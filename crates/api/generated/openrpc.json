@@ -128,6 +128,36 @@
         ],
         "type": "string"
       },
+      "CheckpointData": {
+        "properties": {
+          "epoch": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sequence": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "snapshot": {
+            "contentEncoding": "base64",
+            "description": "Engine snapshot; peers share the build family checked at handshake.",
+            "type": "string"
+          },
+          "subscription": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "DaemonStatus": {
         "properties": {
           "clients": {
@@ -169,6 +199,17 @@
         "description": "No parameters or no result.",
         "properties": {},
         "type": "object"
+      },
+      "EndReason": {
+        "enum": [
+          "unspecified",
+          "lagged",
+          "pane_closed",
+          "respawned",
+          "connection_lost",
+          "unsubscribed"
+        ],
+        "type": "string"
       },
       "EndpointStatus": {
         "description": "One tmux server the daemon manages.",
@@ -382,6 +423,33 @@
             "type": "integer"
           },
           "pane": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RecordBatch": {
+        "properties": {
+          "epoch": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/TerminalRecord"
+            },
+            "type": "array"
+          },
+          "subscription": {
             "minimum": 0,
             "type": "integer"
           }
@@ -608,6 +676,119 @@
         },
         "type": "object"
       },
+      "SubscribeMode": {
+        "enum": [
+          "unspecified",
+          "checkpoint",
+          "replay"
+        ],
+        "type": "string"
+      },
+      "Subscription": {
+        "properties": {
+          "checkpoint_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "checkpoint_pause_us": {
+            "description": "How long the snapshot held the pane's owner.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "epoch": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/SubscribeMode"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "scrollback_lines": {
+            "description": "The mirror's scrollback limit; a replica uses the same so both keep the same history.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sequence": {
+            "description": "Checkpoint mode: the checkpoint's sequence. Replay mode: the resume point.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "SubscriptionEnd": {
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/EndReason"
+          },
+          "subscription": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "TerminalRecord": {
+        "description": "One journaled change. A resize when cols and rows are set, otherwise output bytes.",
+        "properties": {
+          "cols": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "rows": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sequence": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "TerminalSubscribe": {
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "resume_epoch": {
+            "description": "With generation and sequence: continue after this record instead of a new checkpoint, if it is still retained.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "resume_generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "resume_sequence": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "TerminalText": {
         "description": "A pane's text as the daemon's canonical mirror holds it.",
         "properties": {
@@ -700,6 +881,15 @@
           "endpoint": {
             "description": "Endpoint name; the default endpoint when absent.",
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Unsubscribe": {
+        "properties": {
+          "subscription": {
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -797,7 +987,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.2"
+    "version": "1.3"
   },
   "methods": [
     {
@@ -1028,6 +1218,75 @@
       },
       "summary": "Mark a mirrored pane Hot or Warm.",
       "x-mutation": true
+    },
+    {
+      "name": "terminal.subscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "pane",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "endpoint",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "With generation and sequence: continue after this record instead of a new checkpoint, if it is still retained.",
+          "name": "resume_epoch",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "resume_generation",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "resume_sequence",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Subscription"
+        }
+      },
+      "summary": "Follow a pane's canonical mirror: checkpoint or replay, then ordered records.",
+      "x-mutation": false
+    },
+    {
+      "name": "terminal.unsubscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "subscription",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Empty"
+        }
+      },
+      "x-mutation": false
     }
   ],
   "openrpc": "1.3.2"

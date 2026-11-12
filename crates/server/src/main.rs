@@ -11,6 +11,7 @@
 //! logs to standard error. Nothing is ever written to standard output after
 //! startup, and nothing but protocol frames to the socket.
 
+mod conn;
 mod log;
 mod service;
 
@@ -19,17 +20,13 @@ use std::io::{Read as _, Seek as _, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 
-use prost::Message as _;
 use tmux_backend::Socket;
-use tokio::net::{UnixListener, UnixStream};
-use wire::io::{Reader, server_handshake, write_frame};
-use wire::{Identity, Kind, welcome};
+use tokio::net::UnixListener;
+use wire::Identity;
 use workspace_host::{Actions, Hooks, Ledger};
 
-use crate::service::{DaemonService, EndpointConfig, State};
+use crate::service::{EndpointConfig, State};
 
 /// Set on the copy a group-leading `--background` start hands over to.
 const DETACHED_COPY: &str = "DREAMER_DETACHED_COPY";
@@ -258,7 +255,7 @@ async fn serve(listener: UnixListener, state: Arc<State>) -> Result<(), String> 
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
                     let state = state.clone();
-                    tokio::spawn(async move { connection(stream, state).await });
+                    tokio::spawn(async move { conn::connection(stream, state).await });
                 }
                 Err(e) => log::warn(format!("accept: {e}")),
             },
@@ -271,92 +268,7 @@ async fn serve(listener: UnixListener, state: Arc<State>) -> Result<(), String> 
     Ok(())
 }
 
-async fn connection(stream: UnixStream, state: Arc<State>) {
-    let (r, mut w) = stream.into_split();
-    let me = &state.identity;
-    let mut reader = Reader::new(r, me.limits);
-    let accepted = tokio::time::timeout(
-        Duration::from_secs(5),
-        server_handshake(&mut reader, &mut w, me, |n| {
-            welcome(me, n, &state.instance, state.epoch, &host_name(), "default")
-        }),
-    )
-    .await;
-    let (hello, negotiated) = match accepted {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
-            log::warn(format!("refused a client: {e}"));
-            return;
-        }
-        Err(_) => {
-            log::warn("a client did not complete the handshake in time");
-            return;
-        }
-    };
-    state.clients.fetch_add(1, Ordering::Relaxed);
-    let service = DaemonService(state.clone());
-    loop {
-        let (kind, payload) = match reader.next_frame().await {
-            Ok(f) => f,
-            Err(wire::WireError::Closed) => break,
-            Err(e) => {
-                log::warn(format!("{} client (pid {}): {e}", hello.role, hello.pid));
-                break;
-            }
-        };
-        let reply = match kind {
-            Kind::Request => {
-                let response = match wire::Request::decode(payload.as_slice()) {
-                    Ok(req) => answer(&service, req).await,
-                    Err(e) => {
-                        log::warn(format!("undecodable request: {e}"));
-                        break;
-                    }
-                };
-                (Kind::Response, response.encode_to_vec())
-            }
-            Kind::Ping => (Kind::Pong, Vec::new()),
-            Kind::Goodbye => break,
-            other => {
-                log::warn(format!("unexpected {other:?} frame from a client"));
-                break;
-            }
-        };
-        if let Err(e) = write_frame(&mut w, reply.0, &reply.1, negotiated.limits.max_frame).await {
-            log::warn(format!("writing to a client: {e}"));
-            break;
-        }
-        if state.shutting_down.load(Ordering::SeqCst) {
-            state.shutdown.notify_one();
-            break;
-        }
-    }
-    state.clients.fetch_sub(1, Ordering::Relaxed);
-}
-
-async fn answer(service: &DaemonService, req: wire::Request) -> wire::Response {
-    let fail = |e: api::RpcError| wire::Response {
-        id: req.id,
-        payload: Vec::new(),
-        error_code: Some(e.code),
-        error_message: e.message,
-    };
-    let request = match api::Request::decode(&req.method, &req.payload) {
-        Ok(r) => r,
-        Err(e) => return fail(e.into()),
-    };
-    match api::dispatch(service, request).await {
-        Ok(response) => wire::Response {
-            id: req.id,
-            payload: response.encode(),
-            error_code: None,
-            error_message: String::new(),
-        },
-        Err(e) => fail(e),
-    }
-}
-
-fn host_name() -> String {
+pub(crate) fn host_name() -> String {
     std::fs::read_to_string("/etc/hostname")
         .ok()
         .map(|s| s.trim().to_owned())

@@ -1,13 +1,17 @@
 //! A connection to `dreamerd` over its Unix socket: the wire handshake,
 //! typed API calls, and starting the daemon when it is not running.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prost::Message as _;
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::{mpsc, oneshot};
 use wire::io::{HandshakeError, Reader, client_handshake, write_frame};
 use wire::{Identity, Kind, Limits, Welcome, WireError};
 
@@ -44,12 +48,34 @@ impl From<WireError> for ClientError {
     }
 }
 
+/// Something the daemon pushed without being asked (after a subscribe).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pushed {
+    Event {
+        topic: String,
+        sequence: u64,
+        payload: Vec<u8>,
+    },
+    Bulk {
+        stream: u64,
+        topic: String,
+        data: Vec<u8>,
+    },
+    /// The connection ended; nothing else follows.
+    Closed { error: Option<String> },
+}
+
+type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<wire::Response>>>>;
+
+/// A connection to the daemon. Calls may run concurrently; pushed data
+/// arrives on [`Client::pushed`].
 #[derive(Debug)]
 pub struct Client {
-    reader: Reader<OwnedReadHalf>,
-    writer: OwnedWriteHalf,
+    writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
+    pending: Pending,
     limits: Limits,
-    next_id: u64,
+    next_id: AtomicU64,
+    pushed: Option<mpsc::Receiver<Pushed>>,
     pub welcome: Welcome,
 }
 
@@ -57,6 +83,16 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Client {
     pub async fn connect(socket: &Path, role: &str) -> Result<Client, ClientError> {
+        Client::connect_with(socket, role, 1024).await
+    }
+
+    /// Like [`Client::connect`], holding at most `pushed_capacity` pushed
+    /// items before the connection stops reading (back-pressure).
+    pub async fn connect_with(
+        socket: &Path,
+        role: &str,
+        pushed_capacity: usize,
+    ) -> Result<Client, ClientError> {
         let stream = UnixStream::connect(socket)
             .await
             .map_err(|e| ClientError::NotRunning(format!("{}: {e}", socket.display())))?;
@@ -70,20 +106,27 @@ impl Client {
         .await
         .map_err(|_| ClientError::Timeout("waiting for the daemon's handshake"))?
         .map_err(ClientError::Handshake)?;
+        let pending: Pending = Arc::default();
+        let (push_tx, push_rx) = mpsc::channel(pushed_capacity.max(1));
+        tokio::spawn(read_loop(reader, pending.clone(), push_tx));
         Ok(Client {
-            reader,
-            writer,
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
+            pending,
             limits,
-            next_id: 1,
+            next_id: AtomicU64::new(1),
+            pushed: Some(push_rx),
             welcome,
         })
     }
 
-    /// One typed call. Events that arrive meanwhile are skipped; this
-    /// client does not subscribe to any.
-    pub async fn call(&mut self, request: api::Request) -> Result<api::Response, ClientError> {
-        let id = self.next_id;
-        self.next_id += 1;
+    /// The stream of pushed events and bulk data. Taken once.
+    pub fn pushed(&mut self) -> Option<mpsc::Receiver<Pushed>> {
+        self.pushed.take()
+    }
+
+    /// One typed call.
+    pub async fn call(&self, request: api::Request) -> Result<api::Response, ClientError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let method = request.method();
         let frame = wire::Request {
             id,
@@ -91,33 +134,84 @@ impl Client {
             payload: request.encode(),
             deadline_ms: 0,
         };
-        write_frame(
-            &mut self.writer,
-            Kind::Request,
-            &frame.encode_to_vec(),
-            self.limits.max_frame,
-        )
-        .await?;
-        loop {
-            let (kind, payload) = self.reader.next_frame().await?;
-            match kind {
-                Kind::Response => {
-                    let r = wire::Response::decode(payload.as_slice()).map_err(WireError::from)?;
-                    if r.id != id {
-                        return Err(WireError::Unexpected("a response to another request").into());
-                    }
-                    if let Some(code) = r.error_code {
-                        return Err(ClientError::Rpc(api::RpcError::new(code, r.error_message)));
-                    }
-                    return api::Response::decode(method, &r.payload)
-                        .map_err(|e| ClientError::Rpc(e.into()));
-                }
-                Kind::Goodbye => return Err(WireError::Closed.into()),
-                Kind::Event | Kind::Ping | Kind::Pong => continue,
-                _ => return Err(WireError::Unexpected("frame instead of a response").into()),
-            }
+        let (tx, rx) = oneshot::channel();
+        self.pending
+            .lock()
+            .map_err(|_| WireError::Closed)?
+            .insert(id, tx);
+        {
+            let mut w = self.writer.lock().await;
+            write_frame(
+                &mut *w,
+                Kind::Request,
+                &frame.encode_to_vec(),
+                self.limits.max_frame,
+            )
+            .await?;
         }
+        let r = rx.await.map_err(|_| WireError::Closed)?;
+        if let Some(code) = r.error_code {
+            return Err(ClientError::Rpc(api::RpcError::new(code, r.error_message)));
+        }
+        api::Response::decode(method, &r.payload).map_err(|e| ClientError::Rpc(e.into()))
     }
+}
+
+async fn read_loop(
+    mut reader: Reader<OwnedReadHalf>,
+    pending: Pending,
+    pushed: mpsc::Sender<Pushed>,
+) {
+    let error = loop {
+        let (kind, payload) = match reader.next_frame().await {
+            Ok(f) => f,
+            Err(WireError::Closed) => break None,
+            Err(e) => break Some(e.to_string()),
+        };
+        match kind {
+            Kind::Response => match wire::Response::decode(payload.as_slice()) {
+                Ok(r) => {
+                    let waiter = pending.lock().ok().and_then(|mut p| p.remove(&r.id));
+                    if let Some(w) = waiter {
+                        let _ = w.send(r);
+                    }
+                }
+                Err(e) => break Some(e.to_string()),
+            },
+            Kind::Event => match wire::Event::decode(payload.as_slice()) {
+                Ok(e) => {
+                    let _ = pushed
+                        .send(Pushed::Event {
+                            topic: e.topic,
+                            sequence: e.sequence,
+                            payload: e.payload,
+                        })
+                        .await;
+                }
+                Err(e) => break Some(e.to_string()),
+            },
+            Kind::Bulk => match wire::Bulk::decode(payload.as_slice()) {
+                Ok(b) => {
+                    let _ = pushed
+                        .send(Pushed::Bulk {
+                            stream: b.stream,
+                            topic: b.topic,
+                            data: b.data,
+                        })
+                        .await;
+                }
+                Err(e) => break Some(e.to_string()),
+            },
+            Kind::Goodbye => break None,
+            Kind::Ping | Kind::Pong => {}
+            _ => break Some("unexpected frame from the daemon".into()),
+        }
+    };
+    // Callers waiting for a response see the connection close.
+    if let Ok(mut p) = pending.lock() {
+        p.clear();
+    }
+    let _ = pushed.send(Pushed::Closed { error }).await;
 }
 
 /// How to start the daemon when it is not running.

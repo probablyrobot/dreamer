@@ -135,6 +135,15 @@ impl Service for Fixed {
     async fn terminal_set_tier(&self, _: api::SetTier) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn terminal_subscribe(
+        &self,
+        _: api::TerminalSubscribe,
+    ) -> Result<api::Subscription, RpcError> {
+        Err(RpcError::new(api::code::NOT_FOUND, "test"))
+    }
+    async fn terminal_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
 }
 
 #[test]

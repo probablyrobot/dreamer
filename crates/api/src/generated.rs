@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 2;
+pub const PROTOCOL_MINOR: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -253,6 +253,106 @@ mod tier_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| Tier::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SubscribeMode {
+    Unspecified = 0,
+    /// A checkpoint follows; records continue after its sequence.
+    Checkpoint = 1,
+    /// No checkpoint; records continue right after the resume point.
+    Replay = 2,
+}
+
+impl SubscribeMode {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Checkpoint => "checkpoint",
+            Self::Replay => "replay",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "checkpoint" => Some(Self::Checkpoint),
+            "replay" => Some(Self::Replay),
+            _ => None,
+        }
+    }
+}
+
+mod subscribe_mode_json {
+    use super::SubscribeMode;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match SubscribeMode::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| SubscribeMode::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EndReason {
+    Unspecified = 0,
+    /// The subscriber fell behind; resubscribe (resume if still retained).
+    Lagged = 1,
+    PaneClosed = 2,
+    /// The pane's process was replaced; subscribe to the new generation.
+    Respawned = 3,
+    /// The daemon lost its tmux connection; a new epoch follows.
+    ConnectionLost = 4,
+    Unsubscribed = 5,
+}
+
+impl EndReason {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Lagged => "lagged",
+            Self::PaneClosed => "pane_closed",
+            Self::Respawned => "respawned",
+            Self::ConnectionLost => "connection_lost",
+            Self::Unsubscribed => "unsubscribed",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "lagged" => Some(Self::Lagged),
+            "pane_closed" => Some(Self::PaneClosed),
+            "respawned" => Some(Self::Respawned),
+            "connection_lost" => Some(Self::ConnectionLost),
+            "unsubscribed" => Some(Self::Unsubscribed),
+            _ => None,
+        }
+    }
+}
+
+mod end_reason_json {
+    use super::EndReason;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match EndReason::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| EndReason::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -785,6 +885,124 @@ pub struct SetTier {
     pub endpoint: Option<String>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalSubscribe {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// With generation and sequence: continue after this record instead of a new checkpoint, if it is still retained.
+    #[prost(uint64, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_epoch: Option<u64>,
+    #[prost(uint64, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_generation: Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_sequence: Option<u64>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Subscription {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    #[prost(uint64, tag = "3")]
+    pub epoch: u64,
+    #[prost(uint64, tag = "4")]
+    pub generation: u64,
+    #[prost(enumeration = "SubscribeMode", tag = "5")]
+    #[serde(with = "subscribe_mode_json")]
+    pub mode: i32,
+    /// Checkpoint mode: the checkpoint's sequence. Replay mode: the resume point.
+    #[prost(uint64, tag = "6")]
+    pub sequence: u64,
+    #[prost(uint64, tag = "7")]
+    pub checkpoint_bytes: u64,
+    /// How long the snapshot held the pane's owner.
+    #[prost(uint64, tag = "8")]
+    pub checkpoint_pause_us: u64,
+    /// The mirror's scrollback limit; a replica uses the same so both keep the same history.
+    #[prost(uint32, tag = "9")]
+    pub scrollback_lines: u32,
+}
+
+/// One journaled change. A resize when cols and rows are set, otherwise output bytes.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalRecord {
+    #[prost(uint64, tag = "1")]
+    pub sequence: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::json::base64")]
+    pub data: Vec<u8>,
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cols: Option<u32>,
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecordBatch {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    #[prost(uint64, tag = "3")]
+    pub epoch: u64,
+    #[prost(uint64, tag = "4")]
+    pub generation: u64,
+    #[prost(message, repeated, tag = "5")]
+    pub records: Vec<TerminalRecord>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CheckpointData {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    #[prost(uint64, tag = "3")]
+    pub epoch: u64,
+    #[prost(uint64, tag = "4")]
+    pub generation: u64,
+    #[prost(uint64, tag = "5")]
+    pub sequence: u64,
+    /// Engine snapshot; peers share the build family checked at handshake.
+    #[prost(bytes = "vec", tag = "6")]
+    #[serde(with = "crate::json::base64")]
+    pub snapshot: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubscriptionEnd {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    #[prost(enumeration = "EndReason", tag = "2")]
+    #[serde(with = "end_reason_json")]
+    pub reason: i32,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Unsubscribe {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -797,6 +1015,8 @@ pub mod method {
     pub const TERMINAL_READ: &str = "terminal.read";
     pub const TERMINAL_MIRRORS: &str = "terminal.mirrors";
     pub const TERMINAL_SET_TIER: &str = "terminal.set_tier";
+    pub const TERMINAL_SUBSCRIBE: &str = "terminal.subscribe";
+    pub const TERMINAL_UNSUBSCRIBE: &str = "terminal.unsubscribe";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -879,6 +1099,20 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Mark a mirrored pane Hot or Warm.",
     },
+    MethodInfo {
+        name: "terminal.subscribe",
+        params: "TerminalSubscribe",
+        result: "Subscription",
+        mutation: false,
+        doc: "Follow a pane's canonical mirror: checkpoint or replay, then ordered records.",
+    },
+    MethodInfo {
+        name: "terminal.unsubscribe",
+        params: "Unsubscribe",
+        result: "Empty",
+        mutation: false,
+        doc: "",
+    },
 ];
 
 /// A typed request for one method.
@@ -894,6 +1128,8 @@ pub enum Request {
     TerminalRead(ReadParams),
     TerminalMirrors(TopologyParams),
     TerminalSetTier(SetTier),
+    TerminalSubscribe(TerminalSubscribe),
+    TerminalUnsubscribe(Unsubscribe),
 }
 
 impl Request {
@@ -909,6 +1145,8 @@ impl Request {
             Self::TerminalRead(_) => "terminal.read",
             Self::TerminalMirrors(_) => "terminal.mirrors",
             Self::TerminalSetTier(_) => "terminal.set_tier",
+            Self::TerminalSubscribe(_) => "terminal.subscribe",
+            Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
         }
     }
 
@@ -925,6 +1163,8 @@ impl Request {
             Self::TerminalRead(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalMirrors(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalSetTier(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -940,6 +1180,10 @@ impl Request {
             "terminal.read" => Ok(Self::TerminalRead(::prost::Message::decode(bytes)?)),
             "terminal.mirrors" => Ok(Self::TerminalMirrors(::prost::Message::decode(bytes)?)),
             "terminal.set_tier" => Ok(Self::TerminalSetTier(::prost::Message::decode(bytes)?)),
+            "terminal.subscribe" => Ok(Self::TerminalSubscribe(::prost::Message::decode(bytes)?)),
+            "terminal.unsubscribe" => {
+                Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
+            }
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -956,6 +1200,8 @@ impl Request {
             Self::TerminalRead(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalMirrors(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalSetTier(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -971,6 +1217,8 @@ impl Request {
             "terminal.read" => Ok(Self::TerminalRead(serde_json::from_value(value)?)),
             "terminal.mirrors" => Ok(Self::TerminalMirrors(serde_json::from_value(value)?)),
             "terminal.set_tier" => Ok(Self::TerminalSetTier(serde_json::from_value(value)?)),
+            "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
+            "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -989,6 +1237,8 @@ pub enum Response {
     TerminalRead(TerminalText),
     TerminalMirrors(MirrorList),
     TerminalSetTier(Empty),
+    TerminalSubscribe(Subscription),
+    TerminalUnsubscribe(Empty),
 }
 
 impl Response {
@@ -1004,6 +1254,8 @@ impl Response {
             Self::TerminalRead(_) => "terminal.read",
             Self::TerminalMirrors(_) => "terminal.mirrors",
             Self::TerminalSetTier(_) => "terminal.set_tier",
+            Self::TerminalSubscribe(_) => "terminal.subscribe",
+            Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
         }
     }
 
@@ -1020,6 +1272,8 @@ impl Response {
             Self::TerminalRead(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalMirrors(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalSetTier(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -1035,6 +1289,10 @@ impl Response {
             "terminal.read" => Ok(Self::TerminalRead(::prost::Message::decode(bytes)?)),
             "terminal.mirrors" => Ok(Self::TerminalMirrors(::prost::Message::decode(bytes)?)),
             "terminal.set_tier" => Ok(Self::TerminalSetTier(::prost::Message::decode(bytes)?)),
+            "terminal.subscribe" => Ok(Self::TerminalSubscribe(::prost::Message::decode(bytes)?)),
+            "terminal.unsubscribe" => {
+                Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
+            }
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1051,6 +1309,8 @@ impl Response {
             Self::TerminalRead(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalMirrors(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalSetTier(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -1066,6 +1326,8 @@ impl Response {
             "terminal.read" => Ok(Self::TerminalRead(serde_json::from_value(value)?)),
             "terminal.mirrors" => Ok(Self::TerminalMirrors(serde_json::from_value(value)?)),
             "terminal.set_tier" => Ok(Self::TerminalSetTier(serde_json::from_value(value)?)),
+            "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
+            "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1122,6 +1384,15 @@ pub trait Service: Sync {
         &self,
         params: SetTier,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Follow a pane's canonical mirror: checkpoint or replay, then ordered records.
+    fn terminal_subscribe(
+        &self,
+        params: TerminalSubscribe,
+    ) -> impl ::core::future::Future<Output = Result<Subscription, RpcError>> + Send;
+    fn terminal_unsubscribe(
+        &self,
+        params: Unsubscribe,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -1146,5 +1417,13 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .terminal_set_tier(p)
             .await
             .map(Response::TerminalSetTier),
+        Request::TerminalSubscribe(p) => service
+            .terminal_subscribe(p)
+            .await
+            .map(Response::TerminalSubscribe),
+        Request::TerminalUnsubscribe(p) => service
+            .terminal_unsubscribe(p)
+            .await
+            .map(Response::TerminalUnsubscribe),
     }
 }

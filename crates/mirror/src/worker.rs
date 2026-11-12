@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use domain::{ConnectionEpoch, PaneGeneration, PaneKey, TmuxPaneId};
@@ -27,6 +27,50 @@ pub enum Tier {
 
 /// Canonical cell size in pixels until clients negotiate one (spec 11.8).
 pub const CELL_PX: (u32, u32) = (10, 20);
+
+/// Why a subscriber's record stream ended, set before its channel closes.
+pub mod end {
+    pub const RUNNING: u8 = 0;
+    /// The subscriber's queue was full: it fell behind.
+    pub const LAGGED: u8 = 1;
+    /// The mirror was dropped (pane closed or respawned).
+    pub const MIRROR_GONE: u8 = 2;
+    /// The worker stopped with its tmux connection.
+    pub const CONNECTION_LOST: u8 = 3;
+}
+
+/// A subscriber's side of the stream: records after its starting point.
+#[derive(Debug)]
+pub struct Sink {
+    pub records: mpsc::Sender<(u64, Record)>,
+    pub ended: Arc<AtomicU8>,
+}
+
+/// How a subscription starts.
+#[derive(Debug)]
+pub enum Start {
+    /// The engine at `sequence`; records continue from `sequence + 1`.
+    Checkpoint {
+        sequence: u64,
+        snapshot: Vec<u8>,
+        pause: std::time::Duration,
+    },
+    /// Retained records right after the resume point, then live records.
+    Replay {
+        after: u64,
+        records: Vec<(u64, Record)>,
+    },
+}
+
+#[derive(Debug)]
+pub struct Started {
+    /// Scrollback lines the mirror keeps.
+    pub scrollback: usize,
+    pub pane: PaneKey,
+    pub epoch: ConnectionEpoch,
+    pub generation: PaneGeneration,
+    pub start: Start,
+}
 
 /// One record that changes replicated terminal semantics.
 #[derive(Debug, Clone)]
@@ -92,6 +136,14 @@ pub enum WorkerMsg {
         tier: Tier,
         reply: oneshot::Sender<bool>,
     },
+    /// Start a subscription on the pane's owner: decide replay or
+    /// checkpoint and register the sink before any later record is applied.
+    Subscribe {
+        pane: TmuxPaneId,
+        resume: Option<(PaneGeneration, u64)>,
+        sink: Sink,
+        reply: oneshot::Sender<Result<Started, String>>,
+    },
     Read {
         pane: TmuxPaneId,
         history: usize,
@@ -112,9 +164,78 @@ struct Mirror {
     error: Option<String>,
     tier: Tier,
     journal: Journal,
+    subscribers: Vec<Sink>,
+    scrollback: usize,
+}
+
+impl Drop for Mirror {
+    fn drop(&mut self) {
+        for s in &self.subscribers {
+            let _ = s.ended.compare_exchange(
+                end::RUNNING,
+                end::MIRROR_GONE,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
+    }
 }
 
 impl Mirror {
+    fn subscribe(
+        &mut self,
+        resume: Option<(PaneGeneration, u64)>,
+        sink: Sink,
+    ) -> Result<Started, String> {
+        if let Some(e) = &self.error {
+            return Err(format!("the mirror failed: {e}"));
+        }
+        let replay = resume
+            .filter(|(g, _)| *g == self.generation)
+            .and_then(|(_, after)| {
+                self.journal
+                    .since(after + 1)
+                    .map(|it| (after, it.map(|(s, r)| (s, r.clone())).collect::<Vec<_>>()))
+            });
+        let start = match replay {
+            Some((after, records)) => Start::Replay { after, records },
+            None => {
+                let t = Instant::now();
+                let snapshot = self
+                    .engine
+                    .snapshot()
+                    .map_err(|e| format!("snapshot: {e}"))?;
+                Start::Checkpoint {
+                    sequence: self.sequence,
+                    snapshot,
+                    pause: t.elapsed(),
+                }
+            }
+        };
+        self.subscribers.push(sink);
+        Ok(Started {
+            scrollback: self.scrollback,
+            pane: self.pane.clone(),
+            epoch: self.epoch,
+            generation: self.generation,
+            start,
+        })
+    }
+
+    /// Hand a committed record to every subscriber. One that is full has
+    /// fallen behind: it is ended as lagged, never skipped silently.
+    fn publish(&mut self, seq: u64, record: &Record) {
+        self.subscribers
+            .retain(|s| match s.records.try_send((seq, record.clone())) {
+                Ok(()) => true,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    s.ended.store(end::LAGGED, Ordering::SeqCst);
+                    false
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+            });
+    }
+
     fn stats(&self) -> LiveStats {
         let s = self.engine.size();
         LiveStats {
@@ -154,7 +275,12 @@ impl Mirror {
             ),
         };
         match r {
-            Ok(()) => self.sequence = self.journal.push(record, Instant::now()),
+            Ok(()) => {
+                if !self.subscribers.is_empty() {
+                    self.publish(self.journal.next_sequence(), &record);
+                }
+                self.sequence = self.journal.push(record, Instant::now());
+            }
             Err(e) => self.error = Some(e.to_string()),
         }
     }
@@ -242,6 +368,8 @@ pub fn spawn(
                             error: None,
                             tier: Tier::Warm,
                             journal: Journal::new(1, retention, host_bytes.clone()),
+                            subscribers: Vec::new(),
+                            scrollback: state.history_limit as usize,
                         };
                         for r in continuation {
                             m.apply(r);
@@ -264,6 +392,18 @@ pub fn spawn(
                     WorkerMsg::Drop { pane } => {
                         mirrors.remove(&pane);
                         failed.remove(&pane);
+                    }
+                    WorkerMsg::Subscribe {
+                        pane,
+                        resume,
+                        sink,
+                        reply,
+                    } => {
+                        let r = match mirrors.get_mut(&pane) {
+                            Some(m) => m.subscribe(resume, sink),
+                            None => Err(format!("pane %{} has no live mirror", pane.0)),
+                        };
+                        let _ = reply.send(r);
                     }
                     WorkerMsg::SetTier { pane, tier, reply } => {
                         let found = mirrors.get_mut(&pane).map(|m| m.tier = tier).is_some();
@@ -290,6 +430,12 @@ pub fn spawn(
                                 .collect(),
                         );
                     }
+                }
+            }
+            // The router and host are gone with their connection.
+            for m in mirrors.values() {
+                for sub in &m.subscribers {
+                    sub.ended.store(end::CONNECTION_LOST, Ordering::SeqCst);
                 }
             }
         })?;

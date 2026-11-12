@@ -120,20 +120,20 @@ impl Router {
                 )
                 .await;
         });
-        let mut open = true;
         loop {
             tokio::select! {
                 c = self.control.recv() => match c {
                     Some(c) => self.on_control(c).await,
                     None => break,
                 },
-                e = self.events.recv(), if open => match e {
+                e = self.events.recv() => match e {
                     Some(ConnEvent::Notification(n)) => self.on_notification(n).await,
                     Some(ConnEvent::LateOutcome { .. }) => {}
-                    // Keep answering status queries after the link ends.
+                    // The connection is gone: stop, which stops the workers
+                    // and ends every subscription as connection lost.
                     Some(ConnEvent::Closed { .. }) | None => {
-                        open = false;
                         self.closed();
+                        break;
                     }
                 },
             }

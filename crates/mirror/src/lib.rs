@@ -21,7 +21,7 @@ use tmux_backend::{ConnEvent, Connection};
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub use journal::Retention;
-pub use worker::{LiveStats, ReadResult, Record, Tier};
+pub use worker::{LiveStats, ReadResult, Record, Sink, Start, Started, Tier, end};
 
 #[derive(Debug, Clone)]
 pub struct MirrorConfig {
@@ -156,6 +156,30 @@ impl MirrorHost {
     /// Journal bytes held for every pane of this connection.
     pub fn host_journal_bytes(&self) -> usize {
         self.host_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Subscribe to a live mirror: replay after `resume` when it is still
+    /// retained for the same generation, otherwise a checkpoint. Records
+    /// after the starting point arrive on `sink`, in order.
+    pub async fn subscribe(
+        &self,
+        pane: TmuxPaneId,
+        resume: Option<(PaneGeneration, u64)>,
+        sink: Sink,
+    ) -> Result<Started, String> {
+        let (reply, answer) = oneshot::channel();
+        let w = &self.workers[worker_of(pane, self.workers.len())];
+        w.send(worker::WorkerMsg::Subscribe {
+            pane,
+            resume,
+            sink,
+            reply,
+        })
+        .await
+        .map_err(|_| "the mirror workers have stopped".to_owned())?;
+        answer
+            .await
+            .map_err(|_| "the mirror workers have stopped".to_owned())?
     }
 
     /// Set a pane's tier. `false` when the pane has no live mirror.
