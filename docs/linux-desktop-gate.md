@@ -19,7 +19,9 @@ It is required to close milestones M0, M2, M3, and M8.
    presents a frame. A session without a display server fails instead of
    drawing nothing.
 4. Writes `target/gate/linux-desktop/<commit>.json` with distribution,
-   kernel, desktop, session type, and each run's result and output.
+   kernel, desktop, session type, compositor, which X server answered the
+   X11 runs (`xwayland` or `xorg`), whether the run was over SSH, and each
+   run's result and output.
 
 Both backends are required. If the machine cannot offer one (for example a
 pure X11 session), pass `--allow-missing wayland` or `--allow-missing x11`;
@@ -37,6 +39,26 @@ cargo xtask gate linux-desktop
 ```
 
 Attach the JSON report to the milestone issue or pull request.
+
+### Over SSH
+
+An SSH login has no display of its own, so both backends report "not
+available". Someone must be logged in to the desktop on that machine; then
+point the SSH shell at that session before running the gate (zsh-safe):
+
+```sh
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export WAYLAND_DISPLAY=$(basename "$(ls $XDG_RUNTIME_DIR/wayland-* | grep -v lock | head -1)")
+export DISPLAY=:0   # see `ls /tmp/.X11-unix`: X0 is :0
+export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+# X11 access file: GNOME, KDE, or the classic location; empty is fine for
+# compositors whose XWayland does not require one (for example Hyprland).
+export XAUTHORITY=$(ls $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.* $XDG_RUNTIME_DIR/xauth_* ~/.Xauthority 2>/dev/null | head -1)
+cargo xtask gate linux-desktop
+```
+
+The windows open on the machine's own screen. The report records
+`"remote": true` and the compositor found from the running processes.
 
 ## Build packages
 

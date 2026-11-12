@@ -82,7 +82,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut problems = Vec::new();
     for (backend, available) in backends {
         if !available {
-            let msg = format!("{backend}: not available in this session");
+            let var = if backend == "wayland" {
+                "WAYLAND_DISPLAY"
+            } else {
+                "DISPLAY"
+            };
+            let msg = format!(
+                "{backend}: not available in this session ({var} is not set; over SSH, \
+                 export the desktop session's display first, see docs/linux-desktop-gate.md)"
+            );
             if allow_missing.iter().any(|b| b == backend) {
                 println!("linux-desktop: {msg} (allowed)");
             } else {
@@ -127,11 +135,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 input: label,
                 passed,
                 millis: started.elapsed().as_millis(),
-                detail: format!(
-                    "{}{}",
-                    stdout.trim(),
-                    String::from_utf8_lossy(&out.stderr).trim()
-                ),
+                detail: [stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()]
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             });
         }
     }
@@ -160,6 +169,63 @@ fn json(s: &str) -> String {
     out
 }
 
+/// Running processes' names, from `/proc/<pid>/comm`.
+fn process_names() -> Vec<String> {
+    std::fs::read_dir("/proc")
+        .map(|dir| {
+            dir.filter_map(Result::ok)
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .bytes()
+                        .all(|b| b.is_ascii_digit())
+                })
+                .filter_map(|e| std::fs::read_to_string(e.path().join("comm")).ok())
+                .map(|s| s.trim().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The Wayland compositor or desktop in use. The session's own variables
+/// are missing over SSH, so fall back to the running compositor process.
+fn compositor() -> String {
+    if let Some(d) = std::env::var("XDG_CURRENT_DESKTOP")
+        .ok()
+        .filter(|d| !d.is_empty())
+    {
+        return d;
+    }
+    const KNOWN: [(&str, &str); 8] = [
+        ("Hyprland", "Hyprland"),
+        ("sway", "sway"),
+        ("gnome-shell", "GNOME"),
+        ("kwin_wayland", "KDE"),
+        ("kwin_x11", "KDE (X11)"),
+        ("niri", "niri"),
+        ("river", "river"),
+        ("weston", "weston"),
+    ];
+    let running = process_names();
+    KNOWN
+        .iter()
+        .find(|(comm, _)| running.iter().any(|r| r == comm))
+        .map_or_else(|| "unknown".to_owned(), |(_, name)| (*name).to_owned())
+}
+
+/// Which X server answered the X11 runs: XWayland under a Wayland
+/// compositor, or a native Xorg server.
+fn x11_server() -> &'static str {
+    let running = process_names();
+    if running.iter().any(|r| r == "Xwayland") {
+        "xwayland"
+    } else if running.iter().any(|r| r == "Xorg" || r == "X") {
+        "xorg"
+    } else {
+        "unknown"
+    }
+}
+
 fn write_report(commit: &str, dirty: bool, runs: &[Run]) -> Result<String, String> {
     let dir = repo_root().join("target/gate/linux-desktop");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -176,13 +242,17 @@ fn write_report(commit: &str, dirty: bool, runs: &[Run]) -> Result<String, Strin
         s,
         "{{\n  \"commit\": \"{}\",\n  \"dirty\": {dirty},\n  \"distro\": \"{}\",\n  \
          \"kernel\": \"{}\",\n  \"arch\": \"{}\",\n  \"desktop\": \"{}\",\n  \
-         \"session_type\": \"{}\",\n  \"runs\": [",
+         \"session_type\": \"{}\",\n  \"compositor\": \"{}\",\n  \
+         \"x11_server\": \"{}\",\n  \"remote\": {},\n  \"runs\": [",
         json(commit),
         json(&distro),
         json(&capture("uname", &["-r"]).unwrap_or_default()),
         std::env::consts::ARCH,
         json(&env("XDG_CURRENT_DESKTOP")),
         json(&env("XDG_SESSION_TYPE")),
+        json(&compositor()),
+        x11_server(),
+        std::env::var_os("SSH_CONNECTION").is_some(),
     );
     for (i, r) in runs.iter().enumerate() {
         let _ = write!(
