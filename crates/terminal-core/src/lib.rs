@@ -5,6 +5,8 @@
 //! tie to the engine that produced them. Rows are shared through `Arc` so an
 //! unchanged row costs nothing in the next frame.
 
+pub mod family;
+
 use std::fmt::Write as _;
 use std::sync::Arc;
 
