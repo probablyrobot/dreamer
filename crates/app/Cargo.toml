@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 gpui.workspace = true
+terminal-ghostty = { path = "../terminal-ghostty" }
+terminal-render = { path = "../terminal-render" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit"] }

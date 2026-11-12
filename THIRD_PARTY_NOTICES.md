@@ -17,3 +17,4 @@ from `Cargo.lock` at packaging time.
 | uucode (in libghostty-vt) | 0.2.0 | MIT AND Unicode-3.0 | same |
 | wuffs (in libghostty-vt) | 0.4.0-alpha.10 | Apache-2.0 OR MIT | same |
 | GPUI (zed-industries/zed @ 6ceb6fe) | 0.2.2 | Apache-2.0 | `dreamer` desktop client |
+| image | 0.25.10 | MIT OR Apache-2.0 | `dreamer` desktop client |
