@@ -332,7 +332,7 @@ async fn dispatch(conn: &Connection, kind: &Kind) -> Result<Option<u32>, Command
             .map(|()| None),
         Kind::SendInput(a) => ops::send_bytes(conn, TmuxPaneId(a.pane), &a.data)
             .await
-            .map(|()| None),
+            .map(|_| None),
         Kind::SendKeys(a) => ops::send_keys(conn, TmuxPaneId(a.pane), &a.keys)
             .await
             .map(|()| None),

@@ -71,6 +71,20 @@ pub struct Started {
     pub start: Start,
 }
 
+/// Input to encode against a pane's canonical engine.
+#[derive(Debug, Clone)]
+pub enum InputEvent {
+    Key {
+        key: String,
+        text: Option<String>,
+        mods: u16,
+        held: bool,
+    },
+    Text(String),
+    Paste(Vec<u8>),
+    Focus(bool),
+}
+
 /// One record that changes replicated terminal semantics.
 #[derive(Debug, Clone)]
 pub enum Record {
@@ -142,6 +156,13 @@ pub enum WorkerMsg {
         resume: Option<(PaneGeneration, u64)>,
         sink: Sink,
         reply: oneshot::Sender<Result<Started, String>>,
+    },
+    /// Encode input on the pane's owner, against its current modes.
+    Encode {
+        pane: TmuxPaneId,
+        generation: Option<PaneGeneration>,
+        event: InputEvent,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
     Read {
         pane: TmuxPaneId,
@@ -309,6 +330,33 @@ impl Mirror {
     }
 }
 
+fn encode(engine: &Engine, event: InputEvent) -> Result<Vec<u8>, String> {
+    use terminal_ghostty::input::{KeyAction, Mods, key_code};
+    match event {
+        InputEvent::Key {
+            key,
+            text,
+            mods,
+            held,
+        } => {
+            let code = key_code(&key)
+                .ok_or_else(|| format!("unknown key `{key}` (use KeyboardEvent.code names)"))?;
+            let action = if held {
+                KeyAction::Repeat
+            } else {
+                KeyAction::Press
+            };
+            engine
+                .encode_key(code, Mods(mods), text.as_deref(), action)
+                .map_err(|e| e.to_string())
+        }
+        // Committed text goes to the application as typed.
+        InputEvent::Text(t) => Ok(t.into_bytes()),
+        InputEvent::Paste(data) => engine.encode_paste(&data).map_err(|e| e.to_string()),
+        InputEvent::Focus(gained) => engine.encode_focus(gained).map_err(|e| e.to_string()),
+    }
+}
+
 pub fn spawn(
     index: usize,
     capacity: usize,
@@ -401,6 +449,24 @@ pub fn spawn(
                         let r = match mirrors.get_mut(&pane) {
                             Some(m) => m.subscribe(resume, sink),
                             None => Err(format!("pane %{} has no live mirror", pane.0)),
+                        };
+                        let _ = reply.send(r);
+                    }
+                    WorkerMsg::Encode {
+                        pane,
+                        generation,
+                        event,
+                        reply,
+                    } => {
+                        let r = match mirrors.get(&pane) {
+                            None => Err(format!("pane %{} has no live mirror", pane.0)),
+                            Some(m) if generation.is_some_and(|g| g != m.generation) => Err(format!(
+                                "pane %{} now runs generation {}, not {}; its process was replaced",
+                                pane.0,
+                                m.generation.0,
+                                generation.map_or(0, |g| g.0)
+                            )),
+                            Some(m) => encode(&m.engine, event),
                         };
                         let _ = reply.send(r);
                     }

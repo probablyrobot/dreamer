@@ -21,7 +21,7 @@ use tmux_backend::{ConnEvent, Connection};
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub use journal::Retention;
-pub use worker::{LiveStats, ReadResult, Record, Sink, Start, Started, Tier, end};
+pub use worker::{InputEvent, LiveStats, ReadResult, Record, Sink, Start, Started, Tier, end};
 
 #[derive(Debug, Clone)]
 pub struct MirrorConfig {
@@ -173,6 +173,28 @@ impl MirrorHost {
             pane,
             resume,
             sink,
+            reply,
+        })
+        .await
+        .map_err(|_| "the mirror workers have stopped".to_owned())?;
+        answer
+            .await
+            .map_err(|_| "the mirror workers have stopped".to_owned())?
+    }
+
+    /// Encode input on the pane's owner against its canonical state.
+    pub async fn encode(
+        &self,
+        pane: TmuxPaneId,
+        generation: Option<PaneGeneration>,
+        event: worker::InputEvent,
+    ) -> Result<Vec<u8>, String> {
+        let (reply, answer) = oneshot::channel();
+        let w = &self.workers[worker_of(pane, self.workers.len())];
+        w.send(worker::WorkerMsg::Encode {
+            pane,
+            generation,
+            event,
             reply,
         })
         .await

@@ -176,27 +176,36 @@ pub async fn rename_session(
     .map(drop)
 }
 
-/// Exact bytes to the pane's program (`send-keys -H`), in one batch so no
-/// other command interleaves.
+/// Bytes per `send-keys -H` command and commands per batch: a batch is
+/// one bounded command line (16 KiB of input).
+const SEND_CHUNK: usize = 256;
+const SEND_BATCH: usize = 64;
+
+/// Exact bytes to the pane's program (`send-keys -H`). Large input goes in
+/// bounded batches, each acknowledged before the next is sent, so nothing
+/// is reordered and no command line grows without bound. Returns the
+/// number of batches.
 pub async fn send_bytes(
     conn: &Connection,
     target: TmuxPaneId,
     bytes: &[u8],
-) -> Result<(), CommandError> {
-    if bytes.is_empty() {
-        return Ok(());
-    }
-    let mut batch = Batch::new();
-    for chunk in bytes.chunks(256) {
-        let mut cmd = TmuxCommand::new("send-keys")
-            .flag("-H")
-            .opt("-t", pane(target));
-        for b in chunk {
-            cmd = cmd.arg(format!("{b:02x}"));
+) -> Result<u32, CommandError> {
+    let mut batches = 0u32;
+    for block in bytes.chunks(SEND_CHUNK * SEND_BATCH) {
+        let mut batch = Batch::new();
+        for chunk in block.chunks(SEND_CHUNK) {
+            let mut cmd = TmuxCommand::new("send-keys")
+                .flag("-H")
+                .opt("-t", pane(target));
+            for b in chunk {
+                cmd = cmd.arg(format!("{b:02x}"));
+            }
+            batch = batch.push(cmd);
         }
-        batch = batch.push(cmd);
+        conn.execute(batch).await?;
+        batches += 1;
     }
-    conn.execute(batch).await.map(drop)
+    Ok(batches)
 }
 
 /// tmux key names (`Enter`, `C-c`, `Up`).
