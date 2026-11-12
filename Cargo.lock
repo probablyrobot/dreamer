@@ -1256,6 +1256,7 @@ dependencies = [
  "tmux-backend",
  "tokio",
  "workspace-config",
+ "workspace-host",
 ]
 
 [[package]]
