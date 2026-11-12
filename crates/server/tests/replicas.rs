@@ -331,3 +331,82 @@ async fn a_respawned_pane_is_followed_into_its_new_generation() {
         "the new generation started from its own checkpoint"
     );
 }
+
+/// Wait for the feed to publish a frame whose text satisfies `want`.
+async fn feed_until(feed: &replica::feed::Feed, want: impl Fn(&str) -> bool) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        tokio::time::timeout_at(deadline, feed.wake.recv())
+            .await
+            .unwrap_or_else(|_| panic!("no matching frame; feed {:?}", feed.status()))
+            .expect("feed alive");
+        if let Some(f) = feed.take() {
+            let text = f.text_dump();
+            if want(&text) {
+                return text;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_feed_publishes_on_change_coalesces_and_never_wakes_when_idle() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let s = Setup::new(&[]);
+    drop(s.client().await);
+    let feed = replica::feed::Feed::start(s.socket(), 0, None).expect("feed");
+    s.type_line("echo FEED-OK");
+    feed_until(&feed, |t| t.contains("\nFEED-OK")).await;
+
+    // A burst coalesces: the view is woken at most once per frame built.
+    s.type_line("seq 1 5000; echo BURST-DONE");
+    feed_until(&feed, |t| t.contains("BURST-DONE")).await;
+    let frames = feed.stats.frames.load(Relaxed);
+    let wakes = feed.stats.view_wakeups.load(Relaxed);
+    assert!(wakes <= frames, "{wakes} view wakeups for {frames} frames");
+
+    // Idle: nothing wakes, neither the owner thread nor the view.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while feed.wake.try_recv().is_ok() {}
+    let before = (
+        feed.stats.owner_wakeups.load(Relaxed),
+        feed.stats.view_wakeups.load(Relaxed),
+        feed.stats.frames.load(Relaxed),
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let after = (
+        feed.stats.owner_wakeups.load(Relaxed),
+        feed.stats.view_wakeups.load(Relaxed),
+        feed.stats.frames.load(Relaxed),
+    );
+    assert_eq!(
+        before, after,
+        "an idle pane caused wakeups (owner, view, frames)"
+    );
+    assert!(feed.wake.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn a_synchronized_output_hold_is_shown_after_the_limit() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let s = Setup::new(&[]);
+    drop(s.client().await);
+    let feed = replica::feed::Feed::start(s.socket(), 0, None).expect("feed");
+    s.type_line("echo READY");
+    feed_until(&feed, |t| t.contains("\nREADY")).await;
+    // Begin synchronized output and never end it.
+    // Quotes split the marker so the shell's echo of the command does not
+    // contain it; only the program's held output does.
+    s.type_line("printf '\\033[?2026hHELD''-TEXT'");
+    let started = Instant::now();
+    feed_until(&feed, |t| t.contains("HELD-TEXT")).await;
+    let waited = started.elapsed();
+    assert!(
+        waited >= replica::feed::HOLD_LIMIT / 2,
+        "shown after {waited:?}: the hold was ignored"
+    );
+    assert!(feed.stats.holds_expired.load(Relaxed) >= 1);
+    // Ending the hold presents normally again.
+    s.type_line("printf '\\033[?2026l'; echo REL''EASED");
+    feed_until(&feed, |t| t.contains("RELEASED")).await;
+}

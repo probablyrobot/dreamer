@@ -192,6 +192,11 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         });
         stages.push(Stage {
+            name: "live",
+            action: Builtin(live_smoke),
+            when: When::Code,
+        });
+        stages.push(Stage {
             name: "package",
             action: Builtin(package_away_from_tree),
             when: When::Full,
@@ -240,6 +245,89 @@ fn require_gui() -> Result<bool, String> {
 }
 
 /// Debug bundle, ad hoc signed and verified, launched to a presented frame.
+/// The desktop app showing a live tmux pane through dreamerd: an isolated
+/// tmux server and private daemon directories; the pane's text must be
+/// drawn and an idle pane must cause no view wakeups or paints.
+fn live_smoke(dir: &Path) -> Result<Done, String> {
+    if !require_gui()? {
+        return Ok(Done::NotRun);
+    }
+    let build = clean_git_env(Command::new("cargo"))
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "dreamer-app",
+            "-p",
+            "dreamer-server",
+        ])
+        .current_dir(dir)
+        .status()
+        .map_err(|e| format!("cargo build: {e}"))?;
+    if !build.success() {
+        return Err("building dreamer and dreamerd failed".into());
+    }
+    let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
+    let socket = format!("dreamer-gate-live-{}", std::process::id());
+    let root = PathBuf::from(format!("/tmp/drm-gate-live-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let marker = "dreamer-live-ok";
+    let started = Command::new(&tmux)
+        .args([
+            "-L",
+            &socket,
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            "main",
+            "-x",
+            "100",
+            "-y",
+            "30",
+        ])
+        .arg(format!("sh -c 'printf \"{marker}\\n\"; exec sleep 600'"))
+        .status()
+        .map_err(|e| format!("{tmux}: {e}"))?;
+    if !started.success() {
+        return Err("could not start an isolated tmux server".into());
+    }
+    let out = Command::new(dir.join("target/debug/dreamer"))
+        .args([
+            "--smoke", "--expect", marker, "--attach", "0", "-L", &socket, "--tmux", &tmux,
+        ])
+        .env("DREAMER_RUNTIME_DIR", root.join("rt"))
+        .env("DREAMER_STATE_DIR", root.join("st"))
+        .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+        .output();
+    // Clean up the daemon and the isolated server whatever happened.
+    if let Some(pid) = std::fs::read_to_string(root.join("rt/dreamerd.lock"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+    {
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+    }
+    let _ = Command::new(&tmux)
+        .args(["-L", &socket, "kill-server"])
+        .status();
+    let _ = std::fs::remove_dir_all(&root);
+    let out = out.map_err(|e| format!("dreamer: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        println!("gate:   {line}");
+    }
+    if out.status.success() {
+        Ok(Done::Passed)
+    } else {
+        Err(format!(
+            "live pane smoke failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 fn bundle_smoke(dir: &Path) -> Result<Done, String> {
     use crate::package::{Profile, build_bundle, launch_smoke, verify_bundle};
     let out = dir.join("target").join("gate-bundle");

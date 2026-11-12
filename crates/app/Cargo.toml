@@ -12,7 +12,9 @@ name = "dreamer"
 path = "src/main.rs"
 
 [dependencies]
+client = { path = "../client" }
 gpui.workspace = true
+replica = { path = "../replica" }
 terminal-ghostty = { path = "../terminal-ghostty" }
 terminal-render = { path = "../terminal-render" }
 

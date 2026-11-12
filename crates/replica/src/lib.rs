@@ -16,13 +16,14 @@
 //! [`Follower`] drives a replica over a daemon connection: subscribe,
 //! resume after a reconnect, and resnapshot with bounded retries.
 
+pub mod feed;
 mod follow;
 
 use terminal_ghostty::core::GridSize;
 use terminal_ghostty::core::family::{CANONICAL_CELL_PX, CONTINUATION_MAX_BYTES};
 use terminal_ghostty::{Engine, EngineConfig};
 
-pub use follow::{FollowError, FollowState, Follower, RetryPolicy};
+pub use follow::{FollowError, FollowState, Follower, RetryPolicy, Step};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicaError {
@@ -129,6 +130,16 @@ impl Replica {
 
     pub fn engine(&self) -> Option<&Engine> {
         self.engine.as_ref()
+    }
+
+    /// The engine's current frame: shared unchanged rows, damage since the
+    /// previous call, and the synchronized-output hold.
+    pub fn frame(
+        &mut self,
+    ) -> Option<Result<std::sync::Arc<terminal_ghostty::core::FrameSnapshot>, String>> {
+        self.engine
+            .as_mut()
+            .map(|e| e.frame().map_err(|e| e.to_string()))
     }
 
     /// The replica's text, oldest line first (empty before a checkpoint).
