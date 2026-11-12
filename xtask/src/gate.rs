@@ -407,14 +407,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let started = Instant::now();
         let outcome = match stage.action {
             Action::Cmd(program, args) => {
-                let status = clean_git_env(Command::new(program))
-                    .args(args)
-                    .current_dir(&worktree)
-                    .status()
-                    .map_err(|e| format!("could not start `{command}`: {e}"))?;
-                if status.success() {
+                let log = root.join("target/gate/logs").join(format!(
+                    "{}-{}.log",
+                    &tree[..12.min(tree.len())],
+                    stage.name
+                ));
+                let mut cmd = clean_git_env(Command::new(program));
+                cmd.args(args).current_dir(&worktree);
+                let ok =
+                    run_teed(cmd, &log).map_err(|e| format!("could not run `{command}`: {e}"))?;
+                if ok {
+                    let _ = std::fs::remove_file(&log);
                     Outcome::Passed
                 } else {
+                    println!("gate: {} output saved to {}", stage.name, log.display());
                     Outcome::Failed
                 }
             }
@@ -463,6 +469,48 @@ pub fn run(args: &[String]) -> Result<(), String> {
             ))
         }
     }
+}
+
+/// Run `cmd`, echoing its output as it arrives and keeping a copy in `log`
+/// so a failure can be read after the fact. Returns whether it succeeded.
+fn run_teed(mut cmd: Command, log: &Path) -> std::io::Result<bool> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = Arc::new(Mutex::new(std::fs::File::create(log)?));
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    fn pump<R: Read + Send + 'static>(
+        mut from: R,
+        to_stderr: bool,
+        file: Arc<Mutex<std::fs::File>>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = from.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                if to_stderr {
+                    let _ = std::io::stderr().write_all(&buf[..n]);
+                } else {
+                    let _ = std::io::stdout().write_all(&buf[..n]);
+                }
+                if let Ok(mut f) = file.lock() {
+                    let _ = f.write_all(&buf[..n]);
+                }
+            }
+        })
+    }
+    let out = child.stdout.take().map(|o| pump(o, false, file.clone()));
+    let err = child.stderr.take().map(|e| pump(e, true, file.clone()));
+    let status = child.wait()?;
+    for t in [out, err].into_iter().flatten() {
+        let _ = t.join();
+    }
+    Ok(status.success())
 }
 
 /// Classify changed paths. Anything that is not plainly documentation counts
