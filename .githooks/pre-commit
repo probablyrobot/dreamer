@@ -1,0 +1,10 @@
+#!/bin/sh
+# Verifies exactly what is staged. Installed by `cargo xtask hooks install`.
+# Do not bypass with --no-verify; fix the staged change instead.
+set -e
+case "$(uname -s)" in
+  Darwin) platform=mac ;;
+  Linux) platform=linux ;;
+  *) echo "pre-commit: unsupported OS, gate not run" >&2; exit 1 ;;
+esac
+exec cargo xtask gate "$platform" --staged

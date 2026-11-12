@@ -1,0 +1,10 @@
+#!/bin/sh
+# Full gate on HEAD before anything leaves this machine.
+# Installed by `cargo xtask hooks install`.
+set -e
+case "$(uname -s)" in
+  Darwin) platform=mac ;;
+  Linux) platform=linux ;;
+  *) echo "pre-push: unsupported OS, gate not run" >&2; exit 1 ;;
+esac
+exec cargo xtask gate "$platform" --full
