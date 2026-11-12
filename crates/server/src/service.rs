@@ -501,6 +501,41 @@ impl api::Service for DaemonService {
                 mirror::InputEvent::Paste(pastes.remove(&(p.pane, v.id)).unwrap_or_default())
             }
             Some(Event::Focus(f)) => mirror::InputEvent::Focus(f.gained),
+            Some(Event::Mouse(m)) => {
+                use api::{MouseAction as A, MouseButton as B};
+                let action = match A::try_from(m.action) {
+                    Ok(A::Press) => mirror::MouseAction::Press,
+                    Ok(A::Release) => mirror::MouseAction::Release,
+                    Ok(A::Motion) => mirror::MouseAction::Motion,
+                    _ => {
+                        return Err(RpcError::new(
+                            code::INVALID_PARAMS,
+                            "mouse input needs an action",
+                        ));
+                    }
+                };
+                let button = match B::try_from(m.button) {
+                    Ok(B::None) => None,
+                    Ok(B::Left) => Some(mirror::MouseButton::Left),
+                    Ok(B::Middle) => Some(mirror::MouseButton::Middle),
+                    Ok(B::Right) => Some(mirror::MouseButton::Right),
+                    Ok(B::WheelUp) => Some(mirror::MouseButton::WheelUp),
+                    Ok(B::WheelDown) => Some(mirror::MouseButton::WheelDown),
+                    Err(_) => {
+                        return Err(RpcError::new(code::INVALID_PARAMS, "unknown mouse button"));
+                    }
+                };
+                let clamp = |v: u32| u16::try_from(v).unwrap_or(u16::MAX);
+                mirror::InputEvent::Mouse {
+                    action,
+                    button,
+                    col: clamp(m.col),
+                    row: clamp(m.row),
+                    mods: u16::try_from(m.mods)
+                        .map_err(|_| RpcError::new(code::INVALID_PARAMS, "mods out of range"))?,
+                    buttons_held: m.buttons_held,
+                }
+            }
             None => return Err(RpcError::new(code::INVALID_PARAMS, "input needs an event")),
         };
         if !host

@@ -4,7 +4,7 @@ Clients never encode terminal input themselves. They send semantic events
 with `terminal.input`, and the daemon encodes each one on the pane's
 mirror worker against the pane's current state (spec 10.1). That state
 includes the cursor-key and keypad modes, the Kitty keyboard flags,
-modifyOtherKeys, focus reporting, and bracketed paste, so the bytes match
+modifyOtherKeys, focus reporting, mouse tracking, and bracketed paste, so the bytes match
 what the application asked for at that moment.
 
 | Event | Fields | Encoded as |
@@ -13,6 +13,13 @@ what the application asked for at that moment.
 | `text` | `text` | The committed text, as typed (keyboard or IME commit; never IME preedit) |
 | `paste` | `data`, `more`, `id` | Bracketed exactly once when the application enabled bracketed paste (mode 2004). Control sequences inside the pasted text are neutralized, so the text cannot close the bracket early |
 | `focus` | `gained` | `ESC [ I` or `ESC [ O`, only if the application enabled focus reports (mode 1004); otherwise nothing |
+| `mouse` | `action` (press, release, motion), `button` (none, left, middle, right, wheel_up, wheel_down), `col`, `row`, `mods`, `buttons_held` | Ghostty's mouse encoder with the application's tracking mode (X10 9, normal 1000, button-event 1002, any-event 1003) and format (X10, UTF-8 1005, SGR 1006, urxvt 1015, SGR-pixels 1016). Nothing is sent when the application does not track that kind of event |
+
+Mouse positions are cells of the pane's canonical grid, 0-based and
+clamped to it. The daemon gives the encoder the centre of that cell in
+canonical pixels (10×20 per cell), so SGR-pixels reports do not depend on
+the font or window of whichever client sent the event. A wheel step is one
+press of `wheel_up` or `wheel_down`.
 
 ## In the desktop app
 
@@ -47,8 +54,21 @@ end, and the macOS gate runs it as the `input` step:
 The composition is fed to the app's input handler directly. Composing with
 a real input method on each platform is checked by hand.
 
-Mouse input is still to come (#119). Its encoding needs the screen and
-cell geometry the window has.
+Mouse events over the grid become cells using the painted cell size:
+- a press inside the grid, and its release wherever it happens;
+- motion only when the pointer enters a new cell. While a button is held,
+  motion keeps reporting outside the grid, clamped to its edge;
+- wheel steps, one per line. Trackpad pixel deltas are added up and sent
+  as whole rows (at most 32 steps per event); the remainder carries over.
+
+When the application does not track the mouse, the daemon sends nothing.
+Local selection and scrollback with the mouse come with M2-05.
+
+The input smoke continues after `hi日本`: it runs a probe that turns on SGR
+mouse reporting, clicks and releases at cell (3, 1), sends one wheel step
+down, and requires the pane to read exactly `ESC[<0;4;2M ESC[<0;4;2m
+ESC[<65;4;2M`. The events go through GPUI's own event dispatch to the
+window's mouse listeners.
 
 ## Delivery
 

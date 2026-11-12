@@ -28,9 +28,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle, KeyDownEvent,
-    Pixels, UTF16Selection, Window, WindowBounds, WindowOptions, canvas, div, font, point,
-    prelude::*, px, rgb, size,
+    App, Bounds, Context, DispatchPhase, ElementInputHandler, EntityInputHandler, FocusHandle,
+    KeyDownEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent,
+    UTF16Selection, Window, WindowBounds, WindowOptions, canvas, div, font, point, prelude::*, px,
+    rgb, size,
 };
 use replica::feed::Feed;
 use terminal_ghostty::core::{FrameSnapshot, GridSize};
@@ -112,6 +113,11 @@ struct Shell {
     preedit: Option<String>,
     /// Window activation becomes focus in or out for the pane.
     _activation: Option<gpui::Subscription>,
+    /// Mouse state, and where the grid was last painted.
+    pointer: input::Pointer,
+    grid: Option<input::Grid>,
+    /// Progress of the input smoke after typing.
+    input_phase: u8,
 }
 
 impl Shell {
@@ -135,6 +141,64 @@ impl Shell {
             }
             input::KeyIntent::Pass => {}
         }
+    }
+
+    fn send_all(&self, events: impl IntoIterator<Item = api::terminal_input::Event>) {
+        if let Some(feed) = &self.feed {
+            for e in events {
+                feed.send(e);
+            }
+        }
+    }
+
+    /// Mouse listeners for the grid painted at `grid`. Presses and wheel
+    /// steps count only inside the grid; a drag keeps reporting (clamped)
+    /// outside it until the button is released.
+    fn listen_mouse(
+        entity: gpui::Entity<Shell>,
+        grid: input::Grid,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+    ) {
+        let e = entity.clone();
+        window.on_mouse_event(move |ev: &MouseDownEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && bounds.contains(&ev.position) {
+                e.update(cx, |s, _| {
+                    let out = s.pointer.down(&grid, ev.button, ev.position, &ev.modifiers);
+                    s.send_all(out);
+                });
+            }
+        });
+        let e = entity.clone();
+        window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble {
+                e.update(cx, |s, _| {
+                    let out = s.pointer.up(&grid, ev.button, ev.position, &ev.modifiers);
+                    s.send_all(out);
+                });
+            }
+        });
+        let e = entity.clone();
+        window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble
+                && (ev.pressed_button.is_some() || bounds.contains(&ev.position))
+            {
+                e.update(cx, |s, _| {
+                    let out = s.pointer.moved(&grid, ev.position, &ev.modifiers);
+                    s.send_all(out);
+                });
+            }
+        });
+        window.on_mouse_event(move |ev: &ScrollEvent, phase, _, cx| {
+            if phase == DispatchPhase::Bubble && bounds.contains(&ev.position) {
+                entity.update(cx, |s, _| {
+                    let out = s
+                        .pointer
+                        .scroll(&grid, ev.position, ev.delta, &ev.modifiers);
+                    s.send_all(out);
+                });
+            }
+        });
     }
 
     /// The terminal cursor's cell, relative to the terminal's origin.
@@ -312,6 +376,7 @@ impl Render for Shell {
         }
         let term = term_font();
         let entity = cx.entity();
+        let grid_size = self.frame.size;
         let focus = self.focus.clone();
         let preedit = self.preedit.clone().map(|text| {
             let cell = self.cursor_cell(window);
@@ -354,6 +419,21 @@ impl Render for Shell {
                                     ElementInputHandler::new(bounds, entity.clone()),
                                     cx,
                                 );
+                                let tf = term_font();
+                                let m = cell_metrics(
+                                    window,
+                                    &font(tf.family.clone()),
+                                    px(tf.size),
+                                    tf.line_height,
+                                );
+                                let grid = input::Grid {
+                                    origin: bounds.origin,
+                                    cell: size(m.width, m.height),
+                                    cols: grid_size.cols,
+                                    rows: grid_size.rows,
+                                };
+                                entity.update(cx, |s, _| s.grid = Some(grid));
+                                Shell::listen_mouse(entity.clone(), grid, bounds, window);
                             },
                         )
                         .absolute()
@@ -560,6 +640,9 @@ fn main() -> ExitCode {
                     feed: view_feed,
                     preedit: None,
                     _activation: None,
+                    pointer: input::Pointer::default(),
+                    grid: None,
+                    input_phase: 0,
                 });
                 let focus = shell.read(cx).focus.clone();
                 window.focus(&focus, cx);
@@ -602,12 +685,33 @@ fn main() -> ExitCode {
                                 Some(matches!(shell.smoke, Smoke::Input(_)))
                             }
                             Smoke::Input(_) if shell.frame_seen => {
-                                // Output of the typed command: exactly one line.
-                                if text.lines().any(|l| l.trim_end() == "hi日本") {
-                                    println!(
-                                        "smoke: typed and composed input reached the pane: hi日本"
-                                    );
-                                    std::process::exit(0);
+                                let line = |want: &str| text.lines().any(|l| l.trim_end() == want);
+                                match shell.input_phase {
+                                    // Output of the typed command: exactly one line.
+                                    0 if line("hi日本") => {
+                                        println!(
+                                            "smoke: typed and composed input reached the pane: hi日本"
+                                        );
+                                        shell.input_phase = 1;
+                                        shell.send_all([api::terminal_input::Event::Text(
+                                            api::TextInput { text: MOUSE_PROBE.into() },
+                                        )]);
+                                    }
+                                    1 if line("MOUSE-READY") => {
+                                        shell.input_phase = 2;
+                                        if let Some(grid) = shell.grid {
+                                            let any = window.window_handle();
+                                            cx.spawn(async move |_, cx| click_and_scroll(any, grid, cx).await)
+                                                .detach();
+                                        }
+                                    }
+                                    2 if line(MOUSE_EXPECTED) => {
+                                        println!(
+                                            "smoke: click, release, and wheel reached the pane as {MOUSE_EXPECTED}"
+                                        );
+                                        std::process::exit(0);
+                                    }
+                                    _ => {}
                                 }
                                 None
                             }
@@ -673,6 +777,53 @@ async fn type_into(window: gpui::WindowHandle<Shell>, cx: &mut gpui::AsyncApp) {
         .timer(Duration::from_secs(10))
         .await;
     eprintln!("smoke: the typed input never produced `hi日本` in the pane");
+    std::process::exit(3);
+}
+
+/// Turns on SGR mouse reporting, reads one press, release, and wheel step,
+/// and prints them with ESC shown as `E`.
+const MOUSE_PROBE: &str = "printf '\\033[?1000h\\033[?1006h'; stty raw -echo; printf 'MOUSE-''READY\\r\\n'; head -c 28 | tr '\\033' E; printf '\\r\\n'; stty sane; printf '\\033[?1000l\\033[?1006l'\r";
+/// Left press and release at cell (3, 1), then one wheel step down there.
+const MOUSE_EXPECTED: &str = "E[<0;4;2ME[<0;4;2mE[<65;4;2M";
+
+/// Click and scroll through the window as a person would, at cell (3, 1).
+async fn click_and_scroll(any: gpui::AnyWindowHandle, grid: input::Grid, cx: &mut gpui::AsyncApp) {
+    use gpui::{Modifiers, MouseButton, PlatformInput, ScrollDelta, TouchPhase};
+    let at = point(
+        grid.origin.x + grid.cell.width * 3.5,
+        grid.origin.y + grid.cell.height * 1.5,
+    );
+    let events = [
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }),
+        PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position: at,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }),
+        PlatformInput::Scroll(ScrollEvent {
+            position: at,
+            delta: ScrollDelta::Lines(point(0.0, -1.0)),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+            source: gpui::ScrollSource::Pointer,
+        }),
+    ];
+    for ev in events {
+        let _ = cx.update_window(any, move |_, window, cx| {
+            window.dispatch_event(ev, cx);
+        });
+    }
+    cx.background_executor()
+        .timer(Duration::from_secs(10))
+        .await;
+    eprintln!("smoke: the click and wheel never reached the pane as {MOUSE_EXPECTED}");
     std::process::exit(3);
 }
 

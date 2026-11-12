@@ -162,6 +162,44 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     .join("\n"),
             });
         }
+        // Keys, IME commit, click, and wheel through this backend's window
+        // into a shell in an isolated pane.
+        let remove: &[&str] = if backend == "x11" {
+            &["WAYLAND_DISPLAY"]
+        } else {
+            &[]
+        };
+        let started = Instant::now();
+        let out = crate::gate::input_smoke_output(&root, remove)?;
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let expected = if backend == "wayland" {
+            "Wayland"
+        } else {
+            "X11"
+        };
+        let passed = out.status.success()
+            && stdout.contains(&format!("smoke: backend {expected}"))
+            && stdout.contains("smoke: click, release, and wheel reached the pane");
+        println!(
+            "linux-desktop: {backend:<7} {:<18} {}",
+            "input",
+            if passed { "passed" } else { "FAILED" }
+        );
+        if !passed {
+            problems.push(format!("{backend} input: {}", out.status));
+        }
+        runs.push(Run {
+            backend,
+            input: "input".into(),
+            passed,
+            millis: started.elapsed().as_millis(),
+            detail: [stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
     }
 
     let report = write_report(&commit, dirty, &runs)?;

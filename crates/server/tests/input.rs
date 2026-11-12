@@ -285,3 +285,46 @@ async fn input_for_a_replaced_process_is_refused() {
     std::thread::sleep(Duration::from_millis(300));
     assert!(!s.screen().contains("must-not-run"));
 }
+
+fn mouse(action: api::MouseAction, button: api::MouseButton, col: u32, row: u32) -> Event {
+    Event::Mouse(api::MouseInput {
+        action: action as i32,
+        button: button as i32,
+        col,
+        row,
+        ..api::MouseInput::default()
+    })
+}
+
+#[tokio::test]
+async fn mouse_reaches_only_programs_that_track_it() {
+    use api::{MouseAction as A, MouseButton as B};
+    let s = Setup::new();
+    let c = s.client().await;
+    s.type_line("echo M''0");
+    s.wait_mirror(&c, "M0").await;
+    let r = input(&c, mouse(A::Press, B::Left, 3, 1), None)
+        .await
+        .expect("mouse");
+    assert_eq!(r.bytes, 0, "the shell did not ask for mouse reports");
+    // Normal tracking with SGR coordinates; the program reads one press and
+    // one wheel step (9 + 10 bytes).
+    s.type_line(
+        "printf '\\033[?1000h\\033[?1006h'; stty raw -echo; printf 'M''1\\r\\n'; head -c 19 | tr '\\033' E; printf '\\r\\n'; stty sane; printf '\\033[?1000l\\033[?1006l'",
+    );
+    s.wait_mirror(&c, "M1").await;
+    input(&c, mouse(A::Press, B::Left, 3, 1), None)
+        .await
+        .expect("press");
+    input(&c, mouse(A::Press, B::WheelDown, 0, 0), None)
+        .await
+        .expect("wheel");
+    s.wait_line("E[<0;4;2ME[<65;1;1M");
+    let e = input(&c, mouse(A::Unspecified, B::Left, 0, 0), None)
+        .await
+        .expect_err("no action");
+    assert!(
+        matches!(e, ClientError::Rpc(ref r) if r.code == api::code::INVALID_PARAMS),
+        "{e}"
+    );
+}

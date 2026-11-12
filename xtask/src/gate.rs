@@ -354,13 +354,19 @@ fn input_smoke(dir: &Path) -> Result<Done, String> {
     if !require_gui()? {
         return Ok(Done::NotRun);
     }
-    isolated_app_run(
-        dir,
-        "input",
-        "env PS1='$ ' /bin/sh",
-        Some("echo READY-FOR-INPUT"),
-        &["--smoke-input", "--expect", "READY-FOR-INPUT"],
-    )
+    let out = input_smoke_output(dir, &[])?;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        println!("gate:   {line}");
+    }
+    if out.status.success() {
+        Ok(Done::Passed)
+    } else {
+        Err(format!(
+            "input smoke failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
 }
 
 /// Run `dreamer --attach 0 <args>` against an isolated tmux server whose
@@ -373,6 +379,48 @@ fn isolated_app_run(
     type_first: Option<&str>,
     args: &[&str],
 ) -> Result<Done, String> {
+    let out = isolated_app_output(dir, name, command, type_first, args, &[])?;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        println!("gate:   {line}");
+    }
+    if out.status.code() == Some(5) {
+        println!("gate: the display did not refresh; {name} paint checks recorded as not run");
+        return Ok(Done::NotRun);
+    }
+    if out.status.success() {
+        Ok(Done::Passed)
+    } else {
+        Err(format!(
+            "{name} smoke failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// The input smoke: typing, IME composition, click, and wheel through the
+/// window must reach a shell in the pane.
+pub fn input_smoke_output(dir: &Path, env_remove: &[&str]) -> Result<std::process::Output, String> {
+    isolated_app_output(
+        dir,
+        "input",
+        "env PS1='$ ' /bin/sh",
+        Some("echo READY-FOR-INPUT"),
+        &["--smoke-input", "--expect", "READY-FOR-INPUT"],
+        env_remove,
+    )
+}
+
+/// Like [`isolated_app_run`], returning the app's output; `env_remove`
+/// names variables the app must not see (to pick a display backend).
+fn isolated_app_output(
+    dir: &Path,
+    name: &str,
+    command: &str,
+    type_first: Option<&str>,
+    args: &[&str],
+    env_remove: &[&str],
+) -> Result<std::process::Output, String> {
     let build = clean_git_env(Command::new("cargo"))
         .args([
             "build",
@@ -418,7 +466,11 @@ fn isolated_app_run(
             .args(["-L", &socket, "send-keys", "-t", "main", line, "Enter"])
             .status();
     }
-    let out = Command::new(dir.join("target/debug/dreamer"))
+    let mut app = Command::new(dir.join("target/debug/dreamer"));
+    for var in env_remove {
+        app.env_remove(var);
+    }
+    let out = app
         .args(args)
         .args(["--attach", "0", "-L", &socket, "--tmux", &tmux])
         .env("DREAMER_RUNTIME_DIR", root.join("rt"))
@@ -436,23 +488,7 @@ fn isolated_app_run(
         .args(["-L", &socket, "kill-server"])
         .status();
     let _ = std::fs::remove_dir_all(&root);
-    let out = out.map_err(|e| format!("dreamer: {e}"))?;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        println!("gate:   {line}");
-    }
-    if out.status.code() == Some(5) {
-        println!("gate: the display did not refresh; {name} paint checks recorded as not run");
-        return Ok(Done::NotRun);
-    }
-    if out.status.success() {
-        Ok(Done::Passed)
-    } else {
-        Err(format!(
-            "{name} smoke failed ({}): {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
-    }
+    out.map_err(|e| format!("dreamer: {e}"))
 }
 
 fn bundle_smoke(dir: &Path) -> Result<Done, String> {
