@@ -83,6 +83,16 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Client {
     pub async fn connect(socket: &Path, role: &str) -> Result<Client, ClientError> {
+        Client::connect_with(socket, role, 1024).await
+    }
+
+    /// Like [`Client::connect`], holding at most `pushed_capacity` pushed
+    /// items before the connection stops reading (back-pressure).
+    pub async fn connect_with(
+        socket: &Path,
+        role: &str,
+        pushed_capacity: usize,
+    ) -> Result<Client, ClientError> {
         let stream = UnixStream::connect(socket)
             .await
             .map_err(|e| ClientError::NotRunning(format!("{}: {e}", socket.display())))?;
@@ -97,7 +107,7 @@ impl Client {
         .map_err(|_| ClientError::Timeout("waiting for the daemon's handshake"))?
         .map_err(ClientError::Handshake)?;
         let pending: Pending = Arc::default();
-        let (push_tx, push_rx) = mpsc::channel(1024);
+        let (push_tx, push_rx) = mpsc::channel(pushed_capacity.max(1));
         tokio::spawn(read_loop(reader, pending.clone(), push_tx));
         Ok(Client {
             writer: Arc::new(tokio::sync::Mutex::new(writer)),

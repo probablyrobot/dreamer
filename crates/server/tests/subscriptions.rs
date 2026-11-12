@@ -25,6 +25,10 @@ struct Daemon {
 
 impl Daemon {
     fn start() -> Daemon {
+        Daemon::start_with(&[])
+    }
+
+    fn start_with(env: &[(&str, &str)]) -> Daemon {
         let root = PathBuf::from(format!(
             "/tmp/drm-sub-{}-{}",
             std::process::id(),
@@ -41,6 +45,7 @@ impl Daemon {
             .env("DREAMER_RUNTIME_DIR", root.join("rt"))
             .env("DREAMER_STATE_DIR", root.join("st"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -54,10 +59,14 @@ impl Daemon {
     }
 
     async fn client(&self) -> Client {
+        self.client_with(1024).await
+    }
+
+    async fn client_with(&self, pushed: usize) -> Client {
         let socket = self.root.join("rt/dreamerd.sock");
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            match Client::connect(&socket, "test").await {
+            match Client::connect_with(&socket, "test", pushed).await {
                 Ok(c) => return c,
                 Err(_) if Instant::now() < deadline => {
                     tokio::time::sleep(Duration::from_millis(50)).await
@@ -377,8 +386,10 @@ async fn a_checkpoint_plus_records_matches_the_mirror_and_resume_replays() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_subscriber_that_stops_reading_is_ended_as_lagged() {
-    let d = Daemon::start();
-    let mut c = d.client().await;
+    // Small queues on both sides, so the subscriber falls behind on every
+    // platform regardless of how much the OS buffers in the socket.
+    let d = Daemon::start_with(&[("DREAMER_TEST_SMALL_QUEUES", "1")]);
+    let mut c = d.client_with(2).await;
     let mut pushed = c.pushed().expect("pushed");
     let s = subscribe(
         &c,

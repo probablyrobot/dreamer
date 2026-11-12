@@ -22,8 +22,21 @@ use crate::service::{DaemonService, State};
 
 /// Records a subscriber may have in flight before it counts as lagging.
 const SUBSCRIBER_QUEUE: usize = 4096;
-/// Records per pushed batch.
+/// Frames waiting for the connection's writer.
+const CONNECTION_QUEUE: usize = 256;
+/// Limits of one pushed batch.
 const BATCH_RECORDS: usize = 512;
+const BATCH_BYTES: usize = 256 << 10;
+
+/// Queue sizes; `DREAMER_TEST_SMALL_QUEUES` shrinks them so tests reach
+/// back-pressure the same way on every platform.
+fn queues() -> (usize, usize) {
+    if std::env::var_os("DREAMER_TEST_SMALL_QUEUES").is_some() {
+        (16, 4)
+    } else {
+        (SUBSCRIBER_QUEUE, CONNECTION_QUEUE)
+    }
+}
 
 pub const TOPIC_RECORDS: &str = "terminal.records";
 pub const TOPIC_END: &str = "terminal.end";
@@ -86,7 +99,7 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         }
     };
     state.clients.fetch_add(1, Ordering::Relaxed);
-    let (out, out_rx) = mpsc::channel(1024);
+    let (out, out_rx) = mpsc::channel(queues().1);
     let writer = tokio::spawn(write_loop(w, out_rx, negotiated.limits));
     let conn = Conn {
         out,
@@ -310,7 +323,7 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         ))
         .await;
     }
-    let (tx, rx) = mpsc::channel(SUBSCRIBER_QUEUE);
+    let (tx, rx) = mpsc::channel(queues().0);
     let ended = Arc::new(AtomicU8::new(mirror::end::RUNNING));
     let started = match host
         .subscribe(
@@ -416,9 +429,14 @@ async fn stream(
 ) {
     while let Some((seq, r)) = rx.recv().await {
         let mut records = vec![to_api(seq, &r)];
-        while records.len() < BATCH_RECORDS {
+        let mut bytes = records[0].data.len();
+        while records.len() < BATCH_RECORDS && bytes < BATCH_BYTES {
             match rx.try_recv() {
-                Ok((seq, r)) => records.push(to_api(seq, &r)),
+                Ok((seq, r)) => {
+                    let r = to_api(seq, &r);
+                    bytes += r.data.len();
+                    records.push(r);
+                }
                 Err(_) => break,
             }
         }
