@@ -200,7 +200,7 @@ fn an_isolated_session_is_discovered_and_controlled_from_the_cli() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let mirrors = cli.ok(&["mirrors"]);
-        let live = |p: u64| mirrors.contains(&format!("%{p} gen 1 epoch 1 live"));
+        let live = |p: u64| mirrors.contains(&format!("%{p} gen 1 epoch 1 live warm"));
         if live(first) && live(second) {
             break;
         }
@@ -210,6 +210,13 @@ fn an_isolated_session_is_discovered_and_controlled_from_the_cli() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+
+    let out = cli.ok(&["tier", &format!("%{first}"), "hot"]);
+    assert_eq!(out.trim(), format!("%{first} is hot"));
+    assert!(
+        cli.ok(&["mirrors"])
+            .contains(&format!("%{first} gen 1 epoch 1 live hot"))
+    );
 
     let out = cli.ok(&["act", "rename", &format!("@{window}"), "from cli #1"]);
     assert!(out.contains("named \"from cli #1\""), "{out}");

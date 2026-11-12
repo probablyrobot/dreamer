@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 1;
+pub const PROTOCOL_MINOR: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -206,6 +206,53 @@ mod mirror_state_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| MirrorState::from_name(n).map(|e| e as i32))
+    }
+}
+
+/// Observation tier (spec 16.6). Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Tier {
+    Unspecified = 0,
+    Hot = 1,
+    Warm = 2,
+    Cold = 3,
+}
+
+impl Tier {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Hot => "hot",
+            Self::Warm => "warm",
+            Self::Cold => "cold",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "hot" => Some(Self::Hot),
+            "warm" => Some(Self::Warm),
+            "cold" => Some(Self::Cold),
+            _ => None,
+        }
+    }
+}
+
+mod tier_json {
+    use super::Tier;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match Tier::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| Tier::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -696,6 +743,16 @@ pub struct MirrorStatus {
     #[prost(string, optional, tag = "10")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[prost(enumeration = "Tier", tag = "11")]
+    #[serde(with = "tier_json")]
+    pub tier: i32,
+    #[prost(uint64, tag = "12")]
+    pub journal_bytes: u64,
+    /// Oldest retained journal record; sequence + 1 when none is retained.
+    #[prost(uint64, tag = "13")]
+    pub journal_first_sequence: u64,
+    #[prost(uint32, tag = "14")]
+    pub journal_records: u32,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -705,6 +762,27 @@ pub struct MirrorList {
     pub mirrors: Vec<MirrorStatus>,
     #[prost(uint32, tag = "2")]
     pub workers: u32,
+    #[prost(uint64, tag = "3")]
+    pub host_journal_bytes: u64,
+    #[prost(uint64, tag = "4")]
+    pub journal_pane_limit: u64,
+    #[prost(uint64, tag = "5")]
+    pub journal_host_limit: u64,
+    #[prost(uint64, tag = "6")]
+    pub journal_max_age_ms: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SetTier {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(enumeration = "Tier", tag = "2")]
+    #[serde(with = "tier_json")]
+    pub tier: i32,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 /// Method names.
@@ -718,6 +796,7 @@ pub mod method {
     pub const ACTIONS_LIST: &str = "actions.list";
     pub const TERMINAL_READ: &str = "terminal.read";
     pub const TERMINAL_MIRRORS: &str = "terminal.mirrors";
+    pub const TERMINAL_SET_TIER: &str = "terminal.set_tier";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -793,6 +872,13 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: false,
         doc: "Every mirrored pane and its state.",
     },
+    MethodInfo {
+        name: "terminal.set_tier",
+        params: "SetTier",
+        result: "Empty",
+        mutation: true,
+        doc: "Mark a mirrored pane Hot or Warm.",
+    },
 ];
 
 /// A typed request for one method.
@@ -807,6 +893,7 @@ pub enum Request {
     ActionsList(ActionListParams),
     TerminalRead(ReadParams),
     TerminalMirrors(TopologyParams),
+    TerminalSetTier(SetTier),
 }
 
 impl Request {
@@ -821,6 +908,7 @@ impl Request {
             Self::ActionsList(_) => "actions.list",
             Self::TerminalRead(_) => "terminal.read",
             Self::TerminalMirrors(_) => "terminal.mirrors",
+            Self::TerminalSetTier(_) => "terminal.set_tier",
         }
     }
 
@@ -836,6 +924,7 @@ impl Request {
             Self::ActionsList(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalRead(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalMirrors(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalSetTier(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -850,6 +939,7 @@ impl Request {
             "actions.list" => Ok(Self::ActionsList(::prost::Message::decode(bytes)?)),
             "terminal.read" => Ok(Self::TerminalRead(::prost::Message::decode(bytes)?)),
             "terminal.mirrors" => Ok(Self::TerminalMirrors(::prost::Message::decode(bytes)?)),
+            "terminal.set_tier" => Ok(Self::TerminalSetTier(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -865,6 +955,7 @@ impl Request {
             Self::ActionsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalRead(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalMirrors(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalSetTier(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -879,6 +970,7 @@ impl Request {
             "actions.list" => Ok(Self::ActionsList(serde_json::from_value(value)?)),
             "terminal.read" => Ok(Self::TerminalRead(serde_json::from_value(value)?)),
             "terminal.mirrors" => Ok(Self::TerminalMirrors(serde_json::from_value(value)?)),
+            "terminal.set_tier" => Ok(Self::TerminalSetTier(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -896,6 +988,7 @@ pub enum Response {
     ActionsList(ActionList),
     TerminalRead(TerminalText),
     TerminalMirrors(MirrorList),
+    TerminalSetTier(Empty),
 }
 
 impl Response {
@@ -910,6 +1003,7 @@ impl Response {
             Self::ActionsList(_) => "actions.list",
             Self::TerminalRead(_) => "terminal.read",
             Self::TerminalMirrors(_) => "terminal.mirrors",
+            Self::TerminalSetTier(_) => "terminal.set_tier",
         }
     }
 
@@ -925,6 +1019,7 @@ impl Response {
             Self::ActionsList(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalRead(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalMirrors(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalSetTier(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -939,6 +1034,7 @@ impl Response {
             "actions.list" => Ok(Self::ActionsList(::prost::Message::decode(bytes)?)),
             "terminal.read" => Ok(Self::TerminalRead(::prost::Message::decode(bytes)?)),
             "terminal.mirrors" => Ok(Self::TerminalMirrors(::prost::Message::decode(bytes)?)),
+            "terminal.set_tier" => Ok(Self::TerminalSetTier(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -954,6 +1050,7 @@ impl Response {
             Self::ActionsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalRead(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalMirrors(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalSetTier(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -968,6 +1065,7 @@ impl Response {
             "actions.list" => Ok(Self::ActionsList(serde_json::from_value(value)?)),
             "terminal.read" => Ok(Self::TerminalRead(serde_json::from_value(value)?)),
             "terminal.mirrors" => Ok(Self::TerminalMirrors(serde_json::from_value(value)?)),
+            "terminal.set_tier" => Ok(Self::TerminalSetTier(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1019,6 +1117,11 @@ pub trait Service: Sync {
         &self,
         params: TopologyParams,
     ) -> impl ::core::future::Future<Output = Result<MirrorList, RpcError>> + Send;
+    /// Mark a mirrored pane Hot or Warm.
+    fn terminal_set_tier(
+        &self,
+        params: SetTier,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -1039,5 +1142,9 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .terminal_mirrors(p)
             .await
             .map(Response::TerminalMirrors),
+        Request::TerminalSetTier(p) => service
+            .terminal_set_tier(p)
+            .await
+            .map(Response::TerminalSetTier),
     }
 }

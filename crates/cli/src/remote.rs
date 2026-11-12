@@ -185,12 +185,20 @@ pub fn mirrors(d: &DaemonArgs, json: bool) -> Result<(), String> {
             );
             return Ok(());
         }
-        println!("{} VT workers", m.workers);
+        println!(
+            "{} VT workers; journals {} of {} bytes (per pane {}, max age {}s)",
+            m.workers,
+            m.host_journal_bytes,
+            m.journal_host_limit,
+            m.journal_pane_limit,
+            m.journal_max_age_ms / 1000
+        );
         for s in &m.mirrors {
             let state =
                 api::MirrorState::try_from(s.state).map_or("unknown", api::MirrorState::name);
+            let tier = api::Tier::try_from(s.tier).map_or("unknown", api::Tier::name);
             println!(
-                "%{} gen {} epoch {} {state} {}x{} seq {} bytes {} worker {}{}",
+                "%{} gen {} epoch {} {state} {tier} {}x{} seq {} bytes {} journal {}..={} ({} bytes) worker {}{}",
                 s.pane,
                 s.generation,
                 s.epoch,
@@ -198,6 +206,9 @@ pub fn mirrors(d: &DaemonArgs, json: bool) -> Result<(), String> {
                 s.rows,
                 s.sequence,
                 s.ingested_bytes,
+                s.journal_first_sequence,
+                s.sequence,
+                s.journal_bytes,
                 s.worker,
                 s.detail
                     .as_deref()
@@ -205,6 +216,29 @@ pub fn mirrors(d: &DaemonArgs, json: bool) -> Result<(), String> {
                     .unwrap_or_default()
             );
         }
+        Ok(())
+    })
+}
+
+/// `dream tier %PANE hot|warm`.
+pub fn tier(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    let [target, tier] = args else {
+        return Err("usage: dream tier %PANE hot|warm".into());
+    };
+    let pane = id(target, '%', "pane")?;
+    let tier = api::Tier::from_name(tier).ok_or("tier must be hot or warm")?;
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        call(
+            &mut c,
+            Request::TerminalSetTier(api::SetTier {
+                pane,
+                tier: tier as i32,
+                endpoint: None,
+            }),
+        )
+        .await?;
+        println!("%{pane} is {}", tier.name());
         Ok(())
     })
 }

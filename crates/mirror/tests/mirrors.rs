@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use domain::{ConnectionEpoch, PaneGeneration, ServerKey, TmuxPaneId};
-use mirror::{MirrorConfig, MirrorHost, MirrorState};
+use mirror::{MirrorConfig, MirrorHost, MirrorState, Retention, Tier};
 use tmux_backend::server::tmux_program;
 use tmux_backend::{Connection, ConnectionConfig, InventoryTracker, Socket, TmuxServer};
 
@@ -34,6 +34,18 @@ fn config(server: &TmuxServer) -> ConnectionConfig {
 }
 
 async fn start(panes: usize) -> Harness {
+    start_with(
+        panes,
+        MirrorConfig {
+            workers: 2,
+            worker_queue: 256,
+            ..MirrorConfig::default()
+        },
+    )
+    .await
+}
+
+async fn start_with(panes: usize, mirror_config: MirrorConfig) -> Harness {
     let server = TmuxServer::start(160, 50, "/bin/sh").expect("tmux");
     server
         .run_checked(&["set-option", "-g", "default-shell", "/bin/sh"])
@@ -47,17 +59,10 @@ async fn start(panes: usize) -> Harness {
             .expect("layout");
     }
     let (conn, events) = Connection::spawn(config(&server)).await.expect("connect");
-    let (host, changes) = MirrorHost::start(
-        conn.clone(),
-        events,
-        ConnectionEpoch(1),
-        MirrorConfig {
-            workers: 2,
-            worker_queue: 256,
-        },
-    )
-    .await
-    .expect("mirrors");
+    let (host, changes) =
+        MirrorHost::start(conn.clone(), events, ConnectionEpoch(1), mirror_config)
+            .await
+            .expect("mirrors");
     let (tracker, _) = InventoryTracker::start(conn, ServerKey("test".into()), "test")
         .await
         .expect("inventory");
@@ -305,4 +310,97 @@ async fn resizes_and_closed_panes_follow_tmux() {
             .iter()
             .any(|s| s.pane == a && s.state == MirrorState::Live)
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn journal_retention_holds_per_pane_and_per_host_under_load() {
+    let retention = Retention {
+        per_pane_bytes: 64 << 10,
+        host_bytes: 160 << 10,
+        max_age: Duration::from_secs(600),
+    };
+    let h = start_with(
+        3,
+        MirrorConfig {
+            workers: 2,
+            worker_queue: 256,
+            retention,
+        },
+    )
+    .await;
+    let panes = h.panes();
+    for p in &panes {
+        let t = format!("%{}", p.0);
+        h.server
+            .run_checked(&[
+                "send-keys",
+                "-t",
+                &t,
+                "-l",
+                &format!("seq 1 40000; echo DONE-{}", p.0),
+            ])
+            .expect("type");
+        h.server
+            .run_checked(&["send-keys", "-t", &t, "Enter"])
+            .expect("enter");
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    for p in &panes {
+        let done = format!("DONE-{}", p.0);
+        while !h.mirror_lines(*p).await.iter().any(|l| l == &done) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "pane %{} never finished",
+                p.0
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Retention never changes what the engine holds.
+        assert_eq!(h.mirror_lines(*p).await, h.tmux_lines(*p));
+    }
+    let status = h.host.status().await;
+    let mut total = 0;
+    for s in &status {
+        let l = s.live.as_ref().expect("live");
+        assert!(
+            l.journal_bytes <= retention.per_pane_bytes,
+            "pane %{}: {} bytes",
+            s.pane.0,
+            l.journal_bytes
+        );
+        assert!(
+            l.journal_first > 1,
+            "pane %{}: nothing was trimmed",
+            s.pane.0
+        );
+        // Contiguous: the retained records are exactly first..=sequence.
+        assert_eq!(
+            l.journal_first + l.journal_records as u64,
+            l.sequence + 1,
+            "pane %{}",
+            s.pane.0
+        );
+        total += l.journal_bytes;
+    }
+    assert!(total <= retention.host_bytes, "host holds {total} bytes");
+    assert_eq!(h.host.host_journal_bytes(), total);
+
+    // Tiers: Warm by default, Hot on request, visible in status.
+    assert!(
+        status
+            .iter()
+            .all(|s| s.live.as_ref().expect("live").tier == Tier::Warm)
+    );
+    assert!(h.host.set_tier(panes[0], Tier::Hot).await);
+    assert!(!h.host.set_tier(TmuxPaneId(9999), Tier::Hot).await);
+    let after = h.host.status().await;
+    let tier = |p: TmuxPaneId| {
+        after
+            .iter()
+            .find(|s| s.pane == p)
+            .and_then(|s| s.live.as_ref())
+            .map(|l| l.tier)
+    };
+    assert_eq!(tier(panes[0]), Some(Tier::Hot));
+    assert_eq!(tier(panes[1]), Some(Tier::Warm));
 }

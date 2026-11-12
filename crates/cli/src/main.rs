@@ -20,7 +20,8 @@
 //! dream doctor                          diagnostics; never starts the daemon
 //! dream read %PANE [--history N] [--json]
 //!                                       a pane's text from the daemon's mirror
-//! dream mirrors [--json]                mirror state of every pane
+//! dream mirrors [--json]                mirror state, tier, and journal of every pane
+//! dream tier %PANE hot|warm             set a pane's observation tier
 //! dream --version
 //! ```
 
@@ -52,6 +53,7 @@ const USAGE: &str = "usage:
   dream doctor
   dream read %PANE [--history N] [--json]
   dream mirrors [--json]
+  dream tier %PANE hot|warm
   dream --version";
 
 fn main() -> ExitCode {
@@ -95,6 +97,9 @@ fn main() -> ExitCode {
         ["doctor"] => remote::doctor(),
         ["read", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::read(&d, &extra))
+        }
+        ["tier", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::tier(&d, &extra))
         }
         ["mirrors", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| match extra.as_slice() {

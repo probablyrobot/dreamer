@@ -132,6 +132,9 @@ impl Service for Fixed {
     async fn terminal_mirrors(&self, _: api::TopologyParams) -> Result<api::MirrorList, RpcError> {
         Ok(api::MirrorList::default())
     }
+    async fn terminal_set_tier(&self, _: api::SetTier) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
 }
 
 #[test]

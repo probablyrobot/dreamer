@@ -10,6 +10,7 @@
 //! The router never waits on tmux itself; capture commands run as separate
 //! tasks and report back, so the event stream keeps flowing meanwhile.
 
+pub mod journal;
 mod router;
 pub mod worker;
 
@@ -19,7 +20,8 @@ use domain::{ConnectionEpoch, PaneGeneration, TmuxPaneId, TmuxServerRef};
 use tmux_backend::{ConnEvent, Connection};
 use tokio::sync::{mpsc, oneshot, watch};
 
-pub use worker::{LiveStats, ReadResult, Record};
+pub use journal::Retention;
+pub use worker::{LiveStats, ReadResult, Record, Tier};
 
 #[derive(Debug, Clone)]
 pub struct MirrorConfig {
@@ -27,6 +29,7 @@ pub struct MirrorConfig {
     pub workers: usize,
     /// Queued messages per worker before the router waits (backpressure).
     pub worker_queue: usize,
+    pub retention: Retention,
 }
 
 impl Default for MirrorConfig {
@@ -35,6 +38,7 @@ impl Default for MirrorConfig {
         MirrorConfig {
             workers: cores.clamp(1, 4),
             worker_queue: 1024,
+            retention: Retention::default(),
         }
     }
 }
@@ -93,6 +97,8 @@ pub struct MirrorHost {
     control: mpsc::Sender<Control>,
     workers: Vec<mpsc::Sender<worker::WorkerMsg>>,
     epoch: ConnectionEpoch,
+    retention: Retention,
+    host_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 pub(crate) fn worker_of(pane: TmuxPaneId, workers: usize) -> usize {
@@ -111,8 +117,9 @@ impl MirrorHost {
         epoch: ConnectionEpoch,
         config: MirrorConfig,
     ) -> std::io::Result<(MirrorHost, watch::Receiver<u64>)> {
+        let host_bytes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let workers = (0..config.workers.max(1))
-            .map(|i| worker::spawn(i, config.worker_queue))
+            .map(|i| worker::spawn(i, config.worker_queue, config.retention, host_bytes.clone()))
             .collect::<std::io::Result<Vec<_>>>()?;
         let (control, control_rx) = mpsc::channel(256);
         let (changes_tx, changes) = watch::channel(0u64);
@@ -131,6 +138,8 @@ impl MirrorHost {
                 control,
                 workers,
                 epoch,
+                retention: config.retention,
+                host_bytes,
             },
             changes,
         ))
@@ -138,6 +147,28 @@ impl MirrorHost {
 
     pub fn epoch(&self) -> ConnectionEpoch {
         self.epoch
+    }
+
+    pub fn retention(&self) -> Retention {
+        self.retention
+    }
+
+    /// Journal bytes held for every pane of this connection.
+    pub fn host_journal_bytes(&self) -> usize {
+        self.host_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Set a pane's tier. `false` when the pane has no live mirror.
+    pub async fn set_tier(&self, pane: TmuxPaneId, tier: Tier) -> bool {
+        let (reply, answer) = oneshot::channel();
+        let w = &self.workers[worker_of(pane, self.workers.len())];
+        if w.send(worker::WorkerMsg::SetTier { pane, tier, reply })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        answer.await.unwrap_or(false)
     }
 
     /// Mirror exactly these pane executions: attach new ones, re-attach a

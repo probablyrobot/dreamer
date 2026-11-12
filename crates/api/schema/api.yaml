@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 1 }
+version: { major: 1, minor: 2 }
 package: dreamer.v1
 
 types:
@@ -289,11 +289,33 @@ types:
       - { n: 8, name: cols, type: u32 }
       - { n: 9, name: rows, type: u32 }
       - { n: 10, name: detail, type: string, optional: true }
+      - { n: 11, name: tier, type: Tier }
+      - { n: 12, name: journal_bytes, type: u64 }
+      - { n: 13, name: journal_first_sequence, type: u64, doc: "Oldest retained journal record; sequence + 1 when none is retained." }
+      - { n: 14, name: journal_records, type: u32 }
 
   - message: MirrorList
     fields:
       - { n: 1, name: mirrors, type: MirrorStatus, repeated: true }
       - { n: 2, name: workers, type: u32 }
+      - { n: 3, name: host_journal_bytes, type: u64 }
+      - { n: 4, name: journal_pane_limit, type: u64 }
+      - { n: 5, name: journal_host_limit, type: u64 }
+      - { n: 6, name: journal_max_age_ms, type: u64 }
+
+  - enum: Tier
+    doc: "Observation tier (spec 16.6). Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only."
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: hot }
+      - { n: 2, name: warm }
+      - { n: 3, name: cold }
+
+  - message: SetTier
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: tier, type: Tier }
+      - { n: 3, name: endpoint, type: string, optional: true }
 
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
@@ -305,3 +327,4 @@ methods:
   - { method: actions.list, params: ActionListParams, result: ActionList }
   - { method: terminal.read, params: ReadParams, result: TerminalText, doc: "Bounded text, cursor, and size from a pane's canonical mirror." }
   - { method: terminal.mirrors, params: TopologyParams, result: MirrorList, doc: Every mirrored pane and its state. }
+  - { method: terminal.set_tier, params: SetTier, result: Empty, mutation: true, doc: Mark a mirrored pane Hot or Warm. }
