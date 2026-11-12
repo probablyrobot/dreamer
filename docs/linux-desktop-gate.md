@@ -53,7 +53,7 @@ export DISPLAY=:0   # see `ls /tmp/.X11-unix`: X0 is :0
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 # X11 access file: GNOME, KDE, or the classic location; empty is fine for
 # compositors whose XWayland does not require one (for example Hyprland).
-export XAUTHORITY=$(ls $XDG_RUNTIME_DIR/.mutter-Xwaylandauth.* $XDG_RUNTIME_DIR/xauth_* ~/.Xauthority 2>/dev/null | head -1)
+export XAUTHORITY=$(sh -c 'ls "$1"/.mutter-Xwaylandauth.* "$1"/xauth_* ~/.Xauthority 2>/dev/null | head -1' - "$XDG_RUNTIME_DIR")
 cargo xtask gate linux-desktop
 ```
 
