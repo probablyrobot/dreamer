@@ -36,6 +36,10 @@ fn main() -> ExitCode {
         .allowlist_function("ghostty_.*")
         .allowlist_type("Ghostty.*")
         .allowlist_var("GHOSTTY_.*")
+        // Defined through <limits.h> (INT_MAX); clang only evaluates it with
+        // some platform headers, so it is excluded to keep output identical
+        // on every host. It is an enum sentinel with no use from Rust.
+        .blocklist_item("GHOSTTY_ENUM_MAX_VALUE")
         // Every exported enum is a C `int`-sized enum with sentinel max values;
         // constified modules keep unknown values from future minor releases
         // representable instead of being undefined behavior.
