@@ -172,6 +172,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dreamer-cli"
+version = "0.0.0"
+
+[[package]]
+name = "dreamer-server"
+version = "0.0.0"
+
+[[package]]
+name = "dreamer-termapp"
+version = "0.0.0"
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -667,6 +679,18 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "terminal-core"
+version = "0.0.0"
+
+[[package]]
+name = "terminal-ghostty"
+version = "0.0.0"
+dependencies = [
+ "ghostty-sys",
+ "terminal-core",
 ]
 
 [[package]]

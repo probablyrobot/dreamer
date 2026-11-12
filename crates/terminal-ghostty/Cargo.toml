@@ -1,0 +1,19 @@
+[package]
+name = "terminal-ghostty"
+description = "Safe libghostty-vt terminal engine producing owned frame snapshots"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "vt-dump"
+path = "src/bin/vt-dump.rs"
+
+[dependencies]
+ghostty-sys = { path = "../ghostty-sys" }
+terminal-core = { path = "../terminal-core" }
+
+[lints]
+workspace = true
