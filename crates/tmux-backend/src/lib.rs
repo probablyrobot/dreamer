@@ -9,12 +9,15 @@ pub mod bootstrap;
 pub mod command;
 pub mod connection;
 pub mod control;
+pub mod inventory;
+pub mod layout;
 pub mod server;
 
 pub use bootstrap::{BootstrapError, Bootstrapped, PaneState, bootstrap_pane};
 pub use command::{Batch, TmuxCommand};
 pub use connection::{CommandError, ConnEvent, Connection, ConnectionConfig, LinkState, Socket};
 pub use control::{ControlClient, ControlError};
+pub use inventory::{Inventory, InventoryError, InventoryTracker, affects_structure};
 pub use server::TmuxServer;
 
 /// Quote a value for tmux's command parser (single quotes, with embedded
