@@ -65,6 +65,7 @@ fn main() -> ExitCode {
                 "{} is out of date with the pinned headers; run `cargo xtask bindings`",
                 out.display()
             );
+            print_diff(&current, &generated);
             return ExitCode::FAILURE;
         }
         println!("bindings: up to date");
@@ -75,4 +76,28 @@ fn main() -> ExitCode {
         println!("bindings: wrote {}", out.display());
     }
     ExitCode::SUCCESS
+}
+
+/// Show where the checked-in and generated bindings diverge.
+fn print_diff(current: &str, generated: &str) {
+    let fresh = std::env::temp_dir().join("ghostty-bindings.generated.rs");
+    if std::fs::write(&fresh, generated).is_ok() {
+        let _ = std::process::Command::new("diff")
+            .arg("-u")
+            .arg("--label")
+            .arg("checked-in")
+            .arg("--label")
+            .arg("generated")
+            .arg("-")
+            .arg(&fresh)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(current.as_bytes())?;
+                }
+                child.wait()
+            });
+    }
 }
