@@ -271,10 +271,12 @@ fn package_away_from_tree(dir: &Path) -> Result<Done, String> {
 /// Native ARM64 Linux tests in a container when a container runtime is
 /// running; otherwise recorded as not run (spec 17.4).
 fn arm64_container(dir: &Path) -> Result<Done, String> {
+    // `docker info` exits 0 even when Docker Desktop failed to start, so
+    // require an actual server version.
     let docker_up = Command::new("docker")
-        .args(["info", "--format", "{{.ServerVersion}}"])
+        .args(["version", "--format", "{{.Server.Version}}"])
         .output()
-        .is_ok_and(|o| o.status.success());
+        .is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty());
     if !docker_up {
         println!("gate: no container runtime running; ARM64 Linux suite recorded as not run");
         return Ok(Done::NotRun);

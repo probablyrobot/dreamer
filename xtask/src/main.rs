@@ -2,6 +2,7 @@
 
 mod bindings;
 mod deps;
+mod desktop;
 mod doctor;
 mod gate;
 mod headless;
@@ -26,6 +27,8 @@ commands:
   package --platform current [--debug]
                                build, ad hoc sign, and zip the macOS app bundle
   policy                       check repository rules (workflow runners, pinned actions)
+  gate linux-desktop [--allow-missing wayland|x11]
+                               real-display smoke on a Linux desktop (second machine)
   gate [mac|linux] [--staged|--full]
                                run the local verification gate (pre-commit: --staged)
 ";
@@ -38,6 +41,9 @@ fn main() -> ExitCode {
         Some("deps") => deps::run(&args[1..]),
         Some("headless") => headless::run(&args[1..]),
         Some("hooks") => hooks::run(&args[1..]),
+        Some("gate") if args.get(1).map(String::as_str) == Some("linux-desktop") => {
+            desktop::run(&args[2..])
+        }
         Some("gate") => gate::run(&args[1..]),
         Some("policy") => policy::run(&args[1..]),
         Some("package") => package::run(&args[1..]),

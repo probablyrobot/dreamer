@@ -80,6 +80,23 @@ impl Render for Shell {
     }
 }
 
+/// The display backend GPUI will use, by its own selection rule: Wayland
+/// when `WAYLAND_DISPLAY` is set, else X11 when `DISPLAY` is set, else a
+/// headless platform that draws nothing.
+fn display_backend() -> &'static str {
+    if cfg!(target_os = "macos") {
+        return "macOS (Metal)";
+    }
+    let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    if set("WAYLAND_DISPLAY") {
+        "Wayland"
+    } else if set("DISPLAY") {
+        "X11"
+    } else {
+        "headless"
+    }
+}
+
 fn demo_image() -> Option<InlineImage> {
     let (w, h) = (96u32, 48u32);
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
@@ -123,6 +140,15 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let backend = display_backend();
+    if smoke {
+        println!("smoke: backend {backend}");
+        if backend == "headless" {
+            // A headless platform would "present" frames without drawing.
+            eprintln!("smoke: no display server in the environment; nothing would be drawn");
+            return ExitCode::from(4);
+        }
+    }
     let images: Vec<InlineImage> = if fixture.is_none() {
         demo_image().into_iter().collect()
     } else {
