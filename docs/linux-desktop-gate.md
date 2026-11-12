@@ -21,7 +21,11 @@ It is required to close milestones M0, M2, M3, and M8.
    decorations, backgrounds, and cursor shape). A run passes only if the app reports the expected backend and
    presents a frame. A session without a display server fails instead of
    drawing nothing.
-4. Writes `target/gate/linux-desktop/<commit>.json` with distribution,
+4. Runs the input smoke (`dreamer --smoke-input`, see `docs/input.md`) on
+   each backend against an isolated tmux server and daemon. It types and
+   commits an IME composition, then clicks and scrolls; the run passes only
+   if the shell in the pane received exactly that input.
+5. Writes `target/gate/linux-desktop/<commit>.json` with distribution,
    kernel, desktop, session type, compositor, which X server answered the
    X11 runs (`xwayland` or `xorg`), whether the run was over SSH, and each
    run's result and output.
