@@ -5,6 +5,10 @@
 //!   and `dream`, plus `dreamer-<version>-aarch64-apple-darwin.zip` and its
 //!   `.sha256`. Bundles are ad hoc signed; Developer ID signing and
 //!   notarization are a separate release step (spec 3.2, 17.5).
+//! - `cargo xtask package --platform linux` (on Linux) writes
+//!   `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256`: a
+//!   self-contained release that `packaging/install.sh` installs into the
+//!   user's home directory.
 //! - `cargo xtask package --platform arch [--source-only] [--nodeps]` writes
 //!   `target/package/arch/` with a `git archive` source tarball and a
 //!   PKGBUILD, then runs `makepkg` when it is available.
@@ -42,10 +46,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     match platform.as_str() {
         "arch" => return arch_package(&repo_root(), source_only, nodeps),
+        "linux" => return linux_tarball(&repo_root()),
         "macos" => {}
         "current" if cfg!(target_os = "macos") => {}
         "current" => return Err("on Linux, choose a package: --platform arch".into()),
-        other => return Err(format!("unknown platform `{other}` (macos, arch)")),
+        other => return Err(format!("unknown platform `{other}` (macos, arch, linux)")),
     }
     if !cfg!(target_os = "macos") {
         return Err("the macOS bundle is built on a Mac".into());
@@ -62,6 +67,132 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
 fn sha256_of(path: &Path) -> Result<String, String> {
     crate::util::sha256_file(path)
+}
+
+/// A self-contained release tarball for any Linux distribution, installed
+/// by `packaging/install.sh` (see docs/packaging.md for the layout).
+fn linux_tarball(root: &Path) -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err(
+            "the Linux tarball is built on Linux (CI builds it on every pull request)".into(),
+        );
+    }
+    let version = version(root)?;
+    let triple = crate::deps::host_triple()?;
+    let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    cargo
+        .args([
+            "build",
+            "--release",
+            "--locked",
+            "-p",
+            "dreamer-app",
+            "-p",
+            "dreamer-server",
+            "-p",
+            "dreamer-cli",
+        ])
+        .env(
+            "RUSTFLAGS",
+            format!(
+                "{} --remap-path-prefix={}=/usr/src/dreamer",
+                std::env::var("RUSTFLAGS").unwrap_or_default(),
+                root.display()
+            ),
+        )
+        .current_dir(root);
+    if !cargo
+        .status()
+        .map_err(|e| format!("cargo build: {e}"))?
+        .success()
+    {
+        return Err("release build failed".into());
+    }
+    let out = root.join("target/package/linux");
+    let name = format!("dreamer-{version}-{triple}");
+    let stage = out.join(&name);
+    if stage.exists() {
+        std::fs::remove_dir_all(&stage).map_err(|e| e.to_string())?;
+    }
+    let copy = |from: &Path, to: &Path| -> Result<(), String> {
+        if let Some(dir) = to.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(from, to)
+            .map(drop)
+            .map_err(|e| format!("{}: {e}", from.display()))
+    };
+    for exe in EXECUTABLES {
+        copy(
+            &root.join("target/release").join(exe),
+            &stage.join("bin").join(exe),
+        )?;
+    }
+    let fonts = crate::deps::ensure_fonts(&crate::manifest::Manifest::load()?)?;
+    for entry in std::fs::read_dir(&fonts)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
+        copy(
+            &entry.path(),
+            &stage.join("share/dreamer/fonts").join(entry.file_name()),
+        )?;
+    }
+    copy(
+        &root.join("packaging/linux/dev.dreamer.Dreamer.desktop"),
+        &stage.join("share/applications/dev.dreamer.Dreamer.desktop"),
+    )?;
+    copy(
+        &root.join("packaging/linux/dreamerd.service"),
+        &stage.join("share/systemd/user/dreamerd.service"),
+    )?;
+    for entry in std::fs::read_dir(root.join("docs"))
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
+        if entry.path().extension().is_some_and(|x| x == "md") {
+            copy(
+                &entry.path(),
+                &stage.join("share/doc/dreamer").join(entry.file_name()),
+            )?;
+        }
+    }
+    for f in ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"] {
+        copy(&root.join(f), &stage.join(f))?;
+    }
+    copy(
+        &root.join("packaging/install.sh"),
+        &stage.join("install.sh"),
+    )?;
+    std::fs::write(stage.join("VERSION"), format!("{version}\n")).map_err(|e| e.to_string())?;
+    // Release assets carry no version in the name, so
+    // releases/latest/download/dreamer-<target>.tar.gz always resolves.
+    let tarball = out.join(format!("dreamer-{triple}.tar.gz"));
+    run_checked(
+        Command::new("tar")
+            .arg("-C")
+            .arg(&out)
+            .arg("-czf")
+            .arg(&tarball)
+            .arg(&name),
+        "tar",
+    )?;
+    let sum = crate::util::sha256_file(&tarball)?;
+    let file = tarball
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    std::fs::write(
+        out.join(format!("{file}.sha256")),
+        format!("{sum}  {file}\n"),
+    )
+    .map_err(|e| e.to_string())?;
+    println!("package: {}", tarball.display());
+    println!(
+        "package: install with `sh packaging/install.sh --from {}`",
+        tarball.display()
+    );
+    Ok(())
 }
 
 /// Source tarball plus PKGBUILD in `target/package/arch`, then `makepkg`.

@@ -1,0 +1,40 @@
+# Draft a GitHub release for a version tag with the generic Linux tarball,
+# which packaging/install.sh downloads. The macOS zip is built and checked
+# on the development Mac (no macOS runners) and uploaded with
+# `gh release upload`; see docs/packaging.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-tarball:
+    name: release linux tarball (x86-64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install GUI build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev
+      - run: cargo xtask deps prepare --locked
+      - run: cargo xtask package --platform linux
+      - name: Draft the release with the tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "$GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz \
+            target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+            packaging/install.sh
