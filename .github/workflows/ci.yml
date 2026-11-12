@@ -170,6 +170,10 @@ jobs:
         run: |
           pacman -U --noconfirm target/package/arch/dreamer-*.pkg.tar.zst
           pacman -Ql dreamer
+          # No build-directory paths in the installed binaries.
+          if grep -l "package/arch/src" /usr/bin/dreamer /usr/bin/dreamerd /usr/bin/dream; then
+            echo "build paths leaked into the binaries above"; exit 1
+          fi
           dreamerd --self-check
           dream --version
           # No display in CI: the app must say so and exit 4.

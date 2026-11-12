@@ -53,6 +53,11 @@ sudo pacman -U target/package/arch/dreamer-*.pkg.tar.zst
 Use `--source-only` to stop after the tarball and `PKGBUILD`, for example to
 build on another machine.
 
+`makepkg` checks the build dependencies against pacman's database. If you
+installed `rustup` with its own installer instead of `pacman -S rustup`,
+that check fails even though `cargo` works. Pass `--nodeps` to skip it
+(`makepkg --nodeps`).
+
 The build fetches the pinned Rust toolchain through `rustup` and
 `rust-toolchain.toml`, plus the pinned, checksum-verified Zig and
 libghostty-vt sources (`cargo xtask deps prepare`). It needs network access
