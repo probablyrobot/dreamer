@@ -1,0 +1,287 @@
+//! Input through the daemon (spec 10.1): encoded against the pane's
+//! canonical state and delivered to the real program in the pane.
+
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use api::{Request, Response, terminal_input::Event};
+use client::{Client, ClientError};
+use tmux_backend::TmuxServer;
+use tmux_backend::server::tmux_program;
+
+const EXE: &str = env!("CARGO_BIN_EXE_dreamerd");
+
+struct Setup {
+    root: PathBuf,
+    tmux: TmuxServer,
+    daemon: Child,
+}
+
+impl Setup {
+    fn new() -> Setup {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let root = PathBuf::from(format!(
+            "/tmp/drm-in-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let tmux = TmuxServer::start(100, 30, "/bin/sh").expect("tmux");
+        tmux.run_checked(&["set-option", "-g", "default-shell", "/bin/sh"])
+            .expect("shell");
+        let daemon = Command::new(EXE)
+            .args(["--background", "--tmux-socket", tmux.socket(), "--tmux"])
+            .arg(tmux_program())
+            .env("DREAMER_RUNTIME_DIR", root.join("rt"))
+            .env("DREAMER_STATE_DIR", root.join("st"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("dreamerd");
+        Setup { root, tmux, daemon }
+    }
+
+    async fn client(&self) -> Client {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match Client::connect(&self.root.join("rt/dreamerd.sock"), "test").await {
+                Ok(c) => return c,
+                Err(_) if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(50)).await
+                }
+                Err(e) => panic!("daemon never answered: {e}"),
+            }
+        }
+    }
+
+    fn type_line(&self, line: &str) {
+        self.tmux
+            .run_checked(&["send-keys", "-t", "main", "-l", line])
+            .expect("type");
+        self.tmux
+            .run_checked(&["send-keys", "-t", "main", "Enter"])
+            .expect("enter");
+    }
+
+    fn screen(&self) -> String {
+        self.tmux
+            .run_checked(&["capture-pane", "-p", "-t", "main"])
+            .unwrap_or_default()
+    }
+
+    /// Wait until a screen line equals `line` exactly (the shell's echo of
+    /// the command never does, because markers are split with quotes).
+    fn wait_line(&self, line: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        // `od` spacing differs between platforms: compare words.
+        let words = |l: &str| l.split_whitespace().collect::<Vec<_>>().join(" ");
+        loop {
+            let s = self.screen();
+            if s.lines().any(|l| words(l) == line) {
+                return s;
+            }
+            assert!(Instant::now() < deadline, "never showed {line:?}:\n{s}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Wait until the daemon's mirror has a line equal to `line`: the
+    /// mirror, not just tmux, must have seen what precedes it.
+    async fn wait_mirror(&self, c: &Client, line: &str) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(Response::TerminalRead(t)) = c
+                .call(Request::TerminalRead(api::ReadParams {
+                    pane: 0,
+                    history: Some(200),
+                    endpoint: None,
+                }))
+                .await
+                && t.lines.iter().any(|l| l.trim_end() == line)
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the mirror never showed {line:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+impl Drop for Setup {
+    fn drop(&mut self) {
+        if let Some(pid) = std::fs::read_to_string(self.root.join("rt/dreamerd.lock"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .filter(|p| platform::process_alive(*p))
+        {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+        }
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+async fn input(
+    c: &Client,
+    event: Event,
+    generation: Option<u64>,
+) -> Result<api::InputResult, ClientError> {
+    match c
+        .call(Request::TerminalInput(api::TerminalInput {
+            pane: 0,
+            generation,
+            endpoint: None,
+            event: Some(event),
+        }))
+        .await?
+    {
+        Response::TerminalInput(r) => Ok(r),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn key(name: &str) -> Event {
+    Event::Key(api::KeyInput {
+        key: name.into(),
+        ..api::KeyInput::default()
+    })
+}
+
+#[tokio::test]
+async fn keys_are_encoded_against_the_pane_s_current_modes() {
+    let s = Setup::new();
+    let c = s.client().await;
+    // Normal cursor mode: the program reads three raw bytes and shows them.
+    s.type_line("stty raw -echo; printf 'K''1\\r\\n'; od -An -tx1 -N3; stty sane");
+    s.wait_mirror(&c, "K1").await;
+    input(&c, key("ArrowUp"), None).await.expect("key");
+    s.wait_line("1b 5b 41");
+    // The program switches to application cursor mode first.
+    s.type_line(
+        "printf '\\033[?1h'; stty raw -echo; printf 'K''2\\r\\n'; od -An -tx1 -N3; stty sane",
+    );
+    s.wait_mirror(&c, "K2").await;
+    input(&c, key("ArrowUp"), None).await.expect("key");
+    s.wait_line("1b 4f 41");
+    let e = input(&c, key("NoSuchKey"), None)
+        .await
+        .expect_err("unknown key");
+    assert!(
+        matches!(e, ClientError::Rpc(ref r) if r.code == api::code::INVALID_PARAMS),
+        "{e}"
+    );
+}
+
+#[tokio::test]
+async fn a_one_mib_paste_arrives_byte_for_byte() {
+    let s = Setup::new();
+    let c = s.client().await;
+    const N: usize = 1 << 20;
+    // Printable bytes only: paste neutralizes control sequences by design.
+    let data: Vec<u8> = (0..N).map(|i| b'!' + (i * 7 % 90) as u8).collect();
+    let out = s.root.join("paste.bin");
+    s.type_line(&format!(
+        "stty raw -echo; printf 'P''1\\r\\n'; head -c {N} > '{}'; stty sane; echo PAS''TED",
+        out.display()
+    ));
+    s.wait_mirror(&c, "P1").await;
+    // Larger than one request frame: the client sends it in parts and the
+    // daemon encodes it as one paste.
+    let r = client::paste(&c, 0, None, &data).await.expect("paste");
+    assert_eq!(
+        r.bytes as usize, N,
+        "not bracketed: the program did not ask"
+    );
+    assert_eq!(r.batches, 64, "16 KiB per tmux batch");
+    s.wait_line("PASTED");
+    let got = std::fs::read(&out).expect("pasted file");
+    assert_eq!(got.len(), N);
+    assert!(got == data, "the paste was reordered or corrupted");
+}
+
+#[tokio::test]
+async fn bracketed_paste_markers_appear_exactly_once() {
+    let s = Setup::new();
+    let c = s.client().await;
+    let out = s.root.join("bracketed.bin");
+    // 11 bytes of text plus the 6-byte start and end markers.
+    s.type_line(&format!(
+        "printf '\\033[?2004h'; stty raw -echo; printf 'B''1\\r\\n'; head -c 23 > '{}'; stty sane; printf '\\033[?2004l'; echo BDO''NE",
+        out.display()
+    ));
+    s.wait_mirror(&c, "B1").await;
+    client::paste(&c, 0, None, b"hello world")
+        .await
+        .expect("paste");
+    s.wait_line("BDONE");
+    assert_eq!(
+        std::fs::read(&out).expect("file"),
+        b"\x1b[200~hello world\x1b[201~"
+    );
+}
+
+#[tokio::test]
+async fn input_for_a_replaced_process_is_refused() {
+    let s = Setup::new();
+    let c = s.client().await;
+    s.type_line("echo R''EADY");
+    s.wait_mirror(&c, "READY").await;
+    let Response::TerminalMirrors(m) = c
+        .call(Request::TerminalMirrors(api::TopologyParams::default()))
+        .await
+        .expect("mirrors")
+    else {
+        panic!("mirrors")
+    };
+    let generation = m.mirrors[0].generation;
+    input(
+        &c,
+        Event::Text(api::TextInput {
+            text: "echo ok\r".into(),
+        }),
+        Some(generation),
+    )
+    .await
+    .expect("current generation is accepted");
+    s.tmux
+        .run_checked(&["respawn-pane", "-k", "-t", "main", "/bin/sh"])
+        .expect("respawn");
+    // Wait until the daemon has the new process's mirror.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Ok(Response::TerminalMirrors(m)) = c
+            .call(Request::TerminalMirrors(api::TopologyParams::default()))
+            .await
+            && m.mirrors
+                .iter()
+                .any(|x| x.generation > generation && x.state == api::MirrorState::Live as i32)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never saw the respawned mirror");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let e = input(
+        &c,
+        Event::Text(api::TextInput {
+            text: "echo must-not-run\r".into(),
+        }),
+        Some(generation),
+    )
+    .await
+    .expect_err("stale generation");
+    assert!(
+        matches!(e, ClientError::Rpc(ref r) if r.code == api::code::PRECONDITION),
+        "{e}"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!s.screen().contains("must-not-run"));
+}

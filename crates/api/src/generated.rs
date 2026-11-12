@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 3;
+pub const PROTOCOL_MINOR: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1003,6 +1003,99 @@ pub struct Unsubscribe {
     pub subscription: u64,
 }
 
+/// A key press, encoded by the daemon with the pane's current keyboard modes.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyInput {
+    /// W3C KeyboardEvent.code name: KeyA, Digit1, ArrowUp, Enter, F5, ...
+    #[prost(string, tag = "1")]
+    pub key: String,
+    /// The text the key produced on the client keyboard layout.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Bits: 1 shift, 2 ctrl, 4 alt, 8 super.
+    #[prost(uint32, tag = "3")]
+    pub mods: u32,
+    /// An auto-repeat of a key held down.
+    #[prost(bool, tag = "4")]
+    pub held: bool,
+}
+
+/// Committed text (typing or IME commit); never IME preedit.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextInput {
+    #[prost(string, tag = "1")]
+    pub text: String,
+}
+
+/// Bracketed exactly once when the application enabled bracketed paste. A paste larger than one request is sent in parts with the same id and `more` set on all but the last; the daemon encodes the whole paste once (at most 64 MiB).
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PasteInput {
+    #[prost(bytes = "vec", tag = "1")]
+    #[serde(with = "crate::json::base64")]
+    pub data: Vec<u8>,
+    #[prost(bool, tag = "2")]
+    pub more: bool,
+    #[prost(uint64, tag = "3")]
+    pub id: u64,
+}
+
+/// Sent to the application only if it asked for focus reports.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FocusInput {
+    #[prost(bool, tag = "1")]
+    pub gained: bool,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalInput {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// Refuse the input if the pane's process was replaced.
+    #[prost(uint64, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[prost(oneof = "terminal_input::Event", tags = "10, 11, 12, 13")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event: Option<terminal_input::Event>,
+}
+
+pub mod terminal_input {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, PartialEq, ::prost::Oneof, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Event {
+        #[prost(message, tag = "10")]
+        Key(super::KeyInput),
+        #[prost(message, tag = "11")]
+        Text(super::TextInput),
+        #[prost(message, tag = "12")]
+        Paste(super::PasteInput),
+        #[prost(message, tag = "13")]
+        Focus(super::FocusInput),
+    }
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputResult {
+    /// Encoded bytes delivered to the pane.
+    #[prost(uint64, tag = "1")]
+    pub bytes: u64,
+    /// tmux command batches used.
+    #[prost(uint32, tag = "2")]
+    pub batches: u32,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -1017,6 +1110,7 @@ pub mod method {
     pub const TERMINAL_SET_TIER: &str = "terminal.set_tier";
     pub const TERMINAL_SUBSCRIBE: &str = "terminal.subscribe";
     pub const TERMINAL_UNSUBSCRIBE: &str = "terminal.unsubscribe";
+    pub const TERMINAL_INPUT: &str = "terminal.input";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1113,6 +1207,13 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: false,
         doc: "",
     },
+    MethodInfo {
+        name: "terminal.input",
+        params: "TerminalInput",
+        result: "InputResult",
+        mutation: true,
+        doc: "Keys, text, paste, or focus for a pane, encoded against its canonical state.",
+    },
 ];
 
 /// A typed request for one method.
@@ -1130,6 +1231,7 @@ pub enum Request {
     TerminalSetTier(SetTier),
     TerminalSubscribe(TerminalSubscribe),
     TerminalUnsubscribe(Unsubscribe),
+    TerminalInput(TerminalInput),
 }
 
 impl Request {
@@ -1147,6 +1249,7 @@ impl Request {
             Self::TerminalSetTier(_) => "terminal.set_tier",
             Self::TerminalSubscribe(_) => "terminal.subscribe",
             Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
+            Self::TerminalInput(_) => "terminal.input",
         }
     }
 
@@ -1165,6 +1268,7 @@ impl Request {
             Self::TerminalSetTier(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalInput(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -1184,6 +1288,7 @@ impl Request {
             "terminal.unsubscribe" => {
                 Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
             }
+            "terminal.input" => Ok(Self::TerminalInput(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1202,6 +1307,7 @@ impl Request {
             Self::TerminalSetTier(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalInput(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -1219,6 +1325,7 @@ impl Request {
             "terminal.set_tier" => Ok(Self::TerminalSetTier(serde_json::from_value(value)?)),
             "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
             "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
+            "terminal.input" => Ok(Self::TerminalInput(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1239,6 +1346,7 @@ pub enum Response {
     TerminalSetTier(Empty),
     TerminalSubscribe(Subscription),
     TerminalUnsubscribe(Empty),
+    TerminalInput(InputResult),
 }
 
 impl Response {
@@ -1256,6 +1364,7 @@ impl Response {
             Self::TerminalSetTier(_) => "terminal.set_tier",
             Self::TerminalSubscribe(_) => "terminal.subscribe",
             Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
+            Self::TerminalInput(_) => "terminal.input",
         }
     }
 
@@ -1274,6 +1383,7 @@ impl Response {
             Self::TerminalSetTier(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalInput(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -1293,6 +1403,7 @@ impl Response {
             "terminal.unsubscribe" => {
                 Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
             }
+            "terminal.input" => Ok(Self::TerminalInput(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1311,6 +1422,7 @@ impl Response {
             Self::TerminalSetTier(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalInput(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -1328,6 +1440,7 @@ impl Response {
             "terminal.set_tier" => Ok(Self::TerminalSetTier(serde_json::from_value(value)?)),
             "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
             "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
+            "terminal.input" => Ok(Self::TerminalInput(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1393,6 +1506,11 @@ pub trait Service: Sync {
         &self,
         params: Unsubscribe,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Keys, text, paste, or focus for a pane, encoded against its canonical state.
+    fn terminal_input(
+        &self,
+        params: TerminalInput,
+    ) -> impl ::core::future::Future<Output = Result<InputResult, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -1425,5 +1543,6 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .terminal_unsubscribe(p)
             .await
             .map(Response::TerminalUnsubscribe),
+        Request::TerminalInput(p) => service.terminal_input(p).await.map(Response::TerminalInput),
     }
 }

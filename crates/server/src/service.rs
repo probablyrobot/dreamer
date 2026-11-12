@@ -64,6 +64,11 @@ pub struct State {
     pub shutdown: Notify,
     /// Canonical mirrors of the current connection, if connected.
     pub mirrors: tokio::sync::RwLock<Option<mirror::MirrorHost>>,
+    /// One input delivery at a time, so a large paste is never interleaved
+    /// with other input.
+    pub input: Mutex<()>,
+    /// Pastes arriving in parts, by (pane, paste id), until the last part.
+    pub pastes: Mutex<std::collections::HashMap<(u32, u64), Vec<u8>>>,
     /// Connection epochs: each new control connection gets the next one.
     pub epochs: std::sync::atomic::AtomicU64,
 }
@@ -459,6 +464,89 @@ impl api::Service for DaemonService {
             code::INVALID_REQUEST,
             "terminal.unsubscribe needs a streaming connection to the daemon",
         ))
+    }
+
+    async fn terminal_input(&self, p: api::TerminalInput) -> Result<api::InputResult, RpcError> {
+        use api::terminal_input::Event;
+        let host = self.mirror_host(p.endpoint.as_deref()).await?;
+        let pane = domain::TmuxPaneId(p.pane);
+        let event = match p.event {
+            Some(Event::Key(k)) => mirror::InputEvent::Key {
+                key: k.key,
+                text: k.text,
+                mods: u16::try_from(k.mods)
+                    .map_err(|_| RpcError::new(code::INVALID_PARAMS, "mods out of range"))?,
+                held: k.held,
+            },
+            Some(Event::Text(t)) => mirror::InputEvent::Text(t.text),
+            Some(Event::Paste(v)) => {
+                // Gather parts; encode the whole paste once, on the last.
+                const MAX_PASTE: usize = 64 << 20;
+                let mut pastes = self.0.pastes.lock().await;
+                let buf = pastes.entry((p.pane, v.id)).or_default();
+                if buf.len() + v.data.len() > MAX_PASTE {
+                    pastes.remove(&(p.pane, v.id));
+                    return Err(RpcError::new(
+                        code::INVALID_PARAMS,
+                        "a paste is limited to 64 MiB",
+                    ));
+                }
+                buf.extend_from_slice(&v.data);
+                if v.more {
+                    return Ok(api::InputResult {
+                        bytes: 0,
+                        batches: 0,
+                    });
+                }
+                mirror::InputEvent::Paste(pastes.remove(&(p.pane, v.id)).unwrap_or_default())
+            }
+            Some(Event::Focus(f)) => mirror::InputEvent::Focus(f.gained),
+            None => return Err(RpcError::new(code::INVALID_PARAMS, "input needs an event")),
+        };
+        if !host
+            .wait_live(&[pane], std::time::Duration::from_secs(3))
+            .await
+        {
+            return Err(RpcError::new(
+                code::NOT_FOUND,
+                format!("pane %{} has no live mirror", p.pane),
+            ));
+        }
+        let _serial = self.0.input.lock().await;
+        let bytes = host
+            .encode(pane, p.generation.map(domain::PaneGeneration), event)
+            .await
+            .map_err(|e| {
+                let c = if e.contains("was replaced") {
+                    code::PRECONDITION
+                } else if e.contains("no live mirror") {
+                    code::NOT_FOUND
+                } else {
+                    code::INVALID_PARAMS
+                };
+                RpcError::new(c, e)
+            })?;
+        let conn = self
+            .0
+            .endpoint
+            .lock()
+            .await
+            .as_ref()
+            .map(|e| e.conn.clone())
+            .ok_or_else(|| unavailable("endpoint not connected".into()))?;
+        let batches = if bytes.is_empty() {
+            0
+        } else {
+            tmux_backend::ops::send_bytes(&conn, pane, &bytes)
+                .await
+                .map_err(|e| {
+                    RpcError::new(code::UNAVAILABLE, tmux_backend::ops::failure_message(&e))
+                })?
+        };
+        Ok(api::InputResult {
+            bytes: bytes.len() as u64,
+            batches,
+        })
     }
 
     async fn actions_get(&self, p: api::ActionQuery) -> Result<api::ActionRecord, RpcError> {

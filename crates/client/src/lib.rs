@@ -214,6 +214,43 @@ async fn read_loop(
     let _ = pushed.send(Pushed::Closed { error }).await;
 }
 
+/// Paste into a pane, splitting data larger than one request into parts
+/// that the daemon reassembles and encodes as one paste.
+pub async fn paste(
+    client: &Client,
+    pane: u32,
+    generation: Option<u64>,
+    data: &[u8],
+) -> Result<api::InputResult, ClientError> {
+    const PART: usize = 512 << 10;
+    static IDS: AtomicU64 = AtomicU64::new(1);
+    let id = IDS.fetch_add(1, Ordering::Relaxed) ^ (u64::from(std::process::id()) << 32);
+    let parts: Vec<&[u8]> = if data.is_empty() {
+        vec![&[][..]]
+    } else {
+        data.chunks(PART).collect()
+    };
+    let mut last = api::InputResult::default();
+    for (i, part) in parts.iter().enumerate() {
+        let more = i + 1 < parts.len();
+        let req = api::TerminalInput {
+            pane,
+            generation,
+            endpoint: None,
+            event: Some(api::terminal_input::Event::Paste(api::PasteInput {
+                data: part.to_vec(),
+                more,
+                id,
+            })),
+        };
+        match client.call(api::Request::TerminalInput(req)).await? {
+            api::Response::TerminalInput(r) => last = r,
+            _ => return Err(WireError::Unexpected("a reply to another method").into()),
+        }
+    }
+    Ok(last)
+}
+
 /// How to start the daemon when it is not running.
 #[derive(Debug, Clone)]
 pub struct Launch {

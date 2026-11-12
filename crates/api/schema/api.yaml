@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 3 }
+version: { major: 1, minor: 4 }
 package: dreamer.v1
 
 types:
@@ -395,6 +395,55 @@ types:
     fields:
       - { n: 1, name: subscription, type: u64 }
 
+  # ---- input --------------------------------------------------------------
+
+  - message: KeyInput
+    doc: "A key press, encoded by the daemon with the pane's current keyboard modes."
+    fields:
+      - { n: 1, name: key, type: string, doc: "W3C KeyboardEvent.code name: KeyA, Digit1, ArrowUp, Enter, F5, ..." }
+      - { n: 2, name: text, type: string, optional: true, doc: The text the key produced on the client keyboard layout. }
+      - { n: 3, name: mods, type: u32, doc: "Bits: 1 shift, 2 ctrl, 4 alt, 8 super." }
+      - { n: 4, name: held, type: bool, doc: "An auto-repeat of a key held down." }
+
+  - message: TextInput
+    doc: "Committed text (typing or IME commit); never IME preedit."
+    fields:
+      - { n: 1, name: text, type: string }
+
+  - message: PasteInput
+    doc: >-
+      Bracketed exactly once when the application enabled bracketed paste.
+      A paste larger than one request is sent in parts with the same id and
+      `more` set on all but the last; the daemon encodes the whole paste
+      once (at most 64 MiB).
+    fields:
+      - { n: 1, name: data, type: bytes }
+      - { n: 2, name: more, type: bool }
+      - { n: 3, name: id, type: u64 }
+
+  - message: FocusInput
+    doc: Sent to the application only if it asked for focus reports.
+    fields:
+      - { n: 1, name: gained, type: bool }
+
+  - message: TerminalInput
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: generation, type: u64, optional: true, doc: "Refuse the input if the pane's process was replaced." }
+      - { n: 3, name: endpoint, type: string, optional: true }
+    oneof:
+      name: event
+      variants:
+        - { n: 10, name: key, type: KeyInput }
+        - { n: 11, name: text, type: TextInput }
+        - { n: 12, name: paste, type: PasteInput }
+        - { n: 13, name: focus, type: FocusInput }
+
+  - message: InputResult
+    fields:
+      - { n: 1, name: bytes, type: u64, doc: Encoded bytes delivered to the pane. }
+      - { n: 2, name: batches, type: u32, doc: tmux command batches used. }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -408,3 +457,4 @@ methods:
   - { method: terminal.set_tier, params: SetTier, result: Empty, mutation: true, doc: Mark a mirrored pane Hot or Warm. }
   - { method: terminal.subscribe, params: TerminalSubscribe, result: Subscription, doc: "Follow a pane's canonical mirror: checkpoint or replay, then ordered records." }
   - { method: terminal.unsubscribe, params: Unsubscribe, result: Empty }
+  - { method: terminal.input, params: TerminalInput, result: InputResult, mutation: true, doc: "Keys, text, paste, or focus for a pane, encoded against its canonical state." }

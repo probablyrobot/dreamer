@@ -19,6 +19,7 @@
 mod effects;
 mod features;
 mod frame;
+pub mod input;
 pub mod snapshot_fixtures;
 
 pub use features::{Features, features};
