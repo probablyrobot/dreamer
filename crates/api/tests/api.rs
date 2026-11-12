@@ -1,0 +1,214 @@
+//! The generated surfaces agree with each other: one record, two encodings;
+//! one method table, three consumers.
+
+use api::{
+    Action, ActionRecord, ActionState, Empty, METHODS, Request, Response, RpcError, SendInput,
+    Service, SplitDirection, SplitPane, SubmitAction, VersionInfo, action, dispatch,
+};
+use serde_json::json;
+
+fn submit() -> SubmitAction {
+    SubmitAction {
+        action: Some(Action {
+            kind: Some(action::Kind::SplitPane(SplitPane {
+                pane: 3,
+                direction: SplitDirection::Vertical as i32,
+                percent: Some(30),
+                cells: None,
+                argv: vec!["htop".into(), "-d".into(), "5".into()],
+                cwd: None,
+            })),
+        }),
+        endpoint: None,
+        idempotency_key: Some("k1".into()),
+        deadline_ms: None,
+    }
+}
+
+#[test]
+fn one_record_round_trips_through_protobuf_and_json() {
+    let req = Request::ActionsSubmit(submit());
+    let bytes = req.encode();
+    assert_eq!(
+        Request::decode("actions.submit", &bytes).expect("proto"),
+        req
+    );
+    let value = req.to_json();
+    assert_eq!(
+        value,
+        json!({
+            "action": { "kind": { "split_pane": {
+                "pane": 3, "direction": "vertical", "percent": 30,
+                "argv": ["htop", "-d", "5"]
+            }}},
+            "idempotency_key": "k1"
+        })
+    );
+    assert_eq!(
+        Request::from_json("actions.submit", value).expect("json"),
+        req
+    );
+}
+
+#[test]
+fn json_spells_bytes_as_base64_and_accepts_enum_numbers() {
+    let input = Request::ActionsSubmit(SubmitAction {
+        action: Some(Action {
+            kind: Some(action::Kind::SendInput(SendInput {
+                pane: 1,
+                data: b"ls\r\x1b[A".to_vec(),
+                generation: Some(2),
+            })),
+        }),
+        ..SubmitAction::default()
+    });
+    let value = input.to_json();
+    assert_eq!(value["action"]["kind"]["send_input"]["data"], "bHMNG1tB");
+    assert_eq!(
+        Request::from_json("actions.submit", value).expect("json"),
+        input
+    );
+
+    // A newer peer may send a number this build has no name for.
+    let rec: ActionRecord =
+        serde_json::from_value(json!({ "id": "a", "state": 7 })).expect("number");
+    assert_eq!(rec.state, ActionState::OutcomeUnknown as i32);
+    assert_eq!(
+        serde_json::to_value(&rec).expect("ser")["state"],
+        "outcome_unknown"
+    );
+    let future: ActionRecord = serde_json::from_value(json!({ "state": 99 })).expect("future");
+    assert_eq!(serde_json::to_value(&future).expect("ser")["state"], 99);
+    assert!(serde_json::from_value::<ActionRecord>(json!({ "state": "nope" })).is_err());
+}
+
+#[test]
+fn unknown_fields_and_methods_are_handled_explicitly() {
+    // A newer client's extra field is ignored, not an error.
+    let v: VersionInfo =
+        serde_json::from_value(json!({ "protocol_major": 1, "from_the_future": true }))
+            .expect("tolerant");
+    assert_eq!(v.protocol_major, 1);
+    let err = Request::decode("no.such", &[]).expect_err("unknown");
+    assert_eq!(RpcError::from(err).code, api::code::METHOD_NOT_FOUND);
+    let err = Request::decode("actions.submit", &[0xff, 0xff]).expect_err("garbage");
+    assert_eq!(RpcError::from(err).code, api::code::INVALID_PARAMS);
+}
+
+struct Fixed;
+
+impl Service for Fixed {
+    async fn daemon_version(&self, _: Empty) -> Result<VersionInfo, RpcError> {
+        Ok(VersionInfo {
+            protocol_major: api::PROTOCOL_MAJOR,
+            ..VersionInfo::default()
+        })
+    }
+    async fn daemon_status(&self, _: Empty) -> Result<api::DaemonStatus, RpcError> {
+        Err(RpcError::new(api::code::UNAVAILABLE, "test"))
+    }
+    async fn daemon_shutdown(&self, _: Empty) -> Result<api::ShutdownResult, RpcError> {
+        Err(RpcError::new(api::code::UNAVAILABLE, "test"))
+    }
+    async fn tmux_topology(&self, _: api::TopologyParams) -> Result<api::Topology, RpcError> {
+        Err(RpcError::new(api::code::UNAVAILABLE, "test"))
+    }
+    async fn actions_submit(&self, p: SubmitAction) -> Result<ActionRecord, RpcError> {
+        Ok(ActionRecord {
+            action: p.action,
+            state: ActionState::Completed as i32,
+            ..ActionRecord::default()
+        })
+    }
+    async fn actions_get(&self, _: api::ActionQuery) -> Result<ActionRecord, RpcError> {
+        Err(RpcError::new(api::code::NOT_FOUND, "test"))
+    }
+    async fn actions_list(&self, _: api::ActionListParams) -> Result<api::ActionList, RpcError> {
+        Ok(api::ActionList::default())
+    }
+}
+
+#[test]
+fn every_method_in_the_table_dispatches_to_its_own_result() {
+    let rt = futures_lite_block_on;
+    for m in METHODS {
+        let req = Request::from_json(m.name, json!({})).expect(m.name);
+        assert_eq!(req.method(), m.name);
+        match rt(dispatch(&Fixed, req)) {
+            Ok(resp) => {
+                assert_eq!(resp.method(), m.name);
+                let bytes = resp.encode();
+                assert_eq!(Response::decode(m.name, &bytes).expect("decode"), resp);
+            }
+            Err(e) => assert!(e.code < 0, "{e}"),
+        }
+    }
+    assert!(
+        METHODS
+            .iter()
+            .any(|m| m.name == "actions.submit" && m.mutation)
+    );
+    assert!(
+        METHODS
+            .iter()
+            .any(|m| m.name == "tmux.topology" && !m.mutation)
+    );
+}
+
+/// The dispatcher's futures here never pend, so polling once is enough.
+fn futures_lite_block_on<F: std::future::Future>(f: F) -> F::Output {
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    let mut f = std::pin::pin!(f);
+    match f.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(v) => v,
+        std::task::Poll::Pending => panic!("test service futures complete immediately"),
+    }
+}
+
+#[test]
+fn the_luau_module_routes_every_method_through_the_host_call() {
+    let lua = mlua::Lua::new();
+    lua.sandbox(true).expect("sandbox");
+    let calls = lua.create_table().expect("table");
+    let log = calls.clone();
+    let call = lua
+        .create_function(move |lua, (method, params): (String, mlua::Table)| {
+            log.raw_push(method.clone())?;
+            let out = lua.create_table()?;
+            out.set("method", method)?;
+            out.set("echo", params)?;
+            Ok(out)
+        })
+        .expect("call");
+    let factory: mlua::Function = lua
+        .load(api::LUAU_MODULE)
+        .set_name("dreamer.luau")
+        .eval()
+        .expect("the generated module compiles");
+    let dreamer: mlua::Table = factory.call(call).expect("module");
+    let script = r#"
+        local dreamer = ...
+        local r = dreamer.actions.submit({ action = { kind = { zoom_pane = { pane = 4 } } } })
+        assert(r.method == "actions.submit")
+        assert(r.echo.action.kind.zoom_pane.pane == 4)
+        assert(dreamer.daemon.version().method == "daemon.version")
+        assert(not pcall(function() dreamer.daemon.extra = 1 end), "service tables are frozen")
+        assert(not pcall(function() dreamer.more = {} end), "the module is frozen")
+    "#;
+    lua.load(script)
+        .call::<()>(dreamer.clone())
+        .expect("script");
+    let mut seen = Vec::new();
+    for m in METHODS {
+        let (service, name) = m.name.split_once('.').expect("service.name");
+        let f: mlua::Function = dreamer
+            .get::<mlua::Table>(service)
+            .and_then(|t| t.get(name))
+            .unwrap_or_else(|_| panic!("{} missing from the Luau module", m.name));
+        let r: mlua::Table = f.call(()).expect("call");
+        seen.push(r.get::<String>("method").expect("method"));
+    }
+    assert_eq!(seen, METHODS.iter().map(|m| m.name).collect::<Vec<_>>());
+    assert_eq!(calls.raw_len(), METHODS.len() + 2);
+}
