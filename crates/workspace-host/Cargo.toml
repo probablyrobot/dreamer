@@ -1,0 +1,20 @@
+[package]
+name = "workspace-host"
+description = "Typed actions, the action ledger, and topology for dreamerd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+api = { path = "../api" }
+domain = { path = "../domain" }
+serde_json = "1.0.154"
+tmux-backend = { path = "../tmux-backend" }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

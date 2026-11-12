@@ -11,6 +11,7 @@ pub mod connection;
 pub mod control;
 pub mod inventory;
 pub mod layout;
+pub mod ops;
 pub mod server;
 pub mod workspace;
 
