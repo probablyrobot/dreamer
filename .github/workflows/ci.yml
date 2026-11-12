@@ -62,6 +62,10 @@ jobs:
           path: ~/.cache/dreamer/deps
           key: deps-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/baseline.toml') }}
       - run: cargo xtask deps prepare --locked
+      - name: Build the pinned tmux baseline
+        run: |
+          sudo apt-get install -y --no-install-recommends libevent-dev libncurses-dev bison
+          echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --locked
 
