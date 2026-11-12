@@ -38,17 +38,42 @@ is open.
 - Mirrors never answer the application. The pane's replies come from tmux
   (see [terminal-compatibility.md](terminal-compatibility.md)).
 
+## Journal and retention
+
+Each mirror journals every record it applies, numbered by the mirror's
+committed sequence: output bytes, size changes, and the continuation that
+followed the cold attach. The journal is what a client replays to catch
+up from a checkpoint (M2-02).
+
+| Limit | Default | Enforced |
+| --- | --- | --- |
+| Per pane | 8 MiB | On every append, oldest records first |
+| Per host | 256 MiB | On every append; over the limit, the pane that is writing gives up its own oldest records |
+| Age | 10 minutes | On every append, and for idle panes whenever status is read |
+
+Trimming never touches the engine; it only limits how far back a client
+can replay. The retained records are always exactly
+`journal_first_sequence..=sequence`. A client that needs an older record
+has fallen behind and needs a fresh checkpoint instead.
+
+## Tiers
+
+Every mirrored pane is **Warm** (mirrored and journaled, not shown) or
+**Hot** (visible in a client). In the daemon both tiers keep a live mirror
+and a journal; clients set Hot for the panes they show. **Cold** (metadata
+only, with tmux output switched off for the pane) is not implemented yet.
+
 ## Reading mirrors
 
 | Command | API | Shows |
 | --- | --- | --- |
 | `dream read %PANE [--history N] [--json]` | `terminal.read` | Up to N scrollback lines, then the screen; size, cursor, generation, epoch, and the number of records applied |
-| `dream mirrors [--json]` | `terminal.mirrors` | Each pane's mirror state (attaching, live, or failed), size, records, bytes ingested, and worker |
+| `dream mirrors [--json]` | `terminal.mirrors` | Each pane's state, tier, size, records, bytes ingested, retained journal range and size, and worker; host journal totals and limits |
+| `dream tier %PANE hot\|warm` | `terminal.set_tier` | Sets a pane's tier |
 
 ## Not yet
 
-- **Retention:** the ordered journal and its retention limits, and the Hot
-  and Warm tiers, are [#101](https://github.com/probablyrobot/dreamer/issues/101).
+- **Cold tier** and demotion through tmux's per-pane output control.
 - **Scrollback depth:** a mirror keeps as much scrollback as tmux's
   `history-limit`.
 - **Pixel size:** the canonical cell pixel size is fixed (10×20) until

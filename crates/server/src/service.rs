@@ -383,14 +383,49 @@ impl api::Service for DaemonService {
                     cols: m.live.as_ref().map_or(0, |l| u32::from(l.cols)),
                     rows: m.live.as_ref().map_or(0, |l| u32::from(l.rows)),
                     detail,
+                    tier: match m.live.as_ref().map(|l| l.tier) {
+                        Some(mirror::Tier::Hot) => api::Tier::Hot,
+                        Some(mirror::Tier::Warm) => api::Tier::Warm,
+                        None => api::Tier::Unspecified,
+                    } as i32,
+                    journal_bytes: m.live.as_ref().map_or(0, |l| l.journal_bytes as u64),
+                    journal_first_sequence: m.live.as_ref().map_or(0, |l| l.journal_first),
+                    journal_records: m.live.as_ref().map_or(0, |l| l.journal_records as u32),
                 }
             })
             .collect();
         mirrors.sort_by_key(|m| m.pane);
+        let r = host.retention();
         Ok(api::MirrorList {
             mirrors,
             workers: mirror::MirrorConfig::default().workers as u32,
+            host_journal_bytes: host.host_journal_bytes() as u64,
+            journal_pane_limit: r.per_pane_bytes as u64,
+            journal_host_limit: r.host_bytes as u64,
+            journal_max_age_ms: r.max_age.as_millis() as u64,
         })
+    }
+
+    async fn terminal_set_tier(&self, p: api::SetTier) -> Result<api::Empty, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        let tier = match api::Tier::try_from(p.tier) {
+            Ok(api::Tier::Hot) => mirror::Tier::Hot,
+            Ok(api::Tier::Warm) => mirror::Tier::Warm,
+            _ => {
+                return Err(RpcError::new(
+                    code::INVALID_PARAMS,
+                    "only hot and warm can be set; cold (metadata only) is not available yet",
+                ));
+            }
+        };
+        let host = self.0.mirrors.read().await.clone();
+        match host {
+            Some(h) if h.set_tier(domain::TmuxPaneId(p.pane), tier).await => Ok(api::Empty {}),
+            _ => Err(RpcError::new(
+                code::NOT_FOUND,
+                format!("pane %{} has no live mirror", p.pane),
+            )),
+        }
     }
 
     async fn actions_get(&self, p: api::ActionQuery) -> Result<api::ActionRecord, RpcError> {
