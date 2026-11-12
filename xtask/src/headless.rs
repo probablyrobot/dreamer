@@ -26,12 +26,13 @@ pub const PACKAGES: &[&str] = &[
     "tmux-backend",
     "tmux-protocol",
     "workspace-config",
+    "workspace-host",
 ];
 
 /// Headless packages whose integration tests drive a real tmux. Where no
 /// tmux baseline binary exists for the target (the emulated ARM64 job),
 /// only their unit tests run.
-pub const NEEDS_TMUX: &[&str] = &["tmux-backend"];
+pub const NEEDS_TMUX: &[&str] = &["tmux-backend", "workspace-host"];
 
 /// Workspace packages that are allowed to depend on GUI crates, or are
 /// build tooling outside the shipped graph.

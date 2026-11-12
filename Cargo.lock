@@ -6428,6 +6428,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "workspace-host"
+version = "0.0.0"
+dependencies = [
+ "api",
+ "domain",
+ "serde_json",
+ "tmux-backend",
+ "tokio",
+]
+
+[[package]]
 name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
