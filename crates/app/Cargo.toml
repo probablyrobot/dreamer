@@ -1,0 +1,24 @@
+[package]
+name = "dreamer-app"
+description = "Dreamer desktop client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "dreamer"
+path = "src/main.rs"
+
+[dependencies]
+gpui.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_platform = { workspace = true, features = ["font-kit"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+
+[lints]
+workspace = true
