@@ -10,6 +10,10 @@ publish = false
 [dependencies]
 terminal-ghostty = { path = "../terminal-ghostty" }
 tmux-protocol = { path = "../tmux-protocol" }
+tokio = { version = "1.54.1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 
 [lints]
 workspace = true
