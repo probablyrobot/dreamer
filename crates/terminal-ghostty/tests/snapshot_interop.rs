@@ -18,12 +18,6 @@ fn every_architectures_snapshots_restore_exactly() {
     let mut checked = 0;
     for target in TARGETS {
         let dir = fixture_root().join("snapshots").join(target);
-        // Bootstrapping: Linux snapshots are produced by CI and added in the
-        // next commit, which makes every target mandatory.
-        if !dir.is_dir() && *target != this_target() {
-            eprintln!("skipping {target}: no snapshots yet");
-            continue;
-        }
         assert!(
             dir.is_dir(),
             "missing snapshots for {target}; generate them on that architecture"
