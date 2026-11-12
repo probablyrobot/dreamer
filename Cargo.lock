@@ -1238,8 +1238,10 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 name = "dreamer-app"
 version = "0.0.0"
 dependencies = [
+ "client",
  "gpui",
  "gpui_platform",
+ "replica",
  "terminal-ghostty",
  "terminal-render",
 ]
@@ -4400,6 +4402,7 @@ name = "replica"
 version = "0.0.0"
 dependencies = [
  "api",
+ "async-channel",
  "client",
  "prost",
  "terminal-ghostty",

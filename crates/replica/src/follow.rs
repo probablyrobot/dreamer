@@ -64,6 +64,14 @@ impl From<ClientError> for FollowError {
     }
 }
 
+/// What one [`Follower::step`] changed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Step {
+    pub records: usize,
+    /// A checkpoint was restored (the whole view changed).
+    pub restored: bool,
+}
+
 /// A replica kept current from a daemon. Not `Send`: the engine has one
 /// owner thread.
 #[derive(Debug)]
@@ -187,64 +195,106 @@ impl Follower {
             let Ok(next) = tokio::time::timeout(wait, pushed.recv()).await else {
                 return Ok(applied);
             };
-            let sub = self.subscription;
-            match next {
-                None | Some(Pushed::Closed { .. }) => {
-                    self.client = None;
-                    self.pushed = None;
-                    self.subscription = None;
-                    self.state = FollowState::Disconnected;
-                    return Err(FollowError::Disconnected);
-                }
-                Some(Pushed::Bulk { stream, data, .. }) if Some(stream) == sub => {
-                    let Ok(d) = api::CheckpointData::decode(data.as_slice()) else {
-                        self.resnapshot("undecodable checkpoint".into()).await?;
-                        continue;
-                    };
-                    match self.replica.checkpoint(&d) {
-                        Ok(Outcome::Applied(n)) => {
-                            applied += n;
-                            self.checkpoints += 1;
-                            self.resnapshots = 0;
-                        }
-                        Ok(_) => {}
-                        Err(e) => self.resnapshot(e.to_string()).await?,
-                    }
-                }
-                Some(Pushed::Event { topic, payload, .. }) if topic == "terminal.records" => {
-                    let Ok(b) = api::RecordBatch::decode(payload.as_slice()) else {
-                        self.resnapshot("undecodable records".into()).await?;
-                        continue;
-                    };
-                    match self.replica.records(&b) {
-                        Ok(Outcome::Applied(n)) => applied += n,
-                        Ok(_) => {}
-                        Err(e) => self.resnapshot(e.to_string()).await?,
-                    }
-                }
-                Some(Pushed::Event { topic, payload, .. }) if topic == "terminal.end" => {
-                    let Ok(end) = api::SubscriptionEnd::decode(payload.as_slice()) else {
-                        continue;
-                    };
-                    if Some(end.subscription) != sub {
-                        continue;
-                    }
-                    self.subscription = None;
-                    match api::EndReason::try_from(end.reason) {
-                        // Behind but maybe still retained: resume.
-                        Ok(api::EndReason::Lagged) => self.subscribe(true).await?,
-                        // A new process: its own checkpoint.
-                        Ok(api::EndReason::Respawned) => self.subscribe(false).await?,
-                        Ok(api::EndReason::PaneClosed) => self.state = FollowState::PaneClosed,
-                        // The daemon reattaches tmux under a new epoch.
-                        Ok(api::EndReason::ConnectionLost) => {
-                            self.resnapshot("the daemon lost tmux".into()).await?;
-                        }
-                        _ => {}
-                    }
-                }
-                Some(_) => {}
+            applied += self.handle(next).await?;
+        }
+    }
+
+    /// Wait for the next thing the daemon pushes, with no timeout, apply it
+    /// and everything already queued behind it, and return what changed.
+    /// An idle pane costs no wakeups here.
+    pub async fn step(&mut self) -> Result<Step, FollowError> {
+        if !matches!(self.state, FollowState::Following) {
+            return Ok(Step::default());
+        }
+        let checkpoints = self.checkpoints;
+        let first = match self.pushed.as_mut() {
+            Some(p) => p.recv().await,
+            None => return Err(FollowError::Disconnected),
+        };
+        let mut records = self.handle(first).await?;
+        loop {
+            if !matches!(self.state, FollowState::Following) {
+                break;
+            }
+            let Some(p) = self.pushed.as_mut() else { break };
+            match p.try_recv() {
+                Ok(next) => records += self.handle(Some(next)).await?,
+                Err(_) => break,
             }
         }
+        Ok(Step {
+            records,
+            restored: self.checkpoints != checkpoints,
+        })
+    }
+
+    /// The replica's current frame, when it holds an engine.
+    pub fn frame(
+        &mut self,
+    ) -> Option<Result<std::sync::Arc<terminal_ghostty::core::FrameSnapshot>, String>> {
+        self.replica.frame()
+    }
+
+    async fn handle(&mut self, next: Option<Pushed>) -> Result<usize, FollowError> {
+        let mut applied = 0;
+        let sub = self.subscription;
+        match next {
+            None | Some(Pushed::Closed { .. }) => {
+                self.client = None;
+                self.pushed = None;
+                self.subscription = None;
+                self.state = FollowState::Disconnected;
+                return Err(FollowError::Disconnected);
+            }
+            Some(Pushed::Bulk { stream, data, .. }) if Some(stream) == sub => {
+                let Ok(d) = api::CheckpointData::decode(data.as_slice()) else {
+                    self.resnapshot("undecodable checkpoint".into()).await?;
+                    return Ok(0);
+                };
+                match self.replica.checkpoint(&d) {
+                    Ok(Outcome::Applied(n)) => {
+                        applied += n;
+                        self.checkpoints += 1;
+                        self.resnapshots = 0;
+                    }
+                    Ok(_) => {}
+                    Err(e) => self.resnapshot(e.to_string()).await?,
+                }
+            }
+            Some(Pushed::Event { topic, payload, .. }) if topic == "terminal.records" => {
+                let Ok(b) = api::RecordBatch::decode(payload.as_slice()) else {
+                    self.resnapshot("undecodable records".into()).await?;
+                    return Ok(0);
+                };
+                match self.replica.records(&b) {
+                    Ok(Outcome::Applied(n)) => applied += n,
+                    Ok(_) => {}
+                    Err(e) => self.resnapshot(e.to_string()).await?,
+                }
+            }
+            Some(Pushed::Event { topic, payload, .. }) if topic == "terminal.end" => {
+                let Ok(end) = api::SubscriptionEnd::decode(payload.as_slice()) else {
+                    return Ok(0);
+                };
+                if Some(end.subscription) != sub {
+                    return Ok(0);
+                }
+                self.subscription = None;
+                match api::EndReason::try_from(end.reason) {
+                    // Behind but maybe still retained: resume.
+                    Ok(api::EndReason::Lagged) => self.subscribe(true).await?,
+                    // A new process: its own checkpoint.
+                    Ok(api::EndReason::Respawned) => self.subscribe(false).await?,
+                    Ok(api::EndReason::PaneClosed) => self.state = FollowState::PaneClosed,
+                    // The daemon reattaches tmux under a new epoch.
+                    Ok(api::EndReason::ConnectionLost) => {
+                        self.resnapshot("the daemon lost tmux".into()).await?;
+                    }
+                    _ => {}
+                }
+            }
+            Some(_) => {}
+        }
+        Ok(applied)
     }
 }

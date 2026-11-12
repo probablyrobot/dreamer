@@ -156,7 +156,16 @@ impl Element for TerminalElement {
     ) {
         let stats = paint_frame(self, bounds, layout.metrics, window, cx);
         LAST_STATS.with(|s| s.set(stats));
+        PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+static PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Terminal elements painted since the process started. A static view
+/// must not move it (spec 16.6: zero render wakeups).
+pub fn paint_count() -> u64 {
+    PAINTS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 thread_local! {
