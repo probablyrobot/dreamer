@@ -1,0 +1,17 @@
+plain line
+bold italic inverse
+strike
+pal196 rgb
+u1 u2 dot colored
+
+-- 20x6 cursor 0,5 Block
+style 1:0..4 Style { fg: Default, bg: Default, underline_color: Default, attrs: Attrs(1), underline: None }
+style 1:5..11 Style { fg: Default, bg: Default, underline_color: Default, attrs: Attrs(2), underline: None }
+style 1:12..19 Style { fg: Default, bg: Default, underline_color: Default, attrs: Attrs(16), underline: None }
+style 2:0..6 Style { fg: Default, bg: Default, underline_color: Default, attrs: Attrs(64), underline: None }
+style 3:0..6 Style { fg: Palette(196), bg: Default, underline_color: Default, attrs: Attrs(0), underline: None }
+style 3:7..10 Style { fg: Rgb(Rgb { r: 10, g: 20, b: 30 }), bg: Rgb(Rgb { r: 200, g: 100, b: 0 }), underline_color: Default, attrs: Attrs(0), underline: None }
+style 4:0..2 Style { fg: Default, bg: Default, underline_color: Default, attrs: Attrs(0), underline: Single }
+style 4:3..5 Style { fg: Default, bg: Default, underline_color: Default, attrs: Attrs(0), underline: Double }
+style 4:6..9 Style { fg: Default, bg: Default, underline_color: Default, attrs: Attrs(0), underline: Dotted }
+style 4:10..17 Style { fg: Default, bg: Default, underline_color: Palette(4), attrs: Attrs(0), underline: Single }
