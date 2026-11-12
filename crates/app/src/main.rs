@@ -20,6 +20,7 @@
 //! checks that 1.5 s of idle pane cause no view wakeups and no paints.
 
 mod fonts;
+mod input;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -27,7 +28,9 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, Window, WindowBounds, WindowOptions, div, font, prelude::*, px, rgb, size,
+    App, Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle, KeyDownEvent,
+    Pixels, UTF16Selection, Window, WindowBounds, WindowOptions, canvas, div, font, point,
+    prelude::*, px, rgb, size,
 };
 use replica::feed::Feed;
 use terminal_ghostty::core::{FrameSnapshot, GridSize};
@@ -67,6 +70,9 @@ enum Smoke {
     Repaint,
     /// Live: wait for a frame containing this text, then check idleness.
     Expect(String),
+    /// Live: wait for this text, then type and compose through the window
+    /// and check what reaches the pane.
+    Input(String),
 }
 
 /// The terminal font for this run, set once before the window opens.
@@ -99,6 +105,144 @@ struct Shell {
     images: Vec<InlineImage>,
     /// Live frames applied to the view.
     live_frames: u64,
+    focus: FocusHandle,
+    /// Where key presses and text go (live panes only).
+    feed: Option<Arc<Feed>>,
+    /// IME composition in progress: drawn at the cursor, never sent.
+    preedit: Option<String>,
+    /// Window activation becomes focus in or out for the pane.
+    _activation: Option<gpui::Subscription>,
+}
+
+impl Shell {
+    fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(feed) = self.feed.clone() else {
+            return;
+        };
+        match input::intent(&ev.keystroke, ev.is_held) {
+            input::KeyIntent::Paste => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                    feed.send(api::terminal_input::Event::Paste(api::PasteInput {
+                        data: text.into_bytes(),
+                        ..api::PasteInput::default()
+                    }));
+                }
+                cx.stop_propagation();
+            }
+            input::KeyIntent::Send(event) => {
+                feed.send(event);
+                cx.stop_propagation();
+            }
+            input::KeyIntent::Pass => {}
+        }
+    }
+
+    /// The terminal cursor's cell, relative to the terminal's origin.
+    fn cursor_cell(&self, window: &mut Window) -> Bounds<Pixels> {
+        let tf = term_font();
+        let m = cell_metrics(
+            window,
+            &font(tf.family.clone()),
+            px(tf.size),
+            tf.line_height,
+        );
+        let c = self.frame.cursor;
+        Bounds::new(
+            point(m.width * f32::from(c.x), m.height * f32::from(c.y)),
+            size(m.width, m.height),
+        )
+    }
+}
+
+/// Text input from the platform, including IME. The terminal has no
+/// editable text of its own: committed text is sent to the pane and
+/// composition is only shown.
+impl EntityInputHandler for Shell {
+    fn text_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        _: &mut Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.preedit.as_ref().map(|p| 0..p.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.preedit = None;
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.preedit = None;
+        if !text.is_empty()
+            && let Some(feed) = &self.feed
+        {
+            feed.send(api::terminal_input::Event::Text(api::TextInput {
+                text: text.to_owned(),
+            }));
+        }
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _: Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.preedit = (!new_text.is_empty()).then(|| new_text.to_owned());
+        cx.notify();
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: gpui::Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        // The IME candidate window opens at the terminal cursor.
+        let cell = self.cursor_cell(window);
+        Some(Bounds::new(element_bounds.origin + cell.origin, cell.size))
+    }
 }
 
 impl Shell {
@@ -167,17 +311,55 @@ impl Render for Shell {
             cx.notify();
         }
         let term = term_font();
+        let entity = cx.entity();
+        let focus = self.focus.clone();
+        let preedit = self.preedit.clone().map(|text| {
+            let cell = self.cursor_cell(window);
+            div()
+                .absolute()
+                .left(cell.origin.x)
+                .top(cell.origin.y)
+                .bg(rgb(0x2a2f38))
+                .text_color(rgb(0xe6e6e6))
+                .font_family(term.family.clone())
+                .text_size(px(term.size))
+                .underline()
+                .child(text)
+        });
         div()
             .size_full()
             .bg(rgb(0x14161a))
             .p_2()
-            .child(TerminalElement {
-                frame: Arc::clone(&self.frame),
-                font: font(term.family.clone()),
-                font_size: px(term.size),
-                line_height: term.line_height,
-                images: self.images.clone(),
-            })
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::key_down))
+            .child(
+                div()
+                    .relative()
+                    .size_full()
+                    .child(TerminalElement {
+                        frame: Arc::clone(&self.frame),
+                        font: font(term.family.clone()),
+                        font_size: px(term.size),
+                        line_height: term.line_height,
+                        images: self.images.clone(),
+                    })
+                    .children(preedit)
+                    // Registers the platform text input (IME) each frame.
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |bounds, _, window, cx| {
+                                window.handle_input(
+                                    &focus,
+                                    ElementInputHandler::new(bounds, entity.clone()),
+                                    cx,
+                                );
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    ),
+            )
     }
 }
 
@@ -227,6 +409,7 @@ fn load_frame(bytes: &[u8]) -> Result<Arc<FrameSnapshot>, String> {
 struct Args {
     smoke: bool,
     repaint: bool,
+    input: bool,
     expect: Option<String>,
     fixture: Option<String>,
     attach: Option<u32>,
@@ -241,6 +424,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
         let mut value = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
         match arg.as_str() {
             "--smoke" => a.smoke = true,
+            "--smoke-input" => {
+                a.smoke = true;
+                a.input = true;
+            }
             "--smoke-repaint" => {
                 a.smoke = true;
                 a.repaint = true;
@@ -311,6 +498,7 @@ fn main() -> ExitCode {
     };
     let smoke = match (args.smoke, args.attach, &args.expect) {
         (false, _, _) => Smoke::Off,
+        (true, Some(_), Some(text)) if args.input => Smoke::Input(text.clone()),
         (true, Some(_), Some(text)) => Smoke::Expect(text.clone()),
         (true, Some(_), None) => Smoke::Expect(String::new()),
         (true, None, _) if args.repaint => Smoke::Repaint,
@@ -355,19 +543,37 @@ fn main() -> ExitCode {
         });
         let bounds = Bounds::centered(None, size(px(900.), px(420.)), cx);
         let smoke_mode = smoke.clone();
+        let view_feed = feed.clone();
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_, cx| {
-                cx.new(|_| Shell {
+            |window, cx| {
+                let shell = cx.new(|cx| Shell {
                     smoke: smoke_mode,
                     frame_seen: false,
                     frame,
                     images,
                     live_frames: 0,
-                })
+                    focus: cx.focus_handle(),
+                    feed: view_feed,
+                    preedit: None,
+                    _activation: None,
+                });
+                let focus = shell.read(cx).focus.clone();
+                window.focus(&focus, cx);
+                shell.update(cx, |s, cx| {
+                    // Sent only if the application asked for focus reports.
+                    s._activation = Some(cx.observe_window_activation(window, |s, window, _| {
+                        if let Some(feed) = &s.feed {
+                            feed.send(api::terminal_input::Event::Focus(api::FocusInput {
+                                gained: window.is_window_active(),
+                            }));
+                        }
+                    }));
+                });
+                shell
             },
         );
         let window = match opened {
@@ -388,20 +594,37 @@ fn main() -> ExitCode {
                         shell.live_frames += 1;
                         cx.notify();
                         match &shell.smoke {
-                            Smoke::Expect(want)
+                            Smoke::Expect(want) | Smoke::Input(want)
                                 if !shell.frame_seen && text.contains(want.as_str()) =>
                             {
                                 shell.frame_seen = true;
                                 window.refresh();
-                                true
+                                Some(matches!(shell.smoke, Smoke::Input(_)))
                             }
-                            _ => false,
+                            Smoke::Input(_) if shell.frame_seen => {
+                                // Output of the typed command: exactly one line.
+                                if text.lines().any(|l| l.trim_end() == "hi日本") {
+                                    println!(
+                                        "smoke: typed and composed input reached the pane: hi日本"
+                                    );
+                                    std::process::exit(0);
+                                }
+                                None
+                            }
+                            _ => None,
                         }
                     });
-                    if done.unwrap_or(false) {
-                        let feed = feed.clone();
-                        cx.spawn(async move |cx| idle_check(feed, cx).await)
-                            .detach();
+                    match done.ok().flatten() {
+                        Some(false) => {
+                            let feed = feed.clone();
+                            cx.spawn(async move |cx| idle_check(feed, cx).await)
+                                .detach();
+                        }
+                        Some(true) => {
+                            cx.spawn(async move |cx| type_into(window, cx).await)
+                                .detach();
+                        }
+                        None => {}
                     }
                 }
             })
@@ -418,6 +641,39 @@ fn main() -> ExitCode {
         cx.activate(true);
     });
     ExitCode::SUCCESS
+}
+
+/// Type through the window as a person would: plain keys go through the
+/// platform text input, then an IME composition ("日" composed, "日本"
+/// committed), then Enter as a key event. Only committed text may reach
+/// the pane, so the shell must print exactly `hi日本`.
+async fn type_into(window: gpui::WindowHandle<Shell>, cx: &mut gpui::AsyncApp) {
+    cx.background_executor()
+        .timer(Duration::from_millis(300))
+        .await;
+    // Dispatch without holding the shell view: its own key and text input
+    // handlers must be able to run.
+    let any: gpui::AnyWindowHandle = window.into();
+    let press = |cx: &mut gpui::AsyncApp, k: &'static str| {
+        let _ = cx.update_window(any, move |_, window, cx| {
+            if let Ok(ks) = gpui::Keystroke::parse(k) {
+                window.dispatch_keystroke(ks, cx);
+            }
+        });
+    };
+    for k in ["e", "c", "h", "o", "space", "h", "i"] {
+        press(cx, k);
+    }
+    let _ = window.update(cx, |shell, window, cx| {
+        shell.replace_and_mark_text_in_range(None, "日", None, window, cx);
+        shell.replace_text_in_range(None, "日本", window, cx);
+    });
+    press(cx, "enter");
+    cx.background_executor()
+        .timer(Duration::from_secs(10))
+        .await;
+    eprintln!("smoke: the typed input never produced `hi日本` in the pane");
+    std::process::exit(3);
 }
 
 /// After the expected frame: an idle pane must cause no view wakeups and
