@@ -199,9 +199,15 @@ fn native_build_tools() -> Vec<Check> {
         )),
         None => checks.push(Check::new(Level::Fail, "xcode", "Xcode not installed")),
     }
+    // `xcrun --find metal` succeeds even when the separately installed Metal
+    // Toolchain component is missing; only running the compiler proves it.
     checks.push(
-        match capture("xcrun", &["--sdk", "macosx", "--find", "metal"]) {
-            Some(path) => Check::new(Level::Ok, "metal", path),
+        match capture("xcrun", &["--sdk", "macosx", "metal", "--version"]) {
+            Some(version) => Check::new(
+                Level::Ok,
+                "metal",
+                version.lines().next().unwrap_or("installed").to_owned(),
+            ),
             None => Check::new(
                 Level::Fail,
                 "metal",
