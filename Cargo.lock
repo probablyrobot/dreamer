@@ -172,12 +172,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain"
+version = "0.0.0"
+
+[[package]]
 name = "dreamer-cli"
 version = "0.0.0"
 
 [[package]]
 name = "dreamer-server"
 version = "0.0.0"
+dependencies = [
+ "domain",
+]
 
 [[package]]
 name = "dreamer-termapp"

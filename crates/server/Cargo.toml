@@ -11,5 +11,8 @@ publish = false
 name = "dreamerd"
 path = "src/main.rs"
 
+[dependencies]
+domain = { path = "../domain" }
+
 [lints]
 workspace = true
