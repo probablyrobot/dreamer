@@ -18,10 +18,17 @@ pub const PACKAGES: &[&str] = &[
     "dreamer-cli",
     "dreamer-termapp",
     "ghostty-sys",
+    "script-runtime",
     "terminal-core",
     "terminal-ghostty",
+    "tmux-backend",
     "tmux-protocol",
 ];
+
+/// Headless packages whose integration tests drive a real tmux. Where no
+/// tmux baseline binary exists for the target (the emulated ARM64 job),
+/// only their unit tests run.
+pub const NEEDS_TMUX: &[&str] = &["tmux-backend"];
 
 /// Workspace packages that are allowed to depend on GUI crates, or are
 /// build tooling outside the shipped graph.
@@ -69,8 +76,25 @@ pub fn run(args: &[String]) -> Result<(), String> {
             println!("{}", parts.join(" "));
             Ok(())
         }
+        [flag] if flag == "--cargo-args-without-tmux" => {
+            let parts: Vec<String> = PACKAGES
+                .iter()
+                .filter(|p| !NEEDS_TMUX.contains(p))
+                .map(|p| format!("-p {p}"))
+                .collect();
+            println!("{}", parts.join(" "));
+            Ok(())
+        }
+        [flag] if flag == "--needs-tmux" => {
+            let parts: Vec<String> = NEEDS_TMUX.iter().map(|p| format!("-p {p}")).collect();
+            println!("{}", parts.join(" "));
+            Ok(())
+        }
         [flag] if flag == "--check" => check(),
-        _ => Err("usage: cargo xtask headless [--cargo-args|--check]".into()),
+        _ => Err(
+            "usage: cargo xtask headless [--cargo-args|--cargo-args-without-tmux|--needs-tmux|--check]"
+                .into(),
+        ),
     }
 }
 
