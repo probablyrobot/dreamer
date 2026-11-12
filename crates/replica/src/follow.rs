@@ -239,6 +239,11 @@ impl Follower {
         })
     }
 
+    /// The replica, for local view state (see [`Replica::engine_mut`]).
+    pub fn replica_mut(&mut self) -> &mut Replica {
+        &mut self.replica
+    }
+
     /// Move the replica's local viewport (see [`Replica::scroll`]).
     pub fn scroll(&mut self, to: terminal_ghostty::Scroll) -> Result<(), String> {
         self.replica.scroll(to)

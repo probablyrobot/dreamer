@@ -13,7 +13,7 @@ use ghostty_sys::GhosttyRenderStateRowData::*;
 use ghostty_sys::*;
 use terminal_core::{
     Attrs, Cell, CellWidth, Color, Colors, Cursor, CursorShape, FrameSnapshot, GridSize, Rgb, Row,
-    Style, Underline,
+    SelectedCells, Style, Underline,
 };
 
 use crate::{Engine, EngineError, check};
@@ -52,6 +52,7 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
             && let Some(prev) = previous
             && prev.render_hold == held
             && prev.view == view
+            && e.selection_rev == e.framed_selection_rev
         {
             return Ok(Arc::clone(prev));
         }
@@ -82,8 +83,27 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
         )?;
         let mut out_rows = Vec::with_capacity(usize::from(rows));
         let mut damaged = Vec::new();
+        let mut selection = Vec::new();
         let mut y: u16 = 0;
         while ghostty_render_state_row_iterator_next(e.row_iter) {
+            let mut sel = GhosttyRenderStateRowSelection {
+                size: size_of::<GhosttyRenderStateRowSelection>(),
+                ..Default::default()
+            };
+            let code = ghostty_render_state_row_get(
+                e.row_iter,
+                GHOSTTY_RENDER_STATE_ROW_DATA_SELECTION,
+                (&raw mut sel).cast(),
+            );
+            if code == GhosttyResult::GHOSTTY_SUCCESS {
+                selection.push(SelectedCells {
+                    row: y,
+                    start: sel.start_x,
+                    end: sel.end_x,
+                });
+            } else if code != GhosttyResult::GHOSTTY_NO_VALUE {
+                check("ghostty_render_state_row_get(selection)", code)?;
+            }
             let mut row_dirty = false;
             row_get(
                 e.row_iter,
@@ -116,6 +136,7 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
             ghostty_render_state_clean(e.render),
         )?;
         e.revision += 1;
+        e.framed_selection_rev = e.selection_rev;
         Ok(Arc::new(FrameSnapshot {
             revision: e.revision,
             size,
@@ -125,6 +146,7 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
             damaged_rows: damaged,
             render_hold: held,
             view,
+            selection,
         }))
     }
 }

@@ -279,3 +279,88 @@ fn the_viewport_scrolls_locally_and_stays_put_under_new_output() {
     let v = e.frame().expect("frame").view;
     assert!(v.mouse_tracking && v.alt_screen);
 }
+
+mod selection {
+    use super::*;
+    use terminal_ghostty::selection::{CellPos, SelectEvent};
+
+    fn at(x: f32, y: f32) -> CellPos {
+        CellPos { x, y }
+    }
+
+    /// Press at `from`, drag to `to`, release; the selected text.
+    fn drag(e: &mut Engine, from: (u16, u16), to: (u16, u16), t: u64) -> Option<String> {
+        // Forward drags: press on the left half of the first cell and end
+        // on the right half of the last, so both are included.
+        let c = |(x, y): (u16, u16), dx: f32| at(f32::from(x) + dx, f32::from(y) + 0.5);
+        e.select(SelectEvent::Press {
+            at: c(from, 0.1),
+            time_ns: t,
+        })
+        .expect("press");
+        e.select(SelectEvent::Drag { at: c(to, 0.9) })
+            .expect("drag");
+        e.select(SelectEvent::Release { at: c(to, 0.9) })
+            .expect("release");
+        e.selection_text().expect("text")
+    }
+
+    fn click(e: &mut Engine, x: u16, y: u16, t: u64) {
+        let p = at(f32::from(x) + 0.5, f32::from(y) + 0.5);
+        e.select(SelectEvent::Press { at: p, time_ns: t })
+            .expect("press");
+        e.select(SelectEvent::Release { at: p }).expect("release");
+    }
+
+    #[test]
+    fn drag_word_and_line_select_the_expected_text_without_changing_cells() {
+        let mut e = engine();
+        // Row 0: "hello world"; row 1: wide characters; rows 2-3: one
+        // line wrapped across two rows (20 columns).
+        e.feed("hello world\r\n日本語 ok\r\nabcdefghijklmnopqrstuvwxyz\r\n".as_bytes())
+            .expect("feed");
+        let before = e.frame().expect("frame").text_dump();
+
+        assert_eq!(drag(&mut e, (0, 0), (4, 0), 1).as_deref(), Some("hello"));
+        // Wide cells: columns 0..5 hold three double-width characters.
+        assert_eq!(
+            drag(&mut e, (0, 1), (5, 1), 10_000_000_000).as_deref(),
+            Some("日本語")
+        );
+        // Across the wrap: one line, no newline inserted.
+        // Row 2 holds a..t, row 3 holds u..z: p to w crosses the wrap.
+        assert_eq!(
+            drag(&mut e, (15, 2), (2, 3), 20_000_000_000).as_deref(),
+            Some("pqrstuvw")
+        );
+        let f = e.frame().expect("frame");
+        assert!(
+            f.selection
+                .iter()
+                .any(|s| s.row == 2 && s.start == 15 && s.end == 19),
+            "{:?}",
+            f.selection
+        );
+
+        // Double click: the word; triple click: the whole line.
+        let t = 30_000_000_000;
+        click(&mut e, 8, 0, t);
+        click(&mut e, 8, 0, t + 100_000_000);
+        assert_eq!(e.selection_text().expect("text").as_deref(), Some("world"));
+        e.select(SelectEvent::Press {
+            at: at(8.5, 0.5),
+            time_ns: t + 200_000_000,
+        })
+        .expect("third");
+        assert_eq!(
+            e.selection_text().expect("text").as_deref(),
+            Some("hello world")
+        );
+
+        // A later single click clears it; the cells never changed.
+        click(&mut e, 2, 4, t + 5_000_000_000);
+        assert_eq!(e.selection_text().expect("text"), None);
+        assert!(e.frame().expect("frame").selection.is_empty());
+        assert_eq!(e.frame().expect("frame").text_dump(), before);
+    }
+}

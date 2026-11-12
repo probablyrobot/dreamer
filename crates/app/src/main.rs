@@ -33,7 +33,7 @@ use gpui::{
     UTF16Selection, Window, WindowBounds, WindowOptions, canvas, div, font, point, prelude::*, px,
     rgb, size,
 };
-use replica::feed::Feed;
+use replica::feed::{Feed, SelectEvent};
 use terminal_ghostty::core::{FrameSnapshot, GridSize};
 use terminal_ghostty::{Engine, EngineConfig};
 use terminal_render::{
@@ -115,6 +115,8 @@ struct Shell {
     _activation: Option<gpui::Subscription>,
     /// Mouse state, and where the grid was last painted.
     pointer: input::Pointer,
+    /// A left-button selection gesture is in progress.
+    selecting: bool,
     grid: Option<input::Grid>,
     /// Progress of the input smoke after typing.
     input_phase: u8,
@@ -135,6 +137,18 @@ impl Shell {
             return;
         }
         match input::intent(&ev.keystroke, ev.is_held) {
+            input::KeyIntent::Copy => {
+                // Asked of the owner thread, never of the daemon.
+                cx.spawn(async move |_, cx| {
+                    if let Some(text) = feed.selection_text().await {
+                        cx.update(|cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text))
+                        });
+                    }
+                })
+                .detach();
+                cx.stop_propagation();
+            }
             input::KeyIntent::Paste => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
                     feed.send(api::terminal_input::Event::Paste(api::PasteInput {
@@ -149,6 +163,12 @@ impl Shell {
                 cx.stop_propagation();
             }
             input::KeyIntent::Pass => {}
+        }
+    }
+
+    fn select(&self, event: SelectEvent) {
+        if let Some(feed) = &self.feed {
+            feed.view(replica::feed::ViewCommand::Select(event));
         }
     }
 
@@ -198,8 +218,20 @@ impl Shell {
         window.on_mouse_event(move |ev: &MouseDownEvent, phase, _, cx| {
             if phase == DispatchPhase::Bubble && bounds.contains(&ev.position) {
                 e.update(cx, |s, _| {
-                    let out = s.pointer.down(&grid, ev.button, ev.position, &ev.modifiers);
-                    s.send_all(out);
+                    // Selection unless the application tracks the mouse;
+                    // Shift selects even then.
+                    let select = ev.button == gpui::MouseButton::Left
+                        && (!s.frame.view.mouse_tracking || ev.modifiers.shift);
+                    if select {
+                        s.selecting = true;
+                        s.select(SelectEvent::Press {
+                            at: grid.cell_pos(ev.position),
+                            time_ns: monotonic_ns(),
+                        });
+                    } else {
+                        let out = s.pointer.down(&grid, ev.button, ev.position, &ev.modifiers);
+                        s.send_all(out);
+                    }
                 });
             }
         });
@@ -207,8 +239,15 @@ impl Shell {
         window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
             if phase == DispatchPhase::Bubble {
                 e.update(cx, |s, _| {
-                    let out = s.pointer.up(&grid, ev.button, ev.position, &ev.modifiers);
-                    s.send_all(out);
+                    if s.selecting && ev.button == gpui::MouseButton::Left {
+                        s.selecting = false;
+                        s.select(SelectEvent::Release {
+                            at: grid.cell_pos(ev.position),
+                        });
+                    } else {
+                        let out = s.pointer.up(&grid, ev.button, ev.position, &ev.modifiers);
+                        s.send_all(out);
+                    }
                 });
             }
         });
@@ -218,8 +257,14 @@ impl Shell {
                 && (ev.pressed_button.is_some() || bounds.contains(&ev.position))
             {
                 e.update(cx, |s, _| {
-                    let out = s.pointer.moved(&grid, ev.position, &ev.modifiers);
-                    s.send_all(out);
+                    if s.selecting {
+                        s.select(SelectEvent::Drag {
+                            at: grid.cell_pos(ev.position),
+                        });
+                    } else {
+                        let out = s.pointer.moved(&grid, ev.position, &ev.modifiers);
+                        s.send_all(out);
+                    }
                 });
             }
         });
@@ -480,11 +525,23 @@ impl Render for Shell {
                                 Shell::listen_mouse(entity.clone(), grid, bounds, window);
                             },
                         )
+                        // Over the grid, not after it in the flow.
                         .absolute()
+                        .top_0()
+                        .left_0()
                         .size_full(),
                     ),
             )
     }
+}
+
+/// Monotonic nanoseconds for counting repeat clicks.
+fn monotonic_ns() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as u64
 }
 
 /// The display backend GPUI will use, by its own selection rule: Wayland
@@ -685,6 +742,7 @@ fn main() -> ExitCode {
                     preedit: None,
                     _activation: None,
                     pointer: input::Pointer::default(),
+                    selecting: false,
                     grid: None,
                     input_phase: 0,
                 });
@@ -772,7 +830,51 @@ fn main() -> ExitCode {
                                         println!(
                                             "smoke: the wheel scrolled {WHEEL_LINES} lines of local history"
                                         );
-                                        std::process::exit(0);
+                                        shell.input_phase = 5;
+                                        // Typing returns the view to the bottom first.
+                                        shell.send_all([api::terminal_input::Event::Text(
+                                            api::TextInput {
+                                                text: "clear; echo SEL''ECT-ME\r".into(),
+                                            },
+                                        )]);
+                                    }
+                                    5 if shell.frame.view.rows_back() == 0 => {
+                                        let row = shell
+                                            .frame
+                                            .rows
+                                            .iter()
+                                            .rposition(|r| r.text().trim_end() == SELECT_TEXT);
+                                        if let (Some(row), Some(grid)) = (row, shell.grid) {
+                                            shell.input_phase = 6;
+                                            let any = window.window_handle();
+                                            cx.spawn(async move |_, cx| {
+                                                drag_select(any, grid, row as f32, cx).await
+                                            })
+                                            .detach();
+                                        }
+                                    }
+                                    // The release's frame: the whole word is highlighted.
+                                    6 if !shell.selecting
+                                        && shell.frame.selection.iter().any(|c| {
+                                            c.start == 0 && usize::from(c.end) + 1 == SELECT_TEXT.len()
+                                        }) =>
+                                    {
+                                        shell.input_phase = 7;
+                                        let selection = shell.frame.selection.clone();
+                                        if let Some(feed) = shell.feed.clone() {
+                                            cx.spawn(async move |_, _| {
+                                                let text = feed.selection_text().await;
+                                                if text.as_deref() == Some(SELECT_TEXT) {
+                                                    println!(
+                                                        "smoke: a drag selected {SELECT_TEXT:?} locally ({selection:?})"
+                                                    );
+                                                    std::process::exit(0);
+                                                }
+                                                eprintln!("smoke: the drag selected {text:?}, not {SELECT_TEXT:?}");
+                                                std::process::exit(3);
+                                            })
+                                            .detach();
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -892,6 +994,58 @@ async fn click_and_scroll(any: gpui::AnyWindowHandle, grid: input::Grid, cx: &mu
         "the click and wheel never reached the pane as expected",
     )
     .await;
+}
+
+/// The line the smoke selects by dragging across it.
+const SELECT_TEXT: &str = "SELECT-ME";
+
+/// Press at the left of the first cell of `row`, drag to the right half of
+/// its ninth cell, and release: the drag must select exactly that word.
+async fn drag_select(
+    any: gpui::AnyWindowHandle,
+    grid: input::Grid,
+    row: f32,
+    cx: &mut gpui::AsyncApp,
+) {
+    use gpui::{Modifiers, MouseButton, PlatformInput};
+    let at = |col: f32| {
+        point(
+            grid.origin.x + grid.cell.width * col,
+            grid.origin.y + grid.cell.height * (row + 0.5),
+        )
+    };
+    let end = SELECT_TEXT.len() as f32 - 0.1;
+    let events = [
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: at(0.1),
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        }),
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position: at(4.5),
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        }),
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position: at(end),
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        }),
+        PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position: at(end),
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }),
+    ];
+    for ev in events {
+        let _ = cx.update_window(any, move |_, window, cx| {
+            window.dispatch_event(ev, cx);
+        });
+    }
+    fail_unless_past(any, 6, cx, "the drag never selected anything").await;
 }
 
 /// Wheel lines the smoke scrolls through local history.

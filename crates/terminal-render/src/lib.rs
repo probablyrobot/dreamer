@@ -405,6 +405,14 @@ fn text_run(cell: &Cell, len: usize, font: &Font, colors: &Colors, fg: Hsla) -> 
     }
 }
 
+/// Selection highlight: translucent, so cell backgrounds still show.
+const SELECTION: gpui::Rgba = gpui::Rgba {
+    r: 0.29,
+    g: 0.44,
+    b: 0.65,
+    a: 0.45,
+};
+
 fn paint_frame(
     el: &TerminalElement,
     bounds: Bounds<Pixels>,
@@ -437,6 +445,16 @@ fn paint_frame(
                 window.paint_quad(fill(rect, bg));
                 stats.background_quads += 1;
             }
+        }
+
+        // Selection: over backgrounds, under text. View state only; the
+        // cells themselves are never changed.
+        for sel in frame.selection.iter().filter(|s| usize::from(s.row) == y) {
+            let rect = Bounds::new(
+                point(origin.x + m.width * f32::from(sel.start), top),
+                size(m.width * f32::from(sel.end - sel.start + 1), m.height),
+            );
+            window.paint_quad(fill(rect, SELECTION));
         }
 
         // Text: shaped once per shared row and reused for as long as the
