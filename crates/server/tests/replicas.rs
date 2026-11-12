@@ -255,11 +255,20 @@ async fn a_client_outside_retention_recovers_through_a_new_checkpoint() {
     // Far more than 16 KiB while away: the resume point is trimmed.
     s.type_line("seq 1 6000; echo FAR-BEHIND");
     s.wait_tmux("FAR-BEHIND");
-    let (_, during) = s.mirror().await;
-    assert!(
-        during.journal_first_sequence > before.sequence + 1,
-        "the resume point was trimmed: before {before:?}, during {during:?}"
-    );
+    // The mirror ingests asynchronously: tmux showing the output does not
+    // mean the daemon has journaled (and trimmed) it yet.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (_, during) = s.mirror().await;
+        if during.journal_first_sequence > before.sequence + 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the resume point was never trimmed: before {before:?}, during {during:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     f.reconnect().await.expect("reconnect");
     assert_eq!(f.last_mode, Some(api::SubscribeMode::Checkpoint));
     converge(&s, &mut f).await;
