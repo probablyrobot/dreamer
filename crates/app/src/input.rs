@@ -11,9 +11,13 @@
 //! 4. Everything else is text. It reaches the platform's text input, so
 //!    IME composition works: preedit is only drawn, and committed text is
 //!    sent.
+//!
+//! Mouse presses, releases, drags, and wheel steps go to the pane as cells
+//! of the grid; the daemon encodes them only if the application tracks the
+//! mouse.
 
 use api::terminal_input::Event;
-use gpui::{Keystroke, Modifiers};
+use gpui::{Keystroke, Modifiers, Pixels, Point, ScrollDelta, Size};
 
 /// W3C `KeyboardEvent.code` for a GPUI key name, when it has one.
 pub fn code_for(key: &str) -> Option<String> {
@@ -130,9 +134,217 @@ pub fn intent(k: &Keystroke, held: bool) -> KeyIntent {
     }
 }
 
+/// Where the grid is drawn, for turning window positions into cells.
+#[derive(Debug, Clone, Copy)]
+pub struct Grid {
+    pub origin: Point<Pixels>,
+    pub cell: Size<Pixels>,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+impl Grid {
+    /// The cell under a window position, clamped to the grid.
+    pub fn cell_at(&self, p: Point<Pixels>) -> (u32, u32) {
+        let at = |v: Pixels, origin: Pixels, size: Pixels, n: u16| {
+            let i = (f32::from(v - origin) / f32::from(size).max(1.0)).floor();
+            i.clamp(0.0, f32::from(n.saturating_sub(1))) as u32
+        };
+        (
+            at(p.x, self.origin.x, self.cell.width, self.cols),
+            at(p.y, self.origin.y, self.cell.height, self.rows),
+        )
+    }
+}
+
+/// Most wheel steps one scroll event may send.
+const MAX_WHEEL_STEPS: f32 = 32.0;
+
+/// Mouse state between events: the held button, the last reported cell
+/// (motion is sent only when the cell changes), and the part of a wheel
+/// step not yet sent (trackpads scroll in pixels).
+#[derive(Debug, Default)]
+pub struct Pointer {
+    held: Option<api::MouseButton>,
+    last: Option<(u32, u32)>,
+    wheel: f32,
+}
+
+fn button(b: gpui::MouseButton) -> Option<api::MouseButton> {
+    match b {
+        gpui::MouseButton::Left => Some(api::MouseButton::Left),
+        gpui::MouseButton::Middle => Some(api::MouseButton::Middle),
+        gpui::MouseButton::Right => Some(api::MouseButton::Right),
+        gpui::MouseButton::Navigate(_) => None,
+    }
+}
+
+fn mouse(
+    action: api::MouseAction,
+    button: Option<api::MouseButton>,
+    (col, row): (u32, u32),
+    m: &Modifiers,
+    buttons_held: bool,
+) -> Event {
+    Event::Mouse(api::MouseInput {
+        action: action as i32,
+        button: button.unwrap_or(api::MouseButton::None) as i32,
+        col,
+        row,
+        mods: mods_bits(m),
+        buttons_held,
+    })
+}
+
+impl Pointer {
+    pub fn down(
+        &mut self,
+        g: &Grid,
+        b: gpui::MouseButton,
+        p: Point<Pixels>,
+        m: &Modifiers,
+    ) -> Option<Event> {
+        let b = button(b)?;
+        let cell = g.cell_at(p);
+        self.held = Some(b);
+        self.last = Some(cell);
+        Some(mouse(api::MouseAction::Press, Some(b), cell, m, true))
+    }
+
+    pub fn up(
+        &mut self,
+        g: &Grid,
+        b: gpui::MouseButton,
+        p: Point<Pixels>,
+        m: &Modifiers,
+    ) -> Option<Event> {
+        let b = button(b)?;
+        if self.held != Some(b) {
+            return None;
+        }
+        self.held = None;
+        let cell = g.cell_at(p);
+        self.last = Some(cell);
+        Some(mouse(api::MouseAction::Release, Some(b), cell, m, false))
+    }
+
+    pub fn moved(&mut self, g: &Grid, p: Point<Pixels>, m: &Modifiers) -> Option<Event> {
+        let cell = g.cell_at(p);
+        if self.last == Some(cell) {
+            return None;
+        }
+        self.last = Some(cell);
+        Some(mouse(
+            api::MouseAction::Motion,
+            self.held,
+            cell,
+            m,
+            self.held.is_some(),
+        ))
+    }
+
+    /// Wheel steps for a scroll, one press each; positive y scrolls up.
+    pub fn scroll(
+        &mut self,
+        g: &Grid,
+        p: Point<Pixels>,
+        delta: ScrollDelta,
+        m: &Modifiers,
+    ) -> Vec<Event> {
+        self.wheel += match delta {
+            ScrollDelta::Lines(d) => d.y,
+            ScrollDelta::Pixels(d) => f32::from(d.y) / f32::from(g.cell.height).max(1.0),
+        };
+        let steps = self.wheel.trunc();
+        self.wheel -= steps;
+        let b = if steps > 0.0 {
+            api::MouseButton::WheelUp
+        } else {
+            api::MouseButton::WheelDown
+        };
+        let cell = g.cell_at(p);
+        (0..steps.abs().min(MAX_WHEEL_STEPS) as u32)
+            .map(|_| {
+                mouse(
+                    api::MouseAction::Press,
+                    Some(b),
+                    cell,
+                    m,
+                    self.held.is_some(),
+                )
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{point, px, size};
+
+    fn grid() -> Grid {
+        Grid {
+            origin: point(px(8.0), px(8.0)),
+            cell: size(px(10.0), px(20.0)),
+            cols: 80,
+            rows: 24,
+        }
+    }
+
+    fn cell_of(e: Event) -> (i32, i32, u32, u32) {
+        match e {
+            Event::Mouse(m) => (m.action, m.button, m.col, m.row),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn positions_become_clamped_cells() {
+        let g = grid();
+        assert_eq!(g.cell_at(point(px(8.0), px(8.0))), (0, 0));
+        assert_eq!(g.cell_at(point(px(47.9), px(48.0))), (3, 2));
+        assert_eq!(g.cell_at(point(px(0.0), px(-50.0))), (0, 0));
+        assert_eq!(g.cell_at(point(px(5000.0), px(5000.0))), (79, 23));
+    }
+
+    #[test]
+    fn drags_report_only_cell_changes_and_wheel_keeps_fractions() {
+        use api::{MouseAction as A, MouseButton as B};
+        let (g, m) = (grid(), Modifiers::default());
+        let mut p = Pointer::default();
+        let down = p.down(&g, gpui::MouseButton::Left, point(px(20.0), px(10.0)), &m);
+        assert_eq!(
+            cell_of(down.expect("press")),
+            (A::Press as i32, B::Left as i32, 1, 0)
+        );
+        assert!(
+            p.moved(&g, point(px(25.0), px(12.0)), &m).is_none(),
+            "same cell"
+        );
+        let drag = p.moved(&g, point(px(31.0), px(12.0)), &m).expect("drag");
+        assert_eq!(cell_of(drag), (A::Motion as i32, B::Left as i32, 2, 0));
+        assert!(
+            p.up(&g, gpui::MouseButton::Right, point(px(31.0), px(12.0)), &m)
+                .is_none()
+        );
+        let up = p
+            .up(&g, gpui::MouseButton::Left, point(px(31.0), px(12.0)), &m)
+            .expect("release");
+        assert_eq!(cell_of(up), (A::Release as i32, B::Left as i32, 2, 0));
+        // Trackpad pixels: 30 px is one and a half rows; the half is kept.
+        let at = point(px(8.0), px(8.0));
+        let one = p.scroll(&g, at, ScrollDelta::Pixels(point(px(0.0), px(30.0))), &m);
+        assert_eq!(one.len(), 1);
+        assert_eq!(cell_of(one[0].clone()).1, B::WheelUp as i32);
+        assert_eq!(
+            p.scroll(&g, at, ScrollDelta::Pixels(point(px(0.0), px(10.0))), &m)
+                .len(),
+            1
+        );
+        let down = p.scroll(&g, at, ScrollDelta::Lines(point(0.0, -3.0)), &m);
+        assert_eq!(down.len(), 3);
+        assert_eq!(cell_of(down[0].clone()).1, B::WheelDown as i32);
+    }
 
     fn ks(s: &'static str) -> Keystroke {
         Keystroke::parse(s).expect("keystroke")

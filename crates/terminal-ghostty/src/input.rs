@@ -37,6 +37,23 @@ pub enum KeyAction {
     Release,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
+/// Mouse buttons; wheel up and down are buttons 4 and 5, as in X11.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+}
+
 /// A physical key by its W3C `KeyboardEvent.code` name (`KeyA`, `Digit1`,
 /// `ArrowUp`, `Enter`, `F5`, ...).
 pub fn key_code(name: &str) -> Option<KeyCode> {
@@ -175,6 +192,122 @@ impl Engine {
         }
     }
 
+    /// A mouse event at a cell, encoded with the terminal's mouse tracking
+    /// mode and format. Empty when the application does not track the mouse
+    /// (or not this kind of event). Positions are canonical cells; the
+    /// encoder sees the centre of the cell in canonical pixels.
+    pub fn encode_mouse(
+        &self,
+        action: MouseAction,
+        button: Option<MouseButton>,
+        col: u16,
+        row: u16,
+        mods: Mods,
+        any_button_pressed: bool,
+    ) -> Result<Vec<u8>, EngineError> {
+        use ghostty_sys::GhosttyMouseAction::*;
+        use ghostty_sys::GhosttyMouseButton::*;
+        use ghostty_sys::GhosttyMouseEncoderOption::*;
+        let (cw, ch) = terminal_core::family::CANONICAL_CELL_PX;
+        let grid = self.size();
+        let size = GhosttyMouseEncoderSize {
+            size: std::mem::size_of::<GhosttyMouseEncoderSize>(),
+            screen_width: u32::from(grid.cols) * cw,
+            screen_height: u32::from(grid.rows) * ch,
+            cell_width: cw,
+            cell_height: ch,
+            padding_top: 0,
+            padding_bottom: 0,
+            padding_right: 0,
+            padding_left: 0,
+        };
+        let position = GhosttyMousePosition {
+            x: (f32::from(col.min(grid.cols.saturating_sub(1))) + 0.5) * cw as f32,
+            y: (f32::from(row.min(grid.rows.saturating_sub(1))) + 0.5) * ch as f32,
+        };
+        let mut encoder: GhosttyMouseEncoder = ptr::null_mut();
+        let mut event: GhosttyMouseEvent = ptr::null_mut();
+        // SAFETY: encoder and event are created here, used while `term` is
+        // live, and freed on every path; option values point at locals that
+        // outlive the calls reading them.
+        unsafe {
+            check(
+                "ghostty_mouse_encoder_new",
+                ghostty_mouse_encoder_new(ptr::null(), &mut encoder),
+            )?;
+            let result = (|| {
+                check(
+                    "ghostty_mouse_event_new",
+                    ghostty_mouse_event_new(ptr::null(), &mut event),
+                )?;
+                check(
+                    "ghostty_mouse_encoder_set_from_terminal",
+                    ghostty_mouse_encoder_set_from_terminal(encoder, self.term),
+                )?;
+                check(
+                    "ghostty_mouse_encoder_set(size)",
+                    ghostty_mouse_encoder_set(
+                        encoder,
+                        GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
+                        (&raw const size).cast(),
+                    ),
+                )?;
+                check(
+                    "ghostty_mouse_encoder_set(any_button_pressed)",
+                    ghostty_mouse_encoder_set(
+                        encoder,
+                        GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
+                        (&raw const any_button_pressed).cast(),
+                    ),
+                )?;
+                let action = match action {
+                    MouseAction::Press => GHOSTTY_MOUSE_ACTION_PRESS,
+                    MouseAction::Release => GHOSTTY_MOUSE_ACTION_RELEASE,
+                    MouseAction::Motion => GHOSTTY_MOUSE_ACTION_MOTION,
+                };
+                check(
+                    "ghostty_mouse_event_set_action",
+                    ghostty_mouse_event_set_action(event, action),
+                )?;
+                match button {
+                    Some(b) => {
+                        let b = match b {
+                            MouseButton::Left => GHOSTTY_MOUSE_BUTTON_LEFT,
+                            MouseButton::Middle => GHOSTTY_MOUSE_BUTTON_MIDDLE,
+                            MouseButton::Right => GHOSTTY_MOUSE_BUTTON_RIGHT,
+                            MouseButton::WheelUp => GHOSTTY_MOUSE_BUTTON_FOUR,
+                            MouseButton::WheelDown => GHOSTTY_MOUSE_BUTTON_FIVE,
+                        };
+                        check(
+                            "ghostty_mouse_event_set_button",
+                            ghostty_mouse_event_set_button(event, b),
+                        )?;
+                    }
+                    None => check(
+                        "ghostty_mouse_event_clear_button",
+                        ghostty_mouse_event_clear_button(event),
+                    )?,
+                }
+                check(
+                    "ghostty_mouse_event_set_mods",
+                    ghostty_mouse_event_set_mods(event, mods.0),
+                )?;
+                check(
+                    "ghostty_mouse_event_set_position",
+                    ghostty_mouse_event_set_position(event, position),
+                )?;
+                encode_into("ghostty_mouse_encoder_encode", |buf, len, out| {
+                    ghostty_mouse_encoder_encode(encoder, event, buf, len, out)
+                })
+            })();
+            if !event.is_null() {
+                ghostty_mouse_event_free(event);
+            }
+            ghostty_mouse_encoder_free(encoder);
+            result
+        }
+    }
+
     /// Focus in or out, if the application asked for focus reports (mode
     /// 1004); otherwise nothing.
     pub fn encode_focus(&self, gained: bool) -> Result<Vec<u8>, EngineError> {
@@ -245,6 +378,49 @@ mod tests {
         assert!(
             key_code("KeyAA").is_none() && key_code("F26").is_none() && key_code("Nope").is_none()
         );
+    }
+
+    #[test]
+    fn mouse_follows_the_tracking_mode_and_format() {
+        let mut e = engine();
+        let click = |e: &Engine, a| {
+            e.encode_mouse(a, Some(MouseButton::Left), 4, 2, Mods::default(), false)
+                .expect("mouse")
+        };
+        assert!(
+            click(&e, MouseAction::Press).is_empty(),
+            "no tracking requested"
+        );
+        // Normal tracking with SGR encoding: 1-based column and row.
+        e.feed(b"\x1b[?1000h\x1b[?1006h").expect("feed");
+        assert_eq!(click(&e, MouseAction::Press), b"\x1b[<0;5;3M");
+        assert_eq!(click(&e, MouseAction::Release), b"\x1b[<0;5;3m");
+        let wheel = e
+            .encode_mouse(
+                MouseAction::Press,
+                Some(MouseButton::WheelUp),
+                0,
+                0,
+                Mods::default(),
+                false,
+            )
+            .expect("wheel");
+        assert_eq!(wheel, b"\x1b[<64;1;1M");
+        // Motion is reported only in button-event mode while a button is held.
+        let drag = |e: &Engine| {
+            e.encode_mouse(
+                MouseAction::Motion,
+                Some(MouseButton::Left),
+                6,
+                2,
+                Mods::default(),
+                true,
+            )
+            .expect("drag")
+        };
+        assert!(drag(&e).is_empty());
+        e.feed(b"\x1b[?1002h").expect("feed");
+        assert_eq!(drag(&e), b"\x1b[<32;7;3M");
     }
 
     #[test]

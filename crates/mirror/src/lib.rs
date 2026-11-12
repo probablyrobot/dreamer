@@ -21,6 +21,7 @@ use tmux_backend::{ConnEvent, Connection};
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub use journal::Retention;
+pub use terminal_ghostty::input::{MouseAction, MouseButton};
 pub use worker::{InputEvent, LiveStats, ReadResult, Record, Sink, Start, Started, Tier, end};
 
 #[derive(Debug, Clone)]

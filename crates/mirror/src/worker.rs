@@ -11,6 +11,7 @@ use std::time::Instant;
 use domain::{ConnectionEpoch, PaneGeneration, PaneKey, TmuxPaneId};
 use terminal_ghostty::Engine;
 use terminal_ghostty::core::GridSize;
+use terminal_ghostty::input::{MouseAction, MouseButton};
 use tmux_backend::bootstrap::{Captures, PaneState, restore_engine};
 use tokio::sync::{mpsc, oneshot};
 
@@ -83,6 +84,14 @@ pub enum InputEvent {
     Text(String),
     Paste(Vec<u8>),
     Focus(bool),
+    Mouse {
+        action: MouseAction,
+        button: Option<MouseButton>,
+        col: u16,
+        row: u16,
+        mods: u16,
+        buttons_held: bool,
+    },
 }
 
 /// One record that changes replicated terminal semantics.
@@ -354,6 +363,16 @@ fn encode(engine: &Engine, event: InputEvent) -> Result<Vec<u8>, String> {
         InputEvent::Text(t) => Ok(t.into_bytes()),
         InputEvent::Paste(data) => engine.encode_paste(&data).map_err(|e| e.to_string()),
         InputEvent::Focus(gained) => engine.encode_focus(gained).map_err(|e| e.to_string()),
+        InputEvent::Mouse {
+            action,
+            button,
+            col,
+            row,
+            mods,
+            buttons_held,
+        } => engine
+            .encode_mouse(action, button, col, row, Mods(mods), buttons_held)
+            .map_err(|e| e.to_string()),
     }
 }
 

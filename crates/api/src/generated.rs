@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 4;
+pub const PROTOCOL_MINOR: u32 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -353,6 +353,105 @@ mod end_reason_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| EndReason::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MouseAction {
+    Unspecified = 0,
+    Press = 1,
+    Release = 2,
+    Motion = 3,
+}
+
+impl MouseAction {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Press => "press",
+            Self::Release => "release",
+            Self::Motion => "motion",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "press" => Some(Self::Press),
+            "release" => Some(Self::Release),
+            "motion" => Some(Self::Motion),
+            _ => None,
+        }
+    }
+}
+
+mod mouse_action_json {
+    use super::MouseAction;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match MouseAction::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| MouseAction::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MouseButton {
+    /// Motion with no button held.
+    None = 0,
+    Left = 1,
+    Middle = 2,
+    Right = 3,
+    WheelUp = 4,
+    WheelDown = 5,
+}
+
+impl MouseButton {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Left => "left",
+            Self::Middle => "middle",
+            Self::Right => "right",
+            Self::WheelUp => "wheel_up",
+            Self::WheelDown => "wheel_down",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "none" => Some(Self::None),
+            "left" => Some(Self::Left),
+            "middle" => Some(Self::Middle),
+            "right" => Some(Self::Right),
+            "wheel_up" => Some(Self::WheelUp),
+            "wheel_down" => Some(Self::WheelDown),
+            _ => None,
+        }
+    }
+}
+
+mod mouse_button_json {
+    use super::MouseButton;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match MouseButton::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| MouseButton::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -1051,6 +1150,30 @@ pub struct FocusInput {
     pub gained: bool,
 }
 
+/// A mouse event at a cell of the pane's canonical grid, encoded with the application's mouse tracking mode and format. Nothing is sent when the application does not track this kind of event. Wheel steps are presses of wheel_up or wheel_down, one per step.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MouseInput {
+    #[prost(enumeration = "MouseAction", tag = "1")]
+    #[serde(with = "mouse_action_json")]
+    pub action: i32,
+    #[prost(enumeration = "MouseButton", tag = "2")]
+    #[serde(with = "mouse_button_json")]
+    pub button: i32,
+    /// 0-based; clamped to the grid.
+    #[prost(uint32, tag = "3")]
+    pub col: u32,
+    /// 0-based; clamped to the grid.
+    #[prost(uint32, tag = "4")]
+    pub row: u32,
+    /// Bits as in KeyInput.
+    #[prost(uint32, tag = "5")]
+    pub mods: u32,
+    /// A button is down (for drag reporting).
+    #[prost(bool, tag = "6")]
+    pub buttons_held: bool,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TerminalInput {
@@ -1063,7 +1186,7 @@ pub struct TerminalInput {
     #[prost(string, optional, tag = "3")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
-    #[prost(oneof = "terminal_input::Event", tags = "10, 11, 12, 13")]
+    #[prost(oneof = "terminal_input::Event", tags = "10, 11, 12, 13, 14")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<terminal_input::Event>,
 }
@@ -1082,6 +1205,8 @@ pub mod terminal_input {
         Paste(super::PasteInput),
         #[prost(message, tag = "13")]
         Focus(super::FocusInput),
+        #[prost(message, tag = "14")]
+        Mouse(super::MouseInput),
     }
 }
 
@@ -1212,7 +1337,7 @@ pub const METHODS: &[MethodInfo] = &[
         params: "TerminalInput",
         result: "InputResult",
         mutation: true,
-        doc: "Keys, text, paste, or focus for a pane, encoded against its canonical state.",
+        doc: "Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state.",
     },
 ];
 
@@ -1506,7 +1631,7 @@ pub trait Service: Sync {
         &self,
         params: Unsubscribe,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
-    /// Keys, text, paste, or focus for a pane, encoded against its canonical state.
+    /// Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state.
     fn terminal_input(
         &self,
         params: TerminalInput,

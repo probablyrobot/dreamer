@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 4 }
+version: { major: 1, minor: 5 }
 package: dreamer.v1
 
 types:
@@ -426,6 +426,36 @@ types:
     fields:
       - { n: 1, name: gained, type: bool }
 
+  - enum: MouseAction
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: press }
+      - { n: 2, name: release }
+      - { n: 3, name: motion }
+
+  - enum: MouseButton
+    values:
+      - { n: 0, name: none, doc: Motion with no button held. }
+      - { n: 1, name: left }
+      - { n: 2, name: middle }
+      - { n: 3, name: right }
+      - { n: 4, name: wheel_up }
+      - { n: 5, name: wheel_down }
+
+  - message: MouseInput
+    doc: >-
+      A mouse event at a cell of the pane's canonical grid, encoded with the
+      application's mouse tracking mode and format. Nothing is sent when the
+      application does not track this kind of event. Wheel steps are presses
+      of wheel_up or wheel_down, one per step.
+    fields:
+      - { n: 1, name: action, type: MouseAction }
+      - { n: 2, name: button, type: MouseButton }
+      - { n: 3, name: col, type: u32, doc: "0-based; clamped to the grid." }
+      - { n: 4, name: row, type: u32, doc: "0-based; clamped to the grid." }
+      - { n: 5, name: mods, type: u32, doc: "Bits as in KeyInput." }
+      - { n: 6, name: buttons_held, type: bool, doc: "A button is down (for drag reporting)." }
+
   - message: TerminalInput
     fields:
       - { n: 1, name: pane, type: u32 }
@@ -438,6 +468,7 @@ types:
         - { n: 11, name: text, type: TextInput }
         - { n: 12, name: paste, type: PasteInput }
         - { n: 13, name: focus, type: FocusInput }
+        - { n: 14, name: mouse, type: MouseInput }
 
   - message: InputResult
     fields:
@@ -457,4 +488,4 @@ methods:
   - { method: terminal.set_tier, params: SetTier, result: Empty, mutation: true, doc: Mark a mirrored pane Hot or Warm. }
   - { method: terminal.subscribe, params: TerminalSubscribe, result: Subscription, doc: "Follow a pane's canonical mirror: checkpoint or replay, then ordered records." }
   - { method: terminal.unsubscribe, params: Unsubscribe, result: Empty }
-  - { method: terminal.input, params: TerminalInput, result: InputResult, mutation: true, doc: "Keys, text, paste, or focus for a pane, encoded against its canonical state." }
+  - { method: terminal.input, params: TerminalInput, result: InputResult, mutation: true, doc: "Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state." }
