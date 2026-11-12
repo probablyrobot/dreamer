@@ -32,10 +32,31 @@ at the size tmux gives it.
   resumes, or resnapshots, as the replica rules decide. A closed pane, or
   one that cannot catch up, is reported, not retried forever.
 
+## Renderer
+
+Each row's text is shaped once and reused for as long as the row is shared
+between frames and the colors, font, size, and cell width stay the same.
+Paint statistics report lines shaped versus reused, decorated runs, and the
+cursor shape painted.
+
 ## Checks
 
+The macOS gate runs these after building the app:
+
+| Step | Checks | Needs |
+| --- | --- | --- |
+| `matrix` | Every fixture in `crates/terminal-render/fixtures` paints the statistics listed in its `expected.txt`. These are derived from the fixture content: ASCII, combining marks, CJK, emoji, fallback glyphs, box drawing, five underline styles, strikethrough, inverse, dim, and the block, bar, underline, and hidden cursor | A GUI session |
+| `cache` | `dreamer --smoke-repaint`: painting the same frame again reshapes nothing | A display that keeps refreshing |
+| `live` | The live pane check below | A display that keeps refreshing |
+
+A locked screen still paints a window's first frame, but macOS then stops
+refreshing it. `cache` and `live` are recorded as not run while the screen
+is locked. If a requested repaint does not happen, the app itself exits
+with status 5 ("inconclusive"), so a count of zero paints is never taken
+as evidence when nothing could have painted.
+
 `dreamer --smoke --expect TEXT --attach %PANE …` waits for a frame
-containing TEXT. It then watches 1.5 s of idle pane and exits with status 3
-if anything woke the window or painted. The macOS gate runs this as its
-`live` step, against an isolated tmux server and private daemon
-directories.
+containing TEXT. It then requests one repaint as a control. If that paints,
+it watches 1.5 s of idle pane and exits with status 3 if anything woke the
+window or painted. The `live` step runs this against an isolated tmux
+server and private daemon directories.

@@ -11,6 +11,7 @@ mod hooks;
 mod manifest;
 mod package;
 mod policy;
+mod render;
 mod util;
 
 use std::process::ExitCode;

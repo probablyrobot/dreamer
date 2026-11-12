@@ -192,6 +192,16 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         });
         stages.push(Stage {
+            name: "matrix",
+            action: Builtin(render_matrix),
+            when: When::Code,
+        });
+        stages.push(Stage {
+            name: "cache",
+            action: Builtin(shaping_cache),
+            when: When::Code,
+        });
+        stages.push(Stage {
             name: "live",
             action: Builtin(live_smoke),
             when: When::Code,
@@ -244,12 +254,82 @@ fn require_gui() -> Result<bool, String> {
     )
 }
 
+/// Checks that need the display to keep refreshing (repaints, idle paint
+/// counts) are recorded as not run while the screen is locked.
+fn require_refreshing_display() -> Result<bool, String> {
+    if !require_gui()? {
+        return Ok(false);
+    }
+    match crate::package::screen_locked() {
+        Some(true) => {
+            println!(
+                "gate: the screen is locked, so windows do not repaint; recorded as not run \
+                 (unlock and rerun for evidence)"
+            );
+            Ok(false)
+        }
+        _ => Ok(true),
+    }
+}
+
 /// Debug bundle, ad hoc signed and verified, launched to a presented frame.
+/// Every renderer fixture paints with the statistics derived from its
+/// content (spec 18.3 text matrix). First paints happen even on a locked
+/// screen, so this runs whenever a GUI session exists.
+fn render_matrix(dir: &Path) -> Result<Done, String> {
+    if !require_gui()? {
+        return Ok(Done::NotRun);
+    }
+    let app = dir.join("target/debug/dreamer");
+    let mut failures = Vec::new();
+    for (path, expected) in crate::render::expectations(dir)? {
+        let out = Command::new(&app)
+            .args(["--smoke", "--fixture"])
+            .arg(&path)
+            .output()
+            .map_err(|e| format!("dreamer: {e}"))?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        match crate::render::check(&stdout, &expected) {
+            Ok(()) if out.status.success() => println!("gate:   {:<22} as expected", expected.name),
+            Ok(()) => failures.push(format!("{}: exit {}", expected.name, out.status)),
+            Err(e) => failures.push(e),
+        }
+    }
+    if failures.is_empty() {
+        Ok(Done::Passed)
+    } else {
+        Err(failures.join("\n"))
+    }
+}
+
+/// Painting an unchanged frame again reshapes nothing. Needs a display that
+/// keeps refreshing.
+fn shaping_cache(dir: &Path) -> Result<Done, String> {
+    if !require_refreshing_display()? {
+        return Ok(Done::NotRun);
+    }
+    let out = Command::new(dir.join("target/debug/dreamer"))
+        .arg("--smoke-repaint")
+        .output()
+        .map_err(|e| format!("dreamer: {e}"))?;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        println!("gate:   {line}");
+    }
+    match out.status.code() {
+        Some(0) => Ok(Done::Passed),
+        Some(5) => Ok(Done::NotRun),
+        _ => Err(format!(
+            "the repaint reshaped rows or failed ({})",
+            out.status
+        )),
+    }
+}
+
 /// The desktop app showing a live tmux pane through dreamerd: an isolated
 /// tmux server and private daemon directories; the pane's text must be
 /// drawn and an idle pane must cause no view wakeups or paints.
 fn live_smoke(dir: &Path) -> Result<Done, String> {
-    if !require_gui()? {
+    if !require_refreshing_display()? {
         return Ok(Done::NotRun);
     }
     let build = clean_git_env(Command::new("cargo"))
@@ -316,6 +396,10 @@ fn live_smoke(dir: &Path) -> Result<Done, String> {
     let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines() {
         println!("gate:   {line}");
+    }
+    if out.status.code() == Some(5) {
+        println!("gate: the display did not refresh; live paint checks recorded as not run");
+        return Ok(Done::NotRun);
     }
     if out.status.success() {
         Ok(Done::Passed)

@@ -14,8 +14,11 @@ It is required to close milestones M0, M2, M3, and M8.
    - **X11:** runs with `WAYLAND_DISPLAY` removed so GPUI connects to
      `DISPLAY`. Under a Wayland desktop that is XWayland, which counts as X11
      evidence only.
-3. Launches `dreamer --smoke` on the built-in demo and on every renderer
-   fixture. A run passes only if the app reports the expected backend and
+3. Launches `dreamer --smoke` on the built-in demo, on every snapshot
+   fixture, and on the renderer text matrix in
+   `crates/terminal-render/fixtures`. Each matrix fixture must also paint
+   the statistics listed in its `expected.txt` (runs, wide cells,
+   decorations, backgrounds, and cursor shape). A run passes only if the app reports the expected backend and
    presents a frame. A session without a display server fails instead of
    drawing nothing.
 4. Writes `target/gate/linux-desktop/<commit>.json` with distribution,

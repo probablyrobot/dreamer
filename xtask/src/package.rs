@@ -198,6 +198,40 @@ pub fn launch_smoke(app: &Path) -> Result<String, String> {
 /// launchd reports an Aqua session, or (for tools started from a background
 /// context such as an agent) the console belongs to this user and the
 /// process is not running over SSH.
+/// Whether the console session's screen is locked. While it is, macOS
+/// stops refreshing windows after their first frame, so checks that need a
+/// repaint prove nothing. `None` when the state cannot be read.
+pub fn screen_locked() -> Option<bool> {
+    const PROBE: &str = r#"
+import ctypes, ctypes.util
+cg = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreGraphics"))
+cf = ctypes.cdll.LoadLibrary(ctypes.util.find_library("CoreFoundation"))
+cg.CGSessionCopyCurrentDictionary.restype = ctypes.c_void_p
+d = cg.CGSessionCopyCurrentDictionary()
+if not d:
+    print("unknown")
+else:
+    cf.CFCopyDescription.restype = ctypes.c_void_p
+    cf.CFCopyDescription.argtypes = [ctypes.c_void_p]
+    cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+    buf = ctypes.create_string_buffer(16384)
+    cf.CFStringGetCString(cf.CFCopyDescription(d), buf, 16384, 0x08000100)
+    print("locked" if "CGSSessionScreenIsLocked = 1" in buf.value.decode() else "unlocked")
+"#;
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let out = Command::new("/usr/bin/python3")
+        .args(["-I", "-c", PROBE])
+        .output()
+        .ok()?;
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "locked" => Some(true),
+        "unlocked" => Some(false),
+        _ => None,
+    }
+}
+
 pub fn gui_session_available() -> bool {
     let aqua = Command::new("launchctl")
         .arg("managername")

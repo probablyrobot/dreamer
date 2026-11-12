@@ -12,6 +12,9 @@
 //! repaints only when woken by a new frame.
 //!
 //! `--smoke` exits once a frame has been presented, printing what was drawn.
+//! `--smoke-repaint` then paints the same frame again and checks that every
+//! row came from the shaping cache. Exit status 5 means the display did not
+//! refresh at all (a locked screen), so paint checks proved nothing.
 //! In attach mode it waits for a frame containing `--expect` and then
 //! checks that 1.5 s of idle pane cause no view wakeups and no paints.
 
@@ -32,6 +35,9 @@ use terminal_render::{
 
 /// Give up if no frame is presented within this time in smoke mode.
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(20);
+/// Exit status when the display does not refresh at all (for example a
+/// locked screen), so paint-based checks prove nothing either way.
+const INCONCLUSIVE: i32 = 5;
 /// Idle time a live smoke run watches for unwanted wakeups.
 const IDLE_CHECK: Duration = Duration::from_millis(1500);
 const GRID: GridSize = GridSize { cols: 80, rows: 16 };
@@ -54,6 +60,8 @@ enum Smoke {
     Off,
     /// Exit after the first presented frame.
     First,
+    /// Also paint the same frame again and check the shaping cache.
+    Repaint,
     /// Live: wait for a frame containing this text, then check idleness.
     Expect(String),
 }
@@ -90,11 +98,40 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.smoke == Smoke::First && !self.frame_seen {
+        if matches!(self.smoke, Smoke::First | Smoke::Repaint) && !self.frame_seen {
             self.frame_seen = true;
+            let this = cx.entity();
+            let repaint = self.smoke == Smoke::Repaint;
+            let handle = window.window_handle();
             window.on_next_frame(move |window, cx| {
                 Shell::report_frame(window);
-                cx.quit();
+                if !repaint {
+                    cx.quit();
+                    return;
+                }
+                let first = last_paint_stats();
+                // Paint the same frame again: every row must come from the
+                // shaping cache.
+                let before = paint_count();
+                cx.spawn(async move |cx| {
+                    cx.background_executor().timer(Duration::from_millis(300)).await;
+                    this.update(cx, |_, cx| cx.notify());
+                    let _ = handle.update(cx, |_, window, _| window.refresh());
+                    cx.background_executor().timer(Duration::from_millis(500)).await;
+                    let painted = paint_count() - before;
+                    let again = last_paint_stats();
+                    let code = if painted == 0 {
+                        println!("smoke: the display did not refresh (screen locked or asleep?); repaint checks not run");
+                        INCONCLUSIVE
+                    } else {
+                        println!("smoke: repainted {again:?}");
+                        let cached = again.shaped_lines == 0 && again.reused_lines == first.shaped_lines;
+                        if cached { 0 } else { 3 }
+                    };
+                    cx.update(|cx| cx.quit());
+                    std::process::exit(code);
+                })
+                .detach();
             });
             cx.notify();
         }
@@ -157,6 +194,7 @@ fn load_frame(bytes: &[u8]) -> Result<Arc<FrameSnapshot>, String> {
 #[derive(Debug, Default)]
 struct Args {
     smoke: bool,
+    repaint: bool,
     expect: Option<String>,
     fixture: Option<String>,
     attach: Option<u32>,
@@ -171,6 +209,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
         let mut value = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
         match arg.as_str() {
             "--smoke" => a.smoke = true,
+            "--smoke-repaint" => {
+                a.smoke = true;
+                a.repaint = true;
+            }
             "--expect" => a.expect = Some(value("--expect")?),
             "--fixture" => a.fixture = Some(value("--fixture")?),
             "--attach" => {
@@ -236,6 +278,7 @@ fn main() -> ExitCode {
         (false, _, _) => Smoke::Off,
         (true, Some(_), Some(text)) => Smoke::Expect(text.clone()),
         (true, Some(_), None) => Smoke::Expect(String::new()),
+        (true, None, _) if args.repaint => Smoke::Repaint,
         (true, None, _) => Smoke::First,
     };
     let feed = match args.attach {

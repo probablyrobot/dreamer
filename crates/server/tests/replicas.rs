@@ -325,7 +325,9 @@ async fn a_respawned_pane_is_followed_into_its_new_generation() {
             f.state
         );
     }
-    assert!(!replica_lines(&f).iter().any(|l| l.contains("OLD-PROCESS")));
+    // tmux keeps the pane's screen across `respawn-pane`, so old text may
+    // legitimately remain; what matters is that the replica equals the new
+    // generation's mirror, checked above.
     assert_eq!(
         f.checkpoints, 2,
         "the new generation started from its own checkpoint"

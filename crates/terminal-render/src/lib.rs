@@ -100,6 +100,14 @@ pub struct PaintStats {
     pub text_runs: usize,
     pub wide_cells: usize,
     pub images: usize,
+    /// Text lines shaped in this paint (cache misses).
+    pub shaped_lines: usize,
+    /// Text lines reused from the shaping cache.
+    pub reused_lines: usize,
+    /// Runs painted with an underline or strikethrough.
+    pub decorated_runs: usize,
+    /// The cursor shape painted, if the cursor was visible.
+    pub cursor: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -174,7 +182,12 @@ thread_local! {
         text_runs: 0,
         wide_cells: 0,
         images: 0,
+        shaped_lines: 0,
+        reused_lines: 0,
+        decorated_runs: 0,
+        cursor: None,
     }) };
+    static SHAPES: std::cell::RefCell<ShapeCache> = std::cell::RefCell::new(ShapeCache::default());
 }
 
 /// Statistics from the most recent paint on this thread.
@@ -207,6 +220,153 @@ fn cell_colors(cell: &Cell, colors: &Colors) -> (Hsla, Option<Hsla>) {
         fg.a = 0.0;
     }
     (fg, bg.map(hsla))
+}
+
+/// One shaped piece of a row: a run of narrow cells with one style, or a
+/// single wide cell.
+struct Shaped {
+    col: usize,
+    line: gpui::ShapedLine,
+    wide: bool,
+    decorated: bool,
+}
+
+/// Shaped rows by shared row identity (spec 9.2: unchanged rows are shared
+/// between frames, so their shaping is too). Each entry holds its row, so
+/// the address it is keyed by cannot be reused while the entry exists.
+#[derive(Default)]
+struct ShapeCache {
+    rows: std::collections::HashMap<usize, ShapeEntry>,
+    paints: u64,
+}
+
+struct ShapeEntry {
+    row: Arc<terminal_core::Row>,
+    colors: Arc<Colors>,
+    key: (Font, Pixels, Pixels),
+    lines: std::rc::Rc<Vec<Shaped>>,
+    used: u64,
+}
+
+/// Rows kept beyond those painted recently.
+const SHAPE_CACHE_ROWS: usize = 4096;
+
+impl ShapeCache {
+    fn lookup(
+        &mut self,
+        row: &Arc<terminal_core::Row>,
+        colors: &Arc<Colors>,
+        key: &(Font, Pixels, Pixels),
+    ) -> Option<std::rc::Rc<Vec<Shaped>>> {
+        let e = self.rows.get_mut(&(Arc::as_ptr(row) as usize))?;
+        if Arc::ptr_eq(&e.row, row) && Arc::ptr_eq(&e.colors, colors) && e.key == *key {
+            e.used = self.paints;
+            Some(e.lines.clone())
+        } else {
+            None
+        }
+    }
+
+    fn insert(
+        &mut self,
+        row: &Arc<terminal_core::Row>,
+        colors: &Arc<Colors>,
+        key: (Font, Pixels, Pixels),
+        lines: std::rc::Rc<Vec<Shaped>>,
+    ) {
+        self.rows.insert(
+            Arc::as_ptr(row) as usize,
+            ShapeEntry {
+                row: row.clone(),
+                colors: colors.clone(),
+                key,
+                lines,
+                used: self.paints,
+            },
+        );
+    }
+
+    /// Forget rows not painted lately once the cache is large.
+    fn end_paint(&mut self) {
+        self.paints += 1;
+        if self.rows.len() > SHAPE_CACHE_ROWS {
+            let keep_from = self.paints.saturating_sub(4);
+            self.rows.retain(|_, e| e.used >= keep_from);
+        }
+    }
+}
+
+fn shape_row(
+    row: &terminal_core::Row,
+    el: &TerminalElement,
+    m: CellMetrics,
+    colors: &Colors,
+    window: &mut Window,
+) -> Vec<Shaped> {
+    let mut out = Vec::new();
+    let mut x = 0usize;
+    while x < row.cells.len() {
+        let cell = &row.cells[x];
+        match cell.width {
+            CellWidth::SpacerTail | CellWidth::SpacerHead => x += 1,
+            CellWidth::Wide => {
+                if !cell.text.is_empty() {
+                    let (fg, _) = cell_colors(cell, colors);
+                    let text: SharedString = cell.text.to_string().into();
+                    let run = text_run(cell, text.len(), &el.font, colors, fg);
+                    let decorated = run.underline.is_some() || run.strikethrough.is_some();
+                    let line = window.text_system().shape_line(
+                        text,
+                        el.font_size,
+                        &[run],
+                        Some(m.width * 2.0),
+                    );
+                    out.push(Shaped {
+                        col: x,
+                        line,
+                        wide: true,
+                        decorated,
+                    });
+                }
+                x += 1;
+            }
+            CellWidth::Narrow => {
+                let start = x;
+                let style = cell.style;
+                let mut text = String::new();
+                while x < row.cells.len()
+                    && row.cells[x].width == CellWidth::Narrow
+                    && row.cells[x].style == style
+                {
+                    let t = &row.cells[x].text;
+                    text.push_str(if t.is_empty() { " " } else { t });
+                    x += 1;
+                }
+                if text.trim().is_empty()
+                    && style.underline == Underline::None
+                    && !style.attrs.has(Attrs::STRIKETHROUGH)
+                {
+                    continue;
+                }
+                let (fg, _) = cell_colors(&row.cells[start], colors);
+                let run = text_run(&row.cells[start], text.len(), &el.font, colors, fg);
+                let decorated = run.underline.is_some() || run.strikethrough.is_some();
+                let line = window.text_system().shape_line(
+                    text.into(),
+                    el.font_size,
+                    &[run],
+                    Some(m.width),
+                );
+                out.push(Shaped {
+                    col: start,
+                    line,
+                    wide: false,
+                    decorated,
+                });
+            }
+        }
+    }
+    out
 }
 
 fn text_run(cell: &Cell, len: usize, font: &Font, colors: &Colors, fg: Hsla) -> TextRun {
@@ -279,62 +439,37 @@ fn paint_frame(
             }
         }
 
-        // Text: runs of narrow cells with one style, wide cells alone.
-        let mut x = 0usize;
-        while x < row.cells.len() {
-            let cell = &row.cells[x];
-            match cell.width {
-                CellWidth::SpacerTail | CellWidth::SpacerHead => {
-                    x += 1;
-                    continue;
-                }
-                CellWidth::Wide => {
-                    if !cell.text.is_empty() {
-                        let (fg, _) = cell_colors(cell, colors);
-                        let text: SharedString = cell.text.to_string().into();
-                        let run = text_run(cell, text.len(), &el.font, colors, fg);
-                        let line = window.text_system().shape_line(
-                            text,
-                            el.font_size,
-                            &[run],
-                            Some(m.width * 2.0),
-                        );
-                        let at = point(origin.x + m.width * x as f32, top);
-                        let _ = line.paint(at, m.height, TextAlign::Left, None, window, cx);
-                        stats.wide_cells += 1;
-                    }
-                    x += 1;
-                }
-                CellWidth::Narrow => {
-                    let start = x;
-                    let style = cell.style;
-                    let mut text = String::new();
-                    while x < row.cells.len()
-                        && row.cells[x].width == CellWidth::Narrow
-                        && row.cells[x].style == style
-                    {
-                        let t = &row.cells[x].text;
-                        text.push_str(if t.is_empty() { " " } else { t });
-                        x += 1;
-                    }
-                    if text.trim().is_empty() && style.underline == Underline::None {
-                        continue;
-                    }
-                    let (fg, _) = cell_colors(&row.cells[start], colors);
-                    let run = text_run(&row.cells[start], text.len(), &el.font, colors, fg);
-                    let line = window.text_system().shape_line(
-                        text.into(),
-                        el.font_size,
-                        &[run],
-                        Some(m.width),
-                    );
-                    let at = point(origin.x + m.width * start as f32, top);
-                    let _ = line.paint(at, m.height, TextAlign::Left, None, window, cx);
-                    stats.text_runs += 1;
-                }
+        // Text: shaped once per shared row and reused for as long as the
+        // row, its colors, the font, the size, and the cell width are the same.
+        let key = (el.font.clone(), el.font_size, m.width);
+        let lines = match SHAPES.with(|c| c.borrow_mut().lookup(row, colors, &key)) {
+            Some(lines) => {
+                stats.reused_lines += lines.len();
+                lines
+            }
+            None => {
+                let lines = std::rc::Rc::new(shape_row(row, el, m, colors, window));
+                stats.shaped_lines += lines.len();
+                SHAPES.with(|c| c.borrow_mut().insert(row, colors, key, lines.clone()));
+                lines
+            }
+        };
+        for s in lines.iter() {
+            let at = point(origin.x + m.width * s.col as f32, top);
+            let _ = s
+                .line
+                .paint(at, m.height, TextAlign::Left, None, window, cx);
+            if s.wide {
+                stats.wide_cells += 1;
+            } else {
+                stats.text_runs += 1;
+            }
+            if s.decorated {
+                stats.decorated_runs += 1;
             }
         }
     }
+    SHAPES.with(|c| c.borrow_mut().end_paint());
 
     // Cursor.
     let c = frame.cursor;
@@ -350,6 +485,12 @@ fn paint_frame(
             origin.y + m.height * f32::from(c.y),
         );
         let mut color = hsla(colors.cursor.unwrap_or(colors.foreground));
+        stats.cursor = Some(match c.shape {
+            CursorShape::Block => "block",
+            CursorShape::Bar => "bar",
+            CursorShape::Underline => "underline",
+            CursorShape::BlockHollow => "block_hollow",
+        });
         let rect = match c.shape {
             CursorShape::Block => {
                 color.a = 0.55;
