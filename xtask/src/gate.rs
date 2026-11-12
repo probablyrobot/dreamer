@@ -129,10 +129,9 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Always,
         },
         Stage {
-            name: "headless",
-            program: "cargo",
-            args: &["xtask", "headless", "--check"],
-            always: false,
+            name: "boundary",
+            action: Cmd("cargo", &["xtask", "headless", "--check"]),
+            when: When::Code,
         },
         Stage {
             name: "deps",
