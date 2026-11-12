@@ -59,17 +59,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 }
 
 fn sha256_of(path: &Path) -> Result<String, String> {
-    for (tool, args) in [("sha256sum", &[][..]), ("shasum", &["-a", "256"][..])] {
-        if let Ok(out) = Command::new(tool).args(args).arg(path).output()
-            && out.status.success()
-        {
-            let text = String::from_utf8_lossy(&out.stdout);
-            if let Some(sum) = text.split_whitespace().next() {
-                return Ok(sum.to_owned());
-            }
-        }
-    }
-    Err("neither sha256sum nor shasum is available".into())
+    crate::util::sha256_file(path)
 }
 
 /// Source tarball plus PKGBUILD in `target/package/arch`, then `makepkg`.
