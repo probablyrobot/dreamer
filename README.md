@@ -18,8 +18,13 @@ cargo xtask doctor
 Then:
 
 ```sh
+cargo xtask hooks install   # once per clone
 cargo test --workspace --locked
 ```
+
+The pre-commit hook runs `cargo xtask gate --staged` on exactly what is staged;
+the pre-push hook runs `cargo xtask gate --full`. Reports are written to
+`target/gate/<platform>/<tree>.json`.
 
 ## License
 
