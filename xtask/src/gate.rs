@@ -66,6 +66,8 @@ enum Outcome {
     Passed,
     Failed,
     Skipped,
+    /// The stage could not run on this machine; recorded, not a pass.
+    NotRun,
 }
 
 impl Outcome {
@@ -74,17 +76,40 @@ impl Outcome {
             Outcome::Passed => "passed",
             Outcome::Failed => "failed",
             Outcome::Skipped => "skipped",
+            Outcome::NotRun => "not_run",
         }
     }
+}
+
+/// When a stage runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum When {
+    /// Every gate run, even for documentation-only changes.
+    Always,
+    /// Any change that is not documentation only.
+    Code,
+    /// Only `--full` (pre-push).
+    Full,
+}
+
+/// What a built-in stage reports when it does not fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Done {
+    Passed,
+    NotRun,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Action {
+    Cmd(&'static str, &'static [&'static str]),
+    Builtin(fn(&Path) -> Result<Done, String>),
 }
 
 #[derive(Debug)]
 struct Stage {
     name: &'static str,
-    program: &'static str,
-    args: &'static [&'static str],
-    /// Runs even when only documentation changed.
-    always: bool,
+    action: Action,
+    when: When,
 }
 
 #[derive(Debug)]
@@ -96,59 +121,200 @@ struct StageResult {
 }
 
 fn stages(platform: Platform) -> Vec<Stage> {
-    let _ = platform; // Platform-specific native stages are added with the GUI build.
-    vec![
+    use Action::{Builtin, Cmd};
+    let mut stages = vec![
         Stage {
             name: "policy",
-            program: "cargo",
-            args: &["xtask", "policy"],
-            always: true,
+            action: Cmd("cargo", &["xtask", "policy"]),
+            when: When::Always,
         },
         Stage {
-            name: "headless",
-            program: "cargo",
-            args: &["xtask", "headless", "--check"],
-            always: false,
+            name: "boundary",
+            action: Cmd("cargo", &["xtask", "headless", "--check"]),
+            when: When::Code,
         },
         Stage {
             name: "deps",
-            program: "cargo",
-            args: &["xtask", "deps", "prepare", "--locked"],
-            always: false,
+            action: Cmd("cargo", &["xtask", "deps", "prepare", "--locked"]),
+            when: When::Code,
         },
         Stage {
             name: "bindings",
-            program: "cargo",
-            args: &["xtask", "bindings", "--check"],
-            always: false,
+            action: Cmd("cargo", &["xtask", "bindings", "--check"]),
+            when: When::Code,
         },
         Stage {
             name: "fmt",
-            program: "cargo",
-            args: &["fmt", "--all", "--check"],
-            always: true,
+            action: Cmd("cargo", &["fmt", "--all", "--check"]),
+            when: When::Always,
         },
         Stage {
             name: "clippy",
-            program: "cargo",
-            args: &[
-                "clippy",
-                "--workspace",
-                "--all-targets",
-                "--locked",
-                "--",
-                "-D",
-                "warnings",
-            ],
-            always: false,
+            action: Cmd(
+                "cargo",
+                &[
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--locked",
+                    "--",
+                    "-D",
+                    "warnings",
+                ],
+            ),
+            when: When::Code,
         },
         Stage {
             name: "test",
-            program: "cargo",
-            args: &["test", "--workspace", "--locked"],
-            always: false,
+            action: Cmd("cargo", &["test", "--workspace", "--locked"]),
+            when: When::Code,
         },
-    ]
+        Stage {
+            name: "headless",
+            action: Builtin(headless_build),
+            when: When::Code,
+        },
+        Stage {
+            name: "gui",
+            action: Cmd("cargo", &["build", "--locked", "--package", "dreamer-app"]),
+            when: When::Code,
+        },
+    ];
+    if platform == Platform::Mac {
+        stages.push(Stage {
+            name: "bundle",
+            action: Builtin(bundle_smoke),
+            when: When::Code,
+        });
+        stages.push(Stage {
+            name: "package",
+            action: Builtin(package_away_from_tree),
+            when: When::Full,
+        });
+    }
+    stages.push(Stage {
+        name: "arm64",
+        action: Builtin(arm64_container),
+        when: When::Full,
+    });
+    stages
+}
+
+/// Build the headless packages alone, so a GUI-only dependency cannot hide
+/// behind the workspace build.
+fn headless_build(dir: &Path) -> Result<Done, String> {
+    let mut cmd = clean_git_env(Command::new("cargo"));
+    cmd.args(["build", "--locked"]).current_dir(dir);
+    for p in crate::headless::PACKAGES {
+        cmd.args(["--package", p]);
+    }
+    let status = cmd.status().map_err(|e| format!("cargo build: {e}"))?;
+    if status.success() {
+        Ok(Done::Passed)
+    } else {
+        Err("headless build failed".into())
+    }
+}
+
+/// The launch smoke needs a logged-in GUI session. Without one the stage
+/// fails unless `DREAMER_GATE_ALLOW_NO_GUI=1` is set for this run, in which
+/// case it is recorded as not run.
+fn require_gui() -> Result<bool, String> {
+    if crate::package::gui_session_available() {
+        return Ok(true);
+    }
+    if std::env::var_os("DREAMER_GATE_ALLOW_NO_GUI").is_some() {
+        println!("gate: no GUI session; launch smoke recorded as not run");
+        return Ok(false);
+    }
+    Err(
+        "no logged-in GUI session for the launch smoke; run the gate from the desktop session \
+         or set DREAMER_GATE_ALLOW_NO_GUI=1 to record it as not run"
+            .into(),
+    )
+}
+
+/// Debug bundle, ad hoc signed and verified, launched to a presented frame.
+fn bundle_smoke(dir: &Path) -> Result<Done, String> {
+    use crate::package::{Profile, build_bundle, launch_smoke, verify_bundle};
+    let out = dir.join("target").join("gate-bundle");
+    let app = build_bundle(dir, Profile::Debug, &out)?;
+    verify_bundle(&app)?;
+    if !require_gui()? {
+        return Ok(Done::NotRun);
+    }
+    let output = launch_smoke(&app)?;
+    for line in output.lines() {
+        println!("gate:   {line}");
+    }
+    Ok(Done::Passed)
+}
+
+/// Release bundle and zip, unpacked and launched outside the source tree.
+fn package_away_from_tree(dir: &Path) -> Result<Done, String> {
+    use crate::package::{Profile, build_bundle, smoke_from_zip, verify_bundle, zip_bundle};
+    let out = dir.join("target").join("package");
+    let app = build_bundle(dir, Profile::Release, &out)?;
+    verify_bundle(&app)?;
+    let zip = zip_bundle(&app, &out)?;
+    println!("gate:   {}", zip.display());
+    if !require_gui()? {
+        return Ok(Done::NotRun);
+    }
+    let output = smoke_from_zip(&zip)?;
+    for line in output.lines() {
+        println!("gate:   {line}");
+    }
+    Ok(Done::Passed)
+}
+
+/// Native ARM64 Linux tests in a container when a container runtime is
+/// running; otherwise recorded as not run (spec 17.4).
+fn arm64_container(dir: &Path) -> Result<Done, String> {
+    let docker_up = Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !docker_up {
+        println!("gate: no container runtime running; ARM64 Linux suite recorded as not run");
+        return Ok(Done::NotRun);
+    }
+    let script = "set -e; export DEBIAN_FRONTEND=noninteractive; \
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+          build-essential pkg-config curl ca-certificates xz-utils git libclang-dev \
+          libevent-dev libncurses-dev bison python3 >/dev/null; \
+        command -v rustup >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none; \
+        . \"$HOME/.cargo/env\"; \
+        cargo xtask deps prepare --locked; \
+        export DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1); \
+        cargo test --locked $(cargo xtask headless --cargo-args)";
+    let status = Command::new("docker")
+        .args(["run", "--rm", "--platform", "linux/arm64"])
+        .arg("-v")
+        .arg(format!("{}:/src", dir.display()))
+        .args([
+            "-v",
+            "dreamer-arm64-cargo:/root/.cargo",
+            "-v",
+            "dreamer-arm64-rustup:/root/.rustup",
+            "-v",
+            "dreamer-arm64-cache:/root/.cache",
+            "-e",
+            "CARGO_TARGET_DIR=/root/.cache/dreamer-target",
+            "-w",
+            "/src",
+            "ubuntu:24.04",
+            "bash",
+            "-c",
+            script,
+        ])
+        .status()
+        .map_err(|e| format!("docker run: {e}"))?;
+    if status.success() {
+        Ok(Done::Passed)
+    } else {
+        Err("ARM64 Linux container suite failed".into())
+    }
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -208,8 +374,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut results = Vec::new();
     let mut failed = None;
     for stage in stages(platform) {
-        let command = format!("{} {}", stage.program, stage.args.join(" "));
-        let skip = failed.is_some() || (scope == Scope::Docs && !stage.always);
+        let command = match stage.action {
+            Action::Cmd(program, args) => format!("{program} {}", args.join(" ")),
+            Action::Builtin(_) => format!("cargo xtask gate stage `{}`", stage.name),
+        };
+        let wanted = match stage.when {
+            When::Always => true,
+            When::Code => scope == Scope::Code,
+            When::Full => mode == Mode::Full,
+        };
+        let skip = failed.is_some() || !wanted;
         if skip {
             results.push(StageResult {
                 name: stage.name,
@@ -220,18 +394,32 @@ pub fn run(args: &[String]) -> Result<(), String> {
             continue;
         }
         let started = Instant::now();
-        let status = clean_git_env(Command::new(stage.program))
-            .args(stage.args)
-            .current_dir(&worktree)
-            .status()
-            .map_err(|e| format!("could not start `{command}`: {e}"))?;
-        let millis = started.elapsed().as_millis();
-        let outcome = if status.success() {
-            Outcome::Passed
-        } else {
-            failed = Some(stage.name);
-            Outcome::Failed
+        let outcome = match stage.action {
+            Action::Cmd(program, args) => {
+                let status = clean_git_env(Command::new(program))
+                    .args(args)
+                    .current_dir(&worktree)
+                    .status()
+                    .map_err(|e| format!("could not start `{command}`: {e}"))?;
+                if status.success() {
+                    Outcome::Passed
+                } else {
+                    Outcome::Failed
+                }
+            }
+            Action::Builtin(f) => match f(&worktree) {
+                Ok(Done::Passed) => Outcome::Passed,
+                Ok(Done::NotRun) => Outcome::NotRun,
+                Err(e) => {
+                    eprintln!("gate: {}: {e}", stage.name);
+                    Outcome::Failed
+                }
+            },
         };
+        let millis = started.elapsed().as_millis();
+        if outcome == Outcome::Failed {
+            failed = Some(stage.name);
+        }
         println!(
             "gate: {:<8} {:<7} {:>6} ms",
             stage.name,
