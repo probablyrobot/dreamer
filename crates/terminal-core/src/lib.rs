@@ -183,6 +183,32 @@ pub struct FrameSnapshot {
     pub damaged_rows: Vec<u16>,
     /// The application asked to hold presentation (synchronized output).
     pub render_hold: bool,
+    /// Where the viewport is and what the application asked of the mouse:
+    /// what a view needs to scroll and select locally.
+    pub view: ViewState,
+}
+
+/// Viewport position and input-relevant modes of a frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ViewState {
+    /// Rows in history plus the active area.
+    pub total_rows: u64,
+    /// First row of the viewport, counted from the top of history.
+    pub offset: u64,
+    /// Rows in the viewport.
+    pub len: u64,
+    /// The application enabled a mouse tracking mode.
+    pub mouse_tracking: bool,
+    /// The alternate screen is active (it has no history).
+    pub alt_screen: bool,
+}
+
+impl ViewState {
+    /// Rows between the viewport's bottom and the active area's bottom;
+    /// zero when following new output.
+    pub fn rows_back(&self) -> u64 {
+        self.total_rows.saturating_sub(self.offset + self.len)
+    }
 }
 
 impl FrameSnapshot {

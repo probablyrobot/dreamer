@@ -25,6 +25,15 @@ pub mod snapshot_fixtures;
 pub use features::{Features, features};
 pub use terminal_core as core;
 
+/// Where to move the viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scroll {
+    Top,
+    Bottom,
+    /// Rows; negative scrolls up into history.
+    Delta(isize),
+}
+
 use std::marker::PhantomData;
 use std::ptr;
 use std::sync::Arc;
@@ -425,6 +434,70 @@ impl Engine {
             check("ghostty_formatter_format_alloc", rc)?;
             Ok(text)
         }
+    }
+
+    /// Move the viewport through history. Local view state only: it never
+    /// changes what the terminal holds, and new output keeps a scrolled
+    /// viewport where it is.
+    pub fn scroll_viewport(&mut self, to: Scroll) -> Result<(), EngineError> {
+        use GhosttyTerminalScrollViewportTag::*;
+        let mut value = GhosttyTerminalScrollViewportValue::default();
+        let tag = match to {
+            Scroll::Top => GHOSTTY_TERMINAL_SCROLL_VIEWPORT_TOP,
+            Scroll::Bottom => GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM,
+            Scroll::Delta(d) => {
+                value.delta = d;
+                GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA
+            }
+        };
+        // SAFETY: `term` is live; the behavior is passed by value.
+        check("ghostty_terminal_scroll_viewport", unsafe {
+            ghostty_terminal_scroll_viewport(
+                self.term,
+                GhosttyTerminalScrollViewport { tag, value },
+            )
+        })
+    }
+
+    /// The viewport's position and the modes a view needs locally.
+    pub fn view_state(&self) -> Result<terminal_core::ViewState, EngineError> {
+        let mut bar = GhosttyTerminalScrollbar::default();
+        let mut tracking = false;
+        let mut screen: GhosttyTerminalScreen::Type = 0;
+        // SAFETY: `term` is live; each key writes the documented type.
+        unsafe {
+            check(
+                "ghostty_terminal_get(scrollbar)",
+                ghostty_terminal_get(
+                    self.term,
+                    GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_SCROLLBAR,
+                    (&raw mut bar).cast(),
+                ),
+            )?;
+            check(
+                "ghostty_terminal_get(mouse_tracking)",
+                ghostty_terminal_get(
+                    self.term,
+                    GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,
+                    (&raw mut tracking).cast(),
+                ),
+            )?;
+            check(
+                "ghostty_terminal_get(active_screen)",
+                ghostty_terminal_get(
+                    self.term,
+                    GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+                    (&raw mut screen).cast(),
+                ),
+            )?;
+        }
+        Ok(terminal_core::ViewState {
+            total_rows: bar.total,
+            offset: bar.offset,
+            len: bar.len,
+            mouse_tracking: tracking,
+            alt_screen: screen != GhosttyTerminalScreen::GHOSTTY_TERMINAL_SCREEN_PRIMARY,
+        })
     }
 
     /// Lines of scrollback above the active screen.
