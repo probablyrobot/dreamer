@@ -1,0 +1,11 @@
+# First-paint statistics each fixture must produce (crates/terminal-render
+# fixtures, spec 18.3). Derived from the fixture content, not recorded from
+# a run: runs of narrow cells with one style, wide cells painted alone,
+# whitespace-only plain runs skipped, cell backgrounds merged per row.
+# Fields: text_runs wide_cells decorated_runs background_quads cursor
+text-matrix.vt       6 6 0 0 block
+decorations.vt       8 0 6 1 block
+cursor-block.vt      1 0 0 0 block
+cursor-bar.vt        1 0 0 0 bar
+cursor-underline.vt  1 0 0 0 underline
+cursor-hidden.vt     1 0 0 0 none

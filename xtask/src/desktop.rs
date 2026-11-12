@@ -74,6 +74,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .collect();
     names.sort();
     inputs.extend(names.into_iter().map(Some));
+    // The renderer text matrix, with the statistics each must paint.
+    let matrix = crate::render::expectations(&root)?;
+    inputs.extend(
+        matrix
+            .iter()
+            .map(|(p, _)| Some(p.to_string_lossy().into_owned())),
+    );
 
     let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
     let backends: [(&'static str, bool); 2] =
@@ -115,9 +122,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
             } else {
                 "X11"
             };
-            let passed = out.status.success()
+            let mut passed = out.status.success()
                 && stdout.contains(&format!("smoke: backend {expected}"))
                 && stdout.contains("smoke: frame presented");
+            let mut mismatch = None;
+            if let Some((_, e)) = input
+                .as_deref()
+                .and_then(|p| matrix.iter().find(|(m, _)| m.to_string_lossy() == p))
+                && let Err(why) = crate::render::check(&stdout, e)
+            {
+                passed = false;
+                mismatch = Some(why);
+            }
             let label = input
                 .as_deref()
                 .and_then(|p| p.rsplit('/').next())
@@ -128,7 +144,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 if passed { "passed" } else { "FAILED" }
             );
             if !passed {
-                problems.push(format!("{backend} {label}: {}", out.status));
+                problems.push(match &mismatch {
+                    Some(why) => format!("{backend} {why}"),
+                    None => format!("{backend} {label}: {}", out.status),
+                });
             }
             runs.push(Run {
                 backend,
