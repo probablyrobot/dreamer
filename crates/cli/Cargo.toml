@@ -11,5 +11,10 @@ publish = false
 name = "dream"
 path = "src/main.rs"
 
+[dependencies]
+tmux-backend = { path = "../tmux-backend" }
+tokio = { version = "1.54.1", features = ["macros", "rt"] }
+workspace-config = { path = "../workspace-config" }
+
 [lints]
 workspace = true

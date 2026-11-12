@@ -18,3 +18,5 @@ from `Cargo.lock` at packaging time.
 | wuffs (in libghostty-vt) | 0.4.0-alpha.10 | Apache-2.0 OR MIT | same |
 | GPUI (zed-industries/zed @ 6ceb6fe) | 0.2.2 | Apache-2.0 | `dreamer` desktop client |
 | image | 0.25.10 | MIT OR Apache-2.0 | `dreamer` desktop client |
+| serde | 1.0.229 | MIT OR Apache-2.0 | `dream`, workspace files |
+| serde_norway | 0.9.42 | MIT OR Apache-2.0 | `dream`, workspace files |

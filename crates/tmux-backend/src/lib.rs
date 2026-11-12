@@ -12,6 +12,7 @@ pub mod control;
 pub mod inventory;
 pub mod layout;
 pub mod server;
+pub mod workspace;
 
 pub use bootstrap::{BootstrapError, Bootstrapped, PaneState, bootstrap_pane};
 pub use command::{Batch, TmuxCommand};

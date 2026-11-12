@@ -24,6 +24,7 @@ pub const PACKAGES: &[&str] = &[
     "terminal-ghostty",
     "tmux-backend",
     "tmux-protocol",
+    "workspace-config",
 ];
 
 /// Headless packages whose integration tests drive a real tmux. Where no

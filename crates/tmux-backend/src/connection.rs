@@ -55,6 +55,10 @@ pub struct ConnectionConfig {
     pub event_capacity: usize,
     /// Replace the child's environment with exactly these variables.
     pub env: Option<Vec<(String, String)>>,
+    /// Instead of attaching to `session`, start the control client with
+    /// `new-session` and these arguments (which create and attach a new
+    /// session, starting the server if needed).
+    pub new_session_args: Option<Vec<String>>,
 }
 
 impl ConnectionConfig {
@@ -69,6 +73,7 @@ impl ConnectionConfig {
             queue_capacity: 256,
             event_capacity: 4096,
             env: None,
+            new_session_args: None,
         }
     }
 }
@@ -173,9 +178,16 @@ impl Connection {
         if let Some(f) = &config.config_file {
             cmd.arg("-f").arg(f);
         }
-        cmd.args(["-C", "attach-session", "-t"])
-            .arg(&config.session)
-            .stdin(Stdio::piped())
+        match &config.new_session_args {
+            Some(args) => {
+                cmd.args(["-C", "new-session"]).args(args);
+            }
+            None => {
+                cmd.args(["-C", "attach-session", "-t"])
+                    .arg(&config.session);
+            }
+        }
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
