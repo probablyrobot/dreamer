@@ -8,14 +8,18 @@
 Both packages contain the three executables: `dreamer` (desktop app),
 `dreamerd` (daemon), and `dream` (CLI). Launched with no arguments,
 `dreamer` follows the active pane of your default tmux server, starting
-`dreamerd` if it isn't running. tmux itself is not bundled. Dreamer is
+`dreamerd` if it isn't running. The default terminal font, JetBrains Mono
+Nerd Font (Mono variant), comes with the package (see
+[settings.md](settings.md)). tmux itself is not bundled. Dreamer is
 tested against the tmux baseline in
 [dependency-baseline.md](dependency-baseline.md).
 
 ## macOS
 
 `Dreamer.app/Contents/MacOS` holds `dreamer`, `dreamerd`, and `dream`. The
-app starts the daemon from there. Every executable is arm64 with a minimum
+app starts the daemon from there. `Contents/Resources/Fonts` holds the
+default font (four styles and its license), which the app loads itself, so
+nothing has to be installed system-wide. Every executable is arm64 with a minimum
 of macOS 15.0. Each helper is signed, then the bundle is ad hoc signed over
 them. `cargo xtask package` verifies all of this, and runs
 `dreamerd --self-check` and `dream --version` from inside the bundle.
@@ -73,7 +77,8 @@ Installed files:
 | `/usr/share/licenses/dreamer/` | License and notices |
 | `/usr/share/doc/dreamer/` | These documents |
 
-Runtime dependencies: `tmux`, `fontconfig`, `freetype2`, `libxkbcommon`,
+Runtime dependencies: `tmux`, `ttf-jetbrains-mono-nerd` (the default
+font, from Arch's official repositories), `fontconfig`, `freetype2`, `libxkbcommon`,
 `libxkbcommon-x11`, `libx11`, `libxcb`, `wayland`, and
 `vulkan-icd-loader` (plus a Vulkan driver for your GPU).
 

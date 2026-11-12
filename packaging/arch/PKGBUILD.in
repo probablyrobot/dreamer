@@ -14,7 +14,7 @@ pkgdesc='Native terminal on tmux with live pane mirrors, typed automation, and s
 arch=('x86_64' 'aarch64')
 url='https://github.com/probablyrobot/dreamer'
 license=('Apache-2.0')
-depends=('tmux' 'fontconfig' 'freetype2' 'libxkbcommon' 'libxkbcommon-x11'
+depends=('tmux' 'ttf-jetbrains-mono-nerd' 'fontconfig' 'freetype2' 'libxkbcommon' 'libxkbcommon-x11'
          'libx11' 'libxcb' 'wayland' 'vulkan-icd-loader' 'gcc-libs' 'glibc')
 makedepends=('rustup' 'git' 'curl' 'xz' 'pkgconf')
 options=('!lto' '!debug')
