@@ -25,8 +25,7 @@ pub enum Tier {
     Warm,
 }
 
-/// Canonical cell size in pixels until clients negotiate one (spec 11.8).
-pub const CELL_PX: (u32, u32) = (10, 20);
+pub use terminal_ghostty::core::family::CANONICAL_CELL_PX as CELL_PX;
 
 /// Why a subscriber's record stream ended, set before its channel closes.
 pub mod end {

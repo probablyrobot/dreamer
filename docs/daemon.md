@@ -69,6 +69,12 @@ never loosens or takes over such a directory.
   then removes its socket and releases the lock. Actions left unfinished by
   a crash are settled at the next start (see [actions.md](actions.md)).
 
+## Settings
+
+| Variable | Effect |
+| --- | --- |
+| `DREAMER_JOURNAL_PANE_BYTES`, `DREAMER_JOURNAL_HOST_BYTES` | Journal retention per pane and per host (defaults 8 MiB and 256 MiB); see [mirrors.md](mirrors.md) |
+
 ## Environment for tests
 
 | Variable | Effect |

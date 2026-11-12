@@ -124,14 +124,10 @@ impl State {
             // The mirrors take the event stream first: responses to the
             // commands below only arrive while events keep flowing.
             let epoch = domain::ConnectionEpoch(self.epochs.fetch_add(1, Ordering::SeqCst) + 1);
-            let (host, changes) = mirror::MirrorHost::start(
-                conn.clone(),
-                events,
-                epoch,
-                mirror::MirrorConfig::default(),
-            )
-            .await
-            .map_err(|e| unavailable(format!("cannot start mirror workers: {e}")))?;
+            let (host, changes) =
+                mirror::MirrorHost::start(conn.clone(), events, epoch, mirror_config())
+                    .await
+                    .map_err(|e| unavailable(format!("cannot start mirror workers: {e}")))?;
             let (tracker, _) = InventoryTracker::start(
                 conn.clone(),
                 ServerKey(cfg.name.clone()),
@@ -156,6 +152,24 @@ impl State {
         }
         Ok(guard)
     }
+}
+
+/// Mirror settings: the defaults, with journal limits from
+/// `DREAMER_JOURNAL_PANE_BYTES` and `DREAMER_JOURNAL_HOST_BYTES` if set.
+fn mirror_config() -> mirror::MirrorConfig {
+    let mut c = mirror::MirrorConfig::default();
+    let env = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+    };
+    if let Some(b) = env("DREAMER_JOURNAL_PANE_BYTES") {
+        c.retention.per_pane_bytes = b;
+    }
+    if let Some(b) = env("DREAMER_JOURNAL_HOST_BYTES") {
+        c.retention.host_bytes = b;
+    }
+    c
 }
 
 /// Every pane execution the inventory knows, for the mirrors.
@@ -398,7 +412,7 @@ impl api::Service for DaemonService {
         let r = host.retention();
         Ok(api::MirrorList {
             mirrors,
-            workers: mirror::MirrorConfig::default().workers as u32,
+            workers: mirror_config().workers as u32,
             host_journal_bytes: host.host_journal_bytes() as u64,
             journal_pane_limit: r.per_pane_bytes as u64,
             journal_host_limit: r.host_bytes as u64,

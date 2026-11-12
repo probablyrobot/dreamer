@@ -434,8 +434,7 @@ pub fn restore_engine(
     Ok(engine)
 }
 
-/// Unfinished input a canonical engine keeps for snapshots.
-pub const CONTINUATION_MAX_BYTES: usize = 64 << 10;
+pub use terminal_ghostty::core::family::CONTINUATION_MAX_BYTES;
 
 /// Synthesize the VT byte stream that recreates the captured state in a
 /// fresh engine of the pane's size.

@@ -1,0 +1,18 @@
+[package]
+name = "replica"
+description = "Client replicas of daemon pane mirrors: ordered apply, gaps, resume, resnapshot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+api = { path = "../api" }
+client = { path = "../client" }
+prost = "0.14.5"
+terminal-ghostty = { path = "../terminal-ghostty" }
+tokio = { version = "1.54.1", features = ["time", "sync"] }
+
+[lints]
+workspace = true

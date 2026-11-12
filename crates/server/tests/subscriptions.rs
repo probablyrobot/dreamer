@@ -101,10 +101,11 @@ impl Drop for Daemon {
     }
 }
 
+/// A counter, not the clock: parallel tests start in the same microsecond
+/// and must never share a daemon.
 fn rand_suffix() -> u32 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos())
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The minimum a client needs to follow a pane: an engine restored from the
