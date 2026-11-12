@@ -79,6 +79,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends libevent-dev libncurses-dev bison
           echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
       - run: cargo build --workspace --all-targets --locked
+      - name: Generate snapshot fixtures
+        run: cargo run --locked -p terminal-ghostty --bin snapshot-fixtures -- target/snapshot-fixtures
+      - name: Upload this architecture's snapshot fixtures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshots-x86_64-unknown-linux-gnu
+          path: target/snapshot-fixtures/
+          if-no-files-found: ignore
       - run: cargo test --workspace --locked
 
   linux-aarch64:
@@ -110,6 +119,15 @@ jobs:
           path: ~/.cache/dreamer/deps
           key: deps-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/baseline.toml') }}
       - run: cargo xtask deps prepare --locked --target "$TARGET"
+      - name: Generate snapshot fixtures under emulation
+        run: cargo run --locked --target "$TARGET" -p terminal-ghostty --bin snapshot-fixtures -- target/snapshot-fixtures
+      - name: Upload this architecture's snapshot fixtures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshots-aarch64-unknown-linux-gnu
+          path: target/snapshot-fixtures/
+          if-no-files-found: ignore
       # Emulated runs are correctness evidence only, never performance evidence.
       - name: Test headless crates under emulation
         run: |
