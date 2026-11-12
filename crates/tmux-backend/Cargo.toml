@@ -1,0 +1,15 @@
+[package]
+name = "tmux-backend"
+description = "tmux control-mode connection, inventory, and pane bootstrap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+terminal-ghostty = { path = "../terminal-ghostty" }
+tmux-protocol = { path = "../tmux-protocol" }
+
+[lints]
+workspace = true

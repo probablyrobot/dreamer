@@ -15,7 +15,7 @@ use crate::manifest::Manifest;
 pub fn run(args: &[String]) -> Result<(), String> {
     let (cmd, rest) = args
         .split_first()
-        .ok_or("usage: cargo xtask deps <prepare|path> [--target <triple>]...")?;
+        .ok_or("usage: cargo xtask deps <prepare|path|tmux> [--target <triple>]...")?;
     let mut targets = Vec::new();
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
@@ -40,13 +40,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "tmux" => {
+            let tmux = ensure_tmux(&manifest)?;
+            println!("{}", tmux.display());
+            Ok(())
+        }
         "path" => {
             for target in &targets {
                 println!("{}", ghostty_prefix(&manifest, target)?.display());
             }
             Ok(())
         }
-        other => Err(format!("unknown deps command `{other}` (prepare, path)")),
+        other => Err(format!(
+            "unknown deps command `{other}` (prepare, path, tmux)"
+        )),
     }
 }
 
@@ -82,6 +89,46 @@ pub fn ghostty_prefix(manifest: &Manifest, target: &str) -> Result<PathBuf, Stri
         .join(manifest.get("ghostty", "version")?)
         .join("install")
         .join(target))
+}
+
+/// Build the pinned tmux into the cache and return the executable path.
+/// Needs a C compiler, make, pkg-config, bison, and libevent/ncurses headers.
+fn ensure_tmux(manifest: &Manifest) -> Result<PathBuf, String> {
+    let version = manifest.get("tmux", "version")?;
+    let root = deps_dir()?.join("tmux").join(version);
+    let prefix = root.join("install");
+    let bin = prefix.join("bin").join("tmux");
+    if prefix.join(".complete").is_file() && bin.is_file() {
+        return Ok(bin);
+    }
+    let url = manifest.get("tmux", "url")?;
+    let sha = manifest.get("tmux", "sha256")?;
+    let name = format!("tmux-{version}.tar.gz");
+    let archive = download(url, &name, sha)?;
+    let src = root.join("src");
+    extract(&archive, &src, true)?;
+    println!("deps: building tmux {version}");
+    let run = |program: &str, args: &[&str]| -> Result<(), String> {
+        let status = Command::new(program)
+            .args(args)
+            .current_dir(&src)
+            .status()
+            .map_err(|e| format!("could not run {program}: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("`{program} {}` failed", args.join(" ")))
+        }
+    };
+    let prefix_arg = format!("--prefix={}", prefix.display());
+    run("./configure", &[&prefix_arg])?;
+    let jobs = std::thread::available_parallelism()
+        .map_or(2, usize::from)
+        .to_string();
+    run("make", &["-j", &jobs])?;
+    run("make", &["install"])?;
+    std::fs::write(prefix.join(".complete"), sha).map_err(|e| e.to_string())?;
+    Ok(bin)
 }
 
 fn zig_host_key() -> Result<&'static str, String> {
