@@ -20,6 +20,7 @@ pub const PACKAGES: &[&str] = &[
     "dreamer-cli",
     "dreamer-termapp",
     "domain",
+    "mirror",
     "platform",
     "ghostty-sys",
     "script-runtime",
@@ -38,6 +39,7 @@ pub const PACKAGES: &[&str] = &[
 pub const NEEDS_TMUX: &[&str] = &[
     "dreamer-cli",
     "dreamer-server",
+    "mirror",
     "tmux-backend",
     "workspace-host",
 ];

@@ -228,6 +228,8 @@ fn run(args: Args) -> Result<ExitCode, String> {
             clients: 0.into(),
             shutting_down: false.into(),
             shutdown: tokio::sync::Notify::new(),
+            mirrors: tokio::sync::RwLock::new(None),
+            epochs: 0.into(),
         });
         log::info(format!(
             "started {} (instance {}, socket {}, background {})",

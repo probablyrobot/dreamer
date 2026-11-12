@@ -126,6 +126,12 @@ impl Service for Fixed {
     async fn actions_list(&self, _: api::ActionListParams) -> Result<api::ActionList, RpcError> {
         Ok(api::ActionList::default())
     }
+    async fn terminal_read(&self, _: api::ReadParams) -> Result<api::TerminalText, RpcError> {
+        Err(RpcError::new(api::code::NOT_FOUND, "test"))
+    }
+    async fn terminal_mirrors(&self, _: api::TopologyParams) -> Result<api::MirrorList, RpcError> {
+        Ok(api::MirrorList::default())
+    }
 }
 
 #[test]

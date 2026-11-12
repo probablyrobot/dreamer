@@ -383,7 +383,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
     for stage in stages(platform) {
         let command = match stage.action {
             Action::Cmd(program, args) => format!("{program} {}", args.join(" ")),
-            Action::Builtin(_) => format!("cargo xtask gate stage `{}`", stage.name),
+            // Built-in stages run only inside the gate itself.
+            Action::Builtin(_) => format!(
+                "cargo xtask gate --full   # built-in stage `{}`",
+                stage.name
+            ),
         };
         let wanted = match stage.when {
             When::Always => true,

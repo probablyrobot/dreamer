@@ -25,6 +25,7 @@ use terminal_ghostty::core::GridSize;
 use terminal_ghostty::{Engine, EngineConfig, EngineError};
 use tmux_protocol::{Event, Notification, PaneId, Response, unescape};
 
+use crate::command::{Batch, TmuxCommand};
 use crate::control::{ControlClient, ControlError};
 use crate::quote;
 
@@ -293,6 +294,97 @@ pub fn bootstrap_pane(
         ));
     }
 
+    let (state, captures) = parse_captures(&responses)?;
+    let engine = restore_engine(&state, &captures, &continuation)?;
+    Ok(Bootstrapped {
+        engine,
+        state,
+        captures,
+        dropped_before_pause,
+        continuation: continuation.len(),
+        passthrough,
+    })
+}
+
+/// Phase 1 as typed commands, for an async connection: validate the pane,
+/// then pause its output for this client.
+pub fn phase1_batch(pane: PaneId) -> Batch {
+    let t = pane.to_string();
+    Batch::new()
+        .push(
+            TmuxCommand::new("display-message")
+                .flag("-p")
+                .opt("-t", &t)
+                .format("#{pane_id}"),
+        )
+        .push(TmuxCommand::new("refresh-client").opt("-A", format!("{t}:pause")))
+}
+
+/// Whether phase 1's first response names the pane (tmux prints an empty
+/// line, not an error, for an unknown pane).
+pub fn phase1_found(pane: PaneId, responses: &[Response]) -> bool {
+    responses
+        .first()
+        .and_then(|r| r.body.first())
+        .is_some_and(|l| l.as_slice() == pane.to_string().as_bytes())
+}
+
+/// Phase 2 as one batch (one line, run by tmux without yielding): state,
+/// history, screen, saved screen, pending bytes, and continue.
+pub fn phase2_batch(pane: PaneId) -> Batch {
+    let t = pane.to_string();
+    let capture = || TmuxCommand::new("capture-pane").flag("-p");
+    Batch::new()
+        .push(
+            TmuxCommand::new("display-message")
+                .flag("-p")
+                .opt("-t", &t)
+                .format(STATE_FORMAT),
+        )
+        .push(
+            capture()
+                .flag("-e")
+                .flag("-J")
+                .flag("-N")
+                .opt("-S", "-")
+                .opt("-E", "-1")
+                .opt("-t", &t),
+        )
+        .push(
+            capture()
+                .flag("-e")
+                .flag("-J")
+                .flag("-N")
+                .opt("-S", "0")
+                .opt("-E", "-")
+                .opt("-t", &t),
+        )
+        .push(
+            capture()
+                .flag("-e")
+                .flag("-J")
+                .flag("-N")
+                .flag("-a")
+                .flag("-q")
+                .opt("-t", &t),
+        )
+        .push(capture().flag("-P").flag("-C").opt("-t", &t))
+        .push(resume_command(pane))
+}
+
+/// Resume a paused pane for this client.
+pub fn resume_command(pane: PaneId) -> TmuxCommand {
+    TmuxCommand::new("refresh-client").opt("-A", format!("{pane}:continue"))
+}
+
+/// Turn phase 2's six responses into the pane state and its captures.
+pub fn parse_captures(responses: &[Response]) -> Result<(PaneState, Captures), BootstrapError> {
+    if responses.len() < 5 {
+        return Err(BootstrapError::State(format!(
+            "{} capture responses, expected 6",
+            responses.len()
+        )));
+    }
     let state_line = responses[0]
         .body
         .first()
@@ -318,24 +410,25 @@ pub fn bootstrap_pane(
         },
         pending,
     };
+    Ok((state, captures))
+}
 
-    // The mirror keeps as much history as tmux does. Memory budgets for
-    // mirrors are a later policy (spec 16.4); M0 measures fidelity.
+/// A fresh engine holding the captured state, followed by the continuation
+/// bytes received after the pause. Restoration runs under suppression: no
+/// replies are captured and its effects are discarded.
+pub fn restore_engine(
+    state: &PaneState,
+    captures: &Captures,
+    continuation: &[u8],
+) -> Result<Engine, EngineError> {
+    // The mirror keeps as much history as tmux does.
     let mut config = EngineConfig::new(state.size());
     config.scrollback_lines = Some(state.history_limit as usize);
     config.scrollback_bytes = Some(usize::MAX);
     let mut engine = Engine::new(config)?;
-    // Restore under suppression: no reply capture, effects discarded.
-    let _ = engine.feed(&restore_bytes(&state, &captures))?;
-    let _ = engine.feed(&continuation)?;
-    Ok(Bootstrapped {
-        engine,
-        state,
-        captures,
-        dropped_before_pause,
-        continuation: continuation.len(),
-        passthrough,
-    })
+    let _ = engine.feed(&restore_bytes(state, captures))?;
+    let _ = engine.feed(continuation)?;
+    Ok(engine)
 }
 
 /// Synthesize the VT byte stream that recreates the captured state in a

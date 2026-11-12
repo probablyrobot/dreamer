@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 0 }
+version: { major: 1, minor: 1 }
 package: dreamer.v1
 
 types:
@@ -248,6 +248,53 @@ types:
     fields:
       - { n: 1, name: actions, type: ActionRecord, repeated: true }
 
+  # ---- terminal mirrors ---------------------------------------------------
+
+  - message: ReadParams
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: history, type: u32, optional: true, doc: "Scrollback lines to include before the screen; default 0, at most 10000." }
+      - { n: 3, name: endpoint, type: string, optional: true }
+
+  - message: TerminalText
+    doc: A pane's text as the daemon's canonical mirror holds it.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: generation, type: u64 }
+      - { n: 3, name: epoch, type: u64, doc: The control connection epoch the mirror belongs to. }
+      - { n: 4, name: sequence, type: u64, doc: Records applied since the mirror attached. }
+      - { n: 5, name: cols, type: u32 }
+      - { n: 6, name: rows, type: u32 }
+      - { n: 7, name: cursor_x, type: u32 }
+      - { n: 8, name: cursor_y, type: u32 }
+      - { n: 9, name: lines, type: string, repeated: true, doc: "Oldest first: history lines, then the screen." }
+      - { n: 10, name: history_lines, type: u32 }
+
+  - enum: MirrorState
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: attaching, doc: Paused and being captured. }
+      - { n: 2, name: live }
+      - { n: 3, name: failed }
+
+  - message: MirrorStatus
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: generation, type: u64 }
+      - { n: 3, name: epoch, type: u64 }
+      - { n: 4, name: state, type: MirrorState }
+      - { n: 5, name: sequence, type: u64 }
+      - { n: 6, name: ingested_bytes, type: u64 }
+      - { n: 7, name: worker, type: u32 }
+      - { n: 8, name: cols, type: u32 }
+      - { n: 9, name: rows, type: u32 }
+      - { n: 10, name: detail, type: string, optional: true }
+
+  - message: MirrorList
+    fields:
+      - { n: 1, name: mirrors, type: MirrorStatus, repeated: true }
+      - { n: 2, name: workers, type: u32 }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -256,3 +303,5 @@ methods:
   - { method: actions.submit, params: SubmitAction, result: ActionRecord, mutation: true, doc: "Run a typed action and report its observed outcome." }
   - { method: actions.get, params: ActionQuery, result: ActionRecord }
   - { method: actions.list, params: ActionListParams, result: ActionList }
+  - { method: terminal.read, params: ReadParams, result: TerminalText, doc: "Bounded text, cursor, and size from a pane's canonical mirror." }
+  - { method: terminal.mirrors, params: TopologyParams, result: MirrorList, doc: Every mirrored pane and its state. }

@@ -117,6 +117,98 @@ pub fn ls(d: &DaemonArgs, json: bool) -> Result<(), String> {
     })
 }
 
+// ---- read and mirrors -------------------------------------------------------
+
+/// `dream read %PANE [--history N] [--json]`: the pane's text from the
+/// daemon's canonical mirror.
+pub fn read(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    let json = args.iter().any(|a| a == "--json");
+    let history = args
+        .iter()
+        .position(|a| a == "--history")
+        .map(|i| {
+            args.get(i + 1)
+                .and_then(|n| n.parse().ok())
+                .ok_or("--history needs a number")
+        })
+        .transpose()?;
+    let target = args
+        .iter()
+        .enumerate()
+        .find(|(i, a)| !a.starts_with("--") && (*i == 0 || args[i - 1] != "--history"))
+        .map(|(_, a)| a.clone())
+        .ok_or("usage: dream read %PANE [--history N] [--json]")?;
+    let pane = id(&target, '%', "pane")?;
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        let Response::TerminalRead(t) = call(
+            &mut c,
+            Request::TerminalRead(api::ReadParams {
+                pane,
+                history,
+                endpoint: None,
+            }),
+        )
+        .await?
+        else {
+            return Err("unexpected reply".into());
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&t).map_err(|e| e.to_string())?
+            );
+        } else {
+            for l in &t.lines {
+                println!("{}", l.trim_end());
+            }
+        }
+        Ok(())
+    })
+}
+
+pub fn mirrors(d: &DaemonArgs, json: bool) -> Result<(), String> {
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        let Response::TerminalMirrors(m) = call(
+            &mut c,
+            Request::TerminalMirrors(api::TopologyParams::default()),
+        )
+        .await?
+        else {
+            return Err("unexpected reply".into());
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&m).map_err(|e| e.to_string())?
+            );
+            return Ok(());
+        }
+        println!("{} VT workers", m.workers);
+        for s in &m.mirrors {
+            let state =
+                api::MirrorState::try_from(s.state).map_or("unknown", api::MirrorState::name);
+            println!(
+                "%{} gen {} epoch {} {state} {}x{} seq {} bytes {} worker {}{}",
+                s.pane,
+                s.generation,
+                s.epoch,
+                s.cols,
+                s.rows,
+                s.sequence,
+                s.ingested_bytes,
+                s.worker,
+                s.detail
+                    .as_deref()
+                    .map(|d| format!(": {d}"))
+                    .unwrap_or_default()
+            );
+        }
+        Ok(())
+    })
+}
+
 // ---- act --------------------------------------------------------------------
 
 pub const ACT_USAGE: &str = "usage: dream act <action> [--key IDEMPOTENCY] [--json] ...

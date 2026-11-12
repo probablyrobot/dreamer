@@ -1266,6 +1266,7 @@ dependencies = [
  "api",
  "client",
  "domain",
+ "mirror",
  "platform",
  "prost",
  "terminal-core",
@@ -3016,6 +3017,17 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "mirror"
+version = "0.0.0"
+dependencies = [
+ "domain",
+ "terminal-ghostty",
+ "tmux-backend",
+ "tmux-protocol",
+ "tokio",
 ]
 
 [[package]]

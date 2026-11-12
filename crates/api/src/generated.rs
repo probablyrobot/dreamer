@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 0;
+pub const PROTOCOL_MINOR: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -159,6 +159,53 @@ mod action_state_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| ActionState::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MirrorState {
+    Unspecified = 0,
+    /// Paused and being captured.
+    Attaching = 1,
+    Live = 2,
+    Failed = 3,
+}
+
+impl MirrorState {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Attaching => "attaching",
+            Self::Live => "live",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "attaching" => Some(Self::Attaching),
+            "live" => Some(Self::Live),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+mod mirror_state_json {
+    use super::MirrorState;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match MirrorState::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| MirrorState::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -581,6 +628,85 @@ pub struct ActionList {
     pub actions: Vec<ActionRecord>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReadParams {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// Scrollback lines to include before the screen; default 0, at most 10000.
+    #[prost(uint32, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<u32>,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
+/// A pane's text as the daemon's canonical mirror holds it.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalText {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(uint64, tag = "2")]
+    pub generation: u64,
+    /// The control connection epoch the mirror belongs to.
+    #[prost(uint64, tag = "3")]
+    pub epoch: u64,
+    /// Records applied since the mirror attached.
+    #[prost(uint64, tag = "4")]
+    pub sequence: u64,
+    #[prost(uint32, tag = "5")]
+    pub cols: u32,
+    #[prost(uint32, tag = "6")]
+    pub rows: u32,
+    #[prost(uint32, tag = "7")]
+    pub cursor_x: u32,
+    #[prost(uint32, tag = "8")]
+    pub cursor_y: u32,
+    /// Oldest first: history lines, then the screen.
+    #[prost(string, repeated, tag = "9")]
+    pub lines: Vec<String>,
+    #[prost(uint32, tag = "10")]
+    pub history_lines: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MirrorStatus {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(uint64, tag = "2")]
+    pub generation: u64,
+    #[prost(uint64, tag = "3")]
+    pub epoch: u64,
+    #[prost(enumeration = "MirrorState", tag = "4")]
+    #[serde(with = "mirror_state_json")]
+    pub state: i32,
+    #[prost(uint64, tag = "5")]
+    pub sequence: u64,
+    #[prost(uint64, tag = "6")]
+    pub ingested_bytes: u64,
+    #[prost(uint32, tag = "7")]
+    pub worker: u32,
+    #[prost(uint32, tag = "8")]
+    pub cols: u32,
+    #[prost(uint32, tag = "9")]
+    pub rows: u32,
+    #[prost(string, optional, tag = "10")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MirrorList {
+    #[prost(message, repeated, tag = "1")]
+    pub mirrors: Vec<MirrorStatus>,
+    #[prost(uint32, tag = "2")]
+    pub workers: u32,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -590,6 +716,8 @@ pub mod method {
     pub const ACTIONS_SUBMIT: &str = "actions.submit";
     pub const ACTIONS_GET: &str = "actions.get";
     pub const ACTIONS_LIST: &str = "actions.list";
+    pub const TERMINAL_READ: &str = "terminal.read";
+    pub const TERMINAL_MIRRORS: &str = "terminal.mirrors";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -651,6 +779,20 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: false,
         doc: "",
     },
+    MethodInfo {
+        name: "terminal.read",
+        params: "ReadParams",
+        result: "TerminalText",
+        mutation: false,
+        doc: "Bounded text, cursor, and size from a pane's canonical mirror.",
+    },
+    MethodInfo {
+        name: "terminal.mirrors",
+        params: "TopologyParams",
+        result: "MirrorList",
+        mutation: false,
+        doc: "Every mirrored pane and its state.",
+    },
 ];
 
 /// A typed request for one method.
@@ -663,6 +805,8 @@ pub enum Request {
     ActionsSubmit(SubmitAction),
     ActionsGet(ActionQuery),
     ActionsList(ActionListParams),
+    TerminalRead(ReadParams),
+    TerminalMirrors(TopologyParams),
 }
 
 impl Request {
@@ -675,6 +819,8 @@ impl Request {
             Self::ActionsSubmit(_) => "actions.submit",
             Self::ActionsGet(_) => "actions.get",
             Self::ActionsList(_) => "actions.list",
+            Self::TerminalRead(_) => "terminal.read",
+            Self::TerminalMirrors(_) => "terminal.mirrors",
         }
     }
 
@@ -688,6 +834,8 @@ impl Request {
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsGet(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalRead(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalMirrors(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -700,6 +848,8 @@ impl Request {
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
             "actions.get" => Ok(Self::ActionsGet(::prost::Message::decode(bytes)?)),
             "actions.list" => Ok(Self::ActionsList(::prost::Message::decode(bytes)?)),
+            "terminal.read" => Ok(Self::TerminalRead(::prost::Message::decode(bytes)?)),
+            "terminal.mirrors" => Ok(Self::TerminalMirrors(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -713,6 +863,8 @@ impl Request {
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalRead(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalMirrors(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -725,6 +877,8 @@ impl Request {
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
             "actions.get" => Ok(Self::ActionsGet(serde_json::from_value(value)?)),
             "actions.list" => Ok(Self::ActionsList(serde_json::from_value(value)?)),
+            "terminal.read" => Ok(Self::TerminalRead(serde_json::from_value(value)?)),
+            "terminal.mirrors" => Ok(Self::TerminalMirrors(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -740,6 +894,8 @@ pub enum Response {
     ActionsSubmit(ActionRecord),
     ActionsGet(ActionRecord),
     ActionsList(ActionList),
+    TerminalRead(TerminalText),
+    TerminalMirrors(MirrorList),
 }
 
 impl Response {
@@ -752,6 +908,8 @@ impl Response {
             Self::ActionsSubmit(_) => "actions.submit",
             Self::ActionsGet(_) => "actions.get",
             Self::ActionsList(_) => "actions.list",
+            Self::TerminalRead(_) => "terminal.read",
+            Self::TerminalMirrors(_) => "terminal.mirrors",
         }
     }
 
@@ -765,6 +923,8 @@ impl Response {
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsGet(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalRead(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalMirrors(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -777,6 +937,8 @@ impl Response {
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
             "actions.get" => Ok(Self::ActionsGet(::prost::Message::decode(bytes)?)),
             "actions.list" => Ok(Self::ActionsList(::prost::Message::decode(bytes)?)),
+            "terminal.read" => Ok(Self::TerminalRead(::prost::Message::decode(bytes)?)),
+            "terminal.mirrors" => Ok(Self::TerminalMirrors(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -790,6 +952,8 @@ impl Response {
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalRead(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalMirrors(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -802,6 +966,8 @@ impl Response {
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
             "actions.get" => Ok(Self::ActionsGet(serde_json::from_value(value)?)),
             "actions.list" => Ok(Self::ActionsList(serde_json::from_value(value)?)),
+            "terminal.read" => Ok(Self::TerminalRead(serde_json::from_value(value)?)),
+            "terminal.mirrors" => Ok(Self::TerminalMirrors(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -843,6 +1009,16 @@ pub trait Service: Sync {
         &self,
         params: ActionListParams,
     ) -> impl ::core::future::Future<Output = Result<ActionList, RpcError>> + Send;
+    /// Bounded text, cursor, and size from a pane's canonical mirror.
+    fn terminal_read(
+        &self,
+        params: ReadParams,
+    ) -> impl ::core::future::Future<Output = Result<TerminalText, RpcError>> + Send;
+    /// Every mirrored pane and its state.
+    fn terminal_mirrors(
+        &self,
+        params: TopologyParams,
+    ) -> impl ::core::future::Future<Output = Result<MirrorList, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -858,5 +1034,10 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::ActionsSubmit(p) => service.actions_submit(p).await.map(Response::ActionsSubmit),
         Request::ActionsGet(p) => service.actions_get(p).await.map(Response::ActionsGet),
         Request::ActionsList(p) => service.actions_list(p).await.map(Response::ActionsList),
+        Request::TerminalRead(p) => service.terminal_read(p).await.map(Response::TerminalRead),
+        Request::TerminalMirrors(p) => service
+            .terminal_mirrors(p)
+            .await
+            .map(Response::TerminalMirrors),
     }
 }

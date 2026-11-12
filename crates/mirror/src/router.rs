@@ -1,0 +1,416 @@
+//! The router: one task, the connection's events in order, a small state
+//! machine per mirrored pane.
+
+use std::collections::HashMap;
+
+use domain::{ConnectionEpoch, PaneGeneration, PaneKey, TmuxPaneId, TmuxServerRef, WindowLayout};
+use tmux_backend::bootstrap::{
+    parse_captures, phase1_batch, phase1_found, phase2_batch, resume_command,
+};
+use tmux_backend::layout::parse_layout;
+use tmux_backend::{CommandError, ConnEvent, Connection, TmuxCommand, affects_structure};
+use tmux_protocol::{Notification, PaneId};
+use tokio::sync::{mpsc, watch};
+
+use crate::worker::{Record, WorkerMsg};
+use crate::{Control, MirrorState, worker_of};
+
+/// Subscription that reports pane process changes (respawns) as
+/// `%subscription-changed`; tmux checks it about once a second.
+const PID_SUBSCRIPTION: &str = "dreamer-pid";
+
+enum Flow {
+    /// Waiting for `%pause`; output before it is already in the capture.
+    Pausing {
+        generation: PaneGeneration,
+    },
+    /// Paused and captured (or capturing); everything after `%pause` is the
+    /// continuation, kept in order.
+    Buffering {
+        generation: PaneGeneration,
+        records: Vec<Record>,
+        continued: bool,
+        captured: Option<
+            Box<(
+                tmux_backend::bootstrap::PaneState,
+                tmux_backend::bootstrap::Captures,
+            )>,
+        >,
+    },
+    Live {
+        generation: PaneGeneration,
+    },
+    Failed {
+        generation: PaneGeneration,
+        reason: String,
+    },
+}
+
+impl Flow {
+    fn generation(&self) -> PaneGeneration {
+        match self {
+            Flow::Pausing { generation }
+            | Flow::Buffering { generation, .. }
+            | Flow::Live { generation }
+            | Flow::Failed { generation, .. } => *generation,
+        }
+    }
+}
+
+pub(crate) struct Router {
+    conn: Connection,
+    events: mpsc::Receiver<ConnEvent>,
+    control: mpsc::Receiver<Control>,
+    to_self: mpsc::Sender<Control>,
+    workers: Vec<mpsc::Sender<WorkerMsg>>,
+    tmux: Option<TmuxServerRef>,
+    epoch: ConnectionEpoch,
+    changes: watch::Sender<u64>,
+    flows: HashMap<TmuxPaneId, Flow>,
+    sizes: HashMap<TmuxPaneId, (u16, u16)>,
+}
+
+pub(crate) async fn spawn(router: Router) {
+    tokio::spawn(router.run());
+}
+
+fn pid(p: TmuxPaneId) -> PaneId {
+    PaneId(p.0)
+}
+
+impl Router {
+    pub(crate) fn new(
+        conn: Connection,
+        events: mpsc::Receiver<ConnEvent>,
+        control: mpsc::Receiver<Control>,
+        to_self: mpsc::Sender<Control>,
+        workers: Vec<mpsc::Sender<WorkerMsg>>,
+        epoch: ConnectionEpoch,
+        changes: watch::Sender<u64>,
+    ) -> Router {
+        Router {
+            conn,
+            events,
+            control,
+            to_self,
+            workers,
+            tmux: None,
+            epoch,
+            changes,
+            flows: HashMap::new(),
+            sizes: HashMap::new(),
+        }
+    }
+
+    fn worker(&self, pane: TmuxPaneId) -> &mpsc::Sender<WorkerMsg> {
+        &self.workers[worker_of(pane, self.workers.len())]
+    }
+
+    fn changed(&self) {
+        self.changes.send_modify(|n| *n += 1);
+    }
+
+    async fn run(mut self) {
+        let conn = self.conn.clone();
+        tokio::spawn(async move {
+            let _ = conn
+                .execute(
+                    TmuxCommand::new("refresh-client")
+                        .opt_format("-B", format!("{PID_SUBSCRIPTION}:%*:#{{pane_pid}}")),
+                )
+                .await;
+        });
+        let mut open = true;
+        loop {
+            tokio::select! {
+                c = self.control.recv() => match c {
+                    Some(c) => self.on_control(c).await,
+                    None => break,
+                },
+                e = self.events.recv(), if open => match e {
+                    Some(ConnEvent::Notification(n)) => self.on_notification(n).await,
+                    Some(ConnEvent::LateOutcome { .. }) => {}
+                    // Keep answering status queries after the link ends.
+                    Some(ConnEvent::Closed { .. }) | None => {
+                        open = false;
+                        self.closed();
+                    }
+                },
+            }
+        }
+    }
+
+    fn closed(&mut self) {
+        for flow in self.flows.values_mut() {
+            *flow = Flow::Failed {
+                generation: flow.generation(),
+                reason: "the tmux control connection ended".into(),
+            };
+        }
+        self.changed();
+    }
+
+    async fn on_control(&mut self, c: Control) {
+        match c {
+            Control::Sync { tmux, panes, done } => {
+                self.tmux = Some(tmux);
+                let wanted: HashMap<TmuxPaneId, PaneGeneration> = panes.into_iter().collect();
+                let stale: Vec<TmuxPaneId> = self
+                    .flows
+                    .iter()
+                    .filter(|(p, f)| wanted.get(p) != Some(&f.generation()))
+                    .map(|(p, _)| *p)
+                    .collect();
+                for p in stale {
+                    self.stop(p).await;
+                }
+                for (p, g) in wanted {
+                    if !self.flows.contains_key(&p) {
+                        self.start(p, g);
+                    }
+                }
+                let _ = done.send(());
+            }
+            Control::Phase1 {
+                pane,
+                generation,
+                result,
+            } => {
+                if self
+                    .flows
+                    .get(&pane)
+                    .is_some_and(|f| f.generation() == generation)
+                {
+                    match result {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            self.flows.remove(&pane);
+                        }
+                        Err(reason) => {
+                            self.flows.insert(pane, Flow::Failed { generation, reason });
+                        }
+                    }
+                }
+            }
+            Control::Phase2 {
+                pane,
+                generation,
+                result,
+            } => {
+                let current = self
+                    .flows
+                    .get_mut(&pane)
+                    .filter(|f| f.generation() == generation);
+                match (current, result) {
+                    (Some(Flow::Buffering { captured, .. }), Ok(c)) => *captured = Some(c),
+                    (Some(flow), Err(reason)) => *flow = Flow::Failed { generation, reason },
+                    _ => {}
+                }
+                self.try_finish(pane).await;
+            }
+            Control::States { reply } => {
+                let _ = reply.send(
+                    self.flows
+                        .iter()
+                        .map(|(p, f)| {
+                            let s = match f {
+                                Flow::Pausing { .. } | Flow::Buffering { .. } => {
+                                    MirrorState::Attaching
+                                }
+                                Flow::Live { .. } => MirrorState::Live,
+                                Flow::Failed { reason, .. } => MirrorState::Failed(reason.clone()),
+                            };
+                            (*p, f.generation(), s)
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+
+    fn start(&mut self, pane: TmuxPaneId, generation: PaneGeneration) {
+        self.flows.insert(pane, Flow::Pausing { generation });
+        let conn = self.conn.clone();
+        let back = self.to_self.clone();
+        tokio::spawn(async move {
+            let result = match conn.execute(phase1_batch(pid(pane))).await {
+                Ok(r) => Ok(phase1_found(pid(pane), &r)),
+                Err(e) => Err(format!("pausing for capture: {e}")),
+            };
+            let _ = back
+                .send(Control::Phase1 {
+                    pane,
+                    generation,
+                    result,
+                })
+                .await;
+        });
+    }
+
+    async fn stop(&mut self, pane: TmuxPaneId) {
+        match self.flows.remove(&pane) {
+            Some(Flow::Live { .. }) | Some(Flow::Failed { .. }) => {
+                let _ = self.worker(pane).send(WorkerMsg::Drop { pane }).await;
+            }
+            Some(Flow::Pausing { .. } | Flow::Buffering { .. }) => {
+                // Never leave a pane paused for this client.
+                let conn = self.conn.clone();
+                tokio::spawn(async move {
+                    let _ = conn.execute(resume_command(pid(pane))).await;
+                });
+            }
+            None => {}
+        }
+        self.sizes.remove(&pane);
+    }
+
+    async fn try_finish(&mut self, pane: TmuxPaneId) {
+        let ready = matches!(
+            self.flows.get(&pane),
+            Some(Flow::Buffering {
+                continued: true,
+                captured: Some(_),
+                ..
+            })
+        );
+        if !ready {
+            return;
+        }
+        let Some(Flow::Buffering {
+            generation,
+            records,
+            captured: Some(captured),
+            ..
+        }) = self.flows.remove(&pane)
+        else {
+            return;
+        };
+        let Some(tmux) = self.tmux.clone() else {
+            return;
+        };
+        let (state, captures) = *captured;
+        let size = state.size();
+        let mut final_size = (size.cols, size.rows);
+        for r in &records {
+            if let Record::Resize { cols, rows } = r {
+                final_size = (*cols, *rows);
+            }
+        }
+        self.sizes.insert(pane, final_size);
+        let msg = WorkerMsg::Init {
+            pane: PaneKey { tmux, pane },
+            epoch: self.epoch,
+            generation,
+            state: Box::new(state),
+            captures: Box::new(captures),
+            continuation: records,
+        };
+        let _ = self.worker(pane).send(msg).await;
+        self.flows.insert(pane, Flow::Live { generation });
+    }
+
+    async fn record(&mut self, pane: TmuxPaneId, record: Record) {
+        match self.flows.get_mut(&pane) {
+            Some(Flow::Buffering { records, .. }) => records.push(record),
+            Some(Flow::Live { generation }) => {
+                let generation = *generation;
+                let _ = self
+                    .worker(pane)
+                    .send(WorkerMsg::Apply {
+                        pane,
+                        generation,
+                        record,
+                    })
+                    .await;
+            }
+            // Pausing: already in the coming capture. Failed or unmirrored:
+            // nothing to keep.
+            _ => {}
+        }
+    }
+
+    async fn on_notification(&mut self, n: Notification) {
+        if affects_structure(&n) {
+            self.changed();
+        }
+        match n {
+            Notification::Output { pane, data }
+            | Notification::ExtendedOutput { pane, data, .. } => {
+                self.record(TmuxPaneId(pane.0), Record::Bytes(data)).await;
+            }
+            Notification::Pause { pane } => {
+                let p = TmuxPaneId(pane.0);
+                if let Some(Flow::Pausing { generation }) = self.flows.get(&p) {
+                    let generation = *generation;
+                    self.flows.insert(
+                        p,
+                        Flow::Buffering {
+                            generation,
+                            records: Vec::new(),
+                            continued: false,
+                            captured: None,
+                        },
+                    );
+                    let conn = self.conn.clone();
+                    let back = self.to_self.clone();
+                    tokio::spawn(async move {
+                        let result = match conn.execute(phase2_batch(pane)).await {
+                            Ok(r) => parse_captures(&r).map(Box::new).map_err(|e| e.to_string()),
+                            Err(e) => {
+                                // Whatever ran, make sure the pane resumes.
+                                let _ = conn.execute(resume_command(pane)).await;
+                                Err(match e {
+                                    CommandError::Failed { .. } => {
+                                        format!(
+                                            "capture failed: {}",
+                                            tmux_backend::ops::failure_message(&e)
+                                        )
+                                    }
+                                    other => format!("capture: {other}"),
+                                })
+                            }
+                        };
+                        let _ = back
+                            .send(Control::Phase2 {
+                                pane: p,
+                                generation,
+                                result,
+                            })
+                            .await;
+                    });
+                }
+            }
+            Notification::Continue { pane } => {
+                let p = TmuxPaneId(pane.0);
+                if let Some(Flow::Buffering { continued, .. }) = self.flows.get_mut(&p) {
+                    *continued = true;
+                }
+                self.try_finish(p).await;
+            }
+            Notification::LayoutChange { visible_layout, .. } => {
+                if let WindowLayout::Tiled(node) = parse_layout(&visible_layout) {
+                    for (p, rect) in node.panes() {
+                        let size = (rect.cols, rect.rows);
+                        let known = self.sizes.get(&p).copied();
+                        let buffering = matches!(self.flows.get(&p), Some(Flow::Buffering { .. }));
+                        if buffering || known.is_some_and(|k| k != size) {
+                            self.sizes.insert(p, size);
+                            self.record(
+                                p,
+                                Record::Resize {
+                                    cols: size.0,
+                                    rows: size.1,
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+            Notification::SubscriptionChanged { name, .. } if name == PID_SUBSCRIPTION => {
+                self.changed()
+            }
+            _ => {}
+        }
+    }
+}

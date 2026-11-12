@@ -1,0 +1,21 @@
+[package]
+name = "mirror"
+description = "Canonical pane mirrors in the daemon: cold attach, ordered ingestion, VT owner workers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+domain = { path = "../domain" }
+terminal-ghostty = { path = "../terminal-ghostty" }
+tmux-backend = { path = "../tmux-backend" }
+tmux-protocol = { path = "../tmux-protocol" }
+tokio = { version = "1.54.1", features = ["rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+[lints]
+workspace = true
