@@ -5,8 +5,9 @@
 //! dreamer [--smoke [--expect TEXT]] --attach %PANE [-L socket | --tmux-socket-path P] [--tmux PATH]
 //! ```
 //!
-//! Without `--attach` the window paints a built-in demo or a VT fixture
-//! (the renderer proof). With `--attach` it shows a live tmux pane: a
+//! With no arguments (as when launched from Finder or a desktop launcher) it
+//! follows the active pane of the default tmux server. `--fixture` paints a
+//! VT fixture; `--smoke` alone paints the built-in renderer demo. With `--attach` it shows a live tmux pane: a
 //! background owner thread follows the pane through `dreamerd` (started on
 //! demand) and publishes frames only when the pane changed; the window
 //! repaints only when woken by a new frame.
@@ -250,7 +251,9 @@ fn main() -> ExitCode {
         Some(path) => std::fs::read(path)
             .map_err(|e| format!("{path}: {e}"))
             .and_then(|b| load_frame(&b)),
-        None if args.attach.is_some() => load_frame(b"\x1b[2mconnecting to dreamerd...\x1b[0m"),
+        None if args.attach.is_some() || !args.smoke => {
+            load_frame(b"\x1b[2mconnecting to dreamerd...\x1b[0m")
+        }
         None => load_frame(DEMO),
     };
     let frame = match frame {
@@ -269,7 +272,8 @@ fn main() -> ExitCode {
             return ExitCode::from(4);
         }
     }
-    let images: Vec<InlineImage> = if args.fixture.is_none() && args.attach.is_none() {
+    let images: Vec<InlineImage> = if args.smoke && args.fixture.is_none() && args.attach.is_none()
+    {
         demo_image().into_iter().collect()
     } else {
         Vec::new()
@@ -281,7 +285,14 @@ fn main() -> ExitCode {
         (true, None, _) if args.repaint => Smoke::Repaint,
         (true, None, _) => Smoke::First,
     };
-    let feed = match args.attach {
+    // Launched with nothing to show (Finder, a desktop launcher): follow the
+    // active pane of the default tmux server.
+    let follow = match (args.attach, args.smoke, &args.fixture) {
+        (Some(p), _, _) => Some(Some(p)),
+        (None, false, None) => Some(None),
+        _ => None,
+    };
+    let feed = match follow {
         Some(pane) => {
             let launch = client::Launch::new(args.daemon.clone());
             match Feed::start(launch.socket.clone(), pane, Some(launch)) {

@@ -3,14 +3,21 @@
 `dreamer` is the GPUI desktop client.
 
 ```text
+dreamer
 dreamer --attach %PANE [-L socket | --tmux-socket-path PATH] [--tmux PATH]
-dreamer [--fixture FILE]
+dreamer --fixture FILE
 ```
 
-`--attach` shows a live tmux pane. The app starts `dreamerd` if it is not
+With no arguments (as when launched from Finder or a desktop launcher)
+the app follows the active pane of the default tmux server. If there is no
+tmux server, the window says so and starts following as soon as one
+appears. See [packaging.md](packaging.md) for the macOS app and the Arch
+package.
+
+`--attach` shows a given tmux pane. The app starts `dreamerd` if it is not
 running, passing it the tmux options. It then follows the pane as a client
-replica (see [mirrors.md](mirrors.md)). Without `--attach`, the window
-paints the built-in renderer demo or a VT fixture.
+replica (see [mirrors.md](mirrors.md)). `--fixture` paints a VT fixture,
+and `--smoke` alone paints the built-in renderer demo.
 
 Input, selection, and window sizing come with later work. The pane is shown
 at the size tmux gives it.

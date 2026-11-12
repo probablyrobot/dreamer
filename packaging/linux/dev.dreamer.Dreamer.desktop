@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Dreamer
+GenericName=Terminal
+Comment=Terminal on tmux with live panes and automation
+Exec=dreamer
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;tmux;shell;
+StartupWMClass=dreamer

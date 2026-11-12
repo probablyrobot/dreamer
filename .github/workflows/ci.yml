@@ -144,3 +144,42 @@ jobs:
             qemu-aarch64 -L /usr/aarch64-linux-gnu "target/$TARGET/release/$bin" --version
           done
 
+
+  arch-package:
+    name: arch package (makepkg, install, run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      # base-devel, pinned by digest. Arch is rolling: the job updates the
+      # system before building, as an Arch user would.
+      image: archlinux:base-devel@sha256:fa2d4ce3310ddd90a4208e5168be8ad367da5129af1245f38fd2d803bcbe3239
+    steps:
+      - name: Install build and runtime packages
+        run: >-
+          pacman -Syu --noconfirm --needed git rustup tmux pkgconf curl xz
+          fontconfig freetype2 libxkbcommon libxkbcommon-x11 libx11 libxcb
+          wayland vulkan-icd-loader
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the package as an unprivileged user
+        run: |
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          sudo -u builder git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sudo -u builder bash -c "cd '$GITHUB_WORKSPACE' && cargo xtask package --platform arch"
+      - name: Install the package and run what it installed
+        run: |
+          pacman -U --noconfirm target/package/arch/dreamer-*.pkg.tar.zst
+          pacman -Ql dreamer
+          dreamerd --self-check
+          dream --version
+          # No display in CI: the app must say so and exit 4.
+          set +e; dreamer --smoke; code=$?; set -e
+          test "$code" -eq 4
+          # The installed CLI starts the installed daemon and drives an
+          # isolated tmux server.
+          tmux -L ci-arch -f /dev/null new-session -d -s main "sleep 600"
+          export DREAMER_RUNTIME_DIR=/tmp/drm-arch/rt DREAMER_STATE_DIR=/tmp/drm-arch/st DREAMER_FORBID_DEFAULT_TMUX=1
+          dream ls -L ci-arch | tee /tmp/ls.txt
+          grep -q 'main' /tmp/ls.txt
+          dream shutdown
+          tmux -L ci-arch kill-server

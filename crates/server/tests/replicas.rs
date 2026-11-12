@@ -356,7 +356,7 @@ async fn a_feed_publishes_on_change_coalesces_and_never_wakes_when_idle() {
     use std::sync::atomic::Ordering::Relaxed;
     let s = Setup::new(&[]);
     drop(s.client().await);
-    let feed = replica::feed::Feed::start(s.socket(), 0, None).expect("feed");
+    let feed = replica::feed::Feed::start(s.socket(), Some(0), None).expect("feed");
     s.type_line("echo FEED-OK");
     feed_until(&feed, |t| t.contains("\nFEED-OK")).await;
 
@@ -393,7 +393,7 @@ async fn a_synchronized_output_hold_is_shown_after_the_limit() {
     use std::sync::atomic::Ordering::Relaxed;
     let s = Setup::new(&[]);
     drop(s.client().await);
-    let feed = replica::feed::Feed::start(s.socket(), 0, None).expect("feed");
+    let feed = replica::feed::Feed::start(s.socket(), Some(0), None).expect("feed");
     s.type_line("echo READY");
     feed_until(&feed, |t| t.contains("\nREADY")).await;
     // Begin synchronized output and never end it.
@@ -411,4 +411,28 @@ async fn a_synchronized_output_hold_is_shown_after_the_limit() {
     // Ending the hold presents normally again.
     s.type_line("printf '\\033[?2026l'; echo REL''EASED");
     feed_until(&feed, |t| t.contains("RELEASED")).await;
+}
+
+#[tokio::test]
+async fn with_no_pane_given_the_feed_follows_the_active_pane() {
+    let s = Setup::new(&[]);
+    drop(s.client().await);
+    let feed = replica::feed::Feed::start(s.socket(), None, None).expect("feed");
+    s.type_line("echo ACT''IVE-PANE");
+    feed_until(&feed, |t| t.contains("\nACTIVE-PANE")).await;
+    assert_eq!(feed.status(), replica::feed::FeedStatus::Following);
+}
+
+#[tokio::test]
+async fn without_a_tmux_server_the_feed_says_so() {
+    let s = Setup::new(&[]);
+    drop(s.client().await);
+    s.tmux.run_checked(&["kill-server"]).expect("kill");
+    let feed = replica::feed::Feed::start(s.socket(), None, None).expect("feed");
+    let text = feed_until(&feed, |t| t.contains("no tmux pane to show")).await;
+    assert!(text.contains("start tmux"), "{text}");
+    assert!(matches!(
+        feed.status(),
+        replica::feed::FeedStatus::Reconnecting(_)
+    ));
 }

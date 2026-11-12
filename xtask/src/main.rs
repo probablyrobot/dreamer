@@ -27,7 +27,7 @@ commands:
                                fetch, verify, and build pinned native dependencies
   headless [--cargo-args]      list the packages of the headless build
   hooks install|status         use the versioned git hooks in .githooks/
-  package --platform current [--debug]
+  package --platform macos|arch|current [--debug] [--source-only]
                                build, ad hoc sign, and zip the macOS app bundle
   policy                       check repository rules (workflow runners, pinned actions)
   gate linux-desktop [--allow-missing wayland|x11]
