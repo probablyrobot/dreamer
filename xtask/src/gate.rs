@@ -105,6 +105,12 @@ fn stages(platform: Platform) -> Vec<Stage> {
             always: true,
         },
         Stage {
+            name: "headless",
+            program: "cargo",
+            args: &["xtask", "headless", "--check"],
+            always: false,
+        },
+        Stage {
             name: "deps",
             program: "cargo",
             args: &["xtask", "deps", "prepare", "--locked"],
