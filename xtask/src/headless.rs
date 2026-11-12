@@ -17,6 +17,7 @@ pub const PACKAGES: &[&str] = &[
     "dreamer-server",
     "dreamer-cli",
     "dreamer-termapp",
+    "domain",
     "ghostty-sys",
     "script-runtime",
     "terminal-core",

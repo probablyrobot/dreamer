@@ -1195,6 +1195,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain"
+version = "0.0.0"
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1217,6 +1221,9 @@ version = "0.0.0"
 [[package]]
 name = "dreamer-server"
 version = "0.0.0"
+dependencies = [
+ "domain",
+]
 
 [[package]]
 name = "dreamer-termapp"
