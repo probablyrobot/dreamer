@@ -514,6 +514,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmux-backend"
+version = "0.0.0"
+dependencies = [
+ "terminal-ghostty",
+ "tmux-protocol",
+]
+
+[[package]]
 name = "tmux-protocol"
 version = "0.0.0"
 dependencies = [
