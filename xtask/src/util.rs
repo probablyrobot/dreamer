@@ -51,6 +51,30 @@ pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
     None
 }
 
+/// SHA-256 of a file with whichever tool the system has: `sha256sum`
+/// (coreutils, every Linux) or `shasum` (macOS, Perl).
+pub fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    for (tool, args) in [("sha256sum", &[][..]), ("shasum", &["-a", "256"][..])] {
+        let Ok(out) = std::process::Command::new(tool)
+            .args(args)
+            .arg(path)
+            .output()
+        else {
+            continue;
+        };
+        if !out.status.success() {
+            return Err(format!("{tool} failed on {}", path.display()));
+        }
+        if let Some(sum) = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .next()
+        {
+            return Ok(sum.to_owned());
+        }
+    }
+    Err("neither sha256sum nor shasum is available".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_version;

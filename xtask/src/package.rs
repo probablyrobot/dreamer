@@ -1,9 +1,13 @@
-//! macOS application bundle: build, ad hoc sign, verify, launch, and zip.
+//! Packages. See `docs/packaging.md`.
 //!
-//! `cargo xtask package --platform current [--debug]` writes
-//! `target/package/Dreamer.app`, `dreamer-<version>-<target>.zip`, and its
-//! `.sha256`. Development bundles are ad hoc signed; Developer ID signing and
-//! notarization are a separate release step (spec 3.2, 17.5).
+//! - `cargo xtask package --platform macos [--debug]` (or `current` on a
+//!   Mac) writes `target/package/Dreamer.app` with `dreamer`, `dreamerd`,
+//!   and `dream`, plus `dreamer-<version>-aarch64-apple-darwin.zip` and its
+//!   `.sha256`. Bundles are ad hoc signed; Developer ID signing and
+//!   notarization are a separate release step (spec 3.2, 17.5).
+//! - `cargo xtask package --platform arch [--source-only]` writes
+//!   `target/package/arch/` with a `git archive` source tarball and a
+//!   PKGBUILD, then runs `makepkg` when it is available.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,6 +16,8 @@ use crate::util::repo_root;
 
 const BUNDLE_ID: &str = "dev.dreamer.Dreamer";
 const MIN_MACOS: &str = "15.0";
+/// Executables in `Contents/MacOS`; the first is the bundle's main one.
+const EXECUTABLES: [&str; 3] = ["dreamer", "dreamerd", "dream"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Profile {
@@ -21,21 +27,26 @@ pub enum Profile {
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut profile = Profile::Release;
+    let mut platform = "current".to_owned();
+    let mut source_only = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "--platform" => {
-                let p = iter.next().ok_or("--platform needs a value")?;
-                if p != "current" {
-                    return Err("only --platform current is supported".into());
-                }
-            }
+            "--platform" => platform = iter.next().ok_or("--platform needs a value")?.clone(),
             "--debug" => profile = Profile::Debug,
+            "--source-only" => source_only = true,
             other => return Err(format!("unknown package argument `{other}`")),
         }
     }
+    match platform.as_str() {
+        "arch" => return arch_package(&repo_root(), source_only),
+        "macos" => {}
+        "current" if cfg!(target_os = "macos") => {}
+        "current" => return Err("on Linux, choose a package: --platform arch".into()),
+        other => return Err(format!("unknown platform `{other}` (macos, arch)")),
+    }
     if !cfg!(target_os = "macos") {
-        return Err("Linux packaging arrives with M8; this builds the macOS bundle".into());
+        return Err("the macOS bundle is built on a Mac".into());
     }
     let root = repo_root();
     let out = root.join("target").join("package");
@@ -44,6 +55,74 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let zip = zip_bundle(&app, &out)?;
     println!("package: {}", app.display());
     println!("package: {}", zip.display());
+    Ok(())
+}
+
+fn sha256_of(path: &Path) -> Result<String, String> {
+    crate::util::sha256_file(path)
+}
+
+/// Source tarball plus PKGBUILD in `target/package/arch`, then `makepkg`.
+fn arch_package(root: &Path, source_only: bool) -> Result<(), String> {
+    let version = version(root)?;
+    let out = root.join("target").join("package").join("arch");
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let dirty = run_checked(
+        Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(root),
+        "git status",
+    )?;
+    if !dirty.trim().is_empty() {
+        println!("package: the work tree has uncommitted changes; packaging HEAD only");
+    }
+    let tarball = out.join(format!("dreamer-{version}.tar.gz"));
+    run_checked(
+        Command::new("git")
+            .args(["archive", "--format=tar.gz"])
+            .arg(format!("--prefix=dreamer-{version}/"))
+            .arg("-o")
+            .arg(&tarball)
+            .arg("HEAD")
+            .current_dir(root),
+        "git archive",
+    )?;
+    let sum = sha256_of(&tarball)?;
+    let template = std::fs::read_to_string(root.join("packaging/arch/PKGBUILD.in"))
+        .map_err(|e| format!("PKGBUILD.in: {e}"))?;
+    let pkgbuild = template
+        .replace("@VERSION@", &version)
+        .replace("@SHA256@", &sum);
+    std::fs::write(out.join("PKGBUILD"), pkgbuild).map_err(|e| e.to_string())?;
+    println!("package: {}", tarball.display());
+    println!("package: {}", out.join("PKGBUILD").display());
+    let has_makepkg = Command::new("makepkg").arg("--version").output().is_ok();
+    if source_only || !has_makepkg {
+        if !source_only {
+            println!(
+                "package: makepkg not found; run `makepkg` in {} on Arch",
+                out.display()
+            );
+        }
+        return Ok(());
+    }
+    let status = Command::new("makepkg")
+        .args(["--force", "--noconfirm"])
+        .current_dir(&out)
+        .status()
+        .map_err(|e| format!("makepkg: {e}"))?;
+    if !status.success() {
+        return Err("makepkg failed".into());
+    }
+    for entry in std::fs::read_dir(&out)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".pkg.tar.zst") {
+            println!("package: {}", entry.path().display());
+        }
+    }
     Ok(())
 }
 
@@ -74,23 +153,29 @@ fn run_checked(cmd: &mut Command, what: &str) -> Result<String, String> {
 pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf, String> {
     let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
     cargo
-        .args(["build", "--locked", "--package", "dreamer-app"])
+        .args([
+            "build",
+            "--locked",
+            "--package",
+            "dreamer-app",
+            "--package",
+            "dreamer-server",
+            "--package",
+            "dreamer-cli",
+        ])
         .current_dir(root);
     if profile == Profile::Release {
         cargo.arg("--release");
     }
     let status = cargo.status().map_err(|e| format!("cargo build: {e}"))?;
     if !status.success() {
-        return Err("cargo build -p dreamer-app failed".into());
+        return Err("cargo build of dreamer, dreamerd, and dream failed".into());
     }
-    let binary = root
-        .join("target")
-        .join(if profile == Profile::Release {
-            "release"
-        } else {
-            "debug"
-        })
-        .join("dreamer");
+    let bin_dir = root.join("target").join(if profile == Profile::Release {
+        "release"
+    } else {
+        "debug"
+    });
 
     let app = out.join("Dreamer.app");
     if app.exists() {
@@ -100,7 +185,11 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
     let resources = app.join("Contents").join("Resources");
     std::fs::create_dir_all(&macos).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&resources).map_err(|e| e.to_string())?;
-    std::fs::copy(&binary, macos.join("dreamer")).map_err(|e| format!("copy binary: {e}"))?;
+    // The app starts dreamerd from its own directory; dream is the CLI.
+    for exe in EXECUTABLES {
+        std::fs::copy(bin_dir.join(exe), macos.join(exe))
+            .map_err(|e| format!("copy {exe}: {e}"))?;
+    }
     for notice in ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"] {
         std::fs::copy(root.join(notice), resources.join(notice))
             .map_err(|e| format!("copy {notice}: {e}"))?;
@@ -131,6 +220,15 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
     std::fs::write(app.join("Contents").join("Info.plist"), plist).map_err(|e| e.to_string())?;
     // Ad hoc signature: enough to run locally and to give the bundle a
     // stable code identity. Public builds are Developer ID signed later.
+    // Helpers are signed before the bundle that seals them.
+    for exe in &EXECUTABLES[1..] {
+        run_checked(
+            Command::new("codesign")
+                .args(["--force", "--sign", "-", "--timestamp=none"])
+                .arg(macos.join(exe)),
+            "codesign",
+        )?;
+    }
     run_checked(
         Command::new("codesign")
             .args(["--force", "--sign", "-", "--timestamp=none"])
@@ -140,38 +238,48 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
     Ok(app)
 }
 
-/// Architecture and signature checks.
+/// Architecture, deployment target, and signature of every executable, and
+/// the helpers run from inside the bundle.
 pub fn verify_bundle(app: &Path) -> Result<(), String> {
-    let exe = app.join("Contents").join("MacOS").join("dreamer");
-    let archs = run_checked(Command::new("lipo").arg("-archs").arg(&exe), "lipo")?;
-    if archs.trim() != "arm64" {
-        return Err(format!(
-            "bundle executable architectures: `{}`",
-            archs.trim()
-        ));
-    }
     run_checked(
         Command::new("codesign")
-            .args(["--verify", "--strict", "--verbose=1"])
+            .args(["--verify", "--strict", "--deep", "--verbose=1"])
             .arg(app),
         "codesign --verify",
     )?;
-    let minos = run_checked(
-        Command::new("vtool").args(["-show-build"]).arg(&exe),
-        "vtool",
-    )
-    .unwrap_or_default();
-    let found = minos
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("minos").map(str::trim))
-        .unwrap_or("unknown")
-        .to_owned();
-    if found != MIN_MACOS {
-        return Err(format!(
-            "executable deployment target is {found}, expected {MIN_MACOS} (MACOSX_DEPLOYMENT_TARGET)"
-        ));
+    for name in EXECUTABLES {
+        let exe = app.join("Contents").join("MacOS").join(name);
+        let archs = run_checked(Command::new("lipo").arg("-archs").arg(&exe), "lipo")?;
+        if archs.trim() != "arm64" {
+            return Err(format!("{name}: architectures `{}`", archs.trim()));
+        }
+        let minos = run_checked(
+            Command::new("vtool").args(["-show-build"]).arg(&exe),
+            "vtool",
+        )
+        .unwrap_or_default();
+        let found = minos
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("minos").map(str::trim))
+            .unwrap_or("unknown")
+            .to_owned();
+        if found != MIN_MACOS {
+            return Err(format!(
+                "{name}: deployment target {found}, expected {MIN_MACOS} (MACOSX_DEPLOYMENT_TARGET)"
+            ));
+        }
     }
-    println!("package: arm64, ad hoc signed, minimum macOS {found}");
+    let macos = app.join("Contents").join("MacOS");
+    let daemon = run_checked(
+        Command::new(macos.join("dreamerd")).arg("--self-check"),
+        "dreamerd",
+    )?;
+    let cli = run_checked(Command::new(macos.join("dream")).arg("--version"), "dream")?;
+    println!(
+        "package: dreamer, dreamerd, dream: arm64, ad hoc signed, minimum macOS {MIN_MACOS}; {}; {}",
+        daemon.trim(),
+        cli.trim()
+    );
     Ok(())
 }
 

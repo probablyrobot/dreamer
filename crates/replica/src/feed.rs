@@ -54,11 +54,12 @@ pub struct Feed {
 }
 
 impl Feed {
-    /// Follow `pane` through the daemon at `socket` on a new owner thread.
-    /// With `launch`, the daemon is started first if it is not running.
+    /// Follow `pane` through the daemon at `socket` on a new owner thread;
+    /// with no pane, the active pane of the first session. With `launch`,
+    /// the daemon is started first if it is not running.
     pub fn start(
         socket: PathBuf,
-        pane: u32,
+        pane: Option<u32>,
         launch: Option<client::Launch>,
     ) -> std::io::Result<Feed> {
         let latest = Arc::new(Mutex::new(None));
@@ -72,7 +73,10 @@ impl Feed {
             wake: wake_tx,
         };
         std::thread::Builder::new()
-            .name(format!("dreamer-pane-{pane}"))
+            .name(format!(
+                "dreamer-pane-{}",
+                pane.map_or("active".into(), |p| p.to_string())
+            ))
             .spawn(move || {
                 let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -142,12 +146,71 @@ impl Owner {
         }
     }
 
-    async fn run(self, socket: PathBuf, pane: u32, launch: Option<client::Launch>) {
+    /// Show a message in place of a pane (no tmux server, daemon errors).
+    fn message(&self, text: &str) {
+        use terminal_ghostty::core::GridSize;
+        use terminal_ghostty::{Engine, EngineConfig};
+        let mut config = EngineConfig::new(GridSize { cols: 100, rows: 6 });
+        config.capture_replies = false;
+        let Ok(mut e) = Engine::new(config) else {
+            return;
+        };
+        let body = format!("\x1b[2mdreamer\x1b[0m\r\n{}", text.replace('\n', "\r\n"));
+        if e.feed(body.as_bytes()).is_ok()
+            && let Ok(frame) = e.frame()
+        {
+            self.publish(frame);
+        }
+    }
+
+    /// The active pane of the first session, asked of the daemon.
+    async fn active_pane(&self, socket: &std::path::Path) -> Result<u32, String> {
+        let c = client::Client::connect(socket, "gui")
+            .await
+            .map_err(|e| e.to_string())?;
+        let api::Response::TmuxTopology(t) = c
+            .call(api::Request::TmuxTopology(api::TopologyParams::default()))
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            return Err("unexpected reply".into());
+        };
+        let session = t.sessions.first().ok_or("tmux has no sessions")?;
+        let window = session
+            .active_window
+            .and_then(|w| t.windows.iter().find(|x| x.id == w))
+            .ok_or("tmux reports no active window")?;
+        window
+            .active_pane
+            .ok_or_else(|| "tmux reports no active pane".into())
+    }
+
+    async fn run(self, socket: PathBuf, pane: Option<u32>, launch: Option<client::Launch>) {
         if let Some(l) = &launch
             && let Err(e) = client::ensure_running(l, "gui").await
         {
             self.set(FeedStatus::Reconnecting(e.to_string()));
+            self.message(&format!("cannot start dreamerd: {e}"));
         }
+        let pane = match pane {
+            Some(p) => p,
+            None => {
+                let mut backoff = Duration::from_millis(200);
+                loop {
+                    match self.active_pane(&socket).await {
+                        Ok(p) => break p,
+                        Err(e) => {
+                            self.set(FeedStatus::Reconnecting(e.clone()));
+                            self.message(&format!(
+                                "no tmux pane to show: {e}\nstart tmux (or a session) and this window will follow it"
+                            ));
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(Duration::from_secs(5));
+                        }
+                    }
+                }
+            }
+        };
         let mut f = self.connect(&socket, pane).await;
         self.set(FeedStatus::Following);
         let mut held_since: Option<tokio::time::Instant> = None;

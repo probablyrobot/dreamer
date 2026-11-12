@@ -1,0 +1,14 @@
+# Per-user Dreamer daemon. Optional: dreamer and dream start it on demand.
+#   systemctl --user enable --now dreamerd
+# Stopping it never stops tmux; sessions and panes keep running.
+[Unit]
+Description=Dreamer daemon (tmux mirrors and typed automation)
+Documentation=file:///usr/share/doc/dreamer/daemon.md
+
+[Service]
+# Foreground: logs go to the journal.
+ExecStart=/usr/bin/dreamerd
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

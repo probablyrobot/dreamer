@@ -293,19 +293,7 @@ fn download(url: &str, name: &str, sha256: &str) -> Result<PathBuf, String> {
 }
 
 fn file_sha256(path: &Path) -> Result<String, String> {
-    let out = Command::new("shasum")
-        .args(["-a", "256"])
-        .arg(path)
-        .output()
-        .map_err(|e| format!("could not run shasum: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("shasum failed on {}", path.display()));
-    }
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .next()
-        .map(str::to_owned)
-        .ok_or_else(|| "shasum produced no output".to_owned())
+    crate::util::sha256_file(path)
 }
 
 /// Extract an archive into `dest`, atomically. With `strip`, the archive's
