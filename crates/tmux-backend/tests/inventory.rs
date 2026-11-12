@@ -86,15 +86,26 @@ impl Harness {
                 reported.extend(self.tracker.refresh().await.expect("refresh"));
             }
         }
-        // The tracked model equals a fresh read of tmux.
-        let fresh = Inventory::snapshot(&self.conn, ServerKey("test".into()), "isolated")
-            .await
-            .expect("snapshot");
-        assert_eq!(
-            self.tracker.inventory(),
-            &fresh,
-            "model differs from tmux after {args:?}"
-        );
+        // The tracked model converges to a fresh read of tmux. Some fields
+        // (a pane's current command while its program starts, automatic
+        // window names) change without a notification, so re-read until both
+        // agree instead of comparing two instants.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let fresh = Inventory::snapshot(&self.conn, ServerKey("test".into()), "isolated")
+                .await
+                .expect("snapshot");
+            if self.tracker.inventory() == &fresh {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "model did not converge to tmux after {args:?}:\n{:#?}\nvs\n{fresh:#?}",
+                self.tracker.inventory()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            reported.extend(self.tracker.refresh().await.expect("refresh"));
+        }
         reported
     }
 }
