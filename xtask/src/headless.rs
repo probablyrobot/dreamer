@@ -14,6 +14,7 @@ use crate::util::repo_root;
 /// Packages built and tested for every headless target, including ARM64
 /// Linux. Add each new UI-free crate here.
 pub const PACKAGES: &[&str] = &[
+    "api",
     "dreamer-server",
     "dreamer-cli",
     "dreamer-termapp",
@@ -34,7 +35,13 @@ pub const NEEDS_TMUX: &[&str] = &["tmux-backend"];
 
 /// Workspace packages that are allowed to depend on GUI crates, or are
 /// build tooling outside the shipped graph.
-const NOT_HEADLESS: &[&str] = &["dreamer-app", "ghostty-bindgen", "terminal-render", "xtask"];
+const NOT_HEADLESS: &[&str] = &[
+    "api-gen",
+    "dreamer-app",
+    "ghostty-bindgen",
+    "terminal-render",
+    "xtask",
+];
 
 /// Crate name prefixes that must never appear in a headless dependency
 /// graph: the UI framework, windowing, GPU, and font stacks.

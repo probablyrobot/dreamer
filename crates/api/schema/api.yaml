@@ -1,0 +1,258 @@
+# Dreamer API schema: the single source for every typed operation.
+#
+# `cargo xtask api` regenerates, from this file:
+#   crates/api/src/generated.rs      Rust SDK types (Protobuf + JSON) and dispatch
+#   crates/api/generated/openrpc.json  JSON-RPC surface (OpenRPC 1.3)
+#   crates/api/generated/dreamer.luau  Luau module stubs for scripts
+#   crates/api/generated/dreamer.proto Protobuf description for other languages
+# and checks it against crates/api/schema/compat.lock. Evolution rules are in
+# docs/api.md: never reuse or renumber a field, never change a field's type,
+# add instead of changing, and bump the major version for anything breaking.
+#
+# Field types: string, bool, u32, u64, i32, i64, bytes, an enum or message
+# name. `repeated: true` makes a list; `optional: true` an explicitly
+# optional scalar (messages are always optional).
+
+version: { major: 1, minor: 0 }
+package: dreamer.v1
+
+types:
+  - message: Empty
+    doc: No parameters or no result.
+
+  - message: RpcError
+    doc: A failed call. Codes follow JSON-RPC 2.0 where they apply.
+    fields:
+      - { n: 1, name: code, type: i32 }
+      - { n: 2, name: message, type: string }
+      - { n: 3, name: data, type: string, optional: true, doc: Machine-readable detail. }
+
+  # ---- daemon -------------------------------------------------------------
+
+  - message: VersionInfo
+    fields:
+      - { n: 1, name: protocol_major, type: u32 }
+      - { n: 2, name: protocol_minor, type: u32 }
+      - { n: 3, name: daemon_version, type: string }
+      - { n: 4, name: build_family, type: string, doc: "Engine build family; peers must match exactly." }
+      - { n: 5, name: ghostty_commit, type: string }
+      - { n: 6, name: platform, type: string, doc: "For example aarch64-apple-darwin." }
+
+  - enum: LinkState
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: connecting }
+      - { n: 2, name: live }
+      - { n: 3, name: closed }
+      - { n: 4, name: failed }
+
+  - message: EndpointStatus
+    doc: One tmux server the daemon manages.
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: socket, type: string, doc: "tmux -L name or -S path, as configured." }
+      - { n: 3, name: state, type: LinkState }
+      - { n: 4, name: tmux_version, type: string, optional: true }
+      - { n: 5, name: detail, type: string, optional: true, doc: Why the link is not live. }
+
+  - message: DaemonStatus
+    fields:
+      - { n: 1, name: pid, type: u32 }
+      - { n: 2, name: started_unix_ms, type: u64 }
+      - { n: 3, name: uptime_ms, type: u64 }
+      - { n: 4, name: socket_path, type: string }
+      - { n: 5, name: log_path, type: string }
+      - { n: 6, name: endpoints, type: EndpointStatus, repeated: true }
+      - { n: 7, name: version, type: VersionInfo }
+      - { n: 8, name: clients, type: u32, doc: "Connected API clients, including the caller." }
+
+  - message: ShutdownResult
+    fields:
+      - { n: 1, name: effect, type: string, doc: "What stops and what keeps running (tmux panes always keep running)." }
+
+  # ---- tmux topology ------------------------------------------------------
+
+  - message: TopologyParams
+    fields:
+      - { n: 1, name: endpoint, type: string, optional: true, doc: Endpoint name; the default endpoint when absent. }
+
+  - message: Session
+    fields:
+      - { n: 1, name: id, type: u32, doc: "tmux session id ($N)." }
+      - { n: 2, name: name, type: string }
+      - { n: 3, name: windows, type: u32, repeated: true, doc: Window ids in index order. }
+      - { n: 4, name: active_window, type: u32, optional: true }
+
+  - message: Window
+    fields:
+      - { n: 1, name: id, type: u32, doc: "tmux window id (@N)." }
+      - { n: 2, name: name, type: string }
+      - { n: 3, name: sessions, type: u32, repeated: true, doc: Sessions the window is linked into. }
+      - { n: 4, name: index, type: u32 }
+      - { n: 5, name: panes, type: u32, repeated: true }
+      - { n: 6, name: active_pane, type: u32, optional: true }
+      - { n: 7, name: zoomed, type: bool }
+      - { n: 8, name: layout_supported, type: bool, doc: "False for layouts Dreamer cannot draw yet (floating panes)." }
+      - { n: 9, name: width, type: u32 }
+      - { n: 10, name: height, type: u32 }
+
+  - message: Pane
+    fields:
+      - { n: 1, name: id, type: u32, doc: "tmux pane id (%N)." }
+      - { n: 2, name: window, type: u32 }
+      - { n: 3, name: width, type: u32 }
+      - { n: 4, name: height, type: u32 }
+      - { n: 5, name: left, type: u32 }
+      - { n: 6, name: top, type: u32 }
+      - { n: 7, name: active, type: bool }
+      - { n: 8, name: pid, type: u32, optional: true }
+      - { n: 9, name: current_command, type: string }
+      - { n: 10, name: title, type: string }
+      - { n: 11, name: dead, type: bool }
+      - { n: 12, name: generation, type: u64, doc: Process generation; changes when the pane is respawned. }
+
+  - message: Topology
+    fields:
+      - { n: 1, name: endpoint, type: string }
+      - { n: 2, name: sessions, type: Session, repeated: true }
+      - { n: 3, name: windows, type: Window, repeated: true }
+      - { n: 4, name: panes, type: Pane, repeated: true }
+
+  # ---- actions ------------------------------------------------------------
+
+  - enum: SplitDirection
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: horizontal, doc: Side by side. }
+      - { n: 2, name: vertical, doc: One above the other. }
+
+  - message: SplitPane
+    doc: Split a pane; the new pane runs the default shell unless argv is given.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: direction, type: SplitDirection }
+      - { n: 3, name: percent, type: u32, optional: true }
+      - { n: 4, name: cells, type: u32, optional: true }
+      - { n: 5, name: argv, type: string, repeated: true, doc: Exact program and arguments; never a shell string. }
+      - { n: 6, name: cwd, type: string, optional: true }
+
+  - message: ResizePane
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: width, type: u32, optional: true }
+      - { n: 3, name: height, type: u32, optional: true }
+
+  - message: SelectPane
+    fields:
+      - { n: 1, name: pane, type: u32 }
+
+  - message: SelectWindow
+    fields:
+      - { n: 1, name: window, type: u32 }
+
+  - message: ZoomPane
+    doc: Toggle zoom of a pane.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+
+  - message: RenameWindow
+    fields:
+      - { n: 1, name: window, type: u32 }
+      - { n: 2, name: name, type: string }
+
+  - message: RenameSession
+    fields:
+      - { n: 1, name: session, type: u32 }
+      - { n: 2, name: name, type: string }
+
+  - message: SendInput
+    doc: >-
+      Exact bytes to whatever runs in the pane now. With `generation`, the
+      input is refused if the pane's process was replaced.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: data, type: bytes }
+      - { n: 3, name: generation, type: u64, optional: true }
+
+  - message: SendKeys
+    doc: Named keys (tmux key names such as Enter or C-c) to the pane.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: keys, type: string, repeated: true }
+      - { n: 3, name: generation, type: u64, optional: true }
+
+  - message: KillPane
+    fields:
+      - { n: 1, name: pane, type: u32 }
+
+  - message: KillWindow
+    fields:
+      - { n: 1, name: window, type: u32 }
+
+  - message: Action
+    oneof:
+      name: kind
+      variants:
+        - { n: 1, name: split_pane, type: SplitPane }
+        - { n: 2, name: resize_pane, type: ResizePane }
+        - { n: 3, name: select_pane, type: SelectPane }
+        - { n: 4, name: select_window, type: SelectWindow }
+        - { n: 5, name: zoom_pane, type: ZoomPane }
+        - { n: 6, name: rename_window, type: RenameWindow }
+        - { n: 7, name: rename_session, type: RenameSession }
+        - { n: 8, name: send_input, type: SendInput }
+        - { n: 9, name: send_keys, type: SendKeys }
+        - { n: 10, name: kill_pane, type: KillPane }
+        - { n: 11, name: kill_window, type: KillWindow }
+
+  - message: SubmitAction
+    fields:
+      - { n: 1, name: action, type: Action }
+      - { n: 2, name: endpoint, type: string, optional: true }
+      - { n: 3, name: idempotency_key, type: string, optional: true, doc: "Resubmitting the same key returns the first action; different content is rejected." }
+      - { n: 4, name: deadline_ms, type: u32, optional: true }
+
+  - enum: ActionState
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: accepted }
+      - { n: 2, name: prepared }
+      - { n: 3, name: dispatching }
+      - { n: 4, name: completed }
+      - { n: 5, name: failed }
+      - { n: 6, name: cancelled }
+      - { n: 7, name: outcome_unknown, doc: "The effect may or may not have happened; never retried automatically." }
+
+  - message: ActionRecord
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: action, type: Action }
+      - { n: 3, name: state, type: ActionState }
+      - { n: 4, name: reason, type: string, optional: true, doc: Why it failed or why the outcome is unknown. }
+      - { n: 5, name: observed, type: string, optional: true, doc: "What was observed in tmux afterwards, for example the new pane id." }
+      - { n: 6, name: endpoint, type: string }
+      - { n: 7, name: idempotency_key, type: string, optional: true }
+      - { n: 8, name: created_unix_ms, type: u64 }
+      - { n: 9, name: updated_unix_ms, type: u64 }
+      - { n: 10, name: new_pane, type: u32, optional: true }
+
+  - message: ActionQuery
+    fields:
+      - { n: 1, name: id, type: string }
+
+  - message: ActionListParams
+    fields:
+      - { n: 1, name: limit, type: u32, optional: true, doc: Newest first; default 50. }
+
+  - message: ActionList
+    fields:
+      - { n: 1, name: actions, type: ActionRecord, repeated: true }
+
+methods:
+  - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
+  - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
+  - { method: daemon.shutdown, params: Empty, result: ShutdownResult, mutation: true, doc: "Stop the daemon; tmux sessions and panes keep running." }
+  - { method: tmux.topology, params: TopologyParams, result: Topology, doc: "Sessions, windows, and panes of one endpoint." }
+  - { method: actions.submit, params: SubmitAction, result: ActionRecord, mutation: true, doc: "Run a typed action and report its observed outcome." }
+  - { method: actions.get, params: ActionQuery, result: ActionRecord }
+  - { method: actions.list, params: ActionListParams, result: ActionList }

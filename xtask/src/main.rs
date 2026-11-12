@@ -1,5 +1,6 @@
 //! Repository tasks: `cargo xtask <command>`.
 
+mod api;
 mod bindings;
 mod deps;
 mod desktop;
@@ -19,6 +20,7 @@ usage: cargo xtask <command>
 
 commands:
   doctor                       check the local toolchain and native build prerequisites
+  api [--check]                regenerate (or check) API artifacts from crates/api/schema
   bindings [--check]           regenerate (or check) the libghostty-vt Rust bindings
   deps prepare|path [--target <triple>]
                                fetch, verify, and build pinned native dependencies
@@ -37,6 +39,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("doctor") => doctor::run(&args[1..]),
+        Some("api") => api::run(&args[1..]),
         Some("bindings") => bindings::run(&args[1..]),
         Some("deps") => deps::run(&args[1..]),
         Some("headless") => headless::run(&args[1..]),

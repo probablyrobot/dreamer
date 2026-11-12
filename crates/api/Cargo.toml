@@ -1,0 +1,19 @@
+[package]
+name = "api"
+description = "Dreamer's typed API: generated records, method table, and dispatch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+prost = "0.14.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+mlua = { version = "0.12.2", features = ["luau", "vendored"] }
+
+[lints]
+workspace = true

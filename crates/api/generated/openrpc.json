@@ -1,0 +1,753 @@
+{
+  "components": {
+    "schemas": {
+      "Action": {
+        "properties": {
+          "kind": {
+            "maxProperties": 1,
+            "minProperties": 1,
+            "properties": {
+              "kill_pane": {
+                "$ref": "#/components/schemas/KillPane"
+              },
+              "kill_window": {
+                "$ref": "#/components/schemas/KillWindow"
+              },
+              "rename_session": {
+                "$ref": "#/components/schemas/RenameSession"
+              },
+              "rename_window": {
+                "$ref": "#/components/schemas/RenameWindow"
+              },
+              "resize_pane": {
+                "$ref": "#/components/schemas/ResizePane"
+              },
+              "select_pane": {
+                "$ref": "#/components/schemas/SelectPane"
+              },
+              "select_window": {
+                "$ref": "#/components/schemas/SelectWindow"
+              },
+              "send_input": {
+                "$ref": "#/components/schemas/SendInput"
+              },
+              "send_keys": {
+                "$ref": "#/components/schemas/SendKeys"
+              },
+              "split_pane": {
+                "$ref": "#/components/schemas/SplitPane"
+              },
+              "zoom_pane": {
+                "$ref": "#/components/schemas/ZoomPane"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "ActionList": {
+        "properties": {
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/ActionRecord"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ActionListParams": {
+        "properties": {
+          "limit": {
+            "description": "Newest first; default 50.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ActionQuery": {
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ActionRecord": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "created_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "new_pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed": {
+            "description": "What was observed in tmux afterwards, for example the new pane id.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why it failed or why the outcome is unknown.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ActionState"
+          },
+          "updated_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ActionState": {
+        "enum": [
+          "unspecified",
+          "accepted",
+          "prepared",
+          "dispatching",
+          "completed",
+          "failed",
+          "cancelled",
+          "outcome_unknown"
+        ],
+        "type": "string"
+      },
+      "DaemonStatus": {
+        "properties": {
+          "clients": {
+            "description": "Connected API clients, including the caller.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "endpoints": {
+            "items": {
+              "$ref": "#/components/schemas/EndpointStatus"
+            },
+            "type": "array"
+          },
+          "log_path": {
+            "type": "string"
+          },
+          "pid": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "socket_path": {
+            "type": "string"
+          },
+          "started_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "uptime_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "$ref": "#/components/schemas/VersionInfo"
+          }
+        },
+        "type": "object"
+      },
+      "Empty": {
+        "description": "No parameters or no result.",
+        "properties": {},
+        "type": "object"
+      },
+      "EndpointStatus": {
+        "description": "One tmux server the daemon manages.",
+        "properties": {
+          "detail": {
+            "description": "Why the link is not live.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "socket": {
+            "description": "tmux -L name or -S path, as configured.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/LinkState"
+          },
+          "tmux_version": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "KillPane": {
+        "properties": {
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "KillWindow": {
+        "properties": {
+          "window": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "LinkState": {
+        "enum": [
+          "unspecified",
+          "connecting",
+          "live",
+          "closed",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "Pane": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "current_command": {
+            "type": "string"
+          },
+          "dead": {
+            "type": "boolean"
+          },
+          "generation": {
+            "description": "Process generation; changes when the pane is respawned.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "height": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "tmux pane id (%N).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "left": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "top": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "width": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RenameSession": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "session": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RenameWindow": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "window": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ResizePane": {
+        "properties": {
+          "height": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "width": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RpcError": {
+        "description": "A failed call. Codes follow JSON-RPC 2.0 where they apply.",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "data": {
+            "description": "Machine-readable detail.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "SelectPane": {
+        "properties": {
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "SelectWindow": {
+        "properties": {
+          "window": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "SendInput": {
+        "description": "Exact bytes to whatever runs in the pane now. With `generation`, the input is refused if the pane's process was replaced.",
+        "properties": {
+          "data": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "SendKeys": {
+        "description": "Named keys (tmux key names such as Enter or C-c) to the pane.",
+        "properties": {
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "Session": {
+        "properties": {
+          "active_window": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "tmux session id ($N).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "windows": {
+            "description": "Window ids in index order.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ShutdownResult": {
+        "properties": {
+          "effect": {
+            "description": "What stops and what keeps running (tmux panes always keep running).",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "SplitDirection": {
+        "enum": [
+          "unspecified",
+          "horizontal",
+          "vertical"
+        ],
+        "type": "string"
+      },
+      "SplitPane": {
+        "description": "Split a pane; the new pane runs the default shell unless argv is given.",
+        "properties": {
+          "argv": {
+            "description": "Exact program and arguments; never a shell string.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cells": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/SplitDirection"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "percent": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "SubmitAction": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/Action"
+          },
+          "deadline_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "description": "Resubmitting the same key returns the first action; different content is rejected.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Topology": {
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "panes": {
+            "items": {
+              "$ref": "#/components/schemas/Pane"
+            },
+            "type": "array"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            },
+            "type": "array"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/Window"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "TopologyParams": {
+        "properties": {
+          "endpoint": {
+            "description": "Endpoint name; the default endpoint when absent.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "VersionInfo": {
+        "properties": {
+          "build_family": {
+            "description": "Engine build family; peers must match exactly.",
+            "type": "string"
+          },
+          "daemon_version": {
+            "type": "string"
+          },
+          "ghostty_commit": {
+            "type": "string"
+          },
+          "platform": {
+            "description": "For example aarch64-apple-darwin.",
+            "type": "string"
+          },
+          "protocol_major": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protocol_minor": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "Window": {
+        "properties": {
+          "active_pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "height": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "tmux window id (@N).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "layout_supported": {
+            "description": "False for layouts Dreamer cannot draw yet (floating panes).",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "panes": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "sessions": {
+            "description": "Sessions the window is linked into.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "width": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "zoomed": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "ZoomPane": {
+        "description": "Toggle zoom of a pane.",
+        "properties": {
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
+    "title": "Dreamer API",
+    "version": "1.0"
+  },
+  "methods": [
+    {
+      "name": "daemon.version",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VersionInfo"
+        }
+      },
+      "summary": "Protocol and build identity.",
+      "x-mutation": false
+    },
+    {
+      "name": "daemon.status",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DaemonStatus"
+        }
+      },
+      "summary": "Process, socket, log, and tmux endpoint state.",
+      "x-mutation": false
+    },
+    {
+      "name": "daemon.shutdown",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ShutdownResult"
+        }
+      },
+      "summary": "Stop the daemon; tmux sessions and panes keep running.",
+      "x-mutation": true
+    },
+    {
+      "name": "tmux.topology",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Endpoint name; the default endpoint when absent.",
+          "name": "endpoint",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Topology"
+        }
+      },
+      "summary": "Sessions, windows, and panes of one endpoint.",
+      "x-mutation": false
+    },
+    {
+      "name": "actions.submit",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "action",
+          "schema": {
+            "$ref": "#/components/schemas/Action"
+          }
+        },
+        {
+          "name": "endpoint",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Resubmitting the same key returns the first action; different content is rejected.",
+          "name": "idempotency_key",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "deadline_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ActionRecord"
+        }
+      },
+      "summary": "Run a typed action and report its observed outcome.",
+      "x-mutation": true
+    },
+    {
+      "name": "actions.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "id",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ActionRecord"
+        }
+      },
+      "x-mutation": false
+    },
+    {
+      "name": "actions.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Newest first; default 50.",
+          "name": "limit",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ActionList"
+        }
+      },
+      "x-mutation": false
+    }
+  ],
+  "openrpc": "1.3.2"
+}
