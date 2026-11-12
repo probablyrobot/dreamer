@@ -1196,6 +1196,8 @@ version = "0.0.0"
 dependencies = [
  "gpui",
  "gpui_platform",
+ "terminal-ghostty",
+ "terminal-render",
 ]
 
 [[package]]
@@ -4901,6 +4903,16 @@ name = "terminal-ghostty"
 version = "0.0.0"
 dependencies = [
  "ghostty-sys",
+ "terminal-core",
+]
+
+[[package]]
+name = "terminal-render"
+version = "0.0.0"
+dependencies = [
+ "gpui",
+ "image",
+ "smallvec",
  "terminal-core",
 ]
 

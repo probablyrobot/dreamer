@@ -1,0 +1,18 @@
+[package]
+name = "terminal-render"
+description = "Cell-accurate GPUI renderer for terminal frame snapshots"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+gpui.workspace = true
+# Same versions GPUI uses, for image frames and glyph run lists.
+image = { version = "0.25.10", default-features = false }
+smallvec = "1.16.5"
+terminal-core = { path = "../terminal-core" }
+
+[lints]
+workspace = true
