@@ -25,6 +25,7 @@ workspace-host = { path = "../workspace-host" }
 
 [dev-dependencies]
 client = { path = "../client" }
+terminal-ghostty = { path = "../terminal-ghostty" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]

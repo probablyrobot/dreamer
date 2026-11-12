@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 2 }
+version: { major: 1, minor: 3 }
 package: dreamer.v1
 
 types:
@@ -317,6 +317,84 @@ types:
       - { n: 2, name: tier, type: Tier }
       - { n: 3, name: endpoint, type: string, optional: true }
 
+  # ---- terminal subscriptions ---------------------------------------------
+  # After `terminal.subscribe`, the daemon pushes on the same connection:
+  #   bulk  topic `terminal.checkpoint`  CheckpointData (stream = subscription)
+  #   event topic `terminal.records`     RecordBatch
+  #   event topic `terminal.end`         SubscriptionEnd
+  # A checkpoint (bulk) may arrive after records that follow it (events go
+  # first); records with sequence <= the checkpoint's are already in it.
+
+  - message: TerminalSubscribe
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: endpoint, type: string, optional: true }
+      - { n: 3, name: resume_epoch, type: u64, optional: true, doc: "With generation and sequence: continue after this record instead of a new checkpoint, if it is still retained." }
+      - { n: 4, name: resume_generation, type: u64, optional: true }
+      - { n: 5, name: resume_sequence, type: u64, optional: true }
+
+  - enum: SubscribeMode
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: checkpoint, doc: A checkpoint follows; records continue after its sequence. }
+      - { n: 2, name: replay, doc: "No checkpoint; records continue right after the resume point." }
+
+  - message: Subscription
+    fields:
+      - { n: 1, name: id, type: u64 }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: epoch, type: u64 }
+      - { n: 4, name: generation, type: u64 }
+      - { n: 5, name: mode, type: SubscribeMode }
+      - { n: 6, name: sequence, type: u64, doc: "Checkpoint mode: the checkpoint's sequence. Replay mode: the resume point." }
+      - { n: 7, name: checkpoint_bytes, type: u64 }
+      - { n: 8, name: checkpoint_pause_us, type: u64, doc: How long the snapshot held the pane's owner. }
+      - { n: 9, name: scrollback_lines, type: u32, doc: "The mirror's scrollback limit; a replica uses the same so both keep the same history." }
+
+  - message: TerminalRecord
+    doc: One journaled change. A resize when cols and rows are set, otherwise output bytes.
+    fields:
+      - { n: 1, name: sequence, type: u64 }
+      - { n: 2, name: data, type: bytes }
+      - { n: 3, name: cols, type: u32, optional: true }
+      - { n: 4, name: rows, type: u32, optional: true }
+
+  - message: RecordBatch
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: epoch, type: u64 }
+      - { n: 4, name: generation, type: u64 }
+      - { n: 5, name: records, type: TerminalRecord, repeated: true }
+
+  - message: CheckpointData
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: epoch, type: u64 }
+      - { n: 4, name: generation, type: u64 }
+      - { n: 5, name: sequence, type: u64 }
+      - { n: 6, name: snapshot, type: bytes, doc: "Engine snapshot; peers share the build family checked at handshake." }
+
+  - enum: EndReason
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: lagged, doc: "The subscriber fell behind; resubscribe (resume if still retained)." }
+      - { n: 2, name: pane_closed }
+      - { n: 3, name: respawned, doc: The pane's process was replaced; subscribe to the new generation. }
+      - { n: 4, name: connection_lost, doc: "The daemon lost its tmux connection; a new epoch follows." }
+      - { n: 5, name: unsubscribed }
+
+  - message: SubscriptionEnd
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: reason, type: EndReason }
+      - { n: 3, name: detail, type: string, optional: true }
+
+  - message: Unsubscribe
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -328,3 +406,5 @@ methods:
   - { method: terminal.read, params: ReadParams, result: TerminalText, doc: "Bounded text, cursor, and size from a pane's canonical mirror." }
   - { method: terminal.mirrors, params: TopologyParams, result: MirrorList, doc: Every mirrored pane and its state. }
   - { method: terminal.set_tier, params: SetTier, result: Empty, mutation: true, doc: Mark a mirrored pane Hot or Warm. }
+  - { method: terminal.subscribe, params: TerminalSubscribe, result: Subscription, doc: "Follow a pane's canonical mirror: checkpoint or replay, then ordered records." }
+  - { method: terminal.unsubscribe, params: Unsubscribe, result: Empty }

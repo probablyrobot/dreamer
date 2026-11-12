@@ -1270,6 +1270,7 @@ dependencies = [
  "platform",
  "prost",
  "terminal-core",
+ "terminal-ghostty",
  "tmux-backend",
  "tokio",
  "wire",

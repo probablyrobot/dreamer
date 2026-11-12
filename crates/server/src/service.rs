@@ -428,6 +428,25 @@ impl api::Service for DaemonService {
         }
     }
 
+    // Subscriptions push data on their connection, so the connection layer
+    // (conn.rs) serves them; this path is only reached without one.
+    async fn terminal_subscribe(
+        &self,
+        _: api::TerminalSubscribe,
+    ) -> Result<api::Subscription, RpcError> {
+        Err(RpcError::new(
+            code::INVALID_REQUEST,
+            "terminal.subscribe needs a streaming connection to the daemon",
+        ))
+    }
+
+    async fn terminal_unsubscribe(&self, _: api::Unsubscribe) -> Result<api::Empty, RpcError> {
+        Err(RpcError::new(
+            code::INVALID_REQUEST,
+            "terminal.unsubscribe needs a streaming connection to the daemon",
+        ))
+    }
+
     async fn actions_get(&self, p: api::ActionQuery) -> Result<api::ActionRecord, RpcError> {
         self.0.actions.lock().await.get(&p.id)
     }
@@ -441,6 +460,21 @@ impl api::Service for DaemonService {
 }
 
 impl DaemonService {
+    /// The mirrors of the endpoint, connecting it first if needed.
+    pub async fn mirror_host(
+        &self,
+        endpoint: Option<&str>,
+    ) -> Result<mirror::MirrorHost, RpcError> {
+        self.check_endpoint(endpoint)?;
+        drop(self.0.endpoint().await?);
+        self.0
+            .mirrors
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| unavailable("no mirrors yet".into()))
+    }
+
     fn check_endpoint(&self, name: Option<&str>) -> Result<(), RpcError> {
         match name {
             Some(n) if n != self.0.endpoint_config.name => Err(RpcError::new(

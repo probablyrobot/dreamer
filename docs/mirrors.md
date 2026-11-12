@@ -56,6 +56,40 @@ can replay. The retained records are always exactly
 `journal_first_sequence..=sequence`. A client that needs an older record
 has fallen behind and needs a fresh checkpoint instead.
 
+## Subscriptions
+
+A client follows a pane with `terminal.subscribe`. The pane's owning worker
+decides how the stream starts and registers the subscriber before it
+applies the next record. Nothing can fall between the starting point and
+the stream (spec 11.5).
+
+- **Checkpoint:** the worker snapshots the engine at sequence N, and records
+  N+1 onward follow. The snapshot travels as chunked bulk data (topic
+  `terminal.checkpoint`). Because priority events go first, records after N
+  can arrive before the checkpoint; the client holds them until the
+  checkpoint is restored.
+- **Replay:** a client that resumes with the epoch, generation, and sequence
+  it last applied gets the retained records right after that point, and no
+  checkpoint. Resuming from another epoch or generation, or from a point
+  that has been trimmed, falls back to a checkpoint.
+- **Scrollback:** the reply includes the mirror's scrollback limit. A
+  snapshot does not carry it, and a replica that kept more or less history
+  would drift from the mirror.
+
+Records arrive in order as `terminal.records` batches. A stream always ends
+with a `terminal.end` event that names the reason:
+
+| Reason | Meaning |
+| --- | --- |
+| `lagged` | The subscriber's queue (4096 records) filled: it is not keeping up. Resubscribe, resuming if the records are still retained |
+| `pane_closed` | The pane is gone |
+| `respawned` | The pane runs a new process; subscribe to the new generation |
+| `connection_lost` | The daemon lost tmux; a new epoch follows |
+| `unsubscribed` | `terminal.unsubscribe` |
+
+A slow client never stalls the pane's owner or other subscribers. The owner
+never waits on a subscriber; it ends the one that is behind instead.
+
 ## Tiers
 
 Every mirrored pane is **Warm** (mirrored and journaled, not shown) or

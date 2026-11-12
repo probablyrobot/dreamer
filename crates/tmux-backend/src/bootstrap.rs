@@ -425,11 +425,17 @@ pub fn restore_engine(
     let mut config = EngineConfig::new(state.size());
     config.scrollback_lines = Some(state.history_limit as usize);
     config.scrollback_bytes = Some(usize::MAX);
+    // Snapshots may be taken mid-sequence; they need continuation tracking
+    // (spec 11.5). Replicas restore with the same limit.
+    config.continuation_max_bytes = Some(CONTINUATION_MAX_BYTES);
     let mut engine = Engine::new(config)?;
     let _ = engine.feed(&restore_bytes(state, captures))?;
     let _ = engine.feed(continuation)?;
     Ok(engine)
 }
+
+/// Unfinished input a canonical engine keeps for snapshots.
+pub const CONTINUATION_MAX_BYTES: usize = 64 << 10;
 
 /// Synthesize the VT byte stream that recreates the captured state in a
 /// fresh engine of the pane's size.

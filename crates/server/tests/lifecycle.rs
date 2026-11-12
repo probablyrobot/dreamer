@@ -252,7 +252,7 @@ async fn nothing_but_frames_reaches_stdout_or_the_socket() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("foreground daemon");
-    let mut c = connect_soon(&d.socket()).await;
+    let c = connect_soon(&d.socket()).await;
     // Version, an unknown method, an unavailable endpoint, then shutdown:
     // every reply must decode as a frame, so stray bytes would fail here.
     match c
@@ -371,7 +371,7 @@ async fn a_daemon_crash_mid_action_is_outcome_unknown_after_restart() {
         .env("DREAMER_TEST_ABORT_AFTER_DISPATCH", "1")
         .spawn()
         .expect("daemon");
-    let mut c = connect_soon(&d.socket()).await;
+    let c = connect_soon(&d.socket()).await;
     let split = api::SubmitAction {
         action: Some(api::Action {
             kind: Some(api::action::Kind::SplitPane(api::SplitPane {
@@ -389,7 +389,7 @@ async fn a_daemon_crash_mid_action_is_outcome_unknown_after_restart() {
     assert!(!code.success());
 
     // A new daemon settles the action and does not replay it.
-    let (mut c, started) = ensure_running(&d.launch(&["--tmux-socket", tmux.socket()]), "test")
+    let (c, started) = ensure_running(&d.launch(&["--tmux-socket", tmux.socket()]), "test")
         .await
         .expect("restart");
     assert!(started);
