@@ -99,6 +99,12 @@ fn stages(platform: Platform) -> Vec<Stage> {
     let _ = platform; // Platform-specific native stages are added with the GUI build.
     vec![
         Stage {
+            name: "policy",
+            program: "cargo",
+            args: &["xtask", "policy"],
+            always: true,
+        },
+        Stage {
             name: "fmt",
             program: "cargo",
             args: &["fmt", "--all", "--check"],
@@ -291,7 +297,12 @@ fn write_report(
 ) -> Result<PathBuf, String> {
     let dir = root.join("target").join("gate").join(platform.name());
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let path = dir.join(format!("{tree}.json"));
+    let mode_name = if mode == Mode::Staged {
+        "staged"
+    } else {
+        "full"
+    };
+    let path = dir.join(format!("{tree}-{mode_name}.json"));
 
     let overall = if results.iter().any(|r| r.outcome == Outcome::Failed) {
         "failed"
