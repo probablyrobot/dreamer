@@ -12,9 +12,12 @@ domain = { path = "../domain" }
 serde_json = "1.0.154"
 terminal-ghostty = { path = "../terminal-ghostty" }
 tmux-protocol = { path = "../tmux-protocol" }
+workspace-config = { path = "../workspace-config" }
 tokio = { version = "1.54.1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 
 [dev-dependencies]
+domain = { path = "../domain" }
+workspace-config = { path = "../workspace-config" }
 tokio = { version = "1.54.1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 
 [lints]

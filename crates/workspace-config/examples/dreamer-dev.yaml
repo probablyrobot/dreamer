@@ -1,0 +1,46 @@
+# An example workspace. Copy to ~/.config/dreamer/workspaces/ and start it
+# with `dream workspace up dreamer-dev`.
+version: 1
+name: dreamer-dev
+root: ~/Devel/dreamer
+env:
+  RUST_LOG: info
+
+windows:
+  - name: code
+    focus: true
+    layout:
+      split: horizontal
+      panes:
+        - size: 60%
+          title: editor
+          run: nvim .
+          focus: true
+        - split: vertical
+          panes:
+            - title: check
+              exec: [cargo, watch, -x, check]
+            - title: shell
+
+  - name: tests
+    root: crates/tmux-backend
+    panes:
+      - title: unit
+        shell: cargo test --lib
+        keep: true
+      - title: integration
+        run: cargo test --test bootstrap
+    arrange: even-horizontal
+
+  - name: logs
+    layout:
+      split: vertical
+      panes:
+        - size: 8
+          title: status
+          exec: [git, status]
+          keep: true
+        - title: tail
+          env:
+            LOG_LEVEL: debug
+          run: tail -f target/gate/mac/latest.log
