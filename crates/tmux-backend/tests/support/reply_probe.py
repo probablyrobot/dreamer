@@ -15,6 +15,9 @@ import tty
 fd = sys.stdin.fileno()
 saved = termios.tcgetattr(fd)
 tty.setraw(fd)
+# Announce readiness only now: setraw flushes pending input, so a go key
+# sent earlier would be lost.
+os.write(sys.stdout.fileno(), b"ready")
 os.read(fd, 1)  # wait for the go key
 results = []
 try:

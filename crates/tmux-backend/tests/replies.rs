@@ -82,11 +82,7 @@ struct Outcome {
 fn run_probe(report_colors: bool) -> Outcome {
     let probe = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/reply_probe.py");
     let queries: Vec<String> = QUERIES.iter().map(|q| hex(q.bytes)).collect();
-    let script = format!(
-        "printf ready; python3 {} {}",
-        probe.display(),
-        queries.join(" ")
-    );
+    let script = format!("python3 {} {}", probe.display(), queries.join(" "));
     let server = TmuxServer::start(200, 20, &script).expect("tmux");
     let mut client = ControlClient::attach(&server, "main").expect("attach");
     let pane_text = server.format("main", "#{pane_id}").expect("pane");
