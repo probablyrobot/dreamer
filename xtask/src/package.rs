@@ -5,7 +5,7 @@
 //!   and `dream`, plus `dreamer-<version>-aarch64-apple-darwin.zip` and its
 //!   `.sha256`. Bundles are ad hoc signed; Developer ID signing and
 //!   notarization are a separate release step (spec 3.2, 17.5).
-//! - `cargo xtask package --platform arch [--source-only]` writes
+//! - `cargo xtask package --platform arch [--source-only] [--nodeps]` writes
 //!   `target/package/arch/` with a `git archive` source tarball and a
 //!   PKGBUILD, then runs `makepkg` when it is available.
 
@@ -29,17 +29,19 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut profile = Profile::Release;
     let mut platform = "current".to_owned();
     let mut source_only = false;
+    let mut nodeps = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--platform" => platform = iter.next().ok_or("--platform needs a value")?.clone(),
             "--debug" => profile = Profile::Debug,
             "--source-only" => source_only = true,
+            "--nodeps" => nodeps = true,
             other => return Err(format!("unknown package argument `{other}`")),
         }
     }
     match platform.as_str() {
-        "arch" => return arch_package(&repo_root(), source_only),
+        "arch" => return arch_package(&repo_root(), source_only, nodeps),
         "macos" => {}
         "current" if cfg!(target_os = "macos") => {}
         "current" => return Err("on Linux, choose a package: --platform arch".into()),
@@ -63,7 +65,7 @@ fn sha256_of(path: &Path) -> Result<String, String> {
 }
 
 /// Source tarball plus PKGBUILD in `target/package/arch`, then `makepkg`.
-fn arch_package(root: &Path, source_only: bool) -> Result<(), String> {
+fn arch_package(root: &Path, source_only: bool, nodeps: bool) -> Result<(), String> {
     let version = version(root)?;
     let out = root.join("target").join("package").join("arch");
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
@@ -106,8 +108,14 @@ fn arch_package(root: &Path, source_only: bool) -> Result<(), String> {
         }
         return Ok(());
     }
-    let status = Command::new("makepkg")
-        .args(["--force", "--noconfirm"])
+    let mut makepkg = Command::new("makepkg");
+    makepkg.args(["--force", "--noconfirm"]);
+    if nodeps {
+        // Build tools not installed through pacman (for example rustup from
+        // its own installer) are fine; skip makepkg's package check.
+        makepkg.arg("--nodeps");
+    }
+    let status = makepkg
         .current_dir(&out)
         .status()
         .map_err(|e| format!("makepkg: {e}"))?;
