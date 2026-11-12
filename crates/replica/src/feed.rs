@@ -46,6 +46,10 @@ pub struct FeedStats {
 
 #[derive(Debug)]
 pub struct Feed {
+    input: tokio::sync::mpsc::UnboundedSender<api::terminal_input::Event>,
+    /// Input sent, and input dropped because the daemon was unreachable.
+    pub inputs_sent: Arc<AtomicU64>,
+    pub inputs_dropped: Arc<AtomicU64>,
     latest: Arc<Mutex<Option<Arc<FrameSnapshot>>>>,
     status: Arc<Mutex<FeedStatus>>,
     pub stats: Arc<FeedStats>,
@@ -66,7 +70,18 @@ impl Feed {
         let status = Arc::new(Mutex::new(FeedStatus::Connecting));
         let stats = Arc::new(FeedStats::default());
         let (wake_tx, wake) = async_channel::bounded(1);
+        let (input, input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let inputs_sent = Arc::new(AtomicU64::new(0));
+        let inputs_dropped = Arc::new(AtomicU64::new(0));
+        let target = Arc::new(Target::default());
+        let sender = InputSender {
+            socket: socket.clone(),
+            target: target.clone(),
+            sent: inputs_sent.clone(),
+            dropped: inputs_dropped.clone(),
+        };
         let owner = Owner {
+            target,
             latest: latest.clone(),
             status: status.clone(),
             stats: stats.clone(),
@@ -85,14 +100,26 @@ impl Feed {
                     owner.set(FeedStatus::UnableToCatchUp("no runtime".into()));
                     return;
                 };
+                rt.spawn(sender.run(input_rx));
                 rt.block_on(owner.run(socket, pane, launch));
             })?;
         Ok(Feed {
+            input,
+            inputs_sent,
+            inputs_dropped,
             latest,
             status,
             stats,
             wake,
         })
+    }
+
+    /// Send input to the pane: encoded by the daemon against the pane's
+    /// state and refused if the pane's process has been replaced since
+    /// this feed last saw it. Never queued for replay across a lost
+    /// connection.
+    pub fn send(&self, event: api::terminal_input::Event) {
+        let _ = self.input.send(event);
     }
 
     /// The newest unpainted frame, if any.
@@ -108,7 +135,80 @@ impl Feed {
     }
 }
 
+/// The pane being followed and its process generation (0 until known).
+#[derive(Debug, Default)]
+struct Target {
+    pane: AtomicU64,
+    generation: AtomicU64,
+    known: std::sync::atomic::AtomicBool,
+}
+
+/// Sends input on its own connection, so input never waits for, or
+/// interrupts, the follow loop.
+struct InputSender {
+    socket: PathBuf,
+    target: Arc<Target>,
+    sent: Arc<AtomicU64>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl InputSender {
+    async fn run(self, mut rx: tokio::sync::mpsc::UnboundedReceiver<api::terminal_input::Event>) {
+        let mut client: Option<client::Client> = None;
+        while let Some(event) = rx.recv().await {
+            if !self.target.known.load(Ordering::Acquire) {
+                // No pane yet: nothing to type into.
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            if client.is_none() {
+                client = client::Client::connect(&self.socket, "gui-input")
+                    .await
+                    .ok();
+            }
+            let Some(c) = client.as_ref() else {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            let pane = self.target.pane.load(Ordering::Acquire) as u32;
+            let generation =
+                Some(self.target.generation.load(Ordering::Acquire)).filter(|g| *g != 0);
+            let result = match event {
+                api::terminal_input::Event::Paste(p) => {
+                    client::paste(c, pane, generation, &p.data).await.map(drop)
+                }
+                other => c
+                    .call(api::Request::TerminalInput(api::TerminalInput {
+                        pane,
+                        generation,
+                        endpoint: None,
+                        event: Some(other),
+                    }))
+                    .await
+                    .map(drop),
+            };
+            match result {
+                Ok(()) => {
+                    self.sent.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    // Input is never replayed after an uncertain failure
+                    // (spec 12.4); the next input reconnects.
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    if matches!(
+                        e,
+                        client::ClientError::Wire(_) | client::ClientError::NotRunning(_)
+                    ) {
+                        client = None;
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct Owner {
+    target: Arc<Target>,
     latest: Arc<Mutex<Option<Arc<FrameSnapshot>>>>,
     status: Arc<Mutex<FeedStatus>>,
     stats: Arc<FeedStats>,
@@ -213,6 +313,7 @@ impl Owner {
         };
         let mut f = self.connect(&socket, pane).await;
         self.set(FeedStatus::Following);
+        self.target.pane.store(u64::from(pane), Ordering::Release);
         let mut held_since: Option<tokio::time::Instant> = None;
         loop {
             let step = match held_since {
@@ -233,6 +334,10 @@ impl Owner {
             self.stats.owner_wakeups.fetch_add(1, Ordering::Relaxed);
             match step {
                 Ok(s) if s.records > 0 || s.restored => {
+                    if let Some((_, generation, _)) = f.replica().position() {
+                        self.target.generation.store(generation, Ordering::Release);
+                        self.target.known.store(true, Ordering::Release);
+                    }
                     let Some(Ok(frame)) = f.frame() else { continue };
                     self.stats.frames.fetch_add(1, Ordering::Relaxed);
                     if frame.render_hold && !s.restored {

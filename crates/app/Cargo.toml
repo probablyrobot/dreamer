@@ -12,6 +12,7 @@ name = "dreamer"
 path = "src/main.rs"
 
 [dependencies]
+api = { path = "../api" }
 client = { path = "../client" }
 gpui.workspace = true
 replica = { path = "../replica" }

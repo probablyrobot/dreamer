@@ -445,3 +445,24 @@ async fn without_a_tmux_server_the_feed_says_so() {
         replica::feed::FeedStatus::Reconnecting(_)
     ));
 }
+
+#[tokio::test]
+async fn input_sent_through_the_feed_reaches_the_pane() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let s = Setup::new(&[]);
+    drop(s.client().await);
+    let feed = replica::feed::Feed::start(s.socket(), Some(0), None).expect("feed");
+    s.type_line("echo FEED-READY");
+    feed_until(&feed, |t| t.contains("\nFEED-READY")).await;
+    // Text the way a window sends committed text, then Enter as a key.
+    feed.send(api::terminal_input::Event::Text(api::TextInput {
+        text: "echo VIA-FE''ED".into(),
+    }));
+    feed.send(api::terminal_input::Event::Key(api::KeyInput {
+        key: "Enter".into(),
+        ..api::KeyInput::default()
+    }));
+    feed_until(&feed, |t| t.contains("\nVIA-FEED")).await;
+    assert_eq!(feed.inputs_sent.load(Relaxed), 2);
+    assert_eq!(feed.inputs_dropped.load(Relaxed), 0);
+}

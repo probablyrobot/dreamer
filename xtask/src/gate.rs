@@ -207,6 +207,11 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         });
         stages.push(Stage {
+            name: "input",
+            action: Builtin(input_smoke),
+            when: When::Code,
+        });
+        stages.push(Stage {
             name: "package",
             action: Builtin(package_away_from_tree),
             when: When::Full,
@@ -332,6 +337,42 @@ fn live_smoke(dir: &Path) -> Result<Done, String> {
     if !require_refreshing_display()? {
         return Ok(Done::NotRun);
     }
+    let marker = "dreamer-live-ok";
+    isolated_app_run(
+        dir,
+        "live",
+        &format!("sh -c 'printf \"{marker}\\n\"; exec sleep 600'"),
+        None,
+        &["--smoke", "--expect", marker],
+    )
+}
+
+/// Typing and IME composition through the window reach the pane (only
+/// committed text; preedit is never sent). Needs a GUI session but not a
+/// refreshing display: keys are dispatched, frames arrive from the feed.
+fn input_smoke(dir: &Path) -> Result<Done, String> {
+    if !require_gui()? {
+        return Ok(Done::NotRun);
+    }
+    isolated_app_run(
+        dir,
+        "input",
+        "env PS1='$ ' /bin/sh",
+        Some("echo READY-FOR-INPUT"),
+        &["--smoke-input", "--expect", "READY-FOR-INPUT"],
+    )
+}
+
+/// Run `dreamer --attach 0 <args>` against an isolated tmux server whose
+/// pane runs `command` (optionally after typing `type_first` into it),
+/// with private daemon directories and the default-tmux guard.
+fn isolated_app_run(
+    dir: &Path,
+    name: &str,
+    command: &str,
+    type_first: Option<&str>,
+    args: &[&str],
+) -> Result<Done, String> {
     let build = clean_git_env(Command::new("cargo"))
         .args([
             "build",
@@ -348,10 +389,9 @@ fn live_smoke(dir: &Path) -> Result<Done, String> {
         return Err("building dreamer and dreamerd failed".into());
     }
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
-    let socket = format!("dreamer-gate-live-{}", std::process::id());
-    let root = PathBuf::from(format!("/tmp/drm-gate-live-{}", std::process::id()));
+    let socket = format!("dreamer-gate-{name}-{}", std::process::id());
+    let root = PathBuf::from(format!("/tmp/drm-gate-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let marker = "dreamer-live-ok";
     let started = Command::new(&tmux)
         .args([
             "-L",
@@ -367,16 +407,20 @@ fn live_smoke(dir: &Path) -> Result<Done, String> {
             "-y",
             "30",
         ])
-        .arg(format!("sh -c 'printf \"{marker}\\n\"; exec sleep 600'"))
+        .arg(command)
         .status()
         .map_err(|e| format!("{tmux}: {e}"))?;
     if !started.success() {
         return Err("could not start an isolated tmux server".into());
     }
+    if let Some(line) = type_first {
+        let _ = Command::new(&tmux)
+            .args(["-L", &socket, "send-keys", "-t", "main", line, "Enter"])
+            .status();
+    }
     let out = Command::new(dir.join("target/debug/dreamer"))
-        .args([
-            "--smoke", "--expect", marker, "--attach", "0", "-L", &socket, "--tmux", &tmux,
-        ])
+        .args(args)
+        .args(["--attach", "0", "-L", &socket, "--tmux", &tmux])
         .env("DREAMER_RUNTIME_DIR", root.join("rt"))
         .env("DREAMER_STATE_DIR", root.join("st"))
         .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
@@ -393,19 +437,18 @@ fn live_smoke(dir: &Path) -> Result<Done, String> {
         .status();
     let _ = std::fs::remove_dir_all(&root);
     let out = out.map_err(|e| format!("dreamer: {e}"))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
         println!("gate:   {line}");
     }
     if out.status.code() == Some(5) {
-        println!("gate: the display did not refresh; live paint checks recorded as not run");
+        println!("gate: the display did not refresh; {name} paint checks recorded as not run");
         return Ok(Done::NotRun);
     }
     if out.status.success() {
         Ok(Done::Passed)
     } else {
         Err(format!(
-            "live pane smoke failed ({}): {}",
+            "{name} smoke failed ({}): {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         ))
