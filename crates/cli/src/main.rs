@@ -18,6 +18,9 @@
 //! dream actions [ID] [--limit N] [--json]
 //!                                       the action ledger
 //! dream doctor                          diagnostics; never starts the daemon
+//! dream read %PANE [--history N] [--json]
+//!                                       a pane's text from the daemon's mirror
+//! dream mirrors [--json]                mirror state of every pane
 //! dream --version
 //! ```
 
@@ -47,6 +50,8 @@ const USAGE: &str = "usage:
   dream act <action> ... [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream actions [ID] [--limit N] [--json]
   dream doctor
+  dream read %PANE [--history N] [--json]
+  dream mirrors [--json]
   dream --version";
 
 fn main() -> ExitCode {
@@ -88,6 +93,16 @@ fn main() -> ExitCode {
             remote::actions(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
         }
         ["doctor"] => remote::doctor(),
+        ["read", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::read(&d, &extra))
+        }
+        ["mirrors", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| match extra.as_slice() {
+                [] => remote::mirrors(&d, false),
+                [j] if j == "--json" => remote::mirrors(&d, true),
+                _ => Err(format!("unexpected arguments {extra:?}\n{USAGE}")),
+            })
+        }
         ["ensure-running", rest @ ..] => daemon::split_daemon_args(rest).and_then(|(d, extra)| {
             if extra.is_empty() {
                 daemon::ensure(&d)

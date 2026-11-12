@@ -62,6 +62,10 @@ pub struct State {
     pub clients: AtomicU32,
     pub shutting_down: AtomicBool,
     pub shutdown: Notify,
+    /// Canonical mirrors of the current connection, if connected.
+    pub mirrors: tokio::sync::RwLock<Option<mirror::MirrorHost>>,
+    /// Connection epochs: each new control connection gets the next one.
+    pub epochs: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +77,9 @@ fn unavailable(msg: String) -> RpcError {
 
 impl State {
     /// The endpoint, connecting on first use and after its link dropped.
-    async fn endpoint(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Endpoint>>, RpcError> {
+    async fn endpoint(
+        self: &Arc<Self>,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<Endpoint>>, RpcError> {
         let mut guard = self.endpoint.lock().await;
         let live = guard
             .as_ref()
@@ -112,11 +118,20 @@ impl State {
             let mut config =
                 ConnectionConfig::new(cfg.program.clone(), cfg.socket.clone(), session);
             config.config_file = None;
-            let (conn, mut events) = Connection::spawn(config).await.map_err(|e| {
+            let (conn, events) = Connection::spawn(config).await.map_err(|e| {
                 unavailable(format!("cannot attach to tmux {}: {e}", cfg.describe()))
             })?;
-            // The connection lives as long as its events are read.
-            tokio::spawn(async move { while events.recv().await.is_some() {} });
+            // The mirrors take the event stream first: responses to the
+            // commands below only arrive while events keep flowing.
+            let epoch = domain::ConnectionEpoch(self.epochs.fetch_add(1, Ordering::SeqCst) + 1);
+            let (host, changes) = mirror::MirrorHost::start(
+                conn.clone(),
+                events,
+                epoch,
+                mirror::MirrorConfig::default(),
+            )
+            .await
+            .map_err(|e| unavailable(format!("cannot start mirror workers: {e}")))?;
             let (tracker, _) = InventoryTracker::start(
                 conn.clone(),
                 ServerKey(cfg.name.clone()),
@@ -129,6 +144,10 @@ impl State {
                 cfg.name,
                 cfg.describe()
             ));
+            host.sync(tracker.inventory().server.clone(), mirrored_panes(&tracker))
+                .await;
+            *self.mirrors.write().await = Some(host.clone());
+            tokio::spawn(reconcile(Arc::downgrade(self), host, changes));
             *guard = Some(Endpoint {
                 name: cfg.name.clone(),
                 conn,
@@ -136,6 +155,45 @@ impl State {
             });
         }
         Ok(guard)
+    }
+}
+
+/// Every pane execution the inventory knows, for the mirrors.
+fn mirrored_panes(tracker: &InventoryTracker) -> Vec<(domain::TmuxPaneId, domain::PaneGeneration)> {
+    tracker
+        .inventory()
+        .panes
+        .keys()
+        .filter_map(|p| tracker.generation(*p).map(|g| (*p, g)))
+        .collect()
+}
+
+/// Keep the mirrors in step with tmux: whenever tmux reports a structural
+/// change (windows, layouts, pane processes), re-read the inventory and
+/// attach, re-attach, or drop mirrors. Ends with its connection.
+async fn reconcile(
+    state: std::sync::Weak<State>,
+    host: mirror::MirrorHost,
+    mut changes: tokio::sync::watch::Receiver<u64>,
+) {
+    while changes.changed().await.is_ok() {
+        // Let a burst of notifications settle into one re-read.
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        changes.borrow_and_update();
+        let Some(state) = state.upgrade() else { return };
+        let mut guard = state.endpoint.lock().await;
+        let Some(ep) = guard.as_mut() else { return };
+        if ep.conn.state() == LinkState::Failed {
+            return;
+        }
+        if let Err(e) = ep.tracker.refresh().await {
+            log::warn(format!("re-reading tmux for mirrors: {e}"));
+            continue;
+        }
+        let tmux = ep.tracker.inventory().server.clone();
+        let panes = mirrored_panes(&ep.tracker);
+        drop(guard);
+        host.sync(tmux, panes).await;
     }
 }
 
@@ -252,6 +310,87 @@ impl api::Service for DaemonService {
                 .unwrap_or_default()
         ));
         Ok(r)
+    }
+
+    async fn terminal_read(&self, p: api::ReadParams) -> Result<api::TerminalText, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        drop(self.0.endpoint().await?);
+        let host = self
+            .0
+            .mirrors
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| unavailable("no mirrors yet".into()))?;
+        let pane = domain::TmuxPaneId(p.pane);
+        let history = p.history.unwrap_or(0).min(10_000) as usize;
+        let mut read = host.read(pane, history).await;
+        if read.is_none() {
+            // A pane that is still attaching is worth a short wait.
+            let attaching = host.status().await.iter().any(|s| s.pane == pane);
+            if attaching
+                && host
+                    .wait_live(&[pane], std::time::Duration::from_secs(3))
+                    .await
+            {
+                read = host.read(pane, history).await;
+            }
+        }
+        let r = read
+            .ok_or_else(|| {
+                RpcError::new(code::NOT_FOUND, format!("pane %{} is not mirrored", p.pane))
+            })?
+            .map_err(|e| RpcError::new(code::INTERNAL, e))?;
+        Ok(api::TerminalText {
+            pane: r.pane.pane.0,
+            generation: r.generation.0,
+            epoch: r.epoch.0,
+            sequence: r.sequence,
+            cols: u32::from(r.cols),
+            rows: u32::from(r.rows),
+            cursor_x: u32::from(r.cursor.0),
+            cursor_y: u32::from(r.cursor.1),
+            history_lines: r.history as u32,
+            lines: r.lines,
+        })
+    }
+
+    async fn terminal_mirrors(&self, p: api::TopologyParams) -> Result<api::MirrorList, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        drop(self.0.endpoint().await?);
+        let host = self.0.mirrors.read().await.clone();
+        let Some(host) = host else {
+            return Ok(api::MirrorList::default());
+        };
+        let mut mirrors: Vec<api::MirrorStatus> = host
+            .status()
+            .await
+            .into_iter()
+            .map(|m| {
+                let (state, detail) = match &m.state {
+                    mirror::MirrorState::Attaching => (api::MirrorState::Attaching, None),
+                    mirror::MirrorState::Live => (api::MirrorState::Live, None),
+                    mirror::MirrorState::Failed(e) => (api::MirrorState::Failed, Some(e.clone())),
+                };
+                api::MirrorStatus {
+                    pane: m.pane.0,
+                    generation: m.generation.0,
+                    epoch: host.epoch().0,
+                    state: state as i32,
+                    sequence: m.live.as_ref().map_or(0, |l| l.sequence),
+                    ingested_bytes: m.live.as_ref().map_or(0, |l| l.ingested),
+                    worker: m.worker as u32,
+                    cols: m.live.as_ref().map_or(0, |l| u32::from(l.cols)),
+                    rows: m.live.as_ref().map_or(0, |l| u32::from(l.rows)),
+                    detail,
+                }
+            })
+            .collect();
+        mirrors.sort_by_key(|m| m.pane);
+        Ok(api::MirrorList {
+            mirrors,
+            workers: mirror::MirrorConfig::default().workers as u32,
+        })
     }
 
     async fn actions_get(&self, p: api::ActionQuery) -> Result<api::ActionRecord, RpcError> {

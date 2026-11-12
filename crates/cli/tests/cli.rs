@@ -183,6 +183,28 @@ fn an_isolated_session_is_discovered_and_controlled_from_the_cli() {
         "Enter",
     ]);
     cli.wait_for_text(&format!("%{first}"), "\nkeyed");
+    // The daemon's own mirror of the pane shows the same output.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let mirrored = cli.ok(&["read", &format!("%{first}"), "--history", "100"]);
+        if mirrored.lines().any(|l| l == "keyed") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "mirror never showed the output:\n{mirrored}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let mirrors = cli.ok(&["mirrors"]);
+    assert!(
+        mirrors.contains(&format!("%{first} gen 1 epoch 1 live")),
+        "{mirrors}"
+    );
+    assert!(
+        mirrors.contains(&format!("%{second} gen 1 epoch 1 live")),
+        "{mirrors}"
+    );
 
     let out = cli.ok(&["act", "rename", &format!("@{window}"), "from cli #1"]);
     assert!(out.contains("named \"from cli #1\""), "{out}");
