@@ -1,0 +1,15 @@
+[package]
+name = "dreamer-cli"
+description = "Dreamer command-line interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "dream"
+path = "src/main.rs"
+
+[lints]
+workspace = true
