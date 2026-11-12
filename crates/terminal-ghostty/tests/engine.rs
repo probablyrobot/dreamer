@@ -173,3 +173,33 @@ fn ghostty_version_pin() -> &'static str {
     // Keep in step with deps/baseline.toml.
     "1.0.1"
 }
+
+#[test]
+fn modes_cursor_and_scrollback_are_queryable() {
+    let mut e = engine();
+    assert!(!e.mode(1, false).expect("decckm"));
+    assert!(e.mode(7, false).expect("decawm"));
+    e.feed(b"\x1b[?1h\x1b[?2004h\x1b[4h\x1b[?25l\x1b[3;4H")
+        .expect("feed");
+    assert!(e.mode(1, false).expect("decckm"));
+    assert!(e.mode(2004, false).expect("bracketed paste"));
+    assert!(e.mode(4, true).expect("insert"));
+    assert!(!e.mode(25, false).expect("cursor visible"));
+    assert_eq!(e.cursor_position().expect("cursor"), (3, 2));
+    for i in 0..10 {
+        e.feed(format!("\r\nline {i}").as_bytes()).expect("feed");
+    }
+    assert!(e.scrollback_rows().expect("scrollback") >= 6);
+}
+
+#[test]
+fn screen_text_includes_scrollback() {
+    let mut e = engine();
+    for i in 0..30 {
+        e.feed(format!("line {i}\r\n").as_bytes()).expect("feed");
+    }
+    let text = e.screen_text().expect("text");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.first(), Some(&"line 0"), "{text}");
+    assert!(lines.contains(&"line 29"));
+}

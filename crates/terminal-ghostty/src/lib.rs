@@ -71,6 +71,9 @@ pub struct EngineConfig {
     pub size: GridSize,
     /// Maximum scrollback lines; `None` keeps the library default.
     pub scrollback_lines: Option<usize>,
+    /// Maximum scrollback memory in bytes; `None` keeps the library default,
+    /// `Some(usize::MAX)` removes the byte limit.
+    pub scrollback_bytes: Option<usize>,
     /// Deliver engine-generated replies in [`Effects::replies`]. Off by
     /// default: in tmux mirror mode tmux owns query responses.
     pub capture_replies: bool,
@@ -81,6 +84,7 @@ impl EngineConfig {
         Self {
             size,
             scrollback_lines: None,
+            scrollback_bytes: None,
             capture_replies: false,
         }
     }
@@ -166,6 +170,16 @@ impl Engine {
                 )
             })?;
         }
+        if let Some(bytes) = config.scrollback_bytes {
+            // SAFETY: the option takes a pointer to a size_t read during the call.
+            check("set scrollback bytes", unsafe {
+                ghostty_terminal_set(
+                    engine.term,
+                    GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+                    (&raw const bytes).cast(),
+                )
+            })?;
+        }
         effects::register(engine.term, &mut engine.callbacks)?;
         Ok(engine)
     }
@@ -218,6 +232,88 @@ impl Engine {
         let frame = frame::build(self)?;
         self.last = Some(Arc::clone(&frame));
         Ok(frame)
+    }
+
+    /// Current value of a terminal mode: `ansi` modes are set with `CSI n h`,
+    /// DEC private modes with `CSI ? n h`.
+    pub fn mode(&self, number: u16, ansi: bool) -> Result<bool, EngineError> {
+        let mut config = GhosttyTerminalModeConfig {
+            mode: (number & 0x7fff) | (u16::from(ansi) << 15),
+            value: false,
+        };
+        // SAFETY: `term` is live; the config is read and written in place.
+        check("ghostty_terminal_get(mode)", unsafe {
+            ghostty_terminal_get(
+                self.term,
+                GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_MODE,
+                (&raw mut config).cast(),
+            )
+        })?;
+        Ok(config.value)
+    }
+
+    /// Cursor position in the active screen, zero-based `(x, y)`.
+    pub fn cursor_position(&self) -> Result<(u16, u16), EngineError> {
+        let (mut x, mut y) = (0u16, 0u16);
+        // SAFETY: `term` is live; each key writes one u16.
+        unsafe {
+            check(
+                "ghostty_terminal_get(cursor_x)",
+                ghostty_terminal_get(
+                    self.term,
+                    GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_CURSOR_X,
+                    (&raw mut x).cast(),
+                ),
+            )?;
+            check(
+                "ghostty_terminal_get(cursor_y)",
+                ghostty_terminal_get(
+                    self.term,
+                    GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_CURSOR_Y,
+                    (&raw mut y).cast(),
+                ),
+            )?;
+        }
+        Ok((x, y))
+    }
+
+    /// Plain text of the whole active screen including scrollback, one line
+    /// per row (wrapped rows are not joined), trailing blanks trimmed.
+    /// Intended for verification and diagnostics, not the render path.
+    pub fn screen_text(&self) -> Result<String, EngineError> {
+        let mut fmt: GhosttyFormatter = ptr::null_mut();
+        // SAFETY: `term` outlives `fmt`, which is freed before returning; the
+        // output buffer is copied and freed with the same (default) allocator.
+        unsafe {
+            check(
+                "ghostty_formatter_terminal_new",
+                ghostty_formatter_terminal_new(ptr::null(), &mut fmt, self.term),
+            )?;
+            let mut out: *mut u8 = ptr::null_mut();
+            let mut len = 0usize;
+            let rc = ghostty_formatter_format_alloc(fmt, ptr::null(), &mut out, &mut len);
+            let text = borrowed_str(out, len);
+            if !out.is_null() {
+                ghostty_free(ptr::null(), out, len);
+            }
+            ghostty_formatter_free(fmt);
+            check("ghostty_formatter_format_alloc", rc)?;
+            Ok(text)
+        }
+    }
+
+    /// Lines of scrollback above the active screen.
+    pub fn scrollback_rows(&self) -> Result<usize, EngineError> {
+        let mut rows: usize = 0;
+        // SAFETY: `term` is live; the key writes one size_t.
+        check("ghostty_terminal_get(scrollback_rows)", unsafe {
+            ghostty_terminal_get(
+                self.term,
+                GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS,
+                (&raw mut rows).cast(),
+            )
+        })?;
+        Ok(rows)
     }
 
     fn read_string(&self, data: GhosttyTerminalData::Type) -> Result<String, EngineError> {
