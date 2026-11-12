@@ -27,6 +27,14 @@ pub const REQUIRED_FEATURES: &[&str] = &[
 /// (parser limits, width or Unicode settings, reply policy, restore rules).
 pub const TERMINAL_POLICY_REVISION: u32 = 1;
 
+/// Unfinished input a canonical engine keeps so a snapshot can be taken
+/// mid-sequence; replicas restore with the same limit (spec 11.5).
+pub const CONTINUATION_MAX_BYTES: usize = 64 << 10;
+
+/// Cell size in pixels that daemon mirrors and replicas apply on resize
+/// until clients negotiate canonical geometry (spec 11.8).
+pub const CANONICAL_CELL_PX: (u32, u32) = (10, 20);
+
 /// A stable identifier such as `ghostty-1.0.1-108cacb17ed8-f1a2b3c4-p1`.
 pub fn build_family() -> String {
     // FNV-1a over the feature list: stable across platforms and releases.

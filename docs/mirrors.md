@@ -90,6 +90,27 @@ with a `terminal.end` event that names the reason:
 A slow client never stalls the pane's owner or other subscribers. The owner
 never waits on a subscriber; it ends the one that is behind instead.
 
+## Client replicas
+
+The `replica` crate keeps a client's copy of a pane in step with the
+daemon's mirror. It never guesses:
+
+| Situation | What the replica does |
+| --- | --- |
+| A record at or below the last applied sequence | Ignores it (a duplicate, or already in the checkpoint) |
+| A record beyond the next expected sequence, including out-of-order delivery | Stops applying and asks for a resnapshot. It never applies on top of a hole |
+| A record or checkpoint from another subscription, epoch, or generation | Discards it |
+| Records that arrive before their checkpoint | Holds them, then applies those after the checkpoint's sequence |
+| A checkpoint that fails to restore (corrupt or interrupted transfer) | Keeps showing the previous view, marks it stale, and asks again |
+| Reconnect | Resumes from its (epoch, generation, sequence): a replay if the daemon still retains the records, otherwise a checkpoint |
+| Daemon restart | Epochs never repeat across restarts, so the old resume point is refused and a checkpoint follows |
+| Pane respawned | Follows the new generation from its own checkpoint |
+| Ended as lagged | Resubscribes with a resume point |
+
+Resnapshots are bounded: five in a row without a successful checkpoint,
+with backoff from 50 ms up to 2 s, and the replica reports "unable to catch
+up" instead of looping.
+
 ## Tiers
 
 Every mirrored pane is **Warm** (mirrored and journaled, not shown) or

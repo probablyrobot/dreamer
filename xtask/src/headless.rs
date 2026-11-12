@@ -22,6 +22,7 @@ pub const PACKAGES: &[&str] = &[
     "domain",
     "mirror",
     "platform",
+    "replica",
     "ghostty-sys",
     "script-runtime",
     "terminal-core",

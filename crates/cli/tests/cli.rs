@@ -116,6 +116,13 @@ impl Drop for Cli {
     }
 }
 
+/// The `dream mirrors` line for generation 1 of a pane (any epoch).
+fn mirror_line(mirrors: &str, pane: u64) -> Option<&str> {
+    mirrors
+        .lines()
+        .find(|l| l.starts_with(&format!("%{pane} gen 1 epoch ")))
+}
+
 #[test]
 fn an_isolated_session_is_discovered_and_controlled_from_the_cli() {
     let cli = Cli::new();
@@ -200,7 +207,7 @@ fn an_isolated_session_is_discovered_and_controlled_from_the_cli() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let mirrors = cli.ok(&["mirrors"]);
-        let live = |p: u64| mirrors.contains(&format!("%{p} gen 1 epoch 1 live warm"));
+        let live = |p: u64| mirror_line(&mirrors, p).is_some_and(|l| l.contains(" live warm "));
         if live(first) && live(second) {
             break;
         }
@@ -215,7 +222,8 @@ fn an_isolated_session_is_discovered_and_controlled_from_the_cli() {
     assert_eq!(out.trim(), format!("%{first} is hot"));
     assert!(
         cli.ok(&["mirrors"])
-            .contains(&format!("%{first} gen 1 epoch 1 live hot"))
+            .lines()
+            .any(|l| l.starts_with(&format!("%{first} gen 1 epoch ")) && l.contains(" live hot "))
     );
 
     let out = cli.ok(&["act", "rename", &format!("@{window}"), "from cli #1"]);

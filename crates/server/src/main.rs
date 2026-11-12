@@ -226,7 +226,9 @@ fn run(args: Args) -> Result<ExitCode, String> {
             shutting_down: false.into(),
             shutdown: tokio::sync::Notify::new(),
             mirrors: tokio::sync::RwLock::new(None),
-            epochs: 0.into(),
+            // Epochs must never repeat across daemon restarts: a client
+            // resuming with an old epoch must not replay a new mirror.
+            epochs: (started_unix_ms * 1000).into(),
         });
         log::info(format!(
             "started {} (instance {}, socket {}, background {})",
