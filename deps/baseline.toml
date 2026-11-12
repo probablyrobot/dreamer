@@ -1,0 +1,34 @@
+# Pinned native dependencies. Machine-readable; read by `cargo xtask deps`
+# and by crates/ghostty-sys/build.rs. Human summary: docs/dependency-baseline.md.
+# Changing a pin requires re-running the parser, renderer, ABI, and native
+# smoke tests (spec section 2.2).
+
+[ghostty]
+version = "1.0.1"
+tag = "vt-1.0.1"
+commit = "108cacb17ed8990840cd14abfce43d8ed8503ca1"
+url_base = "https://release.files.ghostty.org/libghostty-vt/1.0.1"
+source = "libghostty-vt-1.0.1.tar.gz"
+source_sha256 = "333dfce97641ef9b536bb9e08907ad86abaaada50e8f7417b70d9284adef37aa"
+deps = "libghostty-vt-1.0.1-deps.tar.gz"
+deps_sha256 = "91a4e10960a52bf5bf4b15aa2a2cddaff8a89d6cd903d3055bda4fd17de3356d"
+minisign_key = "RWQlAjJC23149WL2sEpT/l0QKy7hMIFhYdQOFy0Z7z7PbneUgvlsnYcV"
+optimize = "ReleaseFast"
+cpu = "baseline"
+# Default feature set: every optional VT feature (snapshots, render state,
+# input encoding, selection, search, Kitty graphics).
+vt_features = "default"
+
+[zig]
+version = "0.17.1"
+url_base = "https://ziglang.org/download/0.17.1"
+aarch64-macos = "75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d"
+x86_64-linux = "3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a"
+aarch64-linux = "a1546d5646eb184437918d6635ca6b762a0e889eac09cef720ee7a1ed3fe7795"
+
+# Rust target triple -> Zig target used to build libghostty-vt.
+# Linux pins the Ubuntu 24.04 glibc baseline; macOS pins the 15.0 deployment target.
+[targets]
+aarch64-apple-darwin = "aarch64-macos.15.0"
+x86_64-unknown-linux-gnu = "x86_64-linux-gnu.2.39"
+aarch64-unknown-linux-gnu = "aarch64-linux-gnu.2.39"
