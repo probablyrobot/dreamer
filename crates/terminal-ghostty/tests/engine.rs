@@ -166,12 +166,47 @@ fn resize_changes_the_frame_grid() {
 fn every_required_feature_is_compiled_in() {
     let f = features();
     assert_eq!(f.missing_required(), Vec::<&str>::new(), "{f:?}");
-    assert!(f.version.starts_with(ghostty_version_pin()));
+    assert!(
+        f.version
+            .starts_with(terminal_core::family::GHOSTTY_VERSION)
+    );
 }
 
-fn ghostty_version_pin() -> &'static str {
-    // Keep in step with deps/baseline.toml.
-    "1.0.1"
+/// The build family peers compare (terminal_core::family) must describe
+/// the library actually linked and the pins in deps/baseline.toml.
+#[test]
+fn build_family_matches_the_linked_library_and_the_pins() {
+    use terminal_core::family::{GHOSTTY_COMMIT, GHOSTTY_VERSION, REQUIRED_FEATURES};
+    let baseline = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deps/baseline.toml"),
+    )
+    .expect("baseline");
+    let ghostty: Vec<&str> = baseline
+        .split("[ghostty]")
+        .nth(1)
+        .and_then(|s| s.split("\n[").next())
+        .expect("[ghostty] section")
+        .lines()
+        .collect();
+    assert!(ghostty.contains(&format!("commit = \"{GHOSTTY_COMMIT}\"").as_str()));
+    assert!(ghostty.contains(&format!("version = \"{GHOSTTY_VERSION}\"").as_str()));
+    let f = features();
+    assert!(f.version.starts_with(GHOSTTY_VERSION), "{}", f.version);
+    // Every feature the engine requires is part of the family, and back.
+    let required: Vec<&str> = {
+        let mut none = f.clone();
+        none.kitty_graphics = false;
+        none.snapshot = false;
+        none.formatter = false;
+        none.selection = false;
+        none.search = false;
+        none.render_state = false;
+        none.input_encode = false;
+        none.color = false;
+        none.grid_introspection = false;
+        none.missing_required()
+    };
+    assert_eq!(required, REQUIRED_FEATURES);
 }
 
 #[test]
