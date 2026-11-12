@@ -1,0 +1,8 @@
+split red 世 done
+
+
+
+
+
+-- 20x6 cursor 17,0 Block
+style 0:6..9 Style { fg: Palette(1), bg: Default, underline_color: Default, attrs: Attrs(1), underline: None }

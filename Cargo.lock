@@ -502,6 +502,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminal-core"
+version = "0.0.0"
+
+[[package]]
+name = "terminal-ghostty"
+version = "0.0.0"
+dependencies = [
+ "ghostty-sys",
+ "terminal-core",
+]
+
+[[package]]
 name = "tmux-protocol"
 version = "0.0.0"
 dependencies = [
