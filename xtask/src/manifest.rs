@@ -90,6 +90,12 @@ mod tests {
             assert!(!m.get("ghostty", key).expect(key).is_empty());
         }
         assert!(m.get("zig", "version").is_ok());
+        for key in ["version", "url", "sha256", "family", "files"] {
+            assert!(
+                !m.get("nerdfonts", key).expect(key).is_empty(),
+                "nerdfonts.{key}"
+            );
+        }
         for triple in [
             "aarch64-apple-darwin",
             "x86_64-unknown-linux-gnu",

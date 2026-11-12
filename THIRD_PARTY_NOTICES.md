@@ -20,3 +20,12 @@ from `Cargo.lock` at packaging time.
 | image | 0.25.10 | MIT OR Apache-2.0 | `dreamer` desktop client |
 | serde | 1.0.229 | MIT OR Apache-2.0 | `dream`, workspace files |
 | serde_norway | 0.9.42 | MIT OR Apache-2.0 | `dream`, workspace files |
+
+## JetBrains Mono Nerd Font
+
+The macOS app bundle and the generic Linux package ship JetBrains Mono
+patched with Nerd Fonts icons (Nerd Fonts 3.5.1, `JetBrainsMonoNerdFontMono`,
+Regular, Bold, Italic, Bold Italic). JetBrains Mono is Copyright 2020 The
+JetBrains Mono Project Authors; Nerd Fonts patches are by Ryan L McIntyre.
+Both are licensed under the SIL Open Font License 1.1; the license text
+(`OFL.txt`) is shipped next to the font files.

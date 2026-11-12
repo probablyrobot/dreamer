@@ -15,6 +15,7 @@ path = "src/main.rs"
 client = { path = "../client" }
 gpui.workspace = true
 replica = { path = "../replica" }
+workspace-config = { path = "../workspace-config" }
 terminal-ghostty = { path = "../terminal-ghostty" }
 terminal-render = { path = "../terminal-render" }
 

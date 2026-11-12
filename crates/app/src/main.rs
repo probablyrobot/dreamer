@@ -19,6 +19,8 @@
 //! In attach mode it waits for a frame containing `--expect` and then
 //! checks that 1.5 s of idle pane cause no view wakeups and no paints.
 
+mod fonts;
+
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -67,6 +69,29 @@ enum Smoke {
     Expect(String),
 }
 
+/// The terminal font for this run, set once before the window opens.
+#[derive(Debug, Clone)]
+struct TermFont {
+    family: String,
+    size: f32,
+    line_height: f32,
+    source: String,
+}
+
+static TERM_FONT: std::sync::OnceLock<TermFont> = std::sync::OnceLock::new();
+
+fn term_font() -> TermFont {
+    TERM_FONT.get().cloned().unwrap_or_else(|| {
+        let d = workspace_config::Settings::default();
+        TermFont {
+            family: d.font.family,
+            size: d.font.size,
+            line_height: d.font.line_height,
+            source: "defaults".into(),
+        }
+    })
+}
+
 struct Shell {
     smoke: Smoke,
     frame_seen: bool,
@@ -78,8 +103,13 @@ struct Shell {
 
 impl Shell {
     fn report_frame(window: &mut Window) {
-        let terminal_font = font("Menlo");
-        let metrics = cell_metrics(window, &terminal_font, px(14.0), 1.2);
+        let tf = term_font();
+        let terminal_font = font(tf.family.clone());
+        let metrics = cell_metrics(window, &terminal_font, px(tf.size), tf.line_height);
+        println!(
+            "smoke: font {} {}pt x{} ({})",
+            tf.family, tf.size, tf.line_height, tf.source
+        );
         let size = window.viewport_size();
         println!(
             "smoke: frame presented ({}x{} logical px, scale {})",
@@ -136,15 +166,16 @@ impl Render for Shell {
             });
             cx.notify();
         }
+        let term = term_font();
         div()
             .size_full()
             .bg(rgb(0x14161a))
             .p_2()
             .child(TerminalElement {
                 frame: Arc::clone(&self.frame),
-                font: font("Menlo"),
-                font_size: px(14.0),
-                line_height: 1.2,
+                font: font(term.family.clone()),
+                font_size: px(term.size),
+                line_height: term.line_height,
                 images: self.images.clone(),
             })
     }
@@ -306,7 +337,22 @@ fn main() -> ExitCode {
         None => None,
     };
 
+    let settings = match workspace_config::load_settings() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("dreamer: {e}; using default settings");
+            workspace_config::Settings::default()
+        }
+    };
+
     gpui_platform::application().run(move |cx: &mut App| {
+        let chosen = fonts::choose(cx, &settings);
+        let _ = TERM_FONT.set(TermFont {
+            family: chosen.family,
+            size: settings.font.size,
+            line_height: settings.font.line_height,
+            source: chosen.source,
+        });
         let bounds = Bounds::centered(None, size(px(900.), px(420.)), cx);
         let smoke_mode = smoke.clone();
         let opened = cx.open_window(

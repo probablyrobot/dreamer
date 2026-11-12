@@ -156,7 +156,7 @@ jobs:
     steps:
       - name: Install build and runtime packages
         run: >-
-          pacman -Syu --noconfirm --needed git rustup tmux pkgconf curl xz
+          pacman -Syu --noconfirm --needed git rustup tmux ttf-jetbrains-mono-nerd pkgconf curl xz
           fontconfig freetype2 libxkbcommon libxkbcommon-x11 libx11 libxcb
           wayland vulkan-icd-loader
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -198,6 +198,18 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
         std::fs::copy(bin_dir.join(exe), macos.join(exe))
             .map_err(|e| format!("copy {exe}: {e}"))?;
     }
+    // The default terminal font, so the app looks the same on a Mac without
+    // it installed. SIL OFL 1.1; its license travels with it.
+    let fonts = crate::deps::ensure_fonts(&crate::manifest::Manifest::load()?)?;
+    let font_dir = resources.join("Fonts");
+    std::fs::create_dir_all(&font_dir).map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(&fonts)
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
+        std::fs::copy(entry.path(), font_dir.join(entry.file_name()))
+            .map_err(|e| format!("copy font: {e}"))?;
+    }
     for notice in ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"] {
         std::fs::copy(root.join(notice), resources.join(notice))
             .map_err(|e| format!("copy {notice}: {e}"))?;
@@ -277,6 +289,18 @@ pub fn verify_bundle(app: &Path) -> Result<(), String> {
             ));
         }
     }
+    let fonts = app.join("Contents/Resources/Fonts");
+    let ttf = std::fs::read_dir(&fonts)
+        .map_err(|e| format!("{}: {e}", fonts.display()))?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "ttf"))
+        .count();
+    if ttf < 4 || !fonts.join("OFL.txt").is_file() {
+        return Err(format!(
+            "{}: expected the four font styles and OFL.txt",
+            fonts.display()
+        ));
+    }
     let macos = app.join("Contents").join("MacOS");
     let daemon = run_checked(
         Command::new(macos.join("dreamerd")).arg("--self-check"),
@@ -299,7 +323,9 @@ pub fn launch_smoke(app: &Path) -> Result<String, String> {
         .output()
         .map_err(|e| format!("launch {}: {e}", exe.display()))?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    if !out.status.success() || !stdout.contains("smoke: frame presented") {
+    // The packaged app must paint with its default font, never a fallback.
+    let font_ok = stdout.contains("smoke: font JetBrainsMono Nerd Font Mono ");
+    if !out.status.success() || !stdout.contains("smoke: frame presented") || !font_ok {
         return Err(format!(
             "launch smoke failed ({}): {}{}",
             out.status,

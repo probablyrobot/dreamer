@@ -32,6 +32,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let manifest = Manifest::load()?;
     match cmd.as_str() {
         "prepare" => {
+            let fonts = ensure_fonts(&manifest)?;
+            println!("deps: fonts at {}", fonts.display());
             let zig = ensure_zig(&manifest)?;
             let src = ensure_ghostty_source(&manifest)?;
             for target in &targets {
@@ -45,6 +47,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             println!("{}", tmux.display());
             Ok(())
         }
+        "fonts" => {
+            println!("{}", ensure_fonts(&manifest)?.display());
+            Ok(())
+        }
         "path" => {
             for target in &targets {
                 println!("{}", ghostty_prefix(&manifest, target)?.display());
@@ -52,7 +58,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         other => Err(format!(
-            "unknown deps command `{other}` (prepare, path, tmux)"
+            "unknown deps command `{other}` (prepare, path, tmux, fonts)"
         )),
     }
 }
@@ -138,6 +144,35 @@ fn zig_host_key() -> Result<&'static str, String> {
         ("linux", "aarch64") => Ok("aarch64-linux"),
         (os, arch) => Err(format!("no pinned Zig for host {os}/{arch}")),
     }
+}
+
+/// The pinned default font files (checksum-verified archive, then only the
+/// files listed in the baseline). Returns the directory holding them.
+pub fn ensure_fonts(manifest: &Manifest) -> Result<PathBuf, String> {
+    let version = manifest.get("nerdfonts", "version")?;
+    let files: Vec<&str> = manifest
+        .get("nerdfonts", "files")?
+        .split_whitespace()
+        .collect();
+    let dir = deps_dir()?.join("fonts").join("nerdfonts").join(version);
+    if files.iter().all(|f| dir.join(f).is_file()) {
+        return Ok(dir);
+    }
+    let name = format!("JetBrainsMono-nerdfonts-{version}.tar.xz");
+    let archive = download(
+        manifest.get("nerdfonts", "url")?,
+        &name,
+        manifest.get("nerdfonts", "sha256")?,
+    )?;
+    let all = dir.with_extension("all");
+    extract(&archive, &all, false)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for f in &files {
+        std::fs::copy(all.join(f), dir.join(f))
+            .map_err(|e| format!("{f} missing from {name}: {e}"))?;
+    }
+    let _ = std::fs::remove_dir_all(&all);
+    Ok(dir)
 }
 
 fn ensure_zig(manifest: &Manifest) -> Result<PathBuf, String> {

@@ -39,3 +39,13 @@ aarch64-unknown-linux-gnu = "aarch64-linux-gnu.2.39"
 version = "3.8"
 url = "https://github.com/tmux/tmux/releases/download/3.8/tmux-3.8.tar.gz"
 sha256 = "e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e"
+
+# Default terminal font: JetBrains Mono patched with Nerd Font icons, the
+# Mono variant (icons one cell wide). SIL OFL 1.1; bundled into the macOS
+# app and the generic Linux tarball (Arch depends on ttf-jetbrains-mono-nerd).
+[nerdfonts]
+version = "3.5.1"
+url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/JetBrainsMono.tar.xz"
+sha256 = "04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf"
+family = "JetBrainsMono Nerd Font Mono"
+files = "JetBrainsMonoNerdFontMono-Regular.ttf JetBrainsMonoNerdFontMono-Bold.ttf JetBrainsMonoNerdFontMono-Italic.ttf JetBrainsMonoNerdFontMono-BoldItalic.ttf OFL.txt"
