@@ -75,8 +75,8 @@ pub fn evaluate_preamble(server: &Identity, major: u16, minor: u16) -> Option<Ve
             RejectReason::IncompatibleProtocol,
             format!(
                 "protocol {major}.{minor} is not compatible with this daemon's \
-                 {PROTOCOL_MAJOR}.{PROTOCOL_MINOR}; restart the daemon from the same \
-                 installation as the client (`dream restart`)"
+                 {PROTOCOL_MAJOR}.{PROTOCOL_MINOR}; stop it with `dream shutdown` and start \
+                 the one from this installation with `dream ensure-running`"
             ),
         )
     })
@@ -92,7 +92,7 @@ pub fn evaluate(server: &Identity, hello: &Hello) -> Verdict {
             RejectReason::IncompatibleBuild,
             format!(
                 "client build family {} differs from this daemon's {} (daemon {}, pid {}); \
-                 restart the daemon from the same installation as the client (`dream restart`)",
+                 stop it with `dream shutdown` and start the one from this installation with `dream ensure-running`",
                 hello.build_family, server.build_family, server.software_version, server.pid
             ),
         );

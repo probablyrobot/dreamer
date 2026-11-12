@@ -1,0 +1,286 @@
+//! The daemon's implementation of the API (one `Service`, reached through
+//! the wire protocol now and JSON-RPC later).
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::Instant;
+
+use api::{RpcError, code};
+use domain::ServerKey;
+use tmux_backend::{Connection, ConnectionConfig, InventoryTracker, LinkState, Socket};
+use tokio::sync::{Mutex, Notify};
+use workspace_host::{Actions, Endpoint};
+
+use crate::log;
+
+/// The tmux server this daemon drives.
+#[derive(Debug, Clone)]
+pub struct EndpointConfig {
+    pub name: String,
+    pub program: PathBuf,
+    pub socket: Socket,
+}
+
+impl EndpointConfig {
+    fn describe(&self) -> String {
+        match &self.socket {
+            Socket::Default => "default".into(),
+            Socket::Name(n) => format!("-L {n}"),
+            Socket::Path(p) => format!("-S {}", p.display()),
+        }
+    }
+
+    fn command(&self) -> tokio::process::Command {
+        let mut c = tokio::process::Command::new(&self.program);
+        match &self.socket {
+            Socket::Default => {}
+            Socket::Name(n) => {
+                c.args(["-L", n]);
+            }
+            Socket::Path(p) => {
+                c.arg("-S").arg(p);
+            }
+        }
+        c.stdin(std::process::Stdio::null());
+        c
+    }
+}
+
+#[derive(Debug)]
+pub struct State {
+    pub identity: wire::Identity,
+    pub instance: String,
+    pub epoch: u64,
+    pub started: Instant,
+    pub started_unix_ms: u64,
+    pub socket: PathBuf,
+    pub log: PathBuf,
+    pub endpoint_config: EndpointConfig,
+    pub endpoint: Mutex<Option<Endpoint>>,
+    pub actions: Mutex<Actions>,
+    pub clients: AtomicU32,
+    pub shutting_down: AtomicBool,
+    pub shutdown: Notify,
+}
+
+#[derive(Debug, Clone)]
+pub struct DaemonService(pub Arc<State>);
+
+fn unavailable(msg: String) -> RpcError {
+    RpcError::new(code::UNAVAILABLE, msg)
+}
+
+impl State {
+    /// The endpoint, connecting on first use and after its link dropped.
+    async fn endpoint(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Endpoint>>, RpcError> {
+        let mut guard = self.endpoint.lock().await;
+        let live = guard
+            .as_ref()
+            .is_some_and(|e| !matches!(e.conn.state(), LinkState::Failed));
+        if !live {
+            *guard = None;
+            let cfg = &self.endpoint_config;
+            // Test harnesses set this so no test can reach the user's own
+            // tmux server, even by forgetting to name an isolated socket.
+            if matches!(cfg.socket, Socket::Default)
+                && std::env::var_os("DREAMER_FORBID_DEFAULT_TMUX").is_some()
+            {
+                return Err(unavailable(
+                    "the default tmux server is off limits here (DREAMER_FORBID_DEFAULT_TMUX)"
+                        .into(),
+                ));
+            }
+            let out = cfg
+                .command()
+                .args(["list-sessions", "-F", "#{session_id}"])
+                .output()
+                .await
+                .map_err(|e| unavailable(format!("cannot run {}: {e}", cfg.program.display())))?;
+            let first = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .map(str::to_owned)
+                .filter(|_| out.status.success());
+            let Some(session) = first else {
+                return Err(unavailable(format!(
+                    "no tmux server with sessions on endpoint `{}` (tmux {})",
+                    cfg.name,
+                    cfg.describe()
+                )));
+            };
+            let mut config =
+                ConnectionConfig::new(cfg.program.clone(), cfg.socket.clone(), session);
+            config.config_file = None;
+            let (conn, mut events) = Connection::spawn(config).await.map_err(|e| {
+                unavailable(format!("cannot attach to tmux {}: {e}", cfg.describe()))
+            })?;
+            // The connection lives as long as its events are read.
+            tokio::spawn(async move { while events.recv().await.is_some() {} });
+            let (tracker, _) = InventoryTracker::start(
+                conn.clone(),
+                ServerKey(cfg.name.clone()),
+                cfg.name.clone(),
+            )
+            .await
+            .map_err(|e| unavailable(format!("cannot read tmux {}: {e}", cfg.describe())))?;
+            log::info(format!(
+                "attached to tmux endpoint `{}` ({})",
+                cfg.name,
+                cfg.describe()
+            ));
+            *guard = Some(Endpoint {
+                name: cfg.name.clone(),
+                conn,
+                tracker,
+            });
+        }
+        Ok(guard)
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+pub fn version_info(identity: &wire::Identity) -> api::VersionInfo {
+    api::VersionInfo {
+        protocol_major: u32::from(wire::PROTOCOL_MAJOR),
+        protocol_minor: u32::from(wire::PROTOCOL_MINOR),
+        daemon_version: identity.software_version.clone(),
+        build_family: identity.build_family.clone(),
+        ghostty_commit: terminal_core::family::GHOSTTY_COMMIT.into(),
+        platform: format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),
+    }
+}
+
+impl api::Service for DaemonService {
+    async fn daemon_version(&self, _: api::Empty) -> Result<api::VersionInfo, RpcError> {
+        Ok(version_info(&self.0.identity))
+    }
+
+    async fn daemon_status(&self, _: api::Empty) -> Result<api::DaemonStatus, RpcError> {
+        let s = &self.0;
+        let cfg = &s.endpoint_config;
+        let (state, detail) = match s.endpoint.try_lock() {
+            Ok(guard) => match guard.as_ref().map(|e| e.conn.state()) {
+                Some(LinkState::Ready) => (api::LinkState::Live, None),
+                Some(LinkState::Recovering) => (
+                    api::LinkState::Live,
+                    Some("draining late responses after a timeout".to_owned()),
+                ),
+                Some(LinkState::Failed) => (
+                    api::LinkState::Failed,
+                    Some("the control connection ended; reconnects on next use".to_owned()),
+                ),
+                None => (
+                    api::LinkState::Unspecified,
+                    Some("not connected yet; connects on first use".to_owned()),
+                ),
+            },
+            // Busy running an action: it is connected.
+            Err(_) => (api::LinkState::Live, None),
+        };
+        let tmux_version = cfg
+            .command()
+            .arg("-V")
+            .output()
+            .await
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+        Ok(api::DaemonStatus {
+            pid: std::process::id(),
+            started_unix_ms: s.started_unix_ms,
+            uptime_ms: s.started.elapsed().as_millis() as u64,
+            socket_path: s.socket.display().to_string(),
+            log_path: s.log.display().to_string(),
+            endpoints: vec![api::EndpointStatus {
+                name: cfg.name.clone(),
+                socket: cfg.describe(),
+                state: state as i32,
+                tmux_version,
+                detail,
+            }],
+            version: Some(version_info(&s.identity)),
+            clients: s.clients.load(Ordering::Relaxed),
+        })
+    }
+
+    async fn daemon_shutdown(&self, _: api::Empty) -> Result<api::ShutdownResult, RpcError> {
+        self.0.shutting_down.store(true, Ordering::SeqCst);
+        log::info("shutdown requested by a client");
+        Ok(api::ShutdownResult {
+            effect:
+                "dreamerd is stopping. tmux sessions, windows, panes, and the programs in them \
+                     keep running; no jobs or extensions run under this version of the daemon. \
+                     Start it again with `dream ensure-running`."
+                    .into(),
+        })
+    }
+
+    async fn tmux_topology(&self, p: api::TopologyParams) -> Result<api::Topology, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        let mut guard = self.0.endpoint().await?;
+        let ep = guard
+            .as_mut()
+            .ok_or_else(|| unavailable("endpoint not connected".into()))?;
+        ep.tracker
+            .refresh()
+            .await
+            .map_err(|e| unavailable(format!("cannot read tmux: {e}")))?;
+        Ok(workspace_host::topology(&ep.name, &ep.tracker))
+    }
+
+    async fn actions_submit(&self, p: api::SubmitAction) -> Result<api::ActionRecord, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        let mut guard = self.0.endpoint().await?;
+        let ep = guard
+            .as_mut()
+            .ok_or_else(|| unavailable("endpoint not connected".into()))?;
+        let mut actions = self.0.actions.lock().await;
+        let r = actions.submit(ep, p).await?;
+        log::info(format!(
+            "action {} {}{}",
+            r.id,
+            workspace_host::ledger::state_name(r.state),
+            r.reason
+                .as_deref()
+                .map(|why| format!(": {why}"))
+                .unwrap_or_default()
+        ));
+        Ok(r)
+    }
+
+    async fn actions_get(&self, p: api::ActionQuery) -> Result<api::ActionRecord, RpcError> {
+        self.0.actions.lock().await.get(&p.id)
+    }
+
+    async fn actions_list(&self, p: api::ActionListParams) -> Result<api::ActionList, RpcError> {
+        let limit = p.limit.unwrap_or(50).clamp(1, 1000) as usize;
+        Ok(api::ActionList {
+            actions: self.0.actions.lock().await.list(limit),
+        })
+    }
+}
+
+impl DaemonService {
+    fn check_endpoint(&self, name: Option<&str>) -> Result<(), RpcError> {
+        match name {
+            Some(n) if n != self.0.endpoint_config.name => Err(RpcError::new(
+                code::NOT_FOUND,
+                format!(
+                    "no endpoint `{n}`; this daemon drives `{}`",
+                    self.0.endpoint_config.name
+                ),
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+pub fn started_now() -> (Instant, u64) {
+    (Instant::now(), now_ms())
+}

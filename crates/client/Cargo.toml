@@ -1,0 +1,18 @@
+[package]
+name = "client"
+description = "Connects to dreamerd: handshake, typed calls, ensure-running"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+api = { path = "../api" }
+platform = { path = "../platform" }
+prost = "0.14.5"
+tokio = { version = "1.54.1", features = ["net", "time", "io-util"] }
+wire = { path = "../wire" }
+
+[lints]
+workspace = true

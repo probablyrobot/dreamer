@@ -57,7 +57,7 @@ async fn another_major_version_is_refused_from_its_preamble_alone() {
     match server.await.expect("join") {
         Err(HandshakeError::Rejected(r)) => {
             assert_eq!(r.reason, RejectReason::IncompatibleProtocol as i32);
-            assert!(r.message.contains("dream restart"), "{}", r.message);
+            assert!(r.message.contains("dream shutdown"), "{}", r.message);
         }
         other => panic!("expected a protocol rejection, got {other:?}"),
     }
