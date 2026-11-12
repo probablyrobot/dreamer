@@ -9,6 +9,9 @@
 //! - A synchronized-output hold delays publishing for at most
 //!   [`HOLD_LIMIT`]; then the newest frame is shown anyway, so a broken
 //!   application cannot freeze the view.
+//! - Scrolling is local: the view asks the owner to move the replica's
+//!   viewport and gets a new frame without any daemon round trip. Typing
+//!   returns a scrolled view to the bottom.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +23,16 @@ use terminal_ghostty::core::FrameSnapshot;
 use crate::{FollowError, FollowState, Follower, RetryPolicy};
 
 pub const HOLD_LIMIT: Duration = Duration::from_secs(1);
+
+pub use terminal_ghostty::Scroll;
+
+/// Local view changes, applied by the owner to its replica.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewCommand {
+    Scroll(Scroll),
+    /// Back to the bottom if scrolled (sent before typed input).
+    Follow,
+}
 
 /// Where a feed stands, for the view to show honestly.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +60,7 @@ pub struct FeedStats {
 #[derive(Debug)]
 pub struct Feed {
     input: tokio::sync::mpsc::UnboundedSender<api::terminal_input::Event>,
+    view: tokio::sync::mpsc::UnboundedSender<ViewCommand>,
     /// Input sent, and input dropped because the daemon was unreachable.
     pub inputs_sent: Arc<AtomicU64>,
     pub inputs_dropped: Arc<AtomicU64>,
@@ -71,6 +85,7 @@ impl Feed {
         let stats = Arc::new(FeedStats::default());
         let (wake_tx, wake) = async_channel::bounded(1);
         let (input, input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (view, view_rx) = tokio::sync::mpsc::unbounded_channel();
         let inputs_sent = Arc::new(AtomicU64::new(0));
         let inputs_dropped = Arc::new(AtomicU64::new(0));
         let target = Arc::new(Target::default());
@@ -101,10 +116,11 @@ impl Feed {
                     return;
                 };
                 rt.spawn(sender.run(input_rx));
-                rt.block_on(owner.run(socket, pane, launch));
+                rt.block_on(owner.run(socket, pane, launch, view_rx));
             })?;
         Ok(Feed {
             input,
+            view,
             inputs_sent,
             inputs_dropped,
             latest,
@@ -119,7 +135,16 @@ impl Feed {
     /// this feed last saw it. Never queued for replay across a lost
     /// connection.
     pub fn send(&self, event: api::terminal_input::Event) {
+        use api::terminal_input::Event;
+        if matches!(event, Event::Key(_) | Event::Text(_) | Event::Paste(_)) {
+            let _ = self.view.send(ViewCommand::Follow);
+        }
         let _ = self.input.send(event);
+    }
+
+    /// Change the local view; the owner publishes the resulting frame.
+    pub fn view(&self, command: ViewCommand) {
+        let _ = self.view.send(command);
     }
 
     /// The newest unpainted frame, if any.
@@ -285,7 +310,31 @@ impl Owner {
             .ok_or_else(|| "tmux reports no active pane".into())
     }
 
-    async fn run(self, socket: PathBuf, pane: Option<u32>, launch: Option<client::Launch>) {
+    /// Apply a local view change; publish only if the frame changed.
+    fn view(&self, f: &mut Follower, command: ViewCommand) {
+        let Some(Ok(before)) = f.frame() else { return };
+        let to = match command {
+            ViewCommand::Scroll(to) => to,
+            ViewCommand::Follow if before.view.rows_back() > 0 => Scroll::Bottom,
+            ViewCommand::Follow => return,
+        };
+        if f.scroll(to).is_err() {
+            return;
+        }
+        if let Some(Ok(frame)) = f.frame()
+            && !Arc::ptr_eq(&frame, &before)
+        {
+            self.publish(frame);
+        }
+    }
+
+    async fn run(
+        self,
+        socket: PathBuf,
+        pane: Option<u32>,
+        launch: Option<client::Launch>,
+        mut view_rx: tokio::sync::mpsc::UnboundedReceiver<ViewCommand>,
+    ) {
         if let Some(l) = &launch
             && let Err(e) = client::ensure_running(l, "gui").await
         {
@@ -315,11 +364,33 @@ impl Owner {
         self.set(FeedStatus::Following);
         self.target.pane.store(u64::from(pane), Ordering::Release);
         let mut held_since: Option<tokio::time::Instant> = None;
+        enum Wake {
+            Pushed(Result<Option<client::Pushed>, FollowError>),
+            View(ViewCommand),
+            HoldExpired,
+        }
         loop {
-            let step = match held_since {
-                Some(t) => match tokio::time::timeout_at(t + HOLD_LIMIT, f.step()).await {
-                    Ok(r) => r,
-                    Err(_) => {
+            let step = if matches!(f.state, FollowState::Following) {
+                let hold = async {
+                    match held_since {
+                        Some(t) => tokio::time::sleep_until(t + HOLD_LIMIT).await,
+                        None => std::future::pending().await,
+                    }
+                };
+                // `recv` is cancel-safe: losing the race drops nothing.
+                let wake = tokio::select! {
+                    r = f.recv() => Wake::Pushed(r),
+                    Some(c) = view_rx.recv() => Wake::View(c),
+                    () = hold => Wake::HoldExpired,
+                };
+                match wake {
+                    Wake::Pushed(Ok(first)) => f.apply(first).await,
+                    Wake::Pushed(Err(e)) => Err(e),
+                    Wake::View(c) => {
+                        self.view(&mut f, c);
+                        continue;
+                    }
+                    Wake::HoldExpired => {
                         // The application held output too long: show it.
                         self.stats.holds_expired.fetch_add(1, Ordering::Relaxed);
                         held_since = None;
@@ -328,8 +399,9 @@ impl Owner {
                         }
                         continue;
                     }
-                },
-                None => f.step().await,
+                }
+            } else {
+                f.step().await
             };
             self.stats.owner_wakeups.fetch_add(1, Ordering::Relaxed);
             match step {

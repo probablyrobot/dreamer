@@ -95,6 +95,37 @@ fn mods_bits(m: &Modifiers) -> u32 {
         | (u32::from(m.platform) << 3)
 }
 
+/// Shift-PageUp/PageDown and Shift-Home/End scroll the local history by a
+/// page (`page` rows) or to its ends.
+pub fn scroll_key(k: &Keystroke, page: isize) -> Option<replica::feed::Scroll> {
+    use replica::feed::Scroll;
+    let m = &k.modifiers;
+    if !m.shift || m.control || m.alt || m.platform {
+        return None;
+    }
+    match k.key.as_str() {
+        "pageup" => Some(Scroll::Delta(-page)),
+        "pagedown" => Some(Scroll::Delta(page)),
+        "home" => Some(Scroll::Top),
+        "end" => Some(Scroll::Bottom),
+        _ => None,
+    }
+}
+
+/// An arrow key per wheel step, for full-screen programs on the alternate
+/// screen that do not track the mouse (it has no history to scroll).
+pub fn wheel_arrows(steps: i32) -> Vec<Event> {
+    let key = if steps > 0 { "ArrowUp" } else { "ArrowDown" };
+    (0..steps.unsigned_abs())
+        .map(|_| {
+            Event::Key(api::KeyInput {
+                key: key.into(),
+                ..api::KeyInput::default()
+            })
+        })
+        .collect()
+}
+
 /// What a key press means for the terminal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyIntent {
@@ -243,6 +274,18 @@ impl Pointer {
         ))
     }
 
+    /// Whole wheel steps in a scroll, positive up; the fraction of a step
+    /// carries over to the next scroll.
+    pub fn steps(&mut self, g: &Grid, delta: ScrollDelta) -> i32 {
+        self.wheel += match delta {
+            ScrollDelta::Lines(d) => d.y,
+            ScrollDelta::Pixels(d) => f32::from(d.y) / f32::from(g.cell.height).max(1.0),
+        };
+        let steps = self.wheel.trunc();
+        self.wheel -= steps;
+        steps.clamp(-MAX_WHEEL_STEPS, MAX_WHEEL_STEPS) as i32
+    }
+
     /// Wheel steps for a scroll, one press each; positive y scrolls up.
     pub fn scroll(
         &mut self,
@@ -251,19 +294,14 @@ impl Pointer {
         delta: ScrollDelta,
         m: &Modifiers,
     ) -> Vec<Event> {
-        self.wheel += match delta {
-            ScrollDelta::Lines(d) => d.y,
-            ScrollDelta::Pixels(d) => f32::from(d.y) / f32::from(g.cell.height).max(1.0),
-        };
-        let steps = self.wheel.trunc();
-        self.wheel -= steps;
-        let b = if steps > 0.0 {
+        let steps = self.steps(g, delta);
+        let b = if steps > 0 {
             api::MouseButton::WheelUp
         } else {
             api::MouseButton::WheelDown
         };
         let cell = g.cell_at(p);
-        (0..steps.abs().min(MAX_WHEEL_STEPS) as u32)
+        (0..steps.unsigned_abs())
             .map(|_| {
                 mouse(
                     api::MouseAction::Press,
@@ -296,6 +334,23 @@ mod tests {
             Event::Mouse(m) => (m.action, m.button, m.col, m.row),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn shift_page_keys_scroll_history_and_plain_ones_do_not() {
+        use replica::feed::Scroll;
+        assert_eq!(
+            scroll_key(&ks("shift-pageup"), 23),
+            Some(Scroll::Delta(-23))
+        );
+        assert_eq!(
+            scroll_key(&ks("shift-pagedown"), 23),
+            Some(Scroll::Delta(23))
+        );
+        assert_eq!(scroll_key(&ks("shift-home"), 23), Some(Scroll::Top));
+        assert_eq!(scroll_key(&ks("shift-end"), 23), Some(Scroll::Bottom));
+        assert_eq!(scroll_key(&ks("pageup"), 23), None);
+        assert_eq!(scroll_key(&ks("ctrl-shift-pageup"), 23), None);
     }
 
     #[test]

@@ -466,3 +466,51 @@ async fn input_sent_through_the_feed_reaches_the_pane() {
     assert_eq!(feed.inputs_sent.load(Relaxed), 2);
     assert_eq!(feed.inputs_dropped.load(Relaxed), 0);
 }
+
+async fn frame_until(
+    feed: &replica::feed::Feed,
+    want: impl Fn(&terminal_ghostty::core::FrameSnapshot) -> bool,
+) -> std::sync::Arc<terminal_ghostty::core::FrameSnapshot> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        tokio::time::timeout_at(deadline, feed.wake.recv())
+            .await
+            .unwrap_or_else(|_| panic!("no matching frame; feed {:?}", feed.status()))
+            .expect("feed alive");
+        if let Some(f) = feed.take()
+            && want(&f)
+        {
+            return f;
+        }
+    }
+}
+
+#[tokio::test]
+async fn scrolling_is_local_new_output_keeps_the_view_and_typing_returns() {
+    use replica::feed::{Scroll, ViewCommand};
+    let s = Setup::new(&[]);
+    drop(s.client().await);
+    let feed = replica::feed::Feed::start(s.socket(), Some(0), None).expect("feed");
+    s.type_line("seq 1 300; echo SEQ''-DONE");
+    feed_until(&feed, |t| t.contains("\nSEQ-DONE")).await;
+
+    feed.view(ViewCommand::Scroll(Scroll::Delta(-100)));
+    let back = frame_until(&feed, |f| f.view.rows_back() == 100).await;
+    let top = back.rows[0].text();
+    assert!(
+        !back.text_dump().contains("SEQ-DONE"),
+        "still at the bottom"
+    );
+
+    // New output arrives while scrolled back: the view keeps its rows.
+    s.type_line("echo AFT''ER");
+    let later = frame_until(&feed, |f| f.view.rows_back() > 100).await;
+    assert_eq!(later.rows[0].text(), top, "new output moved the view");
+
+    // Typing returns to the bottom.
+    feed.send(api::terminal_input::Event::Text(api::TextInput {
+        text: "echo TYP''ED\r".into(),
+    }));
+    frame_until(&feed, |f| f.view.rows_back() == 0).await;
+    feed_until(&feed, |t| t.contains("\nTYPED")).await;
+}

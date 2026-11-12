@@ -125,6 +125,15 @@ impl Shell {
         let Some(feed) = self.feed.clone() else {
             return;
         };
+        let view = self.frame.view;
+        let page = self.frame.size.rows.saturating_sub(1).max(1) as isize;
+        if !view.alt_screen
+            && let Some(to) = input::scroll_key(&ev.keystroke, page)
+        {
+            feed.view(replica::feed::ViewCommand::Scroll(to));
+            cx.stop_propagation();
+            return;
+        }
         match input::intent(&ev.keystroke, ev.is_held) {
             input::KeyIntent::Paste => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
@@ -148,6 +157,31 @@ impl Shell {
             for e in events {
                 feed.send(e);
             }
+        }
+    }
+
+    /// The wheel goes to applications that track the mouse, becomes arrow
+    /// keys on an alternate screen without tracking, and otherwise scrolls
+    /// the local history with no daemon round trip.
+    fn wheel(&mut self, grid: &input::Grid, ev: &ScrollEvent) {
+        let view = self.frame.view;
+        if view.mouse_tracking {
+            let out = self
+                .pointer
+                .scroll(grid, ev.position, ev.delta, &ev.modifiers);
+            self.send_all(out);
+            return;
+        }
+        let steps = self.pointer.steps(grid, ev.delta);
+        if steps == 0 {
+            return;
+        }
+        if view.alt_screen {
+            self.send_all(input::wheel_arrows(steps));
+        } else if let Some(feed) = &self.feed {
+            feed.view(replica::feed::ViewCommand::Scroll(
+                replica::feed::Scroll::Delta(-(steps as isize)),
+            ));
         }
     }
 
@@ -191,12 +225,7 @@ impl Shell {
         });
         window.on_mouse_event(move |ev: &ScrollEvent, phase, _, cx| {
             if phase == DispatchPhase::Bubble && bounds.contains(&ev.position) {
-                entity.update(cx, |s, _| {
-                    let out = s
-                        .pointer
-                        .scroll(&grid, ev.position, ev.delta, &ev.modifiers);
-                    s.send_all(out);
-                });
+                entity.update(cx, |s, _| s.wheel(&grid, ev));
             }
         });
     }
@@ -391,6 +420,20 @@ impl Render for Shell {
                 .underline()
                 .child(text)
         });
+        // Shown only while scrolled back into history.
+        let back = self.frame.view.rows_back();
+        let scrolled = (back > 0).then(|| {
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .px_2()
+                .bg(rgb(0x2a2f38))
+                .text_color(rgb(0xb8bec8))
+                .font_family(term.family.clone())
+                .text_size(px(term.size * 0.85))
+                .child(format!("↑ {back} lines"))
+        });
         div()
             .size_full()
             .bg(rgb(0x14161a))
@@ -409,6 +452,7 @@ impl Render for Shell {
                         images: self.images.clone(),
                     })
                     .children(preedit)
+                    .children(scrolled)
                     // Registers the platform text input (IME) each frame.
                     .child(
                         canvas(
@@ -709,6 +753,25 @@ fn main() -> ExitCode {
                                         println!(
                                             "smoke: click, release, and wheel reached the pane as {MOUSE_EXPECTED}"
                                         );
+                                        shell.input_phase = 3;
+                                        shell.send_all([api::terminal_input::Event::Text(
+                                            api::TextInput {
+                                                text: "seq 1 200; echo SCROLL-''READY\r".into(),
+                                            },
+                                        )]);
+                                    }
+                                    3 if line("SCROLL-READY") && shell.frame.view.rows_back() == 0 => {
+                                        shell.input_phase = 4;
+                                        if let Some(grid) = shell.grid {
+                                            let any = window.window_handle();
+                                            cx.spawn(async move |_, cx| wheel_history(any, grid, cx).await)
+                                                .detach();
+                                        }
+                                    }
+                                    4 if shell.frame.view.rows_back() == WHEEL_LINES as u64 => {
+                                        println!(
+                                            "smoke: the wheel scrolled {WHEEL_LINES} lines of local history"
+                                        );
                                         std::process::exit(0);
                                     }
                                     _ => {}
@@ -773,11 +836,13 @@ async fn type_into(window: gpui::WindowHandle<Shell>, cx: &mut gpui::AsyncApp) {
         shell.replace_text_in_range(None, "日本", window, cx);
     });
     press(cx, "enter");
-    cx.background_executor()
-        .timer(Duration::from_secs(10))
-        .await;
-    eprintln!("smoke: the typed input never produced `hi日本` in the pane");
-    std::process::exit(3);
+    fail_unless_past(
+        any,
+        0,
+        cx,
+        "the typed input never produced `hi日本` in the pane",
+    )
+    .await;
 }
 
 /// Turns on SGR mouse reporting, reads one press, release, and wheel step,
@@ -820,11 +885,58 @@ async fn click_and_scroll(any: gpui::AnyWindowHandle, grid: input::Grid, cx: &mu
             window.dispatch_event(ev, cx);
         });
     }
+    fail_unless_past(
+        any,
+        2,
+        cx,
+        "the click and wheel never reached the pane as expected",
+    )
+    .await;
+}
+
+/// Wheel lines the smoke scrolls through local history.
+const WHEEL_LINES: usize = 5;
+
+/// With no mouse tracking, the wheel scrolls the replica's history.
+async fn wheel_history(any: gpui::AnyWindowHandle, grid: input::Grid, cx: &mut gpui::AsyncApp) {
+    use gpui::{Modifiers, PlatformInput, ScrollDelta, TouchPhase};
+    let at = point(
+        grid.origin.x + grid.cell.width * 2.5,
+        grid.origin.y + grid.cell.height * 2.5,
+    );
+    let ev = PlatformInput::Scroll(ScrollEvent {
+        position: at,
+        delta: ScrollDelta::Lines(point(0.0, WHEEL_LINES as f32)),
+        modifiers: Modifiers::default(),
+        touch_phase: TouchPhase::Moved,
+        source: gpui::ScrollSource::Pointer,
+    });
+    let _ = cx.update_window(any, move |_, window, cx| {
+        window.dispatch_event(ev, cx);
+    });
+    fail_unless_past(any, 4, cx, "the wheel never scrolled the local history").await;
+}
+
+/// Fail the input smoke if it is still at `phase` after ten seconds.
+async fn fail_unless_past(
+    any: gpui::AnyWindowHandle,
+    phase: u8,
+    cx: &mut gpui::AsyncApp,
+    why: &str,
+) {
     cx.background_executor()
         .timer(Duration::from_secs(10))
         .await;
-    eprintln!("smoke: the click and wheel never reached the pane as {MOUSE_EXPECTED}");
-    std::process::exit(3);
+    let stuck = cx
+        .update_window(any, |view, _, cx| {
+            view.downcast::<Shell>()
+                .is_ok_and(|s| s.read(cx).input_phase <= phase)
+        })
+        .unwrap_or(true);
+    if stuck {
+        eprintln!("smoke: {why}");
+        std::process::exit(3);
+    }
 }
 
 /// After the expected frame: an idle pane must cause no view wakeups and

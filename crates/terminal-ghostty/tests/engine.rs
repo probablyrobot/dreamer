@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use terminal_ghostty::core::{GridSize, ReplySource};
-use terminal_ghostty::{Engine, EngineConfig, features};
+use terminal_ghostty::{Engine, EngineConfig, Scroll, features};
 
 const SIZE: GridSize = GridSize { cols: 20, rows: 6 };
 
@@ -237,4 +237,45 @@ fn screen_text_includes_scrollback() {
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.first(), Some(&"line 0"), "{text}");
     assert!(lines.contains(&"line 29"));
+}
+
+#[test]
+fn the_viewport_scrolls_locally_and_stays_put_under_new_output() {
+    let mut e = engine();
+    let rows = u64::from(SIZE.rows);
+    for i in 0..100 {
+        e.feed(format!("line {i}\r\n").as_bytes()).expect("feed");
+    }
+    let top = |e: &mut Engine| {
+        e.frame().expect("frame").rows[0]
+            .text()
+            .trim_end()
+            .to_owned()
+    };
+    let following = e.frame().expect("frame").view;
+    assert_eq!(following.rows_back(), 0);
+    assert_eq!(following.len, rows);
+    let bottom_top = top(&mut e);
+
+    e.scroll_viewport(Scroll::Delta(-5)).expect("scroll");
+    let f = e.frame().expect("frame");
+    assert_eq!(f.view.rows_back(), 5);
+    let scrolled_top = top(&mut e);
+    assert_ne!(scrolled_top, bottom_top);
+
+    // New output does not move a scrolled viewport.
+    e.feed(b"more\r\nand more\r\n").expect("feed");
+    assert_eq!(top(&mut e), scrolled_top);
+    assert_eq!(e.frame().expect("frame").view.rows_back(), 7);
+
+    e.scroll_viewport(Scroll::Top).expect("top");
+    assert_eq!(e.frame().expect("frame").view.offset, 0);
+    e.scroll_viewport(Scroll::Bottom).expect("bottom");
+    assert_eq!(e.frame().expect("frame").view.rows_back(), 0);
+
+    let v = e.frame().expect("frame").view;
+    assert!(!v.mouse_tracking && !v.alt_screen);
+    e.feed(b"\x1b[?1000h\x1b[?1049h").expect("feed");
+    let v = e.frame().expect("frame").view;
+    assert!(v.mouse_tracking && v.alt_screen);
 }

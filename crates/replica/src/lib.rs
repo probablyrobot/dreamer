@@ -142,6 +142,15 @@ impl Replica {
             .map(|e| e.frame().map_err(|e| e.to_string()))
     }
 
+    /// Move the local viewport through history. View state only: nothing
+    /// is sent, and a restored checkpoint starts at the bottom again.
+    pub fn scroll(&mut self, to: terminal_ghostty::Scroll) -> Result<(), String> {
+        match self.engine.as_mut() {
+            Some(e) => e.scroll_viewport(to).map_err(|e| e.to_string()),
+            None => Ok(()),
+        }
+    }
+
     /// The replica's text, oldest line first (empty before a checkpoint).
     pub fn text(&self) -> String {
         self.engine

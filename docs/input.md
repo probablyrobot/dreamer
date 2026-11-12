@@ -62,7 +62,31 @@ Mouse events over the grid become cells using the painted cell size:
   as whole rows (at most 32 steps per event); the remainder carries over.
 
 When the application does not track the mouse, the daemon sends nothing.
-Local selection and scrollback with the mouse come with M2-05.
+Local selection comes with M2-05b (#124).
+
+## Scrolling
+
+Scrolling is local view state on the window's replica. It is never sent to
+the daemon and never changes the terminal (spec 10.1, 11.5). Each frame
+carries the viewport position, whether the application tracks the mouse,
+and whether the alternate screen is active, so the window decides locally.
+
+| Input | Application tracks the mouse | Alternate screen, no tracking | Otherwise |
+| --- | --- | --- | --- |
+| Wheel or trackpad | Sent as wheel buttons | One Up or Down arrow key per step | Scrolls history, one row per step |
+| Shift-PageUp, Shift-PageDown | Scroll history by a page | Sent as keys | Scroll history by a page |
+| Shift-Home, Shift-End | Scroll to the top or bottom | Sent as keys | Scroll to the top or bottom |
+
+- **New output while scrolled back:** the view keeps showing the same rows.
+  A note at the top right says how many lines below the view there are.
+- **Typing returns to the bottom:** sending a key, text, or a paste
+  scrolls a scrolled-back view down first.
+- **History depth:** the subscription's scrollback depth (10,000 lines by
+  default). A restored checkpoint starts at the bottom again.
+
+The input smoke checks the wheel path too. After the mouse probe it prints
+200 lines, scrolls up five lines with the wheel through GPUI's event
+dispatch, and requires a frame five rows back from the bottom.
 
 The input smoke continues after `hi日本`: it runs a probe that turns on SGR
 mouse reporting, clicks and releases at cell (3, 1), sends one wheel step

@@ -206,11 +206,22 @@ impl Follower {
         if !matches!(self.state, FollowState::Following) {
             return Ok(Step::default());
         }
+        let first = self.recv().await?;
+        self.apply(first).await
+    }
+
+    /// Wait for the next pushed item without applying it. Cancel-safe:
+    /// dropping the future loses nothing, so it can race other work.
+    pub async fn recv(&mut self) -> Result<Option<Pushed>, FollowError> {
+        match self.pushed.as_mut() {
+            Some(p) => Ok(p.recv().await),
+            None => Err(FollowError::Disconnected),
+        }
+    }
+
+    /// Apply an item from [`Self::recv`] and everything queued behind it.
+    pub async fn apply(&mut self, first: Option<Pushed>) -> Result<Step, FollowError> {
         let checkpoints = self.checkpoints;
-        let first = match self.pushed.as_mut() {
-            Some(p) => p.recv().await,
-            None => return Err(FollowError::Disconnected),
-        };
         let mut records = self.handle(first).await?;
         loop {
             if !matches!(self.state, FollowState::Following) {
@@ -226,6 +237,11 @@ impl Follower {
             records,
             restored: self.checkpoints != checkpoints,
         })
+    }
+
+    /// Move the replica's local viewport (see [`Replica::scroll`]).
+    pub fn scroll(&mut self, to: terminal_ghostty::Scroll) -> Result<(), String> {
+        self.replica.scroll(to)
     }
 
     /// The replica's current frame, when it holds an engine.

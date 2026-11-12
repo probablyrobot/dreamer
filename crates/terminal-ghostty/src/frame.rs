@@ -46,10 +46,12 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
         let size = GridSize { cols, rows };
         let held = e.callbacks.held;
 
+        let view = e.view_state()?;
         let previous = e.last.as_ref().filter(|f| f.size == size);
         if dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE
             && let Some(prev) = previous
             && prev.render_hold == held
+            && prev.view == view
         {
             return Ok(Arc::clone(prev));
         }
@@ -122,6 +124,7 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
             colors,
             damaged_rows: damaged,
             render_hold: held,
+            view,
         }))
     }
 }
