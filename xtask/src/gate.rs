@@ -129,6 +129,12 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Always,
         },
         Stage {
+            name: "headless",
+            program: "cargo",
+            args: &["xtask", "headless", "--check"],
+            always: false,
+        },
+        Stage {
             name: "deps",
             action: Cmd("cargo", &["xtask", "deps", "prepare", "--locked"]),
             when: When::Code,

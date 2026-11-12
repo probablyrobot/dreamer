@@ -40,6 +40,7 @@ jobs:
         with:
           shared-key: lint
       - run: cargo xtask policy
+      - run: cargo xtask headless --check
       - name: Cache pinned native dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -78,6 +79,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends libevent-dev libncurses-dev bison
           echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
       - run: cargo build --workspace --all-targets --locked
+      - name: Generate snapshot fixtures
+        run: cargo run --locked -p terminal-ghostty --bin snapshot-fixtures -- target/snapshot-fixtures
+      - name: Upload this architecture's snapshot fixtures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshots-x86_64-unknown-linux-gnu
+          path: target/snapshot-fixtures/
+          if-no-files-found: ignore
       - run: cargo test --workspace --locked
 
   linux-aarch64:
@@ -87,6 +97,8 @@ jobs:
     env:
       TARGET: aarch64-unknown-linux-gnu
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,7 +109,7 @@ jobs:
       - name: Install cross linker and user-mode emulator
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: linux-aarch64
@@ -107,9 +119,22 @@ jobs:
           path: ~/.cache/dreamer/deps
           key: deps-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/baseline.toml') }}
       - run: cargo xtask deps prepare --locked --target "$TARGET"
+      - name: Generate snapshot fixtures under emulation
+        run: cargo run --locked --target "$TARGET" -p terminal-ghostty --bin snapshot-fixtures -- target/snapshot-fixtures
+      - name: Upload this architecture's snapshot fixtures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshots-aarch64-unknown-linux-gnu
+          path: target/snapshot-fixtures/
+          if-no-files-found: ignore
       # Emulated runs are correctness evidence only, never performance evidence.
       - name: Test headless crates under emulation
-        run: cargo test --locked --target "$TARGET" $(cargo xtask headless --cargo-args)
+        run: |
+          cargo test --locked --target "$TARGET" $(cargo xtask headless --cargo-args-without-tmux)
+          # No ARM64 tmux baseline binary exists here: unit tests only. The
+          # tmux integration suite runs natively on x86-64 and macOS.
+          cargo test --locked --target "$TARGET" --lib $(cargo xtask headless --needs-tmux)
       - name: Run headless binaries under emulation
         run: |
           cargo build --locked --release --target "$TARGET" $(cargo xtask headless --cargo-args)

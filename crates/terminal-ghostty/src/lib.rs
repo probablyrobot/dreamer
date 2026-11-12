@@ -19,6 +19,7 @@
 mod effects;
 mod features;
 mod frame;
+pub mod snapshot_fixtures;
 
 pub use features::{Features, features};
 pub use terminal_core as core;
@@ -74,6 +75,10 @@ pub struct EngineConfig {
     /// Maximum scrollback memory in bytes; `None` keeps the library default,
     /// `Some(usize::MAX)` removes the byte limit.
     pub scrollback_bytes: Option<usize>,
+    /// Track unfinished input (a partial escape or UTF-8 sequence) up to
+    /// this many bytes so snapshots can carry it. Must be set before any
+    /// input; `None` leaves tracking off.
+    pub continuation_max_bytes: Option<usize>,
     /// Deliver engine-generated replies in [`Effects::replies`]. Off by
     /// default: in tmux mirror mode tmux owns query responses.
     pub capture_replies: bool,
@@ -85,6 +90,7 @@ impl EngineConfig {
             size,
             scrollback_lines: None,
             scrollback_bytes: None,
+            continuation_max_bytes: None,
             capture_replies: false,
         }
     }
@@ -127,26 +133,109 @@ impl Engine {
         if size.cols == 0 || size.rows == 0 {
             return Err(EngineError::InvalidSize(size));
         }
+        let mut term: GhosttyTerminal = ptr::null_mut();
+        // SAFETY: valid out-pointer; NULL allocator selects the default.
+        check("ghostty_terminal_new", unsafe {
+            ghostty_terminal_new(ptr::null(), &mut term, size.cols, size.rows)
+        })?;
+        // SAFETY: `term` was just created and is owned by nobody else.
+        unsafe { Self::adopt(term, &config) }
+    }
+
+    /// Restore an engine from a snapshot produced by [`Engine::snapshot`]
+    /// with a compatible library build. Only the terminal state comes from
+    /// the snapshot: callbacks, reply policy, and scrollback limits come from
+    /// `config` (its `size` is ignored; the snapshot carries the grid).
+    pub fn from_snapshot(bytes: &[u8], config: &EngineConfig) -> Result<Self, EngineError> {
+        use ghostty_sys::GhosttySnapshotDecoderOption::*;
+        let mut decoder: GhosttySnapshotDecoder = ptr::null_mut();
+        let mut term: GhosttyTerminal = ptr::null_mut();
+        // SAFETY: `bytes` outlives the decoder, which is freed before return;
+        // options are set before decoding starts and point at locals.
+        unsafe {
+            check(
+                "ghostty_snapshot_decoder_new_buf",
+                ghostty_snapshot_decoder_new_buf(
+                    ptr::null(),
+                    &mut decoder,
+                    bytes.as_ptr(),
+                    bytes.len(),
+                ),
+            )?;
+            let max = config.continuation_max_bytes.unwrap_or(0);
+            let retain = max > 0;
+            let set = |opt, value: *const std::ffi::c_void| {
+                check(
+                    "ghostty_snapshot_decoder_set",
+                    ghostty_snapshot_decoder_set(decoder, opt, value),
+                )
+            };
+            let result = set(
+                GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES,
+                (&raw const max).cast(),
+            )
+            .and_then(|()| {
+                set(
+                    GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION,
+                    (&raw const retain).cast(),
+                )
+            })
+            .and_then(|()| {
+                check(
+                    "ghostty_snapshot_decoder_decode",
+                    ghostty_snapshot_decoder_decode(decoder, &mut term),
+                )
+            });
+            ghostty_snapshot_decoder_free(decoder);
+            result?;
+            Self::adopt(term, config)
+        }
+    }
+
+    /// Encode the complete terminal state, including unfinished input when
+    /// continuation tracking is enabled.
+    pub fn snapshot(&self) -> Result<Vec<u8>, EngineError> {
+        let mut out: *mut u8 = ptr::null_mut();
+        let mut len = 0usize;
+        // SAFETY: `term` is live and not mutated during the call; the buffer
+        // is copied and freed with the same (default) allocator.
+        unsafe {
+            check(
+                "ghostty_snapshot_encode_alloc",
+                ghostty_snapshot_encode_alloc(self.term, ptr::null(), &mut out, &mut len),
+            )?;
+            let bytes = if out.is_null() {
+                Vec::new()
+            } else {
+                std::slice::from_raw_parts(out, len).to_vec()
+            };
+            ghostty_free(ptr::null(), out, len);
+            Ok(bytes)
+        }
+    }
+
+    /// Wrap a terminal handle: create its render state, apply options, and
+    /// register callbacks.
+    ///
+    /// # Safety
+    /// `term` must be a live terminal that nothing else owns; ownership moves
+    /// into the returned engine (or it is freed on error).
+    unsafe fn adopt(term: GhosttyTerminal, config: &EngineConfig) -> Result<Self, EngineError> {
         let mut engine = Engine {
-            term: ptr::null_mut(),
+            term,
             render: ptr::null_mut(),
             row_iter: ptr::null_mut(),
             row_cells: ptr::null_mut(),
             callbacks: Box::new(CallbackState::new(config.capture_replies)),
-            size,
+            size: config.size,
             revision: 0,
             last: None,
             scratch: frame::Scratch::default(),
             _not_send: PhantomData,
         };
-        // Each handle is stored as soon as it exists, so `Drop` frees exactly
-        // what was created if a later step fails.
+        // From here `Drop` frees whatever has been created.
         // SAFETY: valid out-pointers; NULL allocator selects the default.
         unsafe {
-            check(
-                "ghostty_terminal_new",
-                ghostty_terminal_new(ptr::null(), &mut engine.term, size.cols, size.rows),
-            )?;
             check(
                 "ghostty_render_state_new",
                 ghostty_render_state_new(ptr::null(), &mut engine.render),
@@ -160,15 +249,29 @@ impl Engine {
                 ghostty_render_state_row_cells_new(ptr::null(), &mut engine.row_cells),
             )?;
         }
+        let set_size = |opt, value: usize| {
+            // SAFETY: size_t options read the pointed-to value during the call.
+            check("set size option", unsafe {
+                ghostty_terminal_set(engine.term, opt, (&raw const value).cast())
+            })
+        };
         if let Some(lines) = config.scrollback_lines {
-            // SAFETY: the option takes a pointer to a size_t read during the call.
-            check("set scrollback lines", unsafe {
-                ghostty_terminal_set(
-                    engine.term,
-                    GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
-                    (&raw const lines).cast(),
-                )
-            })?;
+            set_size(
+                GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
+                lines,
+            )?;
+        }
+        if let Some(bytes) = config.scrollback_bytes {
+            set_size(
+                GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+                bytes,
+            )?;
+        }
+        if let Some(bytes) = config.continuation_max_bytes {
+            set_size(
+                GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES,
+                bytes,
+            )?;
         }
         if let Some(bytes) = config.scrollback_bytes {
             // SAFETY: the option takes a pointer to a size_t read during the call.
@@ -181,6 +284,27 @@ impl Engine {
             })?;
         }
         effects::register(engine.term, &mut engine.callbacks)?;
+        let (mut cols, mut rows) = (0u16, 0u16);
+        // SAFETY: `term` is live; each key writes one u16.
+        unsafe {
+            check(
+                "ghostty_terminal_get(cols)",
+                ghostty_terminal_get(
+                    engine.term,
+                    GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_COLS,
+                    (&raw mut cols).cast(),
+                ),
+            )?;
+            check(
+                "ghostty_terminal_get(rows)",
+                ghostty_terminal_get(
+                    engine.term,
+                    GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_ROWS,
+                    (&raw mut rows).cast(),
+                ),
+            )?;
+        }
+        engine.size = GridSize { cols, rows };
         Ok(engine)
     }
 
