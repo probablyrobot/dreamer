@@ -364,7 +364,6 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         checkpoint_pause_us: pause_us,
         scrollback_lines: started.scrollback as u32,
     };
-    reply(ok(id, s.encode_to_vec())).await;
     let (pane_id, epoch, generation) = (p.pane, started.epoch.0, started.generation.0);
     let batch = move |records: Vec<api::TerminalRecord>| api::RecordBatch {
         subscription: sub,
@@ -373,6 +372,23 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         generation,
         records,
     };
+    // Register the stream before replying, so an immediate unsubscribe
+    // finds it; it waits for `go` so live records follow the reply and the
+    // starting data, never precede them.
+    let (go, wait) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(stream(
+        conn.clone(),
+        wait,
+        rx,
+        ended,
+        host,
+        sub,
+        p.pane,
+        started.generation,
+        move |r| batch(r).encode_to_vec(),
+    ));
+    conn.subs.lock().await.insert(sub, task);
+    reply(ok(id, s.encode_to_vec())).await;
     match started.start {
         mirror::Start::Checkpoint {
             sequence, snapshot, ..
@@ -399,18 +415,7 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
             }
         }
     }
-    let task_conn = conn.clone();
-    let task = tokio::spawn(stream(
-        task_conn,
-        rx,
-        ended,
-        host,
-        sub,
-        p.pane,
-        started.generation,
-        move |r| batch(r).encode_to_vec(),
-    ));
-    conn.subs.lock().await.insert(sub, task);
+    let _ = go.send(());
 }
 
 /// Forward a subscriber's records as batches until its stream ends, then
@@ -419,6 +424,7 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
 #[allow(clippy::too_many_arguments)]
 async fn stream(
     conn: Conn,
+    go: tokio::sync::oneshot::Receiver<()>,
     mut rx: mpsc::Receiver<(u64, mirror::Record)>,
     ended: Arc<AtomicU8>,
     host: mirror::MirrorHost,
@@ -427,6 +433,7 @@ async fn stream(
     generation: domain::PaneGeneration,
     encode: impl Fn(Vec<api::TerminalRecord>) -> Vec<u8> + Send,
 ) {
+    let _ = go.await;
     while let Some((seq, r)) = rx.recv().await {
         let mut records = vec![to_api(seq, &r)];
         let mut bytes = records[0].data.len();
