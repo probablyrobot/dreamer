@@ -3,6 +3,7 @@
 | Platform | Command | Output |
 | --- | --- | --- |
 | macOS (Apple Silicon) | `cargo xtask package --platform macos` | `target/package/Dreamer.app` and `dreamer-<version>-aarch64-apple-darwin.zip` with its `.sha256` |
+| Any Linux (generic) | `cargo xtask package --platform linux` (on Linux) | `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256`, installed into your home directory by `install.sh` |
 | Arch Linux | `cargo xtask package --platform arch` | `target/package/arch/`: source tarball, `PKGBUILD`, and, on Arch, `dreamer-<version>-1-<arch>.pkg.tar.zst` |
 
 Both packages contain the three executables: `dreamer` (desktop app),
@@ -38,6 +39,68 @@ then confirm.
 The macOS gate builds a debug bundle on every commit (`bundle`), and the
 release zip on every push (`package`). Both are launched outside the
 source tree.
+
+## Generic Linux (any distribution, no root)
+
+Like oh-my-zsh, one command installs into your home directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/probablyrobot/dreamer/main/packaging/install.sh | sh
+```
+
+The script downloads the latest release tarball for your architecture,
+verifies its SHA-256, and installs:
+
+| Path | Content |
+| --- | --- |
+| `~/.local/share/dreamer/versions/<version>/` | The unpacked release; `~/.local/share/dreamer/current` points to the active one |
+| `~/.local/bin/dreamer`, `dreamerd`, `dream` | Links to the active version |
+| `~/.local/share/fonts/dreamer/` | JetBrains Mono Nerd Font, for other applications too. Dreamer loads its own copy regardless |
+| `~/.local/share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
+| `~/.config/systemd/user/dreamerd.service` | Optional user service. Enable it with `--enable-service` |
+
+Options:
+
+| Option | Effect |
+| --- | --- |
+| `--from FILE` | Install a tarball you already have (a local build, or a CI artifact). Verified against `FILE.sha256` if that file exists |
+| `--version V` | Install a specific release instead of the latest |
+| `--prefix DIR` | Install under `DIR` instead of `~/.local` |
+| `--uninstall` | Remove everything above. Your settings and tmux sessions are left alone |
+
+`DREAMER_VERSION` and `DREAMER_PREFIX` work in place of `--version` and
+`--prefix`.
+
+The script tells you if `~/.local/bin` is not on your `PATH`, and reminds
+you to install `tmux` if it is missing.
+
+To build and install a tarball yourself:
+
+```sh
+cargo xtask package --platform linux
+sh packaging/install.sh --from target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz
+```
+
+The tarball is built against glibc 2.39 (Ubuntu 24.04), so it runs on
+current distributions, Arch included.
+
+The repository is private for now. Until it is public, the `curl` line and
+release downloads need GitHub access; use `--from` with a tarball from a CI
+run or from `gh release download`.
+
+## Releases
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`. It builds the
+Linux tarball and attaches it, its `.sha256`, and `install.sh` to a draft
+GitHub release.
+
+There are no macOS runners, so the macOS zip is built on the Mac and added
+by hand:
+
+```sh
+cargo xtask package --platform macos
+gh release upload vX.Y.Z target/package/dreamer-*-aarch64-apple-darwin.zip*
+```
 
 ## Arch Linux
 
