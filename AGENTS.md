@@ -45,6 +45,7 @@ Rules:
 
 - Never bypass hooks with `--no-verify`. If the gate fails, fix the cause or report it.
 - Tests use isolated tmux servers on temporary sockets. Never attach to, reconfigure, or kill the user's own tmux server, and never edit their tmux or SSH configuration.
+- Tests that start `dreamerd` give it private `DREAMER_RUNTIME_DIR` and `DREAMER_STATE_DIR`, an isolated `--tmux-socket`, and `DREAMER_FORBID_DEFAULT_TMUX=1`; anything a test spawns (including through `ensure_running`) must receive the same environment. Never let a test daemon use the user's runtime or state directories.
 - A compile or a test run is not proof that a window rendered. Keep GUI evidence separate for macOS, Wayland, and X11.
 
 The build interface (`cargo xtask doctor`, `deps prepare`, `gate`, `package`, `build-report`) is created during M0. Until an issue has added a command, it does not exist; check before relying on it.

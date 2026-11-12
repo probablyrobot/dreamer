@@ -854,6 +854,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "client"
+version = "0.0.0"
+dependencies = [
+ "api",
+ "platform",
+ "prost",
+ "tokio",
+ "wire",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1237,6 +1248,11 @@ dependencies = [
 name = "dreamer-cli"
 version = "0.0.0"
 dependencies = [
+ "api",
+ "client",
+ "platform",
+ "serde_json",
+ "terminal-core",
  "tmux-backend",
  "tokio",
  "workspace-config",
@@ -1246,7 +1262,16 @@ dependencies = [
 name = "dreamer-server"
 version = "0.0.0"
 dependencies = [
+ "api",
+ "client",
  "domain",
+ "platform",
+ "prost",
+ "terminal-core",
+ "tmux-backend",
+ "tokio",
+ "wire",
+ "workspace-host",
 ]
 
 [[package]]
@@ -3810,6 +3835,13 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
+name = "platform"
+version = "0.0.0"
+dependencies = [
+ "rustix",
+]
 
 [[package]]
 name = "png"

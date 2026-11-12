@@ -12,7 +12,19 @@ name = "dreamerd"
 path = "src/main.rs"
 
 [dependencies]
+api = { path = "../api" }
 domain = { path = "../domain" }
+platform = { path = "../platform" }
+prost = "0.14.5"
+terminal-core = { path = "../terminal-core" }
+tmux-backend = { path = "../tmux-backend" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "signal", "macros", "process"] }
+wire = { path = "../wire" }
+workspace-host = { path = "../workspace-host" }
+
+[dev-dependencies]
+client = { path = "../client" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]
 workspace = true

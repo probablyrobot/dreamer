@@ -8,8 +8,15 @@
 //! dream workspace check <name|path>     validate a workspace and show its plan
 //! dream workspace up <name|path> [-L socket] [--tmux PATH]
 //!                                       create the workspace's tmux session
+//! dream version                       client and daemon versions
+//! dream status [--json]                 daemon process, socket, log, tmux endpoint
+//! dream ensure-running [-L socket | --tmux-socket-path P] [--tmux PATH]
+//!                                       start dreamerd unless it is running
+//! dream shutdown                        stop dreamerd (tmux keeps running)
 //! dream --version
 //! ```
+
+mod daemon;
 
 use std::process::ExitCode;
 
@@ -26,6 +33,10 @@ const USAGE: &str = "usage:
   dream workspace list
   dream workspace check <name|path>
   dream workspace up <name|path> [-L socket] [--tmux PATH]
+  dream version
+  dream status [--json]
+  dream ensure-running [-L socket | --tmux-socket-path PATH] [--tmux PATH]
+  dream shutdown
   dream --version";
 
 fn main() -> ExitCode {
@@ -46,6 +57,17 @@ fn main() -> ExitCode {
         ["workspace", "list"] => list(),
         ["workspace", "check", target] => check(target),
         ["workspace", "up", target, rest @ ..] => up(target, rest),
+        ["version"] => daemon::version(),
+        ["status"] => daemon::status(false),
+        ["status", "--json"] => daemon::status(true),
+        ["shutdown"] => daemon::shutdown(),
+        ["ensure-running", rest @ ..] => daemon::split_daemon_args(rest).and_then(|(d, extra)| {
+            if extra.is_empty() {
+                daemon::ensure(&d)
+            } else {
+                Err(format!("unexpected arguments {extra:?}\n{USAGE}"))
+            }
+        }),
         _ => Err(USAGE.to_owned()),
     };
     match result {
