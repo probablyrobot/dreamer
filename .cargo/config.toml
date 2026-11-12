@@ -1,2 +1,7 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+[env]
+# One deployment target for Rust, C, and the Zig-built libghostty-vt
+# (aarch64-macos.15.0 in deps/baseline.toml). Ignored on Linux.
+MACOSX_DEPLOYMENT_TARGET = "15.0"

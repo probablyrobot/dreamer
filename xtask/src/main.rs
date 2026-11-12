@@ -7,6 +7,7 @@ mod gate;
 mod headless;
 mod hooks;
 mod manifest;
+mod package;
 mod policy;
 mod util;
 
@@ -22,6 +23,8 @@ commands:
                                fetch, verify, and build pinned native dependencies
   headless [--cargo-args]      list the packages of the headless build
   hooks install|status         use the versioned git hooks in .githooks/
+  package --platform current [--debug]
+                               build, ad hoc sign, and zip the macOS app bundle
   policy                       check repository rules (workflow runners, pinned actions)
   gate [mac|linux] [--staged|--full]
                                run the local verification gate (pre-commit: --staged)
@@ -37,6 +40,7 @@ fn main() -> ExitCode {
         Some("hooks") => hooks::run(&args[1..]),
         Some("gate") => gate::run(&args[1..]),
         Some("policy") => policy::run(&args[1..]),
+        Some("package") => package::run(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
