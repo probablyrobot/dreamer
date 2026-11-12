@@ -13,10 +13,16 @@
 //! dream ensure-running [-L socket | --tmux-socket-path P] [--tmux PATH]
 //!                                       start dreamerd unless it is running
 //! dream shutdown                        stop dreamerd (tmux keeps running)
+//! dream ls [--json] [-L socket]         sessions, windows, and panes through dreamerd
+//! dream act <action> ... [-L socket]    run a typed action (see `dream act`)
+//! dream actions [ID] [--limit N] [--json]
+//!                                       the action ledger
+//! dream doctor                          diagnostics; never starts the daemon
 //! dream --version
 //! ```
 
 mod daemon;
+mod remote;
 
 use std::process::ExitCode;
 
@@ -37,6 +43,10 @@ const USAGE: &str = "usage:
   dream status [--json]
   dream ensure-running [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream shutdown
+  dream ls [--json] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
+  dream act <action> ... [-L socket | --tmux-socket-path PATH] [--tmux PATH]
+  dream actions [ID] [--limit N] [--json]
+  dream doctor
   dream --version";
 
 fn main() -> ExitCode {
@@ -61,6 +71,23 @@ fn main() -> ExitCode {
         ["status"] => daemon::status(false),
         ["status", "--json"] => daemon::status(true),
         ["shutdown"] => daemon::shutdown(),
+        ["ls", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| match extra.as_slice() {
+                [] => remote::ls(&d, false),
+                [j] if j == "--json" => remote::ls(&d, true),
+                _ => Err(format!("unexpected arguments {extra:?}\n{USAGE}")),
+            })
+        }
+        ["act", rest @ ..] => {
+            match daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::act(&d, &extra)) {
+                Ok(code) => return ExitCode::from(code),
+                Err(e) => Err(e),
+            }
+        }
+        ["actions", rest @ ..] => {
+            remote::actions(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
+        }
+        ["doctor"] => remote::doctor(),
         ["ensure-running", rest @ ..] => daemon::split_daemon_args(rest).and_then(|(d, extra)| {
             if extra.is_empty() {
                 daemon::ensure(&d)

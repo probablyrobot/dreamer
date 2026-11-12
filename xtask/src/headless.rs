@@ -35,7 +35,12 @@ pub const PACKAGES: &[&str] = &[
 /// Headless packages whose integration tests drive a real tmux. Where no
 /// tmux baseline binary exists for the target (the emulated ARM64 job),
 /// only their unit tests run.
-pub const NEEDS_TMUX: &[&str] = &["dreamer-server", "tmux-backend", "workspace-host"];
+pub const NEEDS_TMUX: &[&str] = &[
+    "dreamer-cli",
+    "dreamer-server",
+    "tmux-backend",
+    "workspace-host",
+];
 
 /// Workspace packages that are allowed to depend on GUI crates, or are
 /// build tooling outside the shipped graph.
