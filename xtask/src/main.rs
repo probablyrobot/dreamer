@@ -3,6 +3,7 @@
 mod doctor;
 mod gate;
 mod hooks;
+mod policy;
 mod util;
 
 use std::process::ExitCode;
@@ -13,6 +14,7 @@ usage: cargo xtask <command>
 commands:
   doctor                       check the local toolchain and native build prerequisites
   hooks install|status         use the versioned git hooks in .githooks/
+  policy                       check repository rules (workflow runners, pinned actions)
   gate [mac|linux] [--staged|--full]
                                run the local verification gate (pre-commit: --staged)
 ";
@@ -23,6 +25,7 @@ fn main() -> ExitCode {
         Some("doctor") => doctor::run(&args[1..]),
         Some("hooks") => hooks::run(&args[1..]),
         Some("gate") => gate::run(&args[1..]),
+        Some("policy") => policy::run(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
