@@ -150,6 +150,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dreamer-cli"
+version = "0.0.0"
+
+[[package]]
+name = "dreamer-server"
+version = "0.0.0"
+
+[[package]]
+name = "dreamer-termapp"
+version = "0.0.0"
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
