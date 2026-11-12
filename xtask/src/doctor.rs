@@ -1,13 +1,11 @@
 //! `cargo xtask doctor`: report whether this machine can build and test Dreamer.
 
+use crate::deps::{deps_dir, ghostty_prefix, host_triple};
+use crate::manifest::Manifest;
 use crate::util::{capture, parse_version, repo_root, which};
 
 /// Minimum supported tmux release (spec section 2.3).
 const TMUX_BASELINE: (u32, u32, u32) = (3, 8, 0);
-
-/// Zig release required by the pinned `libghostty-vt`. `None` until the
-/// Ghostty baseline is selected and recorded in `docs/dependency-baseline.md`.
-const ZIG_REQUIRED: Option<(u32, u32, u32)> = None;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Level {
@@ -40,6 +38,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 
     let mut checks = vec![platform(), rust_toolchain(), tmux(), zig(), git()];
+    checks.push(clang());
     checks.extend(native_build_tools());
     checks.push(docker());
 
@@ -140,27 +139,34 @@ fn tmux() -> Check {
     }
 }
 
+/// Zig and libghostty-vt come from the dependency cache, not from PATH.
 fn zig() -> Check {
-    let found = capture("zig", &["version"]);
-    match (found, ZIG_REQUIRED) {
-        (None, None) => Check::new(
+    let pinned = Manifest::load().and_then(|m| {
+        let version = m.get("zig", "version")?.to_owned();
+        let prefix = ghostty_prefix(&m, host_triple()?)?;
+        Ok((version, prefix, m.get("ghostty", "version")?.to_owned()))
+    });
+    let (version, prefix, ghostty) = match pinned {
+        Ok(p) => p,
+        Err(e) => return Check::new(Level::Fail, "ghostty", e),
+    };
+    let zig_ok = deps_dir()
+        .map(|d| d.join("zig").join(&version).is_dir())
+        .unwrap_or(false);
+    let lib_ok = prefix.join(".dreamer-build").is_file();
+    match (zig_ok, lib_ok) {
+        (true, true) => Check::new(
+            Level::Ok,
+            "ghostty",
+            format!(
+                "libghostty-vt {ghostty} built with Zig {version} at {}",
+                prefix.display()
+            ),
+        ),
+        _ => Check::new(
             Level::Warn,
-            "zig",
-            "not found (needed once the Ghostty baseline is pinned)",
-        ),
-        (None, Some((a, b, c))) => {
-            Check::new(Level::Fail, "zig", format!("not found; need {a}.{b}.{c}"))
-        }
-        (Some(v), None) => Check::new(
-            Level::Info,
-            "zig",
-            format!("{v} (required version not pinned yet)"),
-        ),
-        (Some(v), Some(req)) if parse_version(&v) == Some(req) => Check::new(Level::Ok, "zig", v),
-        (Some(v), Some((a, b, c))) => Check::new(
-            Level::Fail,
-            "zig",
-            format!("{v}, but the Ghostty baseline needs {a}.{b}.{c}"),
+            "ghostty",
+            format!("libghostty-vt {ghostty} not prepared; run `cargo xtask deps prepare`"),
         ),
     }
 }
@@ -193,9 +199,15 @@ fn native_build_tools() -> Vec<Check> {
         )),
         None => checks.push(Check::new(Level::Fail, "xcode", "Xcode not installed")),
     }
+    // `xcrun --find metal` succeeds even when the separately installed Metal
+    // Toolchain component is missing; only running the compiler proves it.
     checks.push(
-        match capture("xcrun", &["--sdk", "macosx", "--find", "metal"]) {
-            Some(path) => Check::new(Level::Ok, "metal", path),
+        match capture("xcrun", &["--sdk", "macosx", "metal", "--version"]) {
+            Some(version) => Check::new(
+                Level::Ok,
+                "metal",
+                version.lines().next().unwrap_or("installed").to_owned(),
+            ),
             None => Check::new(
                 Level::Fail,
                 "metal",
@@ -247,6 +259,18 @@ fn native_build_tools() -> Vec<Check> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn native_build_tools() -> Vec<Check> {
     Vec::new()
+}
+
+/// bindgen loads libclang to regenerate or check the Ghostty bindings.
+fn clang() -> Check {
+    match capture("clang", &["--version"]).and_then(|v| v.lines().next().map(str::to_owned)) {
+        Some(v) => Check::new(Level::Ok, "clang", v),
+        None => Check::new(
+            Level::Warn,
+            "clang",
+            "not found (needed by `cargo xtask bindings`)",
+        ),
+    }
 }
 
 fn docker() -> Check {

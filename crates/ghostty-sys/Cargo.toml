@@ -1,0 +1,13 @@
+[package]
+name = "ghostty-sys"
+description = "Raw FFI bindings to the pinned libghostty-vt release"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+links = "ghostty-vt"
+build = "build.rs"
+
+[lints]
+workspace = true
