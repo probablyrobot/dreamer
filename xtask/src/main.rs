@@ -4,6 +4,7 @@ mod bindings;
 mod deps;
 mod doctor;
 mod gate;
+mod headless;
 mod hooks;
 mod manifest;
 mod policy;
@@ -19,6 +20,7 @@ commands:
   bindings [--check]           regenerate (or check) the libghostty-vt Rust bindings
   deps prepare|path [--target <triple>]
                                fetch, verify, and build pinned native dependencies
+  headless [--cargo-args]      list the packages of the headless build
   hooks install|status         use the versioned git hooks in .githooks/
   policy                       check repository rules (workflow runners, pinned actions)
   gate [mac|linux] [--staged|--full]
@@ -31,6 +33,7 @@ fn main() -> ExitCode {
         Some("doctor") => doctor::run(&args[1..]),
         Some("bindings") => bindings::run(&args[1..]),
         Some("deps") => deps::run(&args[1..]),
+        Some("headless") => headless::run(&args[1..]),
         Some("hooks") => hooks::run(&args[1..]),
         Some("gate") => gate::run(&args[1..]),
         Some("policy") => policy::run(&args[1..]),

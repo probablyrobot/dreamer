@@ -273,6 +273,16 @@ impl Engine {
                 bytes,
             )?;
         }
+        if let Some(bytes) = config.scrollback_bytes {
+            // SAFETY: the option takes a pointer to a size_t read during the call.
+            check("set scrollback bytes", unsafe {
+                ghostty_terminal_set(
+                    engine.term,
+                    GhosttyTerminalOption::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+                    (&raw const bytes).cast(),
+                )
+            })?;
+        }
         effects::register(engine.term, &mut engine.callbacks)?;
         let (mut cols, mut rows) = (0u16, 0u16);
         // SAFETY: `term` is live; each key writes one u16.

@@ -1,0 +1,15 @@
+[package]
+name = "dreamer-termapp"
+description = "Runtime for apps that run inside tmux panes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "dreamer-termapp"
+path = "src/main.rs"
+
+[lints]
+workspace = true
