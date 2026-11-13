@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 18;
+pub const PROTOCOL_MINOR: u32 = 19;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1678,6 +1678,26 @@ pub struct HostReply {
     pub payload: Vec<u8>,
 }
 
+/// What a connection may do. The user's own clients hold the owner grant (everything). A narrow grant lists its methods (exact names, or `service.*`), the panes it may read, follow, or type into, and an optional expiry. Checked by the daemon before every request; data can never widen it.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Grant {
+    /// Everything is allowed (the user's own clients).
+    #[prost(bool, tag = "1")]
+    pub owner: bool,
+    #[prost(string, repeated, tag = "2")]
+    pub methods: Vec<String>,
+    /// Panes in scope; requests naming another pane are refused.
+    #[prost(uint32, repeated, tag = "3")]
+    pub panes: Vec<u32>,
+    /// Every pane is in scope.
+    #[prost(bool, tag = "4")]
+    pub all_panes: bool,
+    #[prost(uint64, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_unix_ms: Option<u64>,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -1705,6 +1725,7 @@ pub mod method {
     pub const HOSTS_INSTALL: &str = "hosts.install";
     pub const HOSTS_UPGRADE: &str = "hosts.upgrade";
     pub const HOSTS_CALL: &str = "hosts.call";
+    pub const GRANTS_CURRENT: &str = "grants.current";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1892,6 +1913,13 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Forward one typed call to a connected host's daemon.",
     },
+    MethodInfo {
+        name: "grants.current",
+        params: "Empty",
+        result: "Grant",
+        mutation: false,
+        doc: "The calling connection's own grant.",
+    },
 ];
 
 /// A typed request for one method.
@@ -1922,6 +1950,7 @@ pub enum Request {
     HostsInstall(InstallParams),
     HostsUpgrade(UpgradeParams),
     HostsCall(HostCall),
+    GrantsCurrent(Empty),
 }
 
 impl Request {
@@ -1952,6 +1981,7 @@ impl Request {
             Self::HostsInstall(_) => "hosts.install",
             Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
+            Self::GrantsCurrent(_) => "grants.current",
         }
     }
 
@@ -1983,6 +2013,7 @@ impl Request {
             Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
+            Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -2015,6 +2046,7 @@ impl Request {
             "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
+            "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -2046,6 +2078,7 @@ impl Request {
             Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -2076,6 +2109,7 @@ impl Request {
             "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
+            "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -2109,6 +2143,7 @@ pub enum Response {
     HostsInstall(InstallResult),
     HostsUpgrade(UpgradeResult),
     HostsCall(HostReply),
+    GrantsCurrent(Grant),
 }
 
 impl Response {
@@ -2139,6 +2174,7 @@ impl Response {
             Self::HostsInstall(_) => "hosts.install",
             Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
+            Self::GrantsCurrent(_) => "grants.current",
         }
     }
 
@@ -2170,6 +2206,7 @@ impl Response {
             Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
+            Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -2202,6 +2239,7 @@ impl Response {
             "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
+            "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -2233,6 +2271,7 @@ impl Response {
             Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -2263,6 +2302,7 @@ impl Response {
             "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
+            "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -2393,6 +2433,11 @@ pub trait Service: Sync {
         &self,
         params: HostCall,
     ) -> impl ::core::future::Future<Output = Result<HostReply, RpcError>> + Send;
+    /// The calling connection's own grant.
+    fn grants_current(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<Grant, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -2453,5 +2498,6 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::HostsInstall(p) => service.hosts_install(p).await.map(Response::HostsInstall),
         Request::HostsUpgrade(p) => service.hosts_upgrade(p).await.map(Response::HostsUpgrade),
         Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
+        Request::GrantsCurrent(p) => service.grants_current(p).await.map(Response::GrantsCurrent),
     }
 }

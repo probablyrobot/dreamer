@@ -351,3 +351,64 @@ async fn one_client_owns_a_window_s_size_and_ownership_passes_on_disconnect() {
     assert!(r.owner && r.applied, "{r:?}");
     settle_to(&s, (90, 28)).await;
 }
+
+#[tokio::test]
+async fn when_the_last_dreamer_window_goes_the_tmux_window_returns_to_the_terminal_s_size() {
+    let s = Setup::new();
+    s.tmux(&["set-option", "-g", "window-size", "latest"]);
+    // The user's own terminal, attached to the same session at its size.
+    let mut terminal = std::process::Command::new(tmux_program())
+        .args(["-L", s.tmux.socket(), "-C", "attach", "-t", "main"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the user's tmux client");
+    {
+        use std::io::Write;
+        let stdin = terminal.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "refresh-client -C 70x20").expect("size the terminal");
+        writeln!(stdin, "select-window -t main:0").expect("be active");
+    }
+    settle_to(&s, (70, 20)).await;
+
+    // Dreamer opens a window on the session and sizes it.
+    let mut a = s.client().await;
+    let Response::TmuxWatch(t) = a
+        .call(Request::TmuxWatch(api::TopologyParams::default()))
+        .await
+        .expect("watch")
+    else {
+        panic!("watch")
+    };
+    let window = t.topology.expect("topology").windows[0].id;
+    drop(a.pushed());
+    let r = size(&a, window, 1, 110, 33).await;
+    assert!(r.owner && r.applied, "{r:?}");
+    settle_to(&s, (110, 33)).await;
+
+    // Dreamer's last window goes away (Cmd-Q): the daemon keeps running,
+    // and the window goes back to the terminal's size.
+    drop(a);
+    settle_to(&s, (70, 20)).await;
+    let _ = terminal.kill();
+    let _ = terminal.wait();
+}
+
+#[tokio::test]
+async fn the_user_s_own_clients_hold_the_owner_grant() {
+    let s = Setup::new();
+    let c = s.client().await;
+    let Response::GrantsCurrent(g) = c
+        .call(Request::GrantsCurrent(api::Empty {}))
+        .await
+        .expect("grants.current")
+    else {
+        panic!("grant");
+    };
+    assert!(g.owner, "{g:?}");
+    // And it can do what it always could.
+    c.call(Request::TmuxTopology(api::TopologyParams::default()))
+        .await
+        .expect("topology");
+}

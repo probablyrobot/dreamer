@@ -9,6 +9,11 @@ use std::process::Command;
 
 use client::ssh::{Mode, Remote, command};
 
+/// The tests here write scripts and run them. On Linux, a child another
+/// test forks at that moment briefly holds the script's write handle, and
+/// running it then fails with ETXTBSY ("text file busy"). One at a time.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn script(path: &Path, body: &str) {
     std::fs::write(path, body).expect("write script");
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -25,6 +30,7 @@ fn nul_words(path: &Path) -> Vec<String> {
 
 #[test]
 fn hostile_words_reach_the_remote_dream_unchanged_through_both_layers() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = PathBuf::from(format!("/tmp/drm-ssh-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     // The remote executable lives in a directory whose name needs quoting.
@@ -96,6 +102,7 @@ exec /bin/sh -c "$1"
 
 #[test]
 fn with_no_dream_named_the_installed_server_is_preferred_then_path() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let root = PathBuf::from(format!("/tmp/drm-ssh-default-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let home = root.join("home");

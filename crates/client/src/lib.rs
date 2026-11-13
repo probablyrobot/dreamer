@@ -69,7 +69,16 @@ pub enum Pushed {
     Closed { error: Option<String> },
 }
 
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<wire::Response>>>>;
+/// Calls waiting for their response, and whether the connection has
+/// closed: kept under one lock, so a call can never wait on a connection
+/// that already ended.
+#[derive(Default)]
+struct Calls {
+    waiting: HashMap<u64, oneshot::Sender<wire::Response>>,
+    closed: bool,
+}
+
+type Pending = Arc<Mutex<Calls>>;
 
 /// A connection to the daemon. Calls may run concurrently; pushed data
 /// arrives on [`Client::pushed`].
@@ -185,10 +194,13 @@ impl Client {
             deadline_ms: 0,
         };
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .map_err(|_| WireError::Closed)?
-            .insert(id, tx);
+        {
+            let mut calls = self.pending.lock().map_err(|_| WireError::Closed)?;
+            if calls.closed {
+                return Err(WireError::Closed.into());
+            }
+            calls.waiting.insert(id, tx);
+        }
         {
             let mut w = self.writer.lock().await;
             write_frame(
@@ -221,7 +233,10 @@ async fn read_loop<R: AsyncRead + Unpin>(
         match kind {
             Kind::Response => match wire::Response::decode(payload.as_slice()) {
                 Ok(r) => {
-                    let waiter = pending.lock().ok().and_then(|mut p| p.remove(&r.id));
+                    let waiter = pending
+                        .lock()
+                        .ok()
+                        .and_then(|mut p| p.waiting.remove(&r.id));
                     if let Some(w) = waiter {
                         let _ = w.send(r);
                     }
@@ -257,9 +272,11 @@ async fn read_loop<R: AsyncRead + Unpin>(
             _ => break Some("unexpected frame from the daemon".into()),
         }
     };
-    // Callers waiting for a response see the connection close.
+    // Callers waiting for a response see the connection close, and later
+    // calls fail at once instead of waiting for a reply that cannot come.
     if let Ok(mut p) = pending.lock() {
-        p.clear();
+        p.closed = true;
+        p.waiting.clear();
     }
     let _ = pushed.send(Pushed::Closed { error }).await;
 }

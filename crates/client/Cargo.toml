@@ -16,3 +16,6 @@ wire = { path = "../wire" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["macros"] }

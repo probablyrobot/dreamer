@@ -187,6 +187,32 @@ pub async fn size_window(
     .map(drop)
 }
 
+/// Stop sizing a window: tmux sizes it from its other clients again
+/// (`refresh-client -C @W:` clears this control client's size for it).
+pub async fn clear_window_size(
+    conn: &Connection,
+    target: TmuxWindowId,
+) -> Result<(), CommandError> {
+    conn.execute(TmuxCommand::new("refresh-client").opt("-C", format!("{}:", window(target))))
+        .await
+        .map(drop)
+}
+
+/// Whether tmux leaves this control client out when sizing windows while
+/// another client is attached (`refresh-client -f [!]ignore-size`). A
+/// control client that ever sized a window otherwise counts with its own
+/// default size even after its window sizes are cleared.
+pub async fn set_ignore_size(conn: &Connection, ignore: bool) -> Result<(), CommandError> {
+    let flag = if ignore {
+        "ignore-size"
+    } else {
+        "!ignore-size"
+    };
+    conn.execute(TmuxCommand::new("refresh-client").opt("-f", flag))
+        .await
+        .map(drop)
+}
+
 /// Toggle zoom of the pane's window onto this pane.
 pub async fn toggle_zoom(conn: &Connection, target: TmuxPaneId) -> Result<(), CommandError> {
     conn.execute(
