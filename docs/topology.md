@@ -50,8 +50,14 @@ from at most one Dreamer client, its **sizing owner** (spec 11.8):
 - **Handover.** When the owner's connection closes (or it asks with
   `release`), the most recent other requester becomes the owner, and its
   last request is applied once.
-- **Leaving.** When the last owner leaves, the window keeps the last
-  applied size for Dreamer's control client. The daemon does not reset it.
+- **Leaving.** When the last owner of a window leaves (for example, the
+  desktop quits while the daemon keeps running), the daemon clears its size
+  for that window (`refresh-client -C @WINDOW:`). Once Dreamer sizes no
+  window at all, it also marks its control client `ignore-size`. tmux then
+  sizes every window from your other clients again: your terminal's window
+  goes back to the terminal's size. A control client that ever sized a
+  window would otherwise keep counting with tmux's default 80x24. The flag
+  is removed before Dreamer next applies a size.
 - **Your tmux options are never changed.** `window-size` decides how
   Dreamer's control-client size combines with other clients'. With the
   default `latest`, a normal tmux client you are typing in wins, and
@@ -82,6 +88,13 @@ that size for the window it shows, once the area has been still for
   - another tmux client attached at 70x20 makes the window settle (at
     70x20) and stay put;
   - when the owner disconnects, the follower's last size is applied.
+- `when_the_last_dreamer_window_goes_the_tmux_window_returns_to_the_terminal_s_size`:
+  - a tmux client at 70x20 stands in for your terminal;
+  - Dreamer sizes the window to 110x33;
+  - after its only client disconnects, the window is 70x20 again.
+
+  Before the fix it stayed at 110x33, and with only the size cleared, at
+  80x24.
 - The workspace smoke requires tmux to size the shown window to the
   workspace's area when the display refreshes.
 

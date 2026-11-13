@@ -253,30 +253,46 @@ pub struct Sizing {
 }
 
 /// Clients whose connection closed give up the windows they own; the most
-/// recent other requester takes over and its size is applied once.
+/// recent other requester takes over and its size is applied once. With no
+/// other requester, the window's size is cleared, so tmux sizes it from its
+/// other clients (the user's terminal) again.
 pub async fn release_sizing(state: &State, clients: &[u64]) {
     if clients.is_empty() {
         return;
     }
     let mut apply = Vec::new();
+    let mut clear = Vec::new();
+    let mut stop_sizing = false;
     {
         let mut sizing = state.sizing.lock().await;
         for (window, s) in sizing.iter_mut() {
             s.requests.retain(|(c, _, _)| !clients.contains(c));
             if s.owner.is_some_and(|o| clients.contains(&o)) {
                 s.owner = s.requests.last().map(|(c, _, _)| *c);
-                if let Some((_, cols, rows)) = s.requests.last() {
-                    apply.push((*window, *cols, *rows));
+                match s.requests.last() {
+                    Some((_, cols, rows)) => apply.push((*window, *cols, *rows)),
+                    None => clear.push(*window),
                 }
             }
         }
         sizing.retain(|_, s| s.owner.is_some());
+        // No Dreamer window sizes anything any more: let tmux size every
+        // window from the other clients (the user's terminal) again.
+        if sizing.is_empty() {
+            stop_sizing = true;
+        }
     }
     let guard = state.endpoint.lock().await;
     let Some(ep) = guard.as_ref() else { return };
     for (window, cols, rows) in apply {
         let _ = tmux_backend::ops::size_window(&ep.conn, domain::TmuxWindowId(window), cols, rows)
             .await;
+    }
+    for window in clear {
+        let _ = tmux_backend::ops::clear_window_size(&ep.conn, domain::TmuxWindowId(window)).await;
+    }
+    if stop_sizing {
+        let _ = tmux_backend::ops::set_ignore_size(&ep.conn, true).await;
     }
 }
 
@@ -450,6 +466,9 @@ impl api::Service for DaemonService {
         let ep = guard
             .as_ref()
             .ok_or_else(|| unavailable("endpoint not connected".into()))?;
+        // A size of ours counts again (it may have been set aside when no
+        // Dreamer window was sizing anything).
+        let _ = tmux_backend::ops::set_ignore_size(&ep.conn, false).await;
         tmux_backend::ops::size_window(&ep.conn, domain::TmuxWindowId(p.window), cols, rows)
             .await
             .map_err(|e| {
