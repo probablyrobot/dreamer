@@ -183,6 +183,9 @@ impl Service for Fixed {
     async fn hosts_upgrade(&self, _: api::UpgradeParams) -> Result<api::UpgradeResult, RpcError> {
         Ok(api::UpgradeResult::default())
     }
+    async fn grants_current(&self, _: Empty) -> Result<api::Grant, RpcError> {
+        Ok(api::Grant::default())
+    }
     async fn hosts_call(&self, _: api::HostCall) -> Result<api::HostReply, RpcError> {
         Ok(api::HostReply::default())
     }

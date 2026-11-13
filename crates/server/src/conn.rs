@@ -62,6 +62,9 @@ struct Conn {
     /// with an error instead of being dropped.
     max_frame: u32,
     events: Arc<AtomicU64>,
+    /// What this connection may do: the owner grant for the user's own
+    /// clients, a narrow one after an app registers.
+    grant: Arc<std::sync::Mutex<crate::grants::Grant>>,
 }
 
 impl Conn {
@@ -117,6 +120,8 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         sizers: Arc::default(),
         next_sub: Arc::new(AtomicU64::new(1)),
         max_frame: negotiated.limits.max_frame,
+        // The socket is owner-only: whoever connects is the user.
+        grant: Arc::new(std::sync::Mutex::new(crate::grants::Grant::owner())),
         events: Arc::new(AtomicU64::new(1)),
     };
     let service = DaemonService(state.clone());
@@ -140,6 +145,25 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                 };
                 let (service, conn, state) = (service.clone(), conn.clone(), state.clone());
                 tokio::spawn(async move {
+                    // The grant decides first, before anything is acted on.
+                    if let Some(refused) = refuse(&conn, &req) {
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(Kind::Response, refused.encode_to_vec()))
+                            .await;
+                        return;
+                    }
+                    if req.method == api::method::GRANTS_CURRENT {
+                        let g = conn.grant.lock().map(|g| g.0.clone()).unwrap_or_default();
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(
+                                Kind::Response,
+                                ok(req.id, g.encode_to_vec()).encode_to_vec(),
+                            ))
+                            .await;
+                        return;
+                    }
                     let shutdown = req.method == api::method::DAEMON_SHUTDOWN;
                     if req.method == api::method::TERMINAL_SUBSCRIBE {
                         // Sends its own response, then the stream.
@@ -257,6 +281,30 @@ pub async fn answer(service: &DaemonService, req: wire::Request) -> wire::Respon
         },
         Err(e) => failure(req.id, e),
     }
+}
+
+/// The connection's grant refuses this request: the error reply to send.
+/// A request that does not decode is left to the method's own handling,
+/// which reports it; it acts on nothing.
+fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
+    let grant = conn.grant.lock().ok()?.clone();
+    if grant.0.owner {
+        return None;
+    }
+    if !grant.method_allowed(&req.method) {
+        return Some(failure(
+            req.id,
+            RpcError::new(
+                code::FORBIDDEN,
+                format!("`{}` is not in this connection's grant", req.method),
+            ),
+        ));
+    }
+    let request = api::Request::decode(&req.method, &req.payload).ok()?;
+    grant
+        .check(&req.method, &request)
+        .err()
+        .map(|e| failure(req.id, e))
 }
 
 /// A reply that would not fit in one frame becomes an error saying so.

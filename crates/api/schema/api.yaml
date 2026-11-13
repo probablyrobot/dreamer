@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 18 }
+version: { major: 1, minor: 19 }
 package: dreamer.v1
 
 types:
@@ -679,6 +679,22 @@ types:
     fields:
       - { n: 1, name: payload, type: bytes }
 
+  # ---- grants -------------------------------------------------------------
+
+  - message: Grant
+    doc: >-
+      What a connection may do. The user's own clients hold the owner grant
+      (everything). A narrow grant lists its methods (exact names, or
+      `service.*`), the panes it may read, follow, or type into, and an
+      optional expiry. Checked by the daemon before every request; data can
+      never widen it.
+    fields:
+      - { n: 1, name: owner, type: bool, doc: "Everything is allowed (the user's own clients)." }
+      - { n: 2, name: methods, type: string, repeated: true }
+      - { n: 3, name: panes, type: u32, repeated: true, doc: "Panes in scope; requests naming another pane are refused." }
+      - { n: 4, name: all_panes, type: bool, doc: "Every pane is in scope." }
+      - { n: 5, name: expires_unix_ms, type: u64, optional: true }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -705,3 +721,4 @@ methods:
   - { method: hosts.install, params: InstallParams, result: InstallResult, mutation: true, doc: "Install the reviewed plan: stream the archive, verify its SHA-256 on the host, unpack into a versioned directory, switch atomically." }
   - { method: hosts.upgrade, params: UpgradeParams, result: UpgradeResult, mutation: true, doc: "Install the reviewed plan, restart the host's daemon on it (tmux keeps running), and reconnect." }
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }
+  - { method: grants.current, params: Empty, result: Grant, doc: "The calling connection's own grant." }

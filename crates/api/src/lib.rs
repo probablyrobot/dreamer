@@ -28,6 +28,8 @@ pub mod code {
     pub const CONFLICT: i32 = -32003;
     /// tmux or the daemon is not reachable right now.
     pub const UNAVAILABLE: i32 = -32004;
+    /// The connection's grant does not allow this method or target.
+    pub const FORBIDDEN: i32 = -32005;
 }
 
 /// A request or response that could not be decoded for a method.
