@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 7;
+pub const PROTOCOL_MINOR: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -313,6 +313,8 @@ pub enum EndReason {
     /// The daemon lost its tmux connection; a new epoch follows.
     ConnectionLost = 4,
     Unsubscribed = 5,
+    /// The pane's output outran its mirror, so the daemon rebuilt the mirror from a fresh capture. Subscribe again; a checkpoint follows.
+    Reattached = 6,
 }
 
 impl EndReason {
@@ -325,6 +327,7 @@ impl EndReason {
             Self::Respawned => "respawned",
             Self::ConnectionLost => "connection_lost",
             Self::Unsubscribed => "unsubscribed",
+            Self::Reattached => "reattached",
         }
     }
 
@@ -336,6 +339,7 @@ impl EndReason {
             "respawned" => Some(Self::Respawned),
             "connection_lost" => Some(Self::ConnectionLost),
             "unsubscribed" => Some(Self::Unsubscribed),
+            "reattached" => Some(Self::Reattached),
             _ => None,
         }
     }
@@ -960,6 +964,9 @@ pub struct MirrorStatus {
     #[prost(string, optional, tag = "16")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Times the mirror was rebuilt from a fresh capture because the pane's output outran it.
+    #[prost(uint32, tag = "17")]
+    pub reattaches: u32,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]

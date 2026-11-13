@@ -12,8 +12,15 @@ use tmux_backend::{CommandError, ConnEvent, Connection, TmuxCommand, affects_str
 use tmux_protocol::{Notification, PaneId};
 use tokio::sync::{mpsc, watch};
 
-use crate::worker::{Record, WorkerMsg};
+use crate::worker::{Record, WorkerHandle, WorkerMsg};
 use crate::{Control, MirrorState, worker_of};
+
+/// Output held for a pane whose worker lane is full, before the pane is
+/// declared overrun and re-attached. Absorbs bursts without a re-capture.
+const BACKLOG_BYTES: usize = 8 << 20;
+
+/// How often held output is offered to its worker again.
+const BACKLOG_TICK: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// Subscription that reports pane process changes (respawns) as
 /// `%subscription-changed`; tmux checks it about once a second.
@@ -62,8 +69,14 @@ pub(crate) struct Router {
     events: mpsc::Receiver<ConnEvent>,
     control: mpsc::Receiver<Control>,
     to_self: mpsc::Sender<Control>,
-    workers: Vec<mpsc::Sender<WorkerMsg>>,
+    workers: Vec<WorkerHandle>,
     tmux: Option<TmuxServerRef>,
+    /// Each pane's current attach; output is tagged with it so a worker can
+    /// drop output queued before a re-attach.
+    attaches: HashMap<TmuxPaneId, u32>,
+    /// Output waiting for room in a full worker lane, in order, with its
+    /// size: the router itself never waits on one pane.
+    backlog: HashMap<TmuxPaneId, (std::collections::VecDeque<Record>, usize)>,
     epoch: ConnectionEpoch,
     changes: watch::Sender<u64>,
     flows: HashMap<TmuxPaneId, Flow>,
@@ -84,7 +97,7 @@ impl Router {
         events: mpsc::Receiver<ConnEvent>,
         control: mpsc::Receiver<Control>,
         to_self: mpsc::Sender<Control>,
-        workers: Vec<mpsc::Sender<WorkerMsg>>,
+        workers: Vec<WorkerHandle>,
         epoch: ConnectionEpoch,
         changes: watch::Sender<u64>,
     ) -> Router {
@@ -95,6 +108,8 @@ impl Router {
             to_self,
             workers,
             tmux: None,
+            attaches: HashMap::new(),
+            backlog: HashMap::new(),
             epoch,
             changes,
             flows: HashMap::new(),
@@ -102,7 +117,7 @@ impl Router {
         }
     }
 
-    fn worker(&self, pane: TmuxPaneId) -> &mpsc::Sender<WorkerMsg> {
+    fn worker(&self, pane: TmuxPaneId) -> &WorkerHandle {
         &self.workers[worker_of(pane, self.workers.len())]
     }
 
@@ -121,7 +136,9 @@ impl Router {
                 .await;
         });
         loop {
+            let held = !self.backlog.is_empty();
             tokio::select! {
+                () = tokio::time::sleep(BACKLOG_TICK), if held => self.drain(),
                 c = self.control.recv() => match c {
                     Some(c) => self.on_control(c).await,
                     None => break,
@@ -229,6 +246,9 @@ impl Router {
     }
 
     fn start(&mut self, pane: TmuxPaneId, generation: PaneGeneration) {
+        *self.attaches.entry(pane).or_default() += 1;
+        // Held output belongs to the old attach; the capture covers it.
+        self.backlog.remove(&pane);
         self.flows.insert(pane, Flow::Pausing { generation });
         let conn = self.conn.clone();
         let back = self.to_self.clone();
@@ -250,7 +270,7 @@ impl Router {
     async fn stop(&mut self, pane: TmuxPaneId) {
         match self.flows.remove(&pane) {
             Some(Flow::Live { .. }) | Some(Flow::Failed { .. }) => {
-                let _ = self.worker(pane).send(WorkerMsg::Drop { pane }).await;
+                let _ = self.worker(pane).urgent(WorkerMsg::Drop { pane });
             }
             Some(Flow::Pausing { .. } | Flow::Buffering { .. }) => {
                 // Never leave a pane paused for this client.
@@ -262,6 +282,46 @@ impl Router {
             None => {}
         }
         self.sizes.remove(&pane);
+        self.attaches.remove(&pane);
+        self.backlog.remove(&pane);
+    }
+
+    /// Offer held output to the workers again, oldest first per pane.
+    fn drain(&mut self) {
+        let panes: Vec<TmuxPaneId> = self.backlog.keys().copied().collect();
+        for pane in panes {
+            let Some(Flow::Live { generation }) = self.flows.get(&pane) else {
+                self.backlog.remove(&pane);
+                continue;
+            };
+            let generation = *generation;
+            let attach = self.attaches.get(&pane).copied().unwrap_or_default();
+            let worker = &self.workers[worker_of(pane, self.workers.len())];
+            let Some((queue, bytes)) = self.backlog.get_mut(&pane) else {
+                continue;
+            };
+            while !queue.is_empty() {
+                match worker.try_reserve() {
+                    Ok(slot) => {
+                        let Some(record) = queue.pop_front() else {
+                            break;
+                        };
+                        *bytes -= record_size(&record);
+                        slot.send(WorkerMsg::Apply {
+                            pane,
+                            generation,
+                            attach,
+                            record,
+                        });
+                    }
+                    Err(crate::worker::LaneError::Full) => break,
+                    Err(crate::worker::LaneError::Gone) => queue.clear(),
+                }
+            }
+            if queue.is_empty() {
+                self.backlog.remove(&pane);
+            }
+        }
     }
 
     async fn try_finish(&mut self, pane: TmuxPaneId) {
@@ -304,8 +364,11 @@ impl Router {
             state: Box::new(state),
             captures: Box::new(captures),
             continuation: records,
+            attach: self.attaches.get(&pane).copied().unwrap_or_default(),
         };
-        let _ = self.worker(pane).send(msg).await;
+        // Ahead of output still queued from an earlier attach, which the
+        // worker then drops as stale.
+        let _ = self.worker(pane).urgent(msg);
         self.flows.insert(pane, Flow::Live { generation });
     }
 
@@ -314,14 +377,30 @@ impl Router {
             Some(Flow::Buffering { records, .. }) => records.push(record),
             Some(Flow::Live { generation }) => {
                 let generation = *generation;
-                let _ = self
-                    .worker(pane)
-                    .send(WorkerMsg::Apply {
+                let attach = self.attaches.get(&pane).copied().unwrap_or_default();
+                // Never wait on one pane: the router reads every pane's
+                // output. Output the worker has no room for is held, in
+                // order; held output beyond BACKLOG_BYTES means the pane
+                // outran its mirror, so it is rebuilt from a fresh capture
+                // (output from here to its %pause is part of that capture).
+                if !self.backlog.contains_key(&pane)
+                    && let Ok(slot) = self.worker(pane).try_reserve()
+                {
+                    slot.send(WorkerMsg::Apply {
                         pane,
                         generation,
+                        attach,
                         record,
-                    })
-                    .await;
+                    });
+                    return;
+                }
+                let (queue, bytes) = self.backlog.entry(pane).or_default();
+                *bytes += record_size(&record);
+                queue.push_back(record);
+                if *bytes > BACKLOG_BYTES {
+                    self.start(pane, generation);
+                    self.changed();
+                }
             }
             // Pausing: already in the coming capture. Failed or unmirrored:
             // nothing to keep.
@@ -412,5 +491,12 @@ impl Router {
             }
             _ => {}
         }
+    }
+}
+
+fn record_size(r: &Record) -> usize {
+    match r {
+        Record::Bytes(b) => b.len(),
+        Record::Resize { .. } => 0,
     }
 }

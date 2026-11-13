@@ -37,6 +37,52 @@ pub mod end {
     pub const MIRROR_GONE: u8 = 2;
     /// The worker stopped with its tmux connection.
     pub const CONNECTION_LOST: u8 = 3;
+    /// The pane's output outran the mirror and it was rebuilt from a fresh
+    /// capture.
+    pub const REATTACHED: u8 = 4;
+}
+
+/// A worker's two lanes. Output goes on the bounded data lane, in order.
+/// Requests that must not wait behind a pane's backlog (a new attach,
+/// input encoding, reads, subscriptions, statistics) go on the urgent
+/// lane, which the worker always drains first.
+#[derive(Debug, Clone)]
+pub struct WorkerHandle {
+    data: mpsc::Sender<WorkerMsg>,
+    urgent: mpsc::UnboundedSender<WorkerMsg>,
+}
+
+/// Why a message did not go on the data lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneError {
+    /// The lane is full: the pane's output is ahead of its mirror.
+    Full,
+    /// The worker has stopped.
+    Gone,
+}
+
+/// The worker has stopped (its connection ended).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerGone;
+
+impl WorkerHandle {
+    /// A slot on the data lane, without waiting: send into it to keep
+    /// order with the pane's output. Nothing is lost when there is none.
+    pub fn try_reserve(&self) -> Result<mpsc::Permit<'_, WorkerMsg>, LaneError> {
+        self.data.try_reserve().map_err(|e| match e {
+            mpsc::error::TrySendError::Full(()) => LaneError::Full,
+            mpsc::error::TrySendError::Closed(()) => LaneError::Gone,
+        })
+    }
+
+    /// Ahead of any queued output.
+    pub fn urgent(&self, m: WorkerMsg) -> Result<(), WorkerGone> {
+        self.urgent.send(m).map_err(|_| WorkerGone)?;
+        // Wake a worker waiting on an empty data lane; a full lane means it
+        // is busy and checks the urgent lane before its next message.
+        let _ = self.data.try_send(WorkerMsg::Wake);
+        Ok(())
+    }
 }
 
 /// What applying a live record did besides changing the screen. Only
@@ -158,6 +204,7 @@ pub struct LiveStats {
     pub journal_first: u64,
     pub title: Option<String>,
     pub cwd: Option<String>,
+    pub reattaches: u32,
 }
 
 #[derive(Debug)]
@@ -169,12 +216,19 @@ pub enum WorkerMsg {
         state: Box<PaneState>,
         captures: Box<Captures>,
         continuation: Vec<Record>,
+        attach: u32,
     },
     Apply {
         pane: TmuxPaneId,
         generation: PaneGeneration,
+        /// Which attach of the pane this output follows; output from an
+        /// earlier attach (left queued when the pane was re-attached) is
+        /// already part of the newer capture and is dropped.
+        attach: u32,
         record: Record,
     },
+    /// Nothing to do; makes a waiting worker look at its urgent lane.
+    Wake,
     Drop {
         pane: TmuxPaneId,
     },
@@ -226,6 +280,10 @@ struct Mirror {
     effects: u64,
     /// The client whose window last gained focus on this pane.
     focused: Option<u64>,
+    /// The attach this mirror was built from, and how many times the pane
+    /// was re-attached because its output outran the mirror.
+    attach: u32,
+    reattaches: u32,
 }
 
 impl Drop for Mirror {
@@ -324,6 +382,7 @@ impl Mirror {
             journal_first: self.journal.first_sequence(),
             title: self.title.clone(),
             cwd: self.cwd.clone(),
+            reattaches: self.reattaches,
         }
     }
 
@@ -447,16 +506,34 @@ pub fn spawn(
     capacity: usize,
     retention: Retention,
     host_bytes: Arc<AtomicUsize>,
-) -> std::io::Result<mpsc::Sender<WorkerMsg>> {
+) -> std::io::Result<WorkerHandle> {
     let (tx, mut rx) = mpsc::channel::<WorkerMsg>(capacity);
+    let (urgent_tx, mut urgent) = mpsc::unbounded_channel::<WorkerMsg>();
+    // Tests: make one pane's output slow to apply, to outrun its mirror.
+    let slow: Option<(u32, std::time::Duration)> =
+        std::env::var("DREAMER_TEST_SLOW_PANE").ok().and_then(|v| {
+            let (pane, us) = v.split_once(':')?;
+            Some((
+                pane.parse().ok()?,
+                std::time::Duration::from_micros(us.parse().ok()?),
+            ))
+        });
     std::thread::Builder::new()
         .name(format!("dreamer-vt-{index}"))
         .spawn(move || {
             let mut mirrors: HashMap<TmuxPaneId, Mirror> = HashMap::new();
             // Panes whose engine could not be restored, reported in stats.
             let mut failed: HashMap<TmuxPaneId, LiveStats> = HashMap::new();
-            while let Some(msg) = rx.blocking_recv() {
+            loop {
+                let msg = match urgent.try_recv() {
+                    Ok(m) => m,
+                    Err(_) => match rx.blocking_recv() {
+                        Some(m) => m,
+                        None => break,
+                    },
+                };
                 match msg {
+                    WorkerMsg::Wake => {}
                     WorkerMsg::Init {
                         pane,
                         epoch,
@@ -464,8 +541,28 @@ pub fn spawn(
                         state,
                         captures,
                         continuation,
+                        attach,
                     } => {
                         let id = pane.pane;
+                        // A re-attach of the same execution replaces a
+                        // mirror that fell behind: its subscribers start
+                        // over, and the new journal begins past a gap so no
+                        // resume point of the old one can be spliced on.
+                        let previous = mirrors
+                            .remove(&id)
+                            .filter(|m| m.generation == generation)
+                            .map(|old| {
+                                for s in &old.subscribers {
+                                    let _ = s.ended.compare_exchange(
+                                        end::RUNNING,
+                                        end::REATTACHED,
+                                        Ordering::SeqCst,
+                                        Ordering::SeqCst,
+                                    );
+                                }
+                                (old.sequence + 2, old.reattaches + 1, old.title.clone(), old.cwd.clone())
+                            });
+                        let (base, reattaches, title, cwd) = previous.unwrap_or((1, 0, None, None));
                         failed.remove(&id);
                         let engine = match restore_engine(&state, &captures, &[]) {
                             Ok(e) => e,
@@ -487,6 +584,7 @@ pub fn spawn(
                                         journal_first: 1,
                                         title: None,
                                         cwd: None,
+                                        reattaches: 0,
                                     },
                                 );
                                 continue;
@@ -497,19 +595,21 @@ pub fn spawn(
                             epoch,
                             generation,
                             engine,
-                            sequence: 0,
+                            sequence: base - 1,
                             ingested: 0,
                             error: None,
                             tier: Tier::Warm,
-                            journal: Journal::new(1, retention, host_bytes.clone()),
+                            journal: Journal::new(base, retention, host_bytes.clone()),
                             subscribers: Vec::new(),
                             scrollback: state.history_limit as usize,
                             // Only what the program sets after attach; the
                             // tmux pane title is in the topology.
-                            title: None,
-                            cwd: None,
+                            title,
+                            cwd,
                             effects: 0,
                             focused: None,
+                            attach,
+                            reattaches,
                         };
                         // Clipboard writes count only from live output, never
                         // from what bootstrap restored.
@@ -524,13 +624,20 @@ pub fn spawn(
                     WorkerMsg::Apply {
                         pane,
                         generation,
+                        attach,
                         record,
                     } => {
-                        // A record for an older execution of the pane is stale.
+                        // A record for an older execution of the pane, or
+                        // from before its latest attach, is stale.
                         if let Some(m) = mirrors
                             .get_mut(&pane)
-                            .filter(|m| m.generation == generation)
+                            .filter(|m| m.generation == generation && m.attach == attach)
                         {
+                            if let Some((p, delay)) = slow
+                                && p == pane.0
+                            {
+                                std::thread::sleep(delay);
+                            }
                             m.apply(record);
                         }
                     }
@@ -613,5 +720,8 @@ pub fn spawn(
                 }
             }
         })?;
-    Ok(tx)
+    Ok(WorkerHandle {
+        data: tx,
+        urgent: urgent_tx,
+    })
 }

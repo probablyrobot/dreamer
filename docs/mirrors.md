@@ -86,6 +86,7 @@ with a `terminal.end` event that names the reason:
 | `respawned` | The pane runs a new process; subscribe to the new generation |
 | `connection_lost` | The daemon lost tmux; a new epoch follows |
 | `unsubscribed` | `terminal.unsubscribe` |
+| `reattached` | The pane's output outran its mirror, which was rebuilt from a fresh capture (see [daemon.md](daemon.md#under-pressure)). Subscribe again; a checkpoint follows |
 
 A slow client never stalls the pane's owner or other subscribers. The owner
 never waits on a subscriber; it ends the one that is behind instead.
@@ -106,6 +107,7 @@ daemon's mirror. It never guesses:
 | Daemon restart | Epochs never repeat across restarts, so the old resume point is refused and a checkpoint follows |
 | Pane respawned | Follows the new generation from its own checkpoint |
 | Ended as lagged | Resubscribes with a resume point |
+| Ended as reattached | Subscribes again from a checkpoint. The rebuilt mirror's journal starts past a gap, so an old resume point could never be spliced on |
 
 Resnapshots are bounded: five in a row without a successful checkpoint,
 with backoff from 50 ms up to 2 s, and the replica reports "unable to catch

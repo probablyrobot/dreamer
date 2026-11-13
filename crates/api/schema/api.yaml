@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 7 }
+version: { major: 1, minor: 8 }
 package: dreamer.v1
 
 types:
@@ -295,6 +295,7 @@ types:
       - { n: 14, name: journal_records, type: u32 }
       - { n: 15, name: title, type: string, optional: true, doc: "Latest title the program set (OSC 0/2)." }
       - { n: 16, name: cwd, type: string, optional: true, doc: "Latest working directory the program reported (OSC 7)." }
+      - { n: 17, name: reattaches, type: u32, doc: "Times the mirror was rebuilt from a fresh capture because the pane's output outran it." }
 
   - message: MirrorList
     fields:
@@ -403,6 +404,7 @@ types:
       - { n: 3, name: respawned, doc: The pane's process was replaced; subscribe to the new generation. }
       - { n: 4, name: connection_lost, doc: "The daemon lost its tmux connection; a new epoch follows." }
       - { n: 5, name: unsubscribed }
+      - { n: 6, name: reattached, doc: "The pane's output outran its mirror, so the daemon rebuilt the mirror from a fresh capture. Subscribe again; a checkpoint follows." }
 
   - message: SubscriptionEnd
     fields:

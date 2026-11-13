@@ -380,6 +380,9 @@ impl Follower {
                     Ok(api::EndReason::Lagged) => self.subscribe(true).await?,
                     // A new process: its own checkpoint.
                     Ok(api::EndReason::Respawned) => self.subscribe(false).await?,
+                    // The mirror was rebuilt: its journal is new, so start
+                    // from a fresh checkpoint.
+                    Ok(api::EndReason::Reattached) => self.subscribe(false).await?,
                     Ok(api::EndReason::PaneClosed) => self.state = FollowState::PaneClosed,
                     // The daemon reattaches tmux under a new epoch.
                     Ok(api::EndReason::ConnectionLost) => {
