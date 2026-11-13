@@ -639,7 +639,25 @@ impl Hosts {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
-        let status = self.reconnect(&p.name).await?;
+        let stopped_remotely = host.as_ref().is_none_or(|h| h.client().is_none());
+        if stopped_remotely {
+            // No usable link (not connected, or the running daemon refuses
+            // this one): the newly installed dream stops it on the host, by
+            // its pid if it is from another build.
+            if let Err(e) = crate::install::stop_daemon(&remote).await {
+                log::warn(format!("hosts: `{}` stopping the old daemon: {e}", p.name));
+            }
+        }
+        // The old daemon may take a moment to let go of its socket.
+        let mut status = self.reconnect(&p.name).await;
+        for _ in 0..10 {
+            if status.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            status = self.reconnect(&p.name).await;
+        }
+        let status = status?;
         Ok(api::UpgradeResult {
             from,
             to: plan.version.clone(),
@@ -736,7 +754,10 @@ fn attempt(
                 };
                 let _ = tokio::time::timeout(Duration::from_secs(1), diag_done).await;
                 let kind = classify(&e, exit, &host.diag_lines());
-                let why = host.explain(&reason(&e));
+                let why = match incompatible(&host.name, &e) {
+                    Some(why) => why,
+                    None => host.explain(&reason(&e)),
+                };
                 failed(&host, generation, kind, why.clone());
                 return Err(why);
             }
@@ -832,6 +853,30 @@ async fn retry(host: Arc<Host>, generation: u64, delay: Duration) {
         l.next_retry_unix_ms = None;
     }
     let _ = attempt(host, generation).await;
+}
+
+/// The host's daemon refused this one in the handshake (before anything
+/// else was decoded): both sides, and how to get a matching server.
+fn incompatible(name: &str, e: &ClientError) -> Option<String> {
+    let ours = wire::Identity::current("coordinator");
+    let theirs = match e {
+        ClientError::Handshake(wire::io::HandshakeError::Rejected(r)) => format!(
+            "{} (protocol {}.{}, build family {})",
+            r.software_version, r.protocol_major, r.protocol_minor, r.build_family
+        ),
+        ClientError::Handshake(wire::io::HandshakeError::Protocol { major, minor }) => {
+            format!("protocol {major}.{minor}")
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "the daemon on `{name}` is {theirs}; this one is {} (protocol {}.{}, build family {}). \
+         Install a matching server with `dream hosts upgrade {name}`",
+        ours.software_version,
+        wire::PROTOCOL_MAJOR,
+        wire::PROTOCOL_MINOR,
+        ours.build_family
+    ))
 }
 
 fn reason(e: &ClientError) -> String {

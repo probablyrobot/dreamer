@@ -270,6 +270,13 @@ pub async fn install(
     })
 }
 
+/// Stop the host's daemon with the installed `dream shutdown`, which stops
+/// a daemon from another build by its pid. tmux keeps running.
+pub async fn stop_daemon(remote: &Remote) -> Result<String, String> {
+    const STOP: &str = r#""$HOME/.local/share/dreamer/current/bin/dream" shutdown"#;
+    run(remote, STOP, &[], None, Duration::from_secs(30)).await
+}
+
 /// The version in an installed `VERSION` file's first line
 /// (`version 0.1.0`), if any.
 pub fn installed_version(first_line: Option<&str>) -> Option<String> {

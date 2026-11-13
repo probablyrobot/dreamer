@@ -416,6 +416,12 @@ async fn a_hosts_topology_follows_changes_across_a_reconnect() {
 /// version `old` installed, and server archives for this version in
 /// `artifacts`. Every installed `dream` runs the real one.
 fn fake_host_with(two: &Two, old: &str) -> PathBuf {
+    fake_host_env(two, old, "")
+}
+
+/// Like `fake_host_with`, with `env` (shell lines) in the host's SSH
+/// sessions.
+fn fake_host_env(two: &Two, old: &str, env: &str) -> PathBuf {
     let root = &two.root;
     let home = root.join("far/home");
     let fakebin = root.join("far/fakebin");
@@ -451,6 +457,7 @@ echo $$ > '{pid}'
 export HOME='{home}' PATH='{fakebin}':"$PATH"
 export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
 export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
+{env}
 exec /bin/sh -c "exec $3"
 "#,
             pid = root.join("bridge-pid").display(),
@@ -651,4 +658,53 @@ async fn an_upgrade_restarts_the_hosts_daemon_and_views_recover_from_a_checkpoin
     assert!(e.to_string().contains("newer"), "{e}");
     let r = upgrade(&c, &artifacts, true).await.expect("allowed");
     assert!(r.restarted);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_incompatible_host_is_refused_in_the_handshake_and_an_upgrade_fixes_it() {
+    let two = Two::new();
+    // The host's daemon is another build.
+    let artifacts = fake_host_env(
+        &two,
+        "0.0.9",
+        "export DREAMER_TEST_BUILD_FAMILY=another-build",
+    );
+    let c = two.client().await;
+    let connect = api::HostConnect {
+        name: "devbox".into(),
+        destination: "devbox".into(),
+        dream: None,
+        tmux: Some(tmux_program().display().to_string()),
+        tmux_socket: Some(two.far.socket().into()),
+        tmux_socket_path: None,
+        auto_reconnect: Some(true),
+    };
+    let e = c
+        .call(Request::HostsConnect(connect.clone()))
+        .await
+        .expect_err("refused");
+    assert!(e.to_string().contains("build family another-build"), "{e}");
+    let s = host_state(&c).await;
+    assert_eq!(s.failure, api::HostFailure::Incompatible as i32, "{s:?}");
+    assert_eq!(s.next_retry_unix_ms, None, "never retried by itself");
+    // Refused before Welcome: nothing of the host's was ever taken in.
+    assert_eq!(s.remote_pid, None);
+    assert!(s.remote.is_none());
+    let detail = s.detail.unwrap_or_default();
+    assert!(detail.contains("dream hosts upgrade devbox"), "{detail}");
+    let old = two.far_pid().expect("the other build's daemon");
+
+    // A matching build installed over it: the old daemon is stopped by its
+    // pid, and the host connects.
+    let artifacts2 = fake_host_env(&two, "0.0.9", "");
+    assert_eq!(artifacts, artifacts2);
+    let r = upgrade(&c, &artifacts, false).await.expect("upgrade");
+    assert!(r.restarted, "{r:?}");
+    let s = host_state(&c).await;
+    assert_eq!(s.state, api::LinkState::Live as i32, "{s:?}");
+    assert_ne!(s.remote_pid, Some(old));
+    assert_eq!(
+        s.remote.map(|v| v.build_family),
+        Some(wire::Identity::current("test").build_family)
+    );
 }

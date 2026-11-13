@@ -15,10 +15,14 @@ pub struct Identity {
 }
 
 impl Identity {
-    /// This build, in the given role.
+    /// This build, in the given role. `DREAMER_TEST_BUILD_FAMILY` stands in
+    /// for another build in tests of incompatible peers.
     pub fn current(role: &str) -> Identity {
         Identity {
-            build_family: terminal_core::family::build_family(),
+            build_family: std::env::var("DREAMER_TEST_BUILD_FAMILY")
+                .ok()
+                .filter(|f| !f.is_empty())
+                .unwrap_or_else(terminal_core::family::build_family),
             software_version: env!("CARGO_PKG_VERSION").to_owned(),
             role: role.to_owned(),
             features: Vec::new(),
