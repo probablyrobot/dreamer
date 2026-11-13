@@ -30,6 +30,12 @@ It is required to close milestones M0, M2, M3, and M8.
    coordinator and a stand-in `ssh`. Typing must reach the host;
    disconnecting must mark the window stale with the pane's content kept;
    reconnecting must resume it ([desktop.md](desktop.md#remote-hosts)).
+   The workspace smoke's click, keyboard, sizing, and drag checks need a
+   window that receives new frames. When the display does not refresh
+   (on Wayland, an output turned off by idle power saving, or a locked
+   session), the run is reported as NOT RUN with `"not_run": true` in the
+   report, not as a failure. The gate still exits non-zero, because the
+   evidence is incomplete: wake the monitor and run it again.
 6. Writes `target/gate/linux-desktop/<commit>.json` with distribution,
    kernel, desktop, session type, compositor, which X server answered the
    X11 runs (`xwayland` or `xorg`), whether the run was over SSH, and each

@@ -20,6 +20,9 @@ struct Run {
     backend: &'static str,
     input: String,
     passed: bool,
+    /// The run could not check what it needed: the display did not
+    /// refresh (an asleep monitor or a locked session).
+    not_run: bool,
     millis: u128,
     detail: String,
 }
@@ -153,6 +156,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 backend,
                 input: label,
                 passed,
+                not_run: false,
                 millis: started.elapsed().as_millis(),
                 detail: [stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()]
                     .iter()
@@ -192,6 +196,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             backend,
             input: "input".into(),
             passed,
+            not_run: false,
             millis: started.elapsed().as_millis(),
             detail: [stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()]
                 .iter()
@@ -221,18 +226,34 @@ pub fn run(args: &[String]) -> Result<(), String> {
             && stdout.contains(&format!("smoke: backend {expected}"))
             && stdout.contains("smoke: dragging a divider resized pane")
             && stdout.contains("smoke: the saved arrangement came back");
+        // Exit 5: the window never got new frames, so the click, keyboard,
+        // sizing, and drag checks could not run. That is missing evidence,
+        // not a failure; on Wayland it means the output is off (DPMS) or
+        // the session locked.
+        let not_run = !passed && out.status.code() == Some(5) && again.status.success();
         println!(
             "linux-desktop: {backend:<7} {:<18} {}",
             "workspace",
-            if passed { "passed" } else { "FAILED" }
+            if passed {
+                "passed"
+            } else if not_run {
+                "NOT RUN (the display did not refresh: monitor asleep or session locked?)"
+            } else {
+                "FAILED"
+            }
         );
-        if !passed {
+        if not_run {
+            problems.push(format!(
+                "{backend} workspace: not run; wake the monitor (or unlock) and run again"
+            ));
+        } else if !passed {
             problems.push(format!("{backend} workspace: {}", out.status));
         }
         runs.push(Run {
             backend,
             input: "workspace".into(),
             passed,
+            not_run,
             millis: started.elapsed().as_millis(),
             detail: [stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()]
                 .iter()
@@ -262,6 +283,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             backend,
             input: "remote".into(),
             passed,
+            not_run: false,
             millis: started.elapsed().as_millis(),
             detail: [stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()]
                 .iter()
@@ -384,11 +406,12 @@ fn write_report(commit: &str, dirty: bool, runs: &[Run]) -> Result<String, Strin
     for (i, r) in runs.iter().enumerate() {
         let _ = write!(
             s,
-            "{}\n    {{ \"backend\": \"{}\", \"input\": \"{}\", \"passed\": {}, \"millis\": {}, \"output\": \"{}\" }}",
+            "{}\n    {{ \"backend\": \"{}\", \"input\": \"{}\", \"passed\": {}, \"not_run\": {}, \"millis\": {}, \"output\": \"{}\" }}",
             if i == 0 { "" } else { "," },
             r.backend,
             json(&r.input),
             r.passed,
+            r.not_run,
             r.millis,
             json(&r.detail)
         );
