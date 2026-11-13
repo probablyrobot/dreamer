@@ -404,8 +404,11 @@ fn print_status(s: &api::HostStatus) {
     }
     if let Some(v) = &s.remote {
         print!(
-            " {} protocol {}.{}",
-            v.daemon_version, v.protocol_major, v.protocol_minor
+            " {} protocol {}.{} build {}",
+            v.daemon_version,
+            v.protocol_major,
+            v.protocol_minor,
+            v.build_family.get(..12).unwrap_or(&v.build_family)
         );
     }
     println!();

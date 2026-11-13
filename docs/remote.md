@@ -112,6 +112,20 @@ a host that failed as `not_installed` or `incompatible` says "click to
 install"; the click, or "Install or update the server on a host…" in the
 palette, opens a local tmux window running that command.
 
+## Incompatible hosts
+
+A host's daemon that speaks another protocol major version, or comes from
+another build family, refuses the coordinator in the handshake, before
+`Welcome`. Nothing of the host's (no topology, no snapshot) is decoded.
+The host is marked `incompatible`, is never retried by itself, and says
+what it is and what this one is. `dream hosts list` shows each live host's
+version, protocol, and build family.
+
+The fix is an upgrade. With no usable link to the old daemon, the newly
+installed `dream shutdown` stops it on the host; a daemon from another
+build is stopped by the process ID in its startup lock. Then the
+coordinator connects to the new one.
+
 ## Upgrading a server
 
 `hosts.upgrade` installs the reviewed plan, then restarts the host's
@@ -217,7 +231,7 @@ retried by itself:
 | `transient` | Network errors, SSH ending, the remote daemon going away | Yes, under `reconnect: auto` |
 | `auth` | SSH says `Permission denied`, `Too many authentication failures`, or `No more authentication methods` | No |
 | `host_key` | `Host key verification failed`, a changed host identification, or no matching host key type | No |
-| `incompatible` | The remote daemon rejects the handshake (protocol or build family) | No |
+| `incompatible` | The remote daemon rejects the handshake (protocol or build family). The detail names both sides' version, protocol, and build family, and the fix: `dream hosts upgrade NAME` | No |
 | `not_installed` | The remote shell cannot find `dream` (exit status 127 or `command not found`), or `ssh` itself cannot be run | No |
 
 Retries wait 1 s, doubling to at most 60 s, with up to a fifth taken off at
