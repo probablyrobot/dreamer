@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 6;
+pub const PROTOCOL_MINOR: u32 = 7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1010,6 +1010,10 @@ pub struct TerminalSubscribe {
     #[prost(uint64, optional, tag = "5")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_sequence: Option<u64>,
+    /// An id the client picks once per window; it names the client in TerminalInput too, so the daemon can address effects such as clipboard writes to exactly one.
+    #[prost(uint64, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -1102,6 +1106,11 @@ pub struct TerminalEffect {
     #[prost(string, optional, tag = "5")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Text the program wrote to the clipboard (OSC 52). Sent only to the subscription of the pane's focused client.
+    #[prost(bytes = "vec", optional, tag = "6")]
+    #[serde(with = "crate::json::base64_option")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clipboard: Option<Vec<u8>>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -1227,6 +1236,10 @@ pub struct TerminalInput {
     #[prost(string, optional, tag = "3")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// The sending client's id (as in TerminalSubscribe); focus events make it the pane's focused client.
+    #[prost(uint64, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client: Option<u64>,
     #[prost(oneof = "terminal_input::Event", tags = "10, 11, 12, 13, 14")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<terminal_input::Event>,

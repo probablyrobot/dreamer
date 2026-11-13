@@ -139,6 +139,7 @@ async fn input(
             pane: 0,
             generation,
             endpoint: None,
+            client: None,
             event: Some(event),
         }))
         .await?

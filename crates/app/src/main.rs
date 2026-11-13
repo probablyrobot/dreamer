@@ -87,6 +87,11 @@ struct TermFont {
 
 static TERM_FONT: std::sync::OnceLock<TermFont> = std::sync::OnceLock::new();
 static LINKS: std::sync::OnceLock<workspace_config::LinkSettings> = std::sync::OnceLock::new();
+static CLIPBOARD: std::sync::OnceLock<workspace_config::ClipboardWrite> =
+    std::sync::OnceLock::new();
+/// Clipboard writes the smoke received: recorded, never put on the
+/// system clipboard.
+static SMOKE_CLIPBOARD: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
 /// Links the input smoke "opened": recorded instead of launching anything.
 static SMOKE_OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
@@ -254,6 +259,29 @@ impl Shell {
             }
         })
         .detach();
+    }
+
+    /// A program's clipboard write, addressed to this window by the daemon
+    /// (it is the pane's focused client), applied under `clipboard.write`.
+    fn clipboard_write(&mut self, text: Vec<u8>, window: &Window, cx: &mut Context<Self>) {
+        use workspace_config::ClipboardWrite;
+        let allowed = match CLIPBOARD.get().copied().unwrap_or_default() {
+            ClipboardWrite::Deny => false,
+            ClipboardWrite::Allow => true,
+            ClipboardWrite::Focused => window.is_window_active() || self.smoke != Smoke::Off,
+        };
+        if !allowed {
+            return;
+        }
+        if self.smoke != Smoke::Off {
+            if let Ok(mut c) = SMOKE_CLIPBOARD.lock() {
+                c.push(text);
+            }
+            return;
+        }
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+            String::from_utf8_lossy(&text).into_owned(),
+        ));
     }
 
     /// The window title follows the pane: its title, else its working
@@ -897,6 +925,7 @@ fn main() -> ExitCode {
     gpui_platform::application().run(move |cx: &mut App| {
         let chosen = fonts::choose(cx, &settings);
         let _ = LINKS.set(settings.links.clone());
+        let _ = CLIPBOARD.set(settings.clipboard.write);
         let _ = TERM_FONT.set(TermFont {
             family: chosen.family,
             size: settings.font.size,
@@ -962,12 +991,16 @@ fn main() -> ExitCode {
                     let text = frame.text_dump();
                     let meta = feed.meta();
                     let bells = feed.take_bells();
+                    let clipboard = feed.take_clipboard();
                     let done = window.update(cx, |shell, window, cx| {
                         shell.frame = frame;
                         shell.live_frames += 1;
                         shell.show_meta(&meta, window);
                         if bells > 0 {
                             shell.bell(cx);
+                        }
+                        if let Some(text) = clipboard {
+                            shell.clipboard_write(text, window, cx);
                         }
                         cx.notify();
                         match &shell.smoke {
@@ -1078,7 +1111,28 @@ fn main() -> ExitCode {
                                         println!(
                                             "smoke: the window title follows the pane ({SMOKE_TITLE:?}) and a bell flashed"
                                         );
-                                        std::process::exit(0);
+                                        shell.input_phase = 11;
+                                        // The focus event window activation sends (a locked
+                                        // screen never activates the window), then a write.
+                                        shell.send_all([
+                                            api::terminal_input::Event::Focus(api::FocusInput {
+                                                gained: true,
+                                            }),
+                                            api::terminal_input::Event::Text(api::TextInput {
+                                                text: CLIPBOARD_PROBE.into(),
+                                            }),
+                                        ]);
+                                    }
+                                    11 if line("CLIPPED") => {
+                                        let got = SMOKE_CLIPBOARD.lock().map(|c| c.clone()).unwrap_or_default();
+                                        if got == [SMOKE_CLIPBOARD_TEXT.as_bytes()] {
+                                            println!(
+                                                "smoke: a program's clipboard write reached this window once ({SMOKE_CLIPBOARD_TEXT:?})"
+                                            );
+                                            std::process::exit(0);
+                                        }
+                                        eprintln!("smoke: clipboard writes received: {got:?}");
+                                        std::process::exit(3);
                                     }
                                     8 => {
                                         let row = shell
@@ -1214,6 +1268,10 @@ async fn click_and_scroll(any: gpui::AnyWindowHandle, grid: input::Grid, cx: &mu
     )
     .await;
 }
+
+/// Writes "SMOKE-CLIP" to the clipboard with OSC 52, then prints a marker.
+const CLIPBOARD_PROBE: &str = "printf '\\033]52;c;U01PS0UtQ0xJUA==\\007'; echo CLIP''PED\r";
+const SMOKE_CLIPBOARD_TEXT: &str = "SMOKE-CLIP";
 
 /// Sets the pane title and rings the bell, then prints a marker.
 const TITLE_PROBE: &str = "printf '\\033]2;SMOKE-TITLE\\007\\007'; echo T''ITLED\r";

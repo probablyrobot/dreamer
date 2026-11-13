@@ -331,6 +331,7 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
             resume,
             mirror::Sink {
                 records: tx,
+                client: p.client,
                 ended: ended.clone(),
             },
         )
@@ -449,6 +450,7 @@ async fn stream(
         bells: e.bells,
         title: e.title,
         cwd: e.cwd,
+        clipboard: e.clipboard,
     };
     while let Some((seq, r, fx)) = rx.recv().await {
         let mut records = vec![to_api(seq, &r)];

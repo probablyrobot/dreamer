@@ -636,3 +636,113 @@ async fn a_bell_reaches_each_live_subscriber_once_and_is_never_replayed() {
     };
     assert_eq!(m.mirrors[0].title.as_deref(), Some("TITLE-ONE"));
 }
+
+/// Step `f` for `wait` and return the clipboard writes addressed to it.
+async fn clipboard_writes(f: &mut Follower, wait: Duration) -> Vec<Vec<u8>> {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut got = Vec::new();
+    while let Ok(r) = tokio::time::timeout_at(deadline, f.step()).await {
+        r.expect("follow");
+        got.extend(f.take_clipboard());
+    }
+    got
+}
+
+async fn focus(c: &Client, client: u64, gained: bool) {
+    c.call(Request::TerminalInput(api::TerminalInput {
+        pane: 0,
+        client: Some(client),
+        event: Some(api::terminal_input::Event::Focus(api::FocusInput {
+            gained,
+        })),
+        ..api::TerminalInput::default()
+    }))
+    .await
+    .expect("focus");
+}
+
+#[tokio::test]
+async fn a_clipboard_write_reaches_only_the_focused_client_once() {
+    let s = Setup::new(&[]);
+    let c = s.client().await;
+    let start = |id: u64| Follower::start_as(s.socket(), 0, RetryPolicy::default(), Some(id));
+    let mut a = start(1).await.expect("a");
+    let mut b = start(2).await.expect("b");
+    focus(&c, 1, true).await;
+    // "CLIP-ONE" in base64; the marker is split so the echo never matches.
+    s.type_line("printf '\\033]52;c;Q0xJUC1PTkU=\\007'; echo C''1");
+    let to_a = clipboard_writes(&mut a, Duration::from_secs(3)).await;
+    let to_b = clipboard_writes(&mut b, Duration::from_millis(500)).await;
+    assert_eq!(
+        to_a,
+        vec![b"CLIP-ONE".to_vec()],
+        "the focused client gets it once"
+    );
+    assert!(to_b.is_empty(), "an unfocused client never gets it");
+
+    // Focus moves to b: the next write goes there only.
+    focus(&c, 1, false).await;
+    focus(&c, 2, true).await;
+    s.type_line("printf '\\033]52;c;Q0xJUC1UV08=\\007'; echo C''2");
+    assert_eq!(
+        clipboard_writes(&mut b, Duration::from_secs(3)).await,
+        vec![b"CLIP-TWO".to_vec()]
+    );
+    assert!(
+        clipboard_writes(&mut a, Duration::from_millis(500))
+            .await
+            .is_empty()
+    );
+
+    // A reconnect replays records, never the write.
+    b.disconnect();
+    b.reconnect().await.expect("reconnect");
+    assert!(
+        clipboard_writes(&mut b, Duration::from_millis(500))
+            .await
+            .is_empty()
+    );
+    // With no focused client, nobody gets a write.
+    focus(&c, 2, false).await;
+    s.type_line("printf '\\033]52;c;Q0xJUC1UUkU=\\007'; echo C''3");
+    assert!(
+        clipboard_writes(&mut b, Duration::from_secs(2))
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_clipboard_read_gets_no_clipboard_contents() {
+    let s = Setup::new(&[]);
+    let c = s.client().await;
+    let mut a = Follower::start_as(s.socket(), 0, RetryPolicy::default(), Some(7))
+        .await
+        .expect("follow");
+    focus(&c, 7, true).await;
+    // Put something in reach first, so a leak would show.
+    // The payload is split in the command line so only a reply matches.
+    s.type_line("printf '\\033]52;c;Q0xJ''UC1PTkU=\\007'; echo W''ROTE");
+    s.wait_tmux("\nWROTE");
+    let _ = clipboard_writes(&mut a, Duration::from_millis(500)).await;
+    // Ask for the clipboard and show whatever comes back within a second,
+    // with ESC shown as E.
+    s.type_line(
+        "printf '\\033]52;c;?\\007'; stty raw -echo min 0 time 10; dd bs=1 count=256 2>/dev/null | tr '\\033\\007' EB; stty sane; echo; echo READ''-DONE",
+    );
+    s.wait_tmux("READ-DONE");
+    let screen = s
+        .tmux
+        .run_checked(&["capture-pane", "-p", "-t", "main"])
+        .expect("screen");
+    assert!(
+        !screen.contains("Q0xJUC1PTkU") && !screen.contains("CLIP-ONE"),
+        "clipboard contents reached the program:\n{screen}"
+    );
+    // Neither does the read become a write for any client.
+    assert!(
+        clipboard_writes(&mut a, Duration::from_millis(500))
+            .await
+            .is_empty()
+    );
+}

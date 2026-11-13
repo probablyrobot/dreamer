@@ -11,7 +11,8 @@ repeated because a client reconnected or a checkpoint was restored.
 | OSC 10/11 color queries | tmux, from the colors the desktop reported (`refresh-client -r`) |
 | Title (OSC 0/2) and working directory (OSC 7) | **State** kept by the daemon's mirror. See below |
 | Bell | **Live effect**. See below |
-| Clipboard (OSC 52) | Not acted on yet (#134) |
+| Clipboard write (OSC 52) | **Live effect to one client**. See below |
+| Clipboard read (OSC 52 `?`) | Nobody answers: the program gets nothing back (spec 15.4) |
 
 ## Title and working directory are state
 
@@ -51,3 +52,42 @@ In the window, a bell flashes the grid for 120 ms, at most once every
 this with two live subscribers, a replay reconnect, and a checkpoint
 start. The input smoke ends by having a program set a title and ring the
 bell, and requires the window title and the flash.
+
+## Clipboard writes go to one window
+
+A program in a pane can write the clipboard with OSC 52. tmux 3.8 passes
+the sequence to control mode, and the daemon's mirror captures the text.
+Capture is turned on only after bootstrap, so restoring a pane never
+produces a write.
+
+- **One window.** Each window has a client ID. It sends that ID with its
+  subscription and its input, and the window's focus events tell the
+  pane's owner which client is focused. A write is sent only on the
+  focused client's stream. With no focused client, nobody gets it. Two
+  windows on one pane never both apply a write.
+- **Never replayed.** Like every effect, a write is never journaled, so it
+  never arrives again by replay, checkpoint, or reconnect.
+- **Size limit.** A write over 1 MiB is refused whole, never truncated.
+  Requests to clear the clipboard, and writes to other selections, are
+  refused.
+- **The window decides last.** It applies the write under
+  `clipboard.write` in `dreamer.yaml`:
+
+| Setting | When the write reaches the system clipboard |
+| --- | --- |
+| `focused` (default) | Only while the window is active |
+| `allow` | Whenever the write is addressed to this window |
+| `deny` | Never |
+
+**Reads get nothing back.** Mirrors never reply, and tmux 3.8 with default
+options does not answer either. This is the limited profile of spec 15.4.
+Pasting stays an ordinary input operation.
+
+**Evidence.**
+- `a_clipboard_write_reaches_only_the_focused_client_once`: two clients;
+  focus moves between them; a replay reconnect; no focused client.
+- `a_clipboard_read_gets_no_clipboard_contents`.
+- The input smoke's last step sends a focus event the way window
+  activation does, then has a program write the clipboard. It requires
+  the write to arrive once. The smoke records the write instead of
+  touching the system clipboard.

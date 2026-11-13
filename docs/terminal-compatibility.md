@@ -22,8 +22,9 @@ engines never write to a pane.
 | OSC 4 palette queries | Not delegated | No report path in tmux 3.8 (`refresh-client -r` accepts only OSC 10/11) | Not tested |
 | Kitty keyboard, Kitty graphics, clipboard replies | Not delegated | Unsupported until a tested single-responder path exists | Not tested |
 | Replies during bootstrap or snapshot restore | Nobody | Always suppressed | `bootstrap.rs` restores with capture off |
-| Bell, title, cwd | Local UI | Applied as current state on live output; never replayed from restore | `terminal-ghostty` effects tests |
-| Clipboard write and read (OSC 52) | Daemon policy | Not yet supported | Not tested |
+| Bell, title, cwd | Daemon state and live effects | Title and cwd are state in `terminal.mirrors` and every subscription start; a bell is a live effect to subscribers present at the time, never replayed | `replicas.rs`: `a_bell_reaches_each_live_subscriber_once_and_is_never_replayed` |
+| Clipboard write (OSC 52) | Daemon, addressed to one client | tmux 3.8 passes the sequence to control mode. The daemon's mirror captures it (capture on only after bootstrap) and sends it only to the pane's focused client; the window applies it under `clipboard.write`. Never replayed. Writes over 1 MiB are refused | `replicas.rs`: `a_clipboard_write_reaches_only_the_focused_client_once`; input smoke |
+| Clipboard read (OSC 52 `?`) | Nobody | No answer: the program gets nothing back (tmux 3.8 with default options does not answer, and mirrors never reply) | `replicas.rs`: `a_clipboard_read_gets_no_clipboard_contents` |
 
 Why suppression matters: with reply capture on, a mirror engine attached to
 the same stream answered the same queries differently (`?62;22c`,

@@ -102,6 +102,10 @@ pub struct Follower {
     /// Checkpoints restored over this follower's life.
     pub checkpoints: u32,
     pub meta: PaneMeta,
+    /// This client's id, sent with every subscription.
+    client_id: Option<u64>,
+    /// A clipboard write addressed to this client, not yet taken.
+    clipboard: Option<Vec<u8>>,
     /// Effects of the current step, collected by `handle`.
     bells: u32,
     meta_changed: bool,
@@ -113,7 +117,20 @@ impl Follower {
         pane: u32,
         policy: RetryPolicy,
     ) -> Result<Follower, FollowError> {
+        Follower::start_as(socket, pane, policy, None).await
+    }
+
+    /// Like [`Follower::start`], naming this client so the daemon can
+    /// address effects (clipboard writes) to it.
+    pub async fn start_as(
+        socket: PathBuf,
+        pane: u32,
+        policy: RetryPolicy,
+        client: Option<u64>,
+    ) -> Result<Follower, FollowError> {
         let mut f = Follower {
+            client_id: client,
+            clipboard: None,
             socket,
             replica: Replica::new(pane),
             client: None,
@@ -172,6 +189,7 @@ impl Follower {
             resume_epoch: pos.map(|p| p.0),
             resume_generation: pos.map(|p| p.1),
             resume_sequence: pos.map(|p| p.2),
+            client: self.client_id,
             ..api::TerminalSubscribe::default()
         };
         let Response::TerminalSubscribe(s) = client.call(Request::TerminalSubscribe(req)).await?
@@ -272,6 +290,11 @@ impl Follower {
         })
     }
 
+    /// The latest clipboard write addressed to this client, once.
+    pub fn take_clipboard(&mut self) -> Option<Vec<u8>> {
+        self.clipboard.take()
+    }
+
     /// The replica, for local view state (see [`Replica::engine_mut`]).
     pub fn replica_mut(&mut self) -> &mut Replica {
         &mut self.replica
@@ -330,6 +353,9 @@ impl Follower {
                             if e.title.is_some() && e.title != self.meta.title {
                                 self.meta.title.clone_from(&e.title);
                                 self.meta_changed = true;
+                            }
+                            if e.clipboard.is_some() {
+                                self.clipboard.clone_from(&e.clipboard);
                             }
                             if e.cwd.is_some() && e.cwd != self.meta.cwd {
                                 self.meta.cwd.clone_from(&e.cwd);

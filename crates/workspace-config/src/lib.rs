@@ -17,7 +17,10 @@ pub mod settings;
 pub use dirs::{config_dir, workspace_dir, workspace_path};
 pub use plan::{Arrange, PanePlan, PaneRef, Plan, SizeArg, SplitStep, Start, WindowPlan};
 pub use schema::{Direction, NodeSpec, Size, WindowSpec, WorkspaceFile};
-pub use settings::{FontSettings, LinkSettings, Settings, load_settings, settings_path};
+pub use settings::{
+    ClipboardSettings, ClipboardWrite, FontSettings, LinkSettings, Settings, load_settings,
+    settings_path,
+};
 
 use std::path::{Path, PathBuf};
 
