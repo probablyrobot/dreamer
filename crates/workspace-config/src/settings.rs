@@ -21,6 +21,17 @@ pub struct Settings {
     pub font: FontSettings,
     pub links: LinkSettings,
     pub clipboard: ClipboardSettings,
+    pub fallback: FallbackSettings,
+}
+
+/// How to open what Dreamer cannot draw (floating panes, tmux modes) in an
+/// ordinary terminal.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FallbackSettings {
+    /// The terminal to run the attach command in, as argv with one
+    /// `{command}` element standing for it, such as
+    /// `[kitty, -e, "{command}"]`. Empty: only the copyable command.
+    pub launch: Vec<String>,
 }
 
 /// When a program's clipboard write (OSC 52) may reach the system
@@ -84,6 +95,7 @@ impl Default for Settings {
                 schemes: DEFAULT_LINK_SCHEMES.map(String::from).to_vec(),
             },
             clipboard: ClipboardSettings::default(),
+            fallback: FallbackSettings::default(),
         }
     }
 }
@@ -97,6 +109,14 @@ struct File {
     links: LinksFile,
     #[serde(default)]
     clipboard: ClipboardFile,
+    #[serde(default)]
+    fallback: FallbackFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FallbackFile {
+    launch: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -194,6 +214,17 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(w) = file.clipboard.write {
         s.clipboard.write = w;
     }
+    if let Some(launch) = file.fallback.launch {
+        let slots = launch.iter().filter(|a| *a == "{command}").count();
+        if !launch.is_empty() && slots != 1 {
+            return Err(error(
+                origin,
+                "fallback.launch",
+                "needs exactly one \"{command}\" element for the attach command".into(),
+            ));
+        }
+        s.fallback.launch = launch;
+    }
     Ok(s)
 }
 
@@ -242,6 +273,16 @@ mod tests {
         assert!(parse_settings("colors: {}", None).is_err());
         let e = parse_settings("links: { schemes: ['https:'] }", None).expect_err("scheme");
         assert_eq!(e.at, "links.schemes");
+    }
+
+    #[test]
+    fn a_fallback_launch_needs_one_command_slot() {
+        let s =
+            parse_settings("fallback: { launch: [kitty, -e, '{command}'] }", None).expect("launch");
+        assert_eq!(s.fallback.launch, ["kitty", "-e", "{command}"]);
+        let e = parse_settings("fallback: { launch: [kitty] }", None).expect_err("no slot");
+        assert_eq!(e.at, "fallback.launch");
+        assert!(Settings::default().fallback.launch.is_empty());
     }
 
     #[test]

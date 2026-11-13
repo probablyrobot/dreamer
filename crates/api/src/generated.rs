@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 12;
+pub const PROTOCOL_MINOR: u32 = 13;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -633,6 +633,10 @@ pub struct Pane {
     /// Process generation; changes when the pane is respawned.
     #[prost(uint64, tag = "12")]
     pub generation: u64,
+    /// A tmux-drawn mode the pane is in (copy-mode, tree-mode, ...). Its screen is tmux's, not the program's, and Dreamer does not draw it.
+    #[prost(string, optional, tag = "13")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]

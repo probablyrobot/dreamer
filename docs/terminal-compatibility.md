@@ -36,6 +36,17 @@ reports colors. The desktop must report its theme's foreground and
 background for every pane it shows (and again when the theme changes), or
 applications that adapt to the background will guess wrong.
 
+## tmux-drawn screens
+
+| What | In the workspace | Fallback |
+| --- | --- | --- |
+| Floating panes (tmux 3.8) | The window is marked unsupported; no partial layout is drawn | Copyable `tmux attach-session -t '$S:@W'`, and an optional terminal launch |
+| Copy mode, choose tree, other `pane_in_mode` screens | The pane gets a banner naming the mode; its program's output stays shown underneath | The same attach command |
+
+Evidence: the workspace smoke marks copy mode started with the plain
+`tmux` command, and resolves the attach target to that exact window. The
+quoting has unit tests in `crates/app/src/fallback.rs`.
+
 ## Known differences between tmux and the mirror
 
 | Behavior | tmux 3.8 | Ghostty mirror | Effect |

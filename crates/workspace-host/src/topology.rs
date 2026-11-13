@@ -84,6 +84,7 @@ pub fn topology(endpoint: &str, tracker: &InventoryTracker) -> api::Topology {
                 current_command: p.command.clone(),
                 title: p.title.clone(),
                 dead: p.dead,
+                mode: p.mode.clone(),
                 generation: tracker.generation(*id).map_or(0, |g| g.0),
             }
         })

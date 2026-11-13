@@ -14,6 +14,8 @@ links:
   schemes: [http, https, mailto]         # default
 clipboard:
   write: focused                         # focused (default), allow, or deny
+fallback:
+  launch: [kitty, -e, "{command}"]       # optional; no default
 ```
 
 ## Font
@@ -54,3 +56,16 @@ reaches the system clipboard:
 
 The daemon addresses each write to one window only: the one focused on
 the pane. Programs can never read the clipboard. See `docs/effects.md`.
+
+## Fallback terminal
+
+`fallback.launch` is the terminal to open when a window or pane holds
+something the workspace does not draw, such as floating panes or tmux copy
+mode (see [desktop.md](desktop.md)). It is an argv with exactly one
+`{command}` element, which is replaced by the words of the `tmux attach`
+command. Examples:
+- `[kitty, -e, "{command}"]`
+- `[alacritty, -e, "{command}"]`
+- `[open, -na, Ghostty, --args, -e, "{command}"]`
+
+Without it, the workspace only offers the copyable command.

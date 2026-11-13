@@ -62,6 +62,7 @@ pub struct PaneInfo {
     pub pid: u32,
     pub command: String,
     pub title: String,
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,10 +205,12 @@ impl Inventory {
                     "pane_active",
                     "pane_dead",
                     "pane_pid",
+                    "pane_in_mode",
                 ]),
             ))
             .push(list("list-panes", true, "#{pane_current_command}".into()))
-            .push(list("list-panes", true, "#{pane_title}".into()));
+            .push(list("list-panes", true, "#{pane_title}".into()))
+            .push(list("list-panes", true, "#{pane_mode}".into()));
         let r = conn.execute(batch).await?;
 
         let ident = rows(&r[0], 2, "server")?;
@@ -267,13 +270,20 @@ impl Inventory {
                 .insert(session);
         }
 
-        let pane_rows = rows(&r[6], 8, "pane")?;
+        let pane_rows = rows(&r[6], 9, "pane")?;
         let pane_commands = text_rows(&r[7]);
         let pane_titles = text_rows(&r[8]);
+        let pane_modes = text_rows(&r[9]);
         aligned(pane_rows.len(), &pane_commands, "pane commands")?;
         aligned(pane_rows.len(), &pane_titles, "pane titles")?;
+        aligned(pane_rows.len(), &pane_modes, "pane modes")?;
         let mut panes = BTreeMap::new();
-        for ((f, command), title) in pane_rows.iter().zip(pane_commands).zip(pane_titles) {
+        for (((f, command), title), mode) in pane_rows
+            .iter()
+            .zip(pane_commands)
+            .zip(pane_titles)
+            .zip(pane_modes)
+        {
             let pane = id(&f[0], '%', TmuxPaneId)?;
             let window = id(&f[1], '@', TmuxWindowId)?;
             if f[5] == "1"
@@ -292,6 +302,9 @@ impl Inventory {
                     pid: num(&f[7]).unwrap_or(0),
                     command,
                     title,
+                    // A tmux-drawn mode (copy, choose, ...): its screen is not
+                    // the program's output, so mirrors do not show it.
+                    mode: (f[8] == "1").then_some(mode).filter(|m| !m.is_empty()),
                 },
             );
         }

@@ -19,8 +19,8 @@ pub use dirs::{config_dir, workspace_dir, workspace_path};
 pub use plan::{Arrange, PanePlan, PaneRef, Plan, SizeArg, SplitStep, Start, WindowPlan};
 pub use schema::{Direction, NodeSpec, Size, WindowSpec, WorkspaceFile};
 pub use settings::{
-    ClipboardSettings, ClipboardWrite, FontSettings, LinkSettings, Settings, load_settings,
-    settings_path,
+    ClipboardSettings, ClipboardWrite, FallbackSettings, FontSettings, LinkSettings, Settings,
+    load_settings, settings_path,
 };
 
 use std::path::{Path, PathBuf};
