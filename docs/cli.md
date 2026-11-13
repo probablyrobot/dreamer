@@ -75,6 +75,14 @@ See [daemon.md](daemon.md) for files, directories, and lifecycle.
 
 See [remote.md](remote.md) for what runs where.
 
+## Apps
+
+`dream app run APP_ID [--method METHOD]... [--all-panes] [--session $N]
+[--ttl-ms N] [--name NAME] -- PROGRAM [ARGS...]` starts a program in a new
+tmux window as a registered app. The program gets a single-use ticket, and
+once it registers it may call only the listed methods, on its own pane
+unless `--all-panes` is given. See [grants.md](grants.md).
+
 ## Bridge
 
 `dream bridge --stdio [tmux options]` carries the daemon's protocol over

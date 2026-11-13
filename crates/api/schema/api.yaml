@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 19 }
+version: { major: 1, minor: 20 }
 package: dreamer.v1
 
 types:
@@ -695,6 +695,39 @@ types:
       - { n: 4, name: all_panes, type: bool, doc: "Every pane is in scope." }
       - { n: 5, name: expires_unix_ms, type: u64, optional: true }
 
+  - message: LaunchApp
+    doc: >-
+      Start a program in a new tmux window as a registered app. The daemon
+      writes a single-use ticket to an owner-only file and gives the program
+      only that file's path (DREAMER_LAUNCH_TICKET) and the launch id
+      (DREAMER_LAUNCH_ID). The program registers with them for `grant`.
+    fields:
+      - { n: 1, name: app_id, type: string }
+      - { n: 2, name: grant, type: Grant, doc: "What the app may do; with no panes and not all_panes, its own pane." }
+      - { n: 3, name: argv, type: string, repeated: true, doc: Exact program and arguments; never a shell string. }
+      - { n: 4, name: session, type: u32 }
+      - { n: 5, name: name, type: string, optional: true, doc: "The window name; default the app id." }
+      - { n: 6, name: cwd, type: string, optional: true }
+      - { n: 7, name: ttl_ms, type: u32, optional: true, doc: "How long the ticket is valid; default 60000." }
+
+  - message: LaunchedApp
+    fields:
+      - { n: 1, name: launch_id, type: string }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: expires_unix_ms, type: u64 }
+
+  - message: RegisterApp
+    fields:
+      - { n: 1, name: launch_id, type: string }
+      - { n: 2, name: ticket, type: string, doc: "The contents of the ticket file." }
+
+  - message: Registration
+    fields:
+      - { n: 1, name: instance, type: string }
+      - { n: 2, name: app_id, type: string }
+      - { n: 3, name: pane, type: u32 }
+      - { n: 4, name: grant, type: Grant }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -722,3 +755,5 @@ methods:
   - { method: hosts.upgrade, params: UpgradeParams, result: UpgradeResult, mutation: true, doc: "Install the reviewed plan, restart the host's daemon on it (tmux keeps running), and reconnect." }
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }
   - { method: grants.current, params: Empty, result: Grant, doc: "The calling connection's own grant." }
+  - { method: apps.launch, params: LaunchApp, result: LaunchedApp, mutation: true, doc: "Start a program in a new tmux window with a single-use registration ticket (owner only)." }
+  - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }

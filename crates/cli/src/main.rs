@@ -29,9 +29,12 @@
 //!                                       the local daemon's connections to other hosts
 //! dream service install [--no-start] [tmux options] | status | uninstall [--no-stop]
 //!                                       an optional per-user service for dreamerd
+//! dream app run APP_ID [--method M]... -- PROGRAM ARGS
+//!                                       start a program as a registered app with a narrow grant
 //! dream --version
 //! ```
 
+mod app;
 mod bridge;
 mod daemon;
 mod hosts;
@@ -70,6 +73,7 @@ const USAGE: &str = "usage:
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
   dream service uninstall [--no-stop]
+  dream app run APP_ID [--method M]... [--all-panes] [--session $N] -- PROGRAM [ARGS...]
   dream --version";
 
 fn main() -> ExitCode {
@@ -124,6 +128,12 @@ fn main() -> ExitCode {
                 [j] if j == "--json" => remote::mirrors(&d, true),
                 _ => Err(format!("unexpected arguments {extra:?}\n{USAGE}")),
             })
+        }
+        ["app", "run", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| app::run(&d, &extra))
+        }
+        ["app", "probe", rest @ ..] => {
+            app::probe(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
         }
         ["hosts", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| hosts::run(&d, &extra))

@@ -65,6 +65,8 @@ struct Conn {
     /// What this connection may do: the owner grant for the user's own
     /// clients, a narrow one after an app registers.
     grant: Arc<std::sync::Mutex<crate::grants::Grant>>,
+    /// The connecting process, from the socket's peer credentials.
+    peer_pid: Option<u32>,
 }
 
 impl Conn {
@@ -82,6 +84,11 @@ impl Conn {
 }
 
 pub async fn connection(stream: UnixStream, state: Arc<State>) {
+    let peer_pid = stream
+        .peer_cred()
+        .ok()
+        .and_then(|c| c.pid())
+        .and_then(|p| u32::try_from(p).ok());
     let (r, mut w) = stream.into_split();
     let me = &state.identity;
     let mut reader = Reader::new(r, me.limits);
@@ -122,6 +129,7 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         max_frame: negotiated.limits.max_frame,
         // The socket is owner-only: whoever connects is the user.
         grant: Arc::new(std::sync::Mutex::new(crate::grants::Grant::owner())),
+        peer_pid,
         events: Arc::new(AtomicU64::new(1)),
     };
     let service = DaemonService(state.clone());
@@ -150,6 +158,14 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                         let _ = conn
                             .out
                             .send(Out::Frame(Kind::Response, refused.encode_to_vec()))
+                            .await;
+                        return;
+                    }
+                    if req.method == api::method::APPS_REGISTER {
+                        let response = register(&state, &conn, &req).await;
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(Kind::Response, response.encode_to_vec()))
                             .await;
                         return;
                     }
@@ -291,6 +307,14 @@ fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
     if grant.0.owner {
         return None;
     }
+    // Only the user starts apps and hands out grants; an app's grant can
+    // never include that, whatever it lists.
+    if req.method == api::method::APPS_LAUNCH {
+        return Some(failure(
+            req.id,
+            RpcError::new(code::FORBIDDEN, "only the user's own clients launch apps"),
+        ));
+    }
     if !grant.method_allowed(&req.method) {
         return Some(failure(
             req.id,
@@ -305,6 +329,32 @@ fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
         .check(&req.method, &request)
         .err()
         .map(|e| failure(req.id, e))
+}
+
+/// `apps.register`: check the ticket and that this connection's process
+/// runs in the launch's pane, then hold the app's grant from now on.
+async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire::Response {
+    let p = match api::RegisterApp::decode(req.payload.as_slice()) {
+        Ok(p) => p,
+        Err(e) => return failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string())),
+    };
+    let state2 = state.clone();
+    let pane_pid = |pane: u32| async move {
+        let guard = state2.endpoint.lock().await;
+        let ep = guard.as_ref()?;
+        tmux_backend::ops::pane_pid(&ep.conn, domain::TmuxPaneId(pane))
+            .await
+            .ok()
+    };
+    match state.apps.register(&p, conn.peer_pid, pane_pid).await {
+        Ok(r) => {
+            if let (Ok(mut g), Some(narrow)) = (conn.grant.lock(), r.grant.clone()) {
+                *g = crate::grants::Grant(narrow);
+            }
+            ok(req.id, r.encode_to_vec())
+        }
+        Err(e) => failure(req.id, e),
+    }
 }
 
 /// A reply that would not fit in one frame becomes an error saying so.

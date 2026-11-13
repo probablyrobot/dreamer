@@ -27,6 +27,8 @@ pub struct Launch {
     /// Exact argv; empty means the default shell.
     pub argv: Vec<String>,
     pub cwd: Option<String>,
+    /// Environment for the new pane's program (`-e NAME=VALUE`).
+    pub env: Vec<(String, String)>,
 }
 
 fn pane(p: TmuxPaneId) -> String {
@@ -92,6 +94,9 @@ pub async fn split_pane(
     if let Some(cwd) = &launch.cwd {
         cmd = cmd.opt("-c", cwd.clone());
     }
+    for (k, v) in &launch.env {
+        cmd = cmd.opt("-e", format!("{k}={v}"));
+    }
     // One argument would go through `sh -c`; wrapping it keeps argv exact.
     let argv: Vec<String> = match launch.argv.as_slice() {
         [] => Vec::new(),
@@ -106,6 +111,22 @@ pub async fn split_pane(
     line.strip_prefix('%')
         .and_then(|n| n.parse().ok())
         .map(TmuxPaneId)
+        .ok_or(CommandError::Closed)
+}
+
+/// The process id of the program running in a pane.
+pub async fn pane_pid(conn: &Connection, target: TmuxPaneId) -> Result<u32, CommandError> {
+    let r = conn
+        .execute(
+            TmuxCommand::new("display-message")
+                .flag("-p")
+                .opt("-t", pane(target))
+                .opt_format("-F", "#{pane_pid}"),
+        )
+        .await?;
+    r.first()
+        .map(first_line)
+        .and_then(|l| l.trim().parse().ok())
         .ok_or(CommandError::Closed)
 }
 
@@ -125,6 +146,9 @@ pub async fn new_window(
     }
     if let Some(cwd) = &launch.cwd {
         cmd = cmd.opt("-c", cwd.clone());
+    }
+    for (k, v) in &launch.env {
+        cmd = cmd.opt("-e", format!("{k}={v}"));
     }
     // One argument would go through `sh -c`; wrapping it keeps argv exact.
     let argv: Vec<String> = match launch.argv.as_slice() {

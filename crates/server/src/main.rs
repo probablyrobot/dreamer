@@ -11,6 +11,7 @@
 //! logs to standard error. Nothing is ever written to standard output after
 //! startup, and nothing but protocol frames to the socket.
 
+mod apps;
 mod conn;
 mod grants;
 mod hosts;
@@ -234,6 +235,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             sizing: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             pastes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             hosts: hosts::Hosts::default(),
+            apps: apps::Apps::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.
             epochs: (started_unix_ms * 1000).into(),

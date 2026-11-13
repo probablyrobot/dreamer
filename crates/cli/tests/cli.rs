@@ -1043,3 +1043,183 @@ exec /bin/sh -c "$3"
         .collect();
     assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
 }
+
+/// The pane `dream app run` reported, and its launch id.
+fn launched(out: &str) -> (String, String) {
+    let pane = out
+        .split_whitespace()
+        .find(|w| w.starts_with('%'))
+        .expect("pane")
+        .to_owned();
+    let id = out
+        .split("(launch ")
+        .nth(1)
+        .and_then(|r| r.split(')').next())
+        .expect("launch id")
+        .to_owned();
+    (pane, id)
+}
+
+impl Cli {
+    fn pane_text(&self, pane: &str) -> String {
+        self.tmux
+            .run_checked(&["capture-pane", "-p", "-J", "-t", pane])
+            .unwrap_or_default()
+    }
+
+    fn wait_pane(&self, pane: &str, text: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let shown = self.pane_text(pane);
+            if shown.contains(text) {
+                return shown;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "pane {pane} never showed {text:?}:\n{shown}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+#[test]
+fn a_pane_app_registers_for_a_narrow_grant_and_its_ticket_never_leaks() {
+    let cli = Cli::new();
+    // A probe app allowed only to read: its own pane is its scope.
+    let out = cli.ok(&[
+        "app",
+        "run",
+        "probe",
+        "--method",
+        "terminal.read",
+        "--",
+        DREAM,
+        "app",
+        "probe",
+        "--other",
+        "%0",
+    ]);
+    let (pane, _) = launched(&out);
+    let shown = cli.wait_pane(&pane, "probe: done");
+    let line = |prefix: &str| {
+        shown
+            .lines()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix:?} in:\n{shown}"))
+            .to_owned()
+    };
+    assert!(
+        line("probe: registered").contains(&format!("panes [{}]", &pane[1..])),
+        "{shown}"
+    );
+    assert_eq!(line("probe: read own pane:"), "probe: read own pane: ok");
+    assert!(
+        line("probe: read other pane:").contains("pane %0 is outside"),
+        "{shown}"
+    );
+    assert!(
+        line("probe: shutdown:").contains("not in this connection's grant"),
+        "{shown}"
+    );
+    assert!(
+        line("probe: launch another app:").contains("only the user"),
+        "{shown}"
+    );
+    assert!(
+        line("probe: register again here:").contains("not in this connection's grant"),
+        "{shown}"
+    );
+    assert!(
+        line("probe: reuse ticket:").contains("already used"),
+        "{shown}"
+    );
+    assert!(
+        cli.run(&["status"]).status.success(),
+        "the daemon is still running (the app could not stop it)"
+    );
+
+    // An expired ticket is refused.
+    let out = cli.ok(&[
+        "app",
+        "run",
+        "late",
+        "--ttl-ms",
+        "200",
+        "--method",
+        "terminal.read",
+        "--",
+        DREAM,
+        "app",
+        "probe",
+        "--delay",
+        "1500",
+    ]);
+    let (pane, _) = launched(&out);
+    let shown = cli.wait_pane(&pane, "probe: register refused");
+    assert!(shown.contains("expired"), "{shown}");
+
+    // The right ticket from a process outside the pane is refused, and the
+    // ticket appears nowhere it should not.
+    let out = cli.ok(&[
+        "app",
+        "run",
+        "idle",
+        "--method",
+        "terminal.read",
+        "--",
+        "sleep",
+        "60",
+    ]);
+    let (pane, id) = launched(&out);
+    let ticket_file = cli.root.join("rt/launch").join(&id);
+    let ticket = std::fs::read_to_string(&ticket_file).expect("ticket file");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&ticket_file)
+            .expect("meta")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the ticket file is owner-only");
+    }
+    let ps = Command::new("ps")
+        .args(["-axww", "-o", "command"])
+        .output()
+        .expect("ps");
+    assert!(
+        !String::from_utf8_lossy(&ps.stdout).contains(&ticket),
+        "ticket in argv"
+    );
+    assert!(!cli.pane_text(&pane).contains(&ticket), "ticket on screen");
+    for args in [
+        &["show-environment", "-g"][..],
+        &["show-options", "-g"][..],
+        &["show-environment", "-t", "main"][..],
+        &["list-windows", "-a", "-F", "#{window_name} #{pane_title}"][..],
+    ] {
+        let shown = cli.tmux.run_checked(args).unwrap_or_default();
+        assert!(!shown.contains(&ticket), "ticket in tmux {args:?}");
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let refused = rt.block_on(async {
+        let c = client::Client::connect(&cli.root.join("rt/dreamerd.sock"), "outsider")
+            .await
+            .expect("connect");
+        c.call(api::Request::AppsRegister(api::RegisterApp {
+            launch_id: id.clone(),
+            ticket: ticket.clone(),
+        }))
+        .await
+        .expect_err("not in the pane")
+    });
+    assert!(
+        refused.to_string().contains("not running in pane"),
+        "{refused}"
+    );
+    assert!(!ticket_file.exists(), "a refused ticket is used up too");
+    let log = std::fs::read_to_string(cli.root.join("st/dreamerd.log")).unwrap_or_default();
+    assert!(!log.contains(&ticket), "ticket in the daemon log");
+}
