@@ -241,6 +241,34 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .collect::<Vec<_>>()
                 .join("\n"),
         });
+        // A host's session through the coordinator and a stand-in ssh:
+        // typing reaches it, disconnect marks it stale, reconnect resumes.
+        let started = Instant::now();
+        let out = crate::gate::remote_smoke_output(&root, remove)?;
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let passed = out.status.success()
+            && stdout.contains(&format!("smoke: backend {expected}"))
+            && stdout.contains("smoke: reconnecting resumed the window");
+        println!(
+            "linux-desktop: {backend:<7} {:<18} {}",
+            "remote",
+            if passed { "passed" } else { "FAILED" }
+        );
+        if !passed {
+            problems.push(format!("{backend} remote: {}", out.status));
+        }
+        runs.push(Run {
+            backend,
+            input: "remote".into(),
+            passed,
+            millis: started.elapsed().as_millis(),
+            detail: [stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
     }
 
     let report = write_report(&commit, dirty, &runs)?;

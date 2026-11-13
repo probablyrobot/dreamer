@@ -134,6 +134,42 @@ the daemon keep running. On Linux the app quits when its last window
 closes. On macOS it stays in the Dock, and clicking the icon opens a
 window again.
 
+## Remote hosts
+
+A window can show a remote host's tmux, reached through the local daemon's
+coordinator over SSH ([remote.md](remote.md)). Topology, pane output,
+typing, pastes, and actions go through the same local connection, routed
+with `hosts.watch`, `hosts.subscribe`, and `hosts.call`.
+
+- **Sidebar.** With the sidebar open, a Hosts section lists every profile
+  and connected host with its state: live, connecting, retrying (with the
+  attempt count), the failure kind (auth, host key, …), disconnected, or
+  not connected. Clicking a host connects it unless it is live and opens a
+  window on it. The list is read once a second, and only while the sidebar
+  is open.
+- **Palette.** "Open host…", "Reconnect host…", and "Disconnect host…"
+  take the host's name. Disconnecting closes SSH; the host's daemon, tmux,
+  and programs keep running.
+- **Launch.** `dreamer --host NAME` opens a window on that host,
+  connecting it first.
+- **Stale.** While the host is not live, the window's tab strip says
+  "reconnecting: host NAME: why", and the panes keep their last content.
+  When the host comes back, panes resume from the host's journal (no new
+  checkpoint when its daemon kept running) and typing works again. Input
+  sent while the host is down is dropped, never replayed later.
+- **Title.** The window title starts with the host's name.
+- **What differs from a local window.** A host's window saves no
+  arrangement (the saved arrangement belongs to the local tmux). The
+  fallback attach command for floating panes and tmux modes is not offered
+  yet, because a local `tmux attach` cannot reach a remote server.
+
+Profiles are edited in `hosts.yaml` for now; editing them in the desktop is
+tracked in #169.
+
+The `remote` gate stage (macOS) and the Linux desktop gate run
+`dreamer --smoke-remote --host devbox` against a second isolated tmux and
+daemon behind a stand-in `ssh`.
+
 ## Command palette
 
 Cmd-Shift-P on macOS, or Ctrl-Shift-P on Linux, opens the command palette;

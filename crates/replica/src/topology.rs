@@ -43,6 +43,17 @@ impl TopologyFeed {
     /// Follow the topology of the daemon at `socket` on a new thread, first
     /// starting the daemon with `launch` if it is not running.
     pub fn start(socket: PathBuf, launch: Option<client::Launch>) -> std::io::Result<TopologyFeed> {
+        TopologyFeed::start_via(socket, crate::Via::Local, launch)
+    }
+
+    /// Like [`TopologyFeed::start`], following a host connected through
+    /// the local daemon. The status also says when that host is not live
+    /// (its last topology stays shown, marked stale).
+    pub fn start_via(
+        socket: PathBuf,
+        via: crate::Via,
+        launch: Option<client::Launch>,
+    ) -> std::io::Result<TopologyFeed> {
         let latest = Arc::new(Mutex::new(None));
         let status = Arc::new(Mutex::new(TopologyStatus::Connecting));
         let (wake_tx, wake) = async_channel::bounded(1);
@@ -54,6 +65,7 @@ impl TopologyFeed {
             (u64::from(std::process::id()) << 32) ^ nanos ^ 0x5157
         };
         let owner = Owner {
+            via,
             latest: latest.clone(),
             status: status.clone(),
             wake: wake_tx,
@@ -107,6 +119,7 @@ impl TopologyFeed {
 }
 
 struct Owner {
+    via: crate::Via,
     latest: Arc<Mutex<Option<api::TopologyUpdate>>>,
     status: Arc<Mutex<TopologyStatus>>,
     wake: async_channel::Sender<()>,
@@ -123,6 +136,24 @@ impl Owner {
         // The view shows the status; let it know.
         if changed.unwrap_or(false) {
             let _ = self.wake.try_send(());
+        }
+    }
+
+    /// Mark the view stale while its host is not live, and current again
+    /// once it is.
+    async fn check_host(&self, c: &client::Client) {
+        let Some(name) = self.via.host() else { return };
+        let Ok(Response::HostsList(l)) = c.call(Request::HostsList(api::Empty {})).await else {
+            return;
+        };
+        let Some(h) = l.hosts.iter().find(|h| h.name == name) else {
+            return;
+        };
+        if h.state == api::LinkState::Live as i32 {
+            self.set(TopologyStatus::Following);
+        } else {
+            let why = h.detail.clone().unwrap_or_else(|| "not connected".into());
+            self.set(TopologyStatus::Reconnecting(format!("host {name}: {why}")));
         }
     }
 
@@ -176,19 +207,19 @@ impl Owner {
             .await
             .map_err(|e| e.to_string())?;
         let mut pushed = c.pushed().ok_or("no event stream")?;
-        let Response::TmuxWatch(first) = c
-            .call(Request::TmuxWatch(api::TopologyParams::default()))
-            .await
-            .map_err(|e| e.to_string())?
-        else {
-            return Err("unexpected reply to tmux.watch".into());
-        };
+        let first = self.via.watch(&c).await.map_err(|e| e.to_string())?;
         self.set(TopologyStatus::Following);
+        // A host's link state, checked once a second: its topology stays
+        // shown while it reconnects, marked stale.
+        let mut host_check = tokio::time::interval(Duration::from_secs(1));
         // Revisions start over when the daemon restarts; take its first.
         *seen = 0;
         self.publish(first, seen);
         loop {
             tokio::select! {
+                _ = host_check.tick(), if self.via.host().is_some() => {
+                    self.check_host(&c).await;
+                }
                 p = pushed.recv() => match p {
                     Some(Pushed::Event { topic, payload, .. }) if topic == "tmux.topology" => {
                         if let Ok(u) = api::TopologyUpdate::decode(payload.as_slice()) {
@@ -207,18 +238,17 @@ impl Owner {
                             ..api::SubmitAction::default()
                         };
                         // The outcome arrives as a topology change.
-                        let _ = c.call(Request::ActionsSubmit(submit)).await;
+                        let _ = self.via.call(&c, Request::ActionsSubmit(submit)).await;
                     }
                     Some(Command::Size { window, cols, rows }) => {
-                        let _ = c
-                            .call(Request::TmuxSizeWindow(api::SizeWindow {
-                                window,
-                                cols,
-                                rows,
-                                client: self.client,
-                                ..api::SizeWindow::default()
-                            }))
-                            .await;
+                        let size = Request::TmuxSizeWindow(api::SizeWindow {
+                            window,
+                            cols,
+                            rows,
+                            client: self.client,
+                            ..api::SizeWindow::default()
+                        });
+                        let _ = self.via.call(&c, size).await;
                     }
                     None => return Ok(()),
                 },

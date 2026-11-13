@@ -17,9 +17,12 @@ pub(crate) enum Command {
     KillPane,
     KillWindow,
     ToggleSidebar,
+    OpenHost,
+    ReconnectHost,
+    DisconnectHost,
 }
 
-pub(crate) const ALL: [Command; 12] = [
+pub(crate) const ALL: [Command; 15] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -32,6 +35,9 @@ pub(crate) const ALL: [Command; 12] = [
     Command::KillPane,
     Command::KillWindow,
     Command::ToggleSidebar,
+    Command::OpenHost,
+    Command::ReconnectHost,
+    Command::DisconnectHost,
 ];
 
 impl Command {
@@ -48,7 +54,10 @@ impl Command {
             Command::CloseView => "Close view (programs keep running)",
             Command::KillPane => "Kill pane (ends its program)…",
             Command::KillWindow => "Kill window (ends its programs)…",
-            Command::ToggleSidebar => "Toggle sidebar (sessions)",
+            Command::ToggleSidebar => "Toggle sidebar (sessions and hosts)",
+            Command::OpenHost => "Open host…",
+            Command::ReconnectHost => "Reconnect host…",
+            Command::DisconnectHost => "Disconnect host… (its programs keep running)",
         }
     }
 
@@ -59,7 +68,13 @@ impl Command {
 
     /// Needs a name typed before it runs.
     pub(crate) fn needs_name(self) -> bool {
-        matches!(self, Command::RenameWindow)
+        matches!(
+            self,
+            Command::RenameWindow
+                | Command::OpenHost
+                | Command::ReconnectHost
+                | Command::DisconnectHost
+        )
     }
 }
 

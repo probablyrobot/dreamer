@@ -18,13 +18,16 @@
 
 pub mod feed;
 mod follow;
+pub mod hosts;
 pub mod topology;
+pub mod via;
 
 use terminal_ghostty::core::GridSize;
 use terminal_ghostty::core::family::{CANONICAL_CELL_PX, CONTINUATION_MAX_BYTES};
 use terminal_ghostty::{Engine, EngineConfig};
 
 pub use follow::{FollowError, FollowState, Follower, PaneMeta, RetryPolicy, Step};
+pub use via::Via;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicaError {

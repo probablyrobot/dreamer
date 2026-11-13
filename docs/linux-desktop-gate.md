@@ -25,7 +25,12 @@ It is required to close milestones M0, M2, M3, and M8.
    each backend against an isolated tmux server and daemon. It types and
    commits an IME composition, then clicks and scrolls; the run passes only
    if the shell in the pane received exactly that input.
-5. Writes `target/gate/linux-desktop/<commit>.json` with distribution,
+5. Runs the workspace smoke (tabs, panes, divider drag, palette, restore)
+   and the remote smoke: a host's session through the local daemon's
+   coordinator and a stand-in `ssh`. Typing must reach the host;
+   disconnecting must mark the window stale with the pane's content kept;
+   reconnecting must resume it ([desktop.md](desktop.md#remote-hosts)).
+6. Writes `target/gate/linux-desktop/<commit>.json` with distribution,
    kernel, desktop, session type, compositor, which X server answered the
    X11 runs (`xwayland` or `xorg`), whether the run was over SSH, and each
    run's result and output.

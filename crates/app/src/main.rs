@@ -934,6 +934,10 @@ struct Args {
     open: Vec<String>,
     /// `dreamerd` options for a daemon started on demand.
     daemon: Vec<String>,
+    /// Show this remote host's tmux, through the local daemon.
+    host: Option<String>,
+    /// The remote smoke (with `host`).
+    remote: bool,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -964,6 +968,15 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 a.smoke = true;
                 a.workspace = true;
                 a.restore = true;
+            }
+            "--host" => {
+                a.host = Some(value("--host")?);
+                a.workspace = true;
+            }
+            "--smoke-remote" => {
+                a.smoke = true;
+                a.remote = true;
+                a.workspace = true;
             }
             "--expect" => a.expect = Some(value("--expect")?),
             "--fixture" => a.fixture = Some(value("--fixture")?),
@@ -1089,6 +1102,26 @@ fn main() -> ExitCode {
         });
         if workspace_mode {
             let launch = client::Launch::new(args.daemon.clone());
+            if let Some(host) = &args.host {
+                let via = replica::Via::Host(host.clone());
+                // Connect the host unless it is live (a profile, or a host
+                // the daemon knows); the window shows it once it is.
+                replica::hosts::connect_once(launch.clone(), host.clone());
+                match workspace::open_via(cx, launch, via, None, args.open.clone()) {
+                    Ok(w) if args.remote => workspace::smoke_remote(cx, w),
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                cx.activate(true);
+                return;
+            }
+            if args.remote {
+                eprintln!("error: --smoke-remote needs --host NAME");
+                std::process::exit(2);
+            }
             let smoke = args.smoke.then(|| (args.daemon.clone(), args.restore));
             if let Err(e) = workspace::open(cx, launch, smoke, args.open.clone()) {
                 eprintln!("error: {e}");
