@@ -175,13 +175,19 @@ fn a_restored_snapshot_shows_the_same_images() {
     assert_eq!(want.len(), 1);
     let mut restored =
         Engine::from_snapshot(&live.snapshot().expect("snapshot"), &config).expect("restore");
-    // Image generations are process-local, and checkpoint equality
-    // excludes them (spec: "excluding ... process-local generations");
-    // everything else must match.
+    // The engine instance and image generations are local to the engine,
+    // and checkpoint equality excludes them (spec: "excluding ...
+    // process-local generations"); everything else must match.
+    let got = placements(&mut restored);
+    assert_ne!(
+        got[0].image.engine, want[0].image.engine,
+        "a replacement engine must not share texture-cache keys with the old one"
+    );
     let semantic = |p: Vec<ImagePlacement>| {
         p.into_iter()
             .map(|mut x| {
                 x.image = std::sync::Arc::new(terminal_ghostty::core::ImagePixels {
+                    engine: 0,
                     id: x.image.id,
                     generation: 0,
                     width: x.image.width,
@@ -193,7 +199,7 @@ fn a_restored_snapshot_shows_the_same_images() {
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        semantic(placements(&mut restored)),
+        semantic(got),
         semantic(want),
         "placements differ after restore"
     );

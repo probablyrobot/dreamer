@@ -202,10 +202,15 @@ pub enum ImageLayer {
     AboveText,
 }
 
-/// An image's decoded pixels, owned and shared across frames. `id` and
-/// `generation` identify the contents: a new generation means new pixels.
+/// An image's decoded pixels, owned and shared across frames. `engine`,
+/// `id`, and `generation` identify the contents: a new generation means
+/// new pixels.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ImagePixels {
+    /// The engine instance the image belongs to, unique in the process:
+    /// image ids and generations are only unique within one engine, and a
+    /// replaced engine (a restored checkpoint) may reuse them.
+    pub engine: u64,
     pub id: u32,
     pub generation: u64,
     pub width: u32,

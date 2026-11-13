@@ -36,9 +36,7 @@ use gpui::{
 use replica::feed::{Feed, SelectEvent};
 use terminal_ghostty::core::{FrameSnapshot, GridSize};
 use terminal_ghostty::{Engine, EngineConfig};
-use terminal_render::{
-    InlineImage, TerminalElement, cell_metrics, last_paint_stats, paint_count, rgba_image,
-};
+use terminal_render::{TerminalElement, cell_metrics, last_paint_stats, paint_count};
 
 /// Give up if no frame is presented within this time in smoke mode.
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -106,7 +104,6 @@ struct Shell {
     smoke: Smoke,
     frame_seen: bool,
     frame: Arc<FrameSnapshot>,
-    images: Vec<InlineImage>,
     /// Live frames applied to the view.
     live_frames: u64,
     focus: FocusHandle,
@@ -568,7 +565,11 @@ impl Render for Shell {
                         INCONCLUSIVE
                     } else {
                         println!("smoke: repainted {again:?}");
-                        let cached = again.shaped_lines == 0 && again.reused_lines == first.shaped_lines;
+                        // Nothing reshaped, and no image converted or uploaded again.
+                        let cached = again.shaped_lines == 0
+                            && again.reused_lines == first.shaped_lines
+                            && again.image_uploads == 0
+                            && again.images == first.images;
                         if cached { 0 } else { 3 }
                     };
                     cx.update(|cx| cx.quit());
@@ -667,7 +668,6 @@ impl Render for Shell {
                         font: font(term.family.clone()),
                         font_size: px(term.size),
                         line_height: term.line_height,
-                        images: self.images.clone(),
                     })
                     .children(preedit)
                     .children(scrolled)
@@ -741,7 +741,9 @@ fn display_backend() -> &'static str {
     }
 }
 
-fn demo_image() -> Option<InlineImage> {
+/// A gradient image placed through the Kitty graphics protocol, like any
+/// program would: 12x4 cells at row 7, column 66.
+fn demo_image() -> Vec<u8> {
     let (w, h) = (96u32, 48u32);
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
@@ -749,19 +751,43 @@ fn demo_image() -> Option<InlineImage> {
             rgba.extend_from_slice(&[(x * 255 / w) as u8, (y * 255 / h) as u8, 200, 255]);
         }
     }
-    Some(InlineImage {
-        image: rgba_image(w, h, rgba)?,
-        col: 66,
-        row: 7,
-        cols: 12,
-        rows: 4,
-    })
+    let mut out = b"\x1b7\x1b[8;67H".to_vec();
+    out.extend_from_slice(format!("\x1b_Ga=T,f=32,s={w},v={h},c=12,r=4,C=1,i=1,q=2;").as_bytes());
+    out.extend_from_slice(base64(&rgba).as_bytes());
+    out.extend_from_slice(b"\x1b\\\x1b8");
+    out
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                T[(n >> (18 - 6 * i)) as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
 }
 
 fn load_frame(bytes: &[u8]) -> Result<Arc<FrameSnapshot>, String> {
     let mut config = EngineConfig::new(GRID);
     config.capture_replies = false;
     let mut engine = Engine::new(config).map_err(|e| e.to_string())?;
+    // Canonical cell pixels, as on mirrors and replicas: image placements
+    // are sized in these units.
+    engine
+        .resize(GRID, terminal_ghostty::core::family::CANONICAL_CELL_PX)
+        .map_err(|e| e.to_string())?;
     engine.feed(bytes).map_err(|e| e.to_string())?;
     engine.frame().map_err(|e| e.to_string())
 }
@@ -833,7 +859,7 @@ fn main() -> ExitCode {
         None if args.attach.is_some() || !args.smoke => {
             load_frame(b"\x1b[2mconnecting to dreamerd...\x1b[0m")
         }
-        None => load_frame(DEMO),
+        None => load_frame(&[DEMO, &demo_image()].concat()),
     };
     let frame = match frame {
         Ok(f) => f,
@@ -851,12 +877,6 @@ fn main() -> ExitCode {
             return ExitCode::from(4);
         }
     }
-    let images: Vec<InlineImage> = if args.smoke && args.fixture.is_none() && args.attach.is_none()
-    {
-        demo_image().into_iter().collect()
-    } else {
-        Vec::new()
-    };
     let smoke = match (args.smoke, args.attach, &args.expect) {
         (false, _, _) => Smoke::Off,
         (true, Some(_), Some(text)) if args.input => Smoke::Input(text.clone()),
@@ -916,7 +936,6 @@ fn main() -> ExitCode {
                     smoke: smoke_mode,
                     frame_seen: false,
                     frame,
-                    images,
                     live_frames: 0,
                     focus: cx.focus_handle(),
                     feed: view_feed,

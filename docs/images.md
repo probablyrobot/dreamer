@@ -16,7 +16,7 @@ release (spec 9.4).
 | File, temporary-file, and shared-memory transmission (`t=f`, `t=t`, `t=s`) | Refused on every engine |
 | Placements: position, cell offset, size, source crop, z-index and layer | In frames |
 | Delete and replace | Supported |
-| Virtual (Unicode placeholder) and relative placements | Placements are read; drawing is #131 |
+| Virtual (Unicode placeholder) and relative placements | Read and drawn like other placements; not covered by fixtures yet |
 | Animation | Frames show the current animation frame; playback is not driven yet |
 
 File and shared-memory transmissions name something on the daemon's host.
@@ -74,3 +74,37 @@ per cell. A view scales them to its own cell size.
 Image generations are local to the process that made them. A replica
 restored from a checkpoint has the same images and placements as the
 mirror, but different generation numbers.
+
+## Drawing
+
+The renderer paints each frame in this order:
+1. the default background;
+2. images below cell backgrounds;
+3. cell backgrounds;
+4. images below text;
+5. the selection;
+6. text;
+7. images above text;
+8. the cursor.
+
+Each placement is clipped to the grid. Pixel values are scaled from
+canonical cells to the view's cells. A source crop is drawn by placing the
+whole image so the cropped region lands on the destination, then clipping
+to the destination. One texture per image serves every crop of it.
+
+**Texture cache.** GPU-ready images are kept per window, keyed by engine
+instance, image ID, and generation:
+- **Reuse:** an unchanged image is never converted or uploaded again.
+  `PaintStats.image_uploads` counts uploads, and the repaint smoke requires
+  zero on a repaint.
+- **Drop:** an image the current frame no longer uses is dropped after the
+  paint and its atlas tiles are released. That covers deleted and replaced
+  images, and everything from a replaced engine. A restored checkpoint
+  is a new engine instance, so it never reuses the old textures.
+- **Size:** the cache holds only what the visible frame uses, so it is
+  bounded by the engines' image storage (64 MiB per pane).
+
+**Fixtures.** `crates/terminal-render/fixtures` has these image fixtures:
+`image-place`, `image-crop`, `image-delete`, `image-clip`, and
+`image-below-text`. `expected.txt` lists the images drawn and clipped for
+each. The macOS gate's matrix and `gate linux-desktop` both check them.

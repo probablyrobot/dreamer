@@ -415,7 +415,7 @@ unsafe fn read_images(
                 .or_else(|| e.images.pixels.get(&(id, image_gen)))
             {
                 Some(p) => Arc::clone(p),
-                None => match copy_pixels(graphics, id, image_gen) {
+                None => match copy_pixels(graphics, e.instance, id, image_gen) {
                     Some(p) => Arc::new(p),
                     None => {
                         e.images.skipped += 1;
@@ -480,6 +480,7 @@ unsafe fn read_images(
 /// too large, or inconsistent with the reported size and format.
 unsafe fn copy_pixels(
     graphics: GhosttyKittyGraphics,
+    engine: u64,
     id: u32,
     generation: u64,
 ) -> Option<ImagePixels> {
@@ -547,6 +548,7 @@ unsafe fn copy_pixels(
                 .for_each(|&g| rgba.extend_from_slice(&[g, g, g, 255])),
         }
         Some(ImagePixels {
+            engine,
             id,
             generation,
             width,

@@ -62,27 +62,6 @@ pub fn cell_metrics(
     }
 }
 
-/// An image to composite over the grid, positioned in cells.
-#[derive(Clone)]
-pub struct InlineImage {
-    pub image: Arc<RenderImage>,
-    pub col: u16,
-    pub row: u16,
-    pub cols: u16,
-    pub rows: u16,
-}
-
-impl std::fmt::Debug for InlineImage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InlineImage")
-            .field("col", &self.col)
-            .field("row", &self.row)
-            .field("cols", &self.cols)
-            .field("rows", &self.rows)
-            .finish_non_exhaustive()
-    }
-}
-
 /// Paints one terminal frame.
 #[derive(Debug, Clone)]
 pub struct TerminalElement {
@@ -90,7 +69,6 @@ pub struct TerminalElement {
     pub font: Font,
     pub font_size: Pixels,
     pub line_height: f32,
-    pub images: Vec<InlineImage>,
 }
 
 /// Counts from the last paint, for diagnostics and smoke evidence.
@@ -100,6 +78,11 @@ pub struct PaintStats {
     pub text_runs: usize,
     pub wide_cells: usize,
     pub images: usize,
+    /// Image textures created in this paint (cache misses); a repaint of
+    /// unchanged images creates none.
+    pub image_uploads: usize,
+    /// Image placements cut by the edge of the grid.
+    pub images_clipped: usize,
     /// Text lines shaped in this paint (cache misses).
     pub shaped_lines: usize,
     /// Text lines reused from the shaping cache.
@@ -182,12 +165,141 @@ thread_local! {
         text_runs: 0,
         wide_cells: 0,
         images: 0,
+        image_uploads: 0,
+        images_clipped: 0,
         shaped_lines: 0,
         reused_lines: 0,
         decorated_runs: 0,
         cursor: None,
     }) };
     static SHAPES: std::cell::RefCell<ShapeCache> = std::cell::RefCell::new(ShapeCache::default());
+    static TEXTURES: std::cell::RefCell<TextureCache> = std::cell::RefCell::new(TextureCache::default());
+}
+
+/// GPU-ready images by (engine, image id, generation): an unchanged image
+/// is never converted or uploaded again. Entries the current frame no longer uses
+/// are dropped after the paint and their atlas tiles released, so replaced
+/// and deleted images, and everything from a replaced engine (whose
+/// generations are new), go at once.
+#[derive(Default)]
+struct TextureCache {
+    entries: std::collections::HashMap<(u64, u32, u64), Arc<RenderImage>>,
+    used: std::collections::HashSet<(u64, u32, u64)>,
+}
+
+impl TextureCache {
+    fn get(
+        &mut self,
+        img: &terminal_core::ImagePixels,
+        stats: &mut PaintStats,
+    ) -> Option<Arc<RenderImage>> {
+        let key = (img.engine, img.id, img.generation);
+        self.used.insert(key);
+        if let Some(t) = self.entries.get(&key) {
+            return Some(Arc::clone(t));
+        }
+        let t = rgba_image(img.width, img.height, img.rgba.to_vec())?;
+        stats.image_uploads += 1;
+        self.entries.insert(key, Arc::clone(&t));
+        Some(t)
+    }
+
+    /// Drop what this paint did not use and free its atlas tiles.
+    fn end_paint(&mut self, window: &mut Window) {
+        let used = std::mem::take(&mut self.used);
+        let stale: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|k| !used.contains(k))
+            .copied()
+            .collect();
+        for key in stale {
+            if let Some(t) = self.entries.remove(&key) {
+                let _ = window.drop_image(t);
+            }
+        }
+    }
+}
+
+/// Paint the frame's placements in one layer. Pixel values are canonical
+/// (10x20 per cell) and scaled to this view's cells. A source crop is drawn
+/// by placing the whole image so the crop lands on the destination and
+/// clipping to the destination; the texture is the same for every crop.
+fn paint_images(
+    frame: &FrameSnapshot,
+    layer: terminal_core::ImageLayer,
+    bounds: Bounds<Pixels>,
+    m: CellMetrics,
+    window: &mut Window,
+    stats: &mut PaintStats,
+) {
+    for p in frame.images.iter().filter(|p| p.layer == layer) {
+        let Some((visible, whole)) = placement_rects(p, bounds, m) else {
+            continue;
+        };
+        let Some(texture) = TEXTURES.with(|t| t.borrow_mut().get(&p.image, stats)) else {
+            continue;
+        };
+        if visible != whole_dest(p, bounds, m) {
+            stats.images_clipped += 1;
+        }
+        if window
+            .paint_image(visible, whole, Corners::default(), texture, 0, false)
+            .is_ok()
+        {
+            stats.images += 1;
+        }
+    }
+}
+
+/// Where a placement lands: its destination rectangle in this view.
+fn whole_dest(
+    p: &terminal_core::ImagePlacement,
+    bounds: Bounds<Pixels>,
+    m: CellMetrics,
+) -> Bounds<Pixels> {
+    let (cw, ch) = terminal_core::family::CANONICAL_CELL_PX;
+    let sx = f32::from(m.width) / cw as f32;
+    let sy = f32::from(m.height) / ch as f32;
+    Bounds::new(
+        point(
+            bounds.origin.x + m.width * p.col as f32 + px(p.offset_x as f32 * sx),
+            bounds.origin.y + m.height * p.row as f32 + px(p.offset_y as f32 * sy),
+        ),
+        size(px(p.width as f32 * sx), px(p.height as f32 * sy)),
+    )
+}
+
+/// The visible part of a placement (its destination clipped to the grid)
+/// and the rectangle the whole image is drawn into so that the source crop
+/// lands exactly on the destination. `None` when nothing is visible.
+fn placement_rects(
+    p: &terminal_core::ImagePlacement,
+    bounds: Bounds<Pixels>,
+    m: CellMetrics,
+) -> Option<(Bounds<Pixels>, Bounds<Pixels>)> {
+    if p.width == 0 || p.height == 0 || p.source_width == 0 || p.source_height == 0 {
+        return None;
+    }
+    let dest = whole_dest(p, bounds, m);
+    // Scale from source pixels to destination pixels.
+    let kx = f32::from(dest.size.width) / p.source_width as f32;
+    let ky = f32::from(dest.size.height) / p.source_height as f32;
+    let whole = Bounds::new(
+        point(
+            dest.origin.x - px(p.source_x as f32 * kx),
+            dest.origin.y - px(p.source_y as f32 * ky),
+        ),
+        size(
+            px(p.image.width as f32 * kx),
+            px(p.image.height as f32 * ky),
+        ),
+    );
+    let visible = dest.intersect(&bounds);
+    if visible.size.width <= Pixels::ZERO || visible.size.height <= Pixels::ZERO {
+        return None;
+    }
+    Some((visible, whole))
 }
 
 /// Statistics from the most recent paint on this thread.
@@ -426,6 +538,18 @@ fn paint_frame(
     let origin = bounds.origin;
     window.paint_quad(fill(bounds, hsla(colors.background)));
 
+    // Layer order (spec 9.3): default background, images below cell
+    // backgrounds, cell backgrounds, images below text, selection, text,
+    // images above text, cursor.
+    use terminal_core::ImageLayer;
+    paint_images(
+        frame,
+        ImageLayer::BelowBackground,
+        bounds,
+        m,
+        window,
+        &mut stats,
+    );
     for (y, row) in frame.rows.iter().enumerate() {
         let top = origin.y + m.height * y as f32;
 
@@ -446,6 +570,10 @@ fn paint_frame(
                 stats.background_quads += 1;
             }
         }
+    }
+    paint_images(frame, ImageLayer::BelowText, bounds, m, window, &mut stats);
+    for (y, row) in frame.rows.iter().enumerate() {
+        let top = origin.y + m.height * y as f32;
 
         // Selection: over backgrounds, under text. View state only; the
         // cells themselves are never changed.
@@ -488,6 +616,8 @@ fn paint_frame(
         }
     }
     SHAPES.with(|c| c.borrow_mut().end_paint());
+    paint_images(frame, ImageLayer::AboveText, bounds, m, window, &mut stats);
+    TEXTURES.with(|t| t.borrow_mut().end_paint(window));
 
     // Cursor.
     let c = frame.cursor;
@@ -536,32 +666,6 @@ fn paint_frame(
         }
     }
 
-    // Images, clipped to the grid.
-    for img in &el.images {
-        let rect = Bounds::new(
-            point(
-                origin.x + m.width * f32::from(img.col),
-                origin.y + m.height * f32::from(img.row),
-            ),
-            size(
-                m.width * f32::from(img.cols),
-                m.height * f32::from(img.rows),
-            ),
-        );
-        if window
-            .paint_image(
-                bounds,
-                rect,
-                Corners::default(),
-                Arc::clone(&img.image),
-                0,
-                false,
-            )
-            .is_ok()
-        {
-            stats.images += 1;
-        }
-    }
     stats
 }
 
@@ -574,4 +678,78 @@ pub fn rgba_image(width: u32, height: u32, mut rgba: Vec<u8>) -> Option<Arc<Rend
     let buffer = image::RgbaImage::from_raw(width, height, rgba)?;
     let frame = image::Frame::new(buffer);
     Some(Arc::new(RenderImage::new(smallvec::smallvec![frame])))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use terminal_core::{ImageLayer, ImagePixels, ImagePlacement};
+
+    fn placement(col: i32, row: i32, w: u32, h: u32, src: (u32, u32, u32, u32)) -> ImagePlacement {
+        ImagePlacement {
+            image: Arc::new(ImagePixels {
+                engine: 1,
+                id: 1,
+                generation: 1,
+                width: 40,
+                height: 40,
+                rgba: vec![0; 40 * 40 * 4].into(),
+            }),
+            layer: ImageLayer::AboveText,
+            z: 0,
+            col,
+            row,
+            offset_x: 5,
+            offset_y: 10,
+            width: w,
+            height: h,
+            source_x: src.0,
+            source_y: src.1,
+            source_width: src.2,
+            source_height: src.3,
+        }
+    }
+
+    /// 8x16 cells: canonical pixels (10x20) scale by 0.8.
+    const M: CellMetrics = CellMetrics {
+        width: px(8.0),
+        height: px(16.0),
+        ascent: px(12.0),
+    };
+
+    fn grid() -> Bounds<Pixels> {
+        Bounds::new(point(px(0.0), px(0.0)), size(px(80.0), px(64.0)))
+    }
+
+    #[test]
+    fn a_crop_lands_exactly_on_the_destination() {
+        // The 20x20 centre of a 40x40 image, drawn 20x20 canonical pixels
+        // at cell (2, 1) with a (5, 10) offset.
+        let p = placement(2, 1, 20, 20, (10, 10, 20, 20));
+        let (visible, whole) = placement_rects(&p, grid(), M).expect("visible");
+        assert_eq!(
+            visible,
+            Bounds::new(point(px(20.0), px(24.0)), size(px(16.0), px(16.0)))
+        );
+        // The whole image is twice the crop, shifted so the crop's corner
+        // is at the destination's corner.
+        assert_eq!(
+            whole,
+            Bounds::new(point(px(12.0), px(16.0)), size(px(32.0), px(32.0)))
+        );
+    }
+
+    #[test]
+    fn placements_are_clipped_to_the_grid_or_skipped() {
+        // Starts two cells from the right edge, four cells wide.
+        let p = placement(8, 0, 40, 20, (0, 0, 40, 40));
+        let (visible, _) = placement_rects(&p, grid(), M).expect("partly visible");
+        assert_eq!(visible.origin.x, px(68.0));
+        assert_eq!(visible.size.width, px(12.0), "cut at the grid's right edge");
+        assert_ne!(visible, whole_dest(&p, grid(), M));
+        // Entirely above the viewport: nothing to draw.
+        assert!(placement_rects(&placement(0, -5, 10, 20, (0, 0, 40, 40)), grid(), M).is_none());
+        // A zero-sized crop is never drawn.
+        assert!(placement_rects(&placement(0, 0, 10, 20, (0, 0, 0, 40)), grid(), M).is_none());
+    }
 }
