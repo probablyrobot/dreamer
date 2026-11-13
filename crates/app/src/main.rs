@@ -22,6 +22,7 @@
 mod fallback;
 mod fonts;
 mod input;
+mod keymap;
 mod palette;
 mod theme;
 
@@ -216,6 +217,33 @@ impl Shell {
             .unwrap_or_else(|| "Dreamer".into())
     }
 
+    /// Copy the selection to the clipboard. The text is asked of the owner
+    /// thread, never of the daemon.
+    fn copy(&mut self, cx: &mut Context<Self>) {
+        let Some(feed) = self.feed.clone() else {
+            return;
+        };
+        cx.spawn(async move |_, cx| {
+            if let Some(text) = feed.selection_text().await {
+                cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)));
+            }
+        })
+        .detach();
+    }
+
+    /// Paste the clipboard's text into the pane.
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        let Some(feed) = self.feed.clone() else {
+            return;
+        };
+        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+            feed.send(api::terminal_input::Event::Paste(api::PasteInput {
+                data: text.into_bytes(),
+                ..api::PasteInput::default()
+            }));
+        }
+    }
+
     fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let Some(feed) = self.feed.clone() else {
             return;
@@ -231,24 +259,11 @@ impl Shell {
         }
         match input::intent(&ev.keystroke, ev.is_held) {
             input::KeyIntent::Copy => {
-                // Asked of the owner thread, never of the daemon.
-                cx.spawn(async move |_, cx| {
-                    if let Some(text) = feed.selection_text().await {
-                        cx.update(|cx| {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text))
-                        });
-                    }
-                })
-                .detach();
+                self.copy(cx);
                 cx.stop_propagation();
             }
             input::KeyIntent::Paste => {
-                if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
-                    feed.send(api::terminal_input::Event::Paste(api::PasteInput {
-                        data: text.into_bytes(),
-                        ..api::PasteInput::default()
-                    }));
-                }
+                self.paste(cx);
                 cx.stop_propagation();
             }
             input::KeyIntent::Send(event) => {
@@ -761,6 +776,8 @@ impl Render for Shell {
             .bg(c(t.background))
             .when(!self.embedded, |d| d.p_2())
             .track_focus(&self.focus)
+            .on_action(cx.listener(|s, _: &keymap::Copy, _, cx| s.copy(cx)))
+            .on_action(cx.listener(|s, _: &keymap::Paste, _, cx| s.paste(cx)))
             .on_key_down(cx.listener(Self::key_down))
             .on_modifiers_changed(cx.listener(|s, ev: &gpui::ModifiersChangedEvent, _, cx| {
                 if let (Some(grid), Some(at)) = (s.grid, s.pointer_at) {
@@ -1044,7 +1061,21 @@ fn main() -> ExitCode {
         }
     };
 
-    gpui_platform::application().run(move |cx: &mut App| {
+    let app = gpui_platform::application();
+    // macOS: clicking the Dock icon with no window open opens one.
+    app.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            keymap::new_window(cx);
+        }
+    });
+    let window_args = args.daemon.clone();
+    app.run(move |cx: &mut App| {
+        keymap::install(cx, move |cx| {
+            let launch = client::Launch::new(window_args.clone());
+            if let Err(e) = workspace::open(cx, launch, None, Vec::new()) {
+                eprintln!("dreamer: {e}");
+            }
+        });
         let chosen = fonts::choose(cx, &settings);
         let _ = LINKS.set(settings.links.clone());
         let _ = CLIPBOARD.set(settings.clipboard.write);
