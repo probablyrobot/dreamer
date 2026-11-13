@@ -12,7 +12,7 @@ use tmux_backend::{CommandError, ConnEvent, Connection, TmuxCommand, affects_str
 use tmux_protocol::{Notification, PaneId};
 use tokio::sync::{mpsc, watch};
 
-use crate::worker::{Record, WorkerMsg};
+use crate::worker::{Record, WorkerHandle, WorkerMsg};
 use crate::{Control, MirrorState, worker_of};
 
 /// Subscription that reports pane process changes (respawns) as
@@ -62,8 +62,11 @@ pub(crate) struct Router {
     events: mpsc::Receiver<ConnEvent>,
     control: mpsc::Receiver<Control>,
     to_self: mpsc::Sender<Control>,
-    workers: Vec<mpsc::Sender<WorkerMsg>>,
+    workers: Vec<WorkerHandle>,
     tmux: Option<TmuxServerRef>,
+    /// Each pane's current attach; output is tagged with it so a worker can
+    /// drop output queued before a re-attach.
+    attaches: HashMap<TmuxPaneId, u32>,
     epoch: ConnectionEpoch,
     changes: watch::Sender<u64>,
     flows: HashMap<TmuxPaneId, Flow>,
@@ -84,7 +87,7 @@ impl Router {
         events: mpsc::Receiver<ConnEvent>,
         control: mpsc::Receiver<Control>,
         to_self: mpsc::Sender<Control>,
-        workers: Vec<mpsc::Sender<WorkerMsg>>,
+        workers: Vec<WorkerHandle>,
         epoch: ConnectionEpoch,
         changes: watch::Sender<u64>,
     ) -> Router {
@@ -95,6 +98,7 @@ impl Router {
             to_self,
             workers,
             tmux: None,
+            attaches: HashMap::new(),
             epoch,
             changes,
             flows: HashMap::new(),
@@ -102,7 +106,7 @@ impl Router {
         }
     }
 
-    fn worker(&self, pane: TmuxPaneId) -> &mpsc::Sender<WorkerMsg> {
+    fn worker(&self, pane: TmuxPaneId) -> &WorkerHandle {
         &self.workers[worker_of(pane, self.workers.len())]
     }
 
@@ -229,6 +233,7 @@ impl Router {
     }
 
     fn start(&mut self, pane: TmuxPaneId, generation: PaneGeneration) {
+        *self.attaches.entry(pane).or_default() += 1;
         self.flows.insert(pane, Flow::Pausing { generation });
         let conn = self.conn.clone();
         let back = self.to_self.clone();
@@ -250,7 +255,7 @@ impl Router {
     async fn stop(&mut self, pane: TmuxPaneId) {
         match self.flows.remove(&pane) {
             Some(Flow::Live { .. }) | Some(Flow::Failed { .. }) => {
-                let _ = self.worker(pane).send(WorkerMsg::Drop { pane }).await;
+                let _ = self.worker(pane).urgent(WorkerMsg::Drop { pane });
             }
             Some(Flow::Pausing { .. } | Flow::Buffering { .. }) => {
                 // Never leave a pane paused for this client.
@@ -262,6 +267,7 @@ impl Router {
             None => {}
         }
         self.sizes.remove(&pane);
+        self.attaches.remove(&pane);
     }
 
     async fn try_finish(&mut self, pane: TmuxPaneId) {
@@ -304,8 +310,11 @@ impl Router {
             state: Box::new(state),
             captures: Box::new(captures),
             continuation: records,
+            attach: self.attaches.get(&pane).copied().unwrap_or_default(),
         };
-        let _ = self.worker(pane).send(msg).await;
+        // Ahead of output still queued from an earlier attach, which the
+        // worker then drops as stale.
+        let _ = self.worker(pane).urgent(msg);
         self.flows.insert(pane, Flow::Live { generation });
     }
 
@@ -314,14 +323,22 @@ impl Router {
             Some(Flow::Buffering { records, .. }) => records.push(record),
             Some(Flow::Live { generation }) => {
                 let generation = *generation;
-                let _ = self
-                    .worker(pane)
-                    .send(WorkerMsg::Apply {
+                let attach = self.attaches.get(&pane).copied().unwrap_or_default();
+                // Never wait on one pane: the router reads every pane's
+                // output. A full lane means this pane outran its mirror, so
+                // it is rebuilt from a fresh capture; output from here to
+                // its %pause is part of that capture.
+                if let Err(crate::worker::LaneError::Full) =
+                    self.worker(pane).try_send(WorkerMsg::Apply {
                         pane,
                         generation,
+                        attach,
                         record,
                     })
-                    .await;
+                {
+                    self.start(pane, generation);
+                    self.changed();
+                }
             }
             // Pausing: already in the coming capture. Failed or unmirrored:
             // nothing to keep.

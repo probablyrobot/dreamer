@@ -216,3 +216,89 @@ async fn ingested(c: &Client, pane: u32) -> u64 {
         .find(|x| x.pane == pane)
         .map_or(0, |x| x.ingested_bytes)
 }
+
+async fn reattaches(c: &Client, pane: u32) -> u32 {
+    let Ok(Response::TerminalMirrors(m)) = c
+        .call(Request::TerminalMirrors(api::TopologyParams::default()))
+        .await
+    else {
+        return 0;
+    };
+    m.mirrors
+        .iter()
+        .find(|x| x.pane == pane)
+        .map_or(0, |x| x.reattaches)
+}
+
+#[tokio::test]
+async fn a_pane_that_outruns_its_mirror_is_reattached_without_stalling_others() {
+    // Pane %0's output takes 2 ms per chunk to apply, so a flood fills its
+    // worker's lane; %0 and %1 are on different workers, so only a router
+    // waiting on %0 could delay %1.
+    let s = Setup::new(&[
+        ("DREAMER_MIRROR_WORKERS", "2"),
+        ("DREAMER_TEST_SLOW_PANE", "0:2000"),
+    ]);
+    let c = s.client().await;
+    s.type_into(0, "echo A''READY");
+    s.type_into(1, "echo B''READY");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !(s.mirror_shows(&c, 0, "AREADY").await && s.mirror_shows(&c, 1, "BREADY").await) {
+        assert!(Instant::now() < deadline, "panes never came up");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut follower = replica::Follower::start(s.socket(), 0, replica::RetryPolicy::default())
+        .await
+        .expect("follow %0");
+    let quiet = round_trips(&s, &c, 1, 10).await;
+
+    s.type_into(
+        0,
+        "yes 0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz",
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while reattaches(&c, 0).await == 0 {
+        assert!(Instant::now() < deadline, "pane %0 never outran its mirror");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let busy = round_trips(&s, &c, 1, 20).await;
+    s.type_into(0, "\u{3}");
+    s.type_into(0, "clear; echo A''FTER");
+    println!(
+        "pressure: pane %1 round trip p95 {:?} quiet, {:?} while %0 outran its mirror ({} reattaches)",
+        p95(&quiet),
+        p95(&busy),
+        reattaches(&c, 0).await
+    );
+    assert!(
+        p95(&busy) < Duration::from_millis(250).max(p95(&quiet) * 5),
+        "a pane that outran its mirror delayed another: p95 {:?} (quiet {:?})",
+        p95(&busy),
+        p95(&quiet)
+    );
+
+    // The mirror of %0 recovers and shows the truth, and a follower that
+    // was ended as reattached follows on from a fresh checkpoint.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !s.mirror_shows(&c, 0, "AFTER").await {
+        assert!(
+            Instant::now() < deadline,
+            "the mirror of %0 never caught up"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !follower
+        .replica()
+        .text()
+        .lines()
+        .any(|l| l.trim_end() == "AFTER")
+    {
+        assert!(Instant::now() < deadline, "the follower never caught up");
+        let _ = tokio::time::timeout(Duration::from_millis(500), follower.step()).await;
+    }
+    assert!(
+        follower.checkpoints >= 2,
+        "the follower did not restart from a checkpoint"
+    );
+}

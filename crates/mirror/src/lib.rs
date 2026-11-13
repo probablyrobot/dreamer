@@ -98,7 +98,7 @@ pub(crate) enum Control {
 #[derive(Debug, Clone)]
 pub struct MirrorHost {
     control: mpsc::Sender<Control>,
-    workers: Vec<mpsc::Sender<worker::WorkerMsg>>,
+    workers: Vec<worker::WorkerHandle>,
     epoch: ConnectionEpoch,
     retention: Retention,
     host_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -172,13 +172,12 @@ impl MirrorHost {
     ) -> Result<Started, String> {
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
-        w.send(worker::WorkerMsg::Subscribe {
+        w.urgent(worker::WorkerMsg::Subscribe {
             pane,
             resume,
             sink,
             reply,
         })
-        .await
         .map_err(|_| "the mirror workers have stopped".to_owned())?;
         answer
             .await
@@ -197,14 +196,13 @@ impl MirrorHost {
     ) -> Result<Vec<u8>, String> {
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
-        w.send(worker::WorkerMsg::Encode {
+        w.urgent(worker::WorkerMsg::Encode {
             pane,
             generation,
             event,
             client,
             reply,
         })
-        .await
         .map_err(|_| "the mirror workers have stopped".to_owned())?;
         answer
             .await
@@ -215,8 +213,7 @@ impl MirrorHost {
     pub async fn set_tier(&self, pane: TmuxPaneId, tier: Tier) -> bool {
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
-        if w.send(worker::WorkerMsg::SetTier { pane, tier, reply })
-            .await
+        if w.urgent(worker::WorkerMsg::SetTier { pane, tier, reply })
             .is_err()
         {
             return false;
@@ -248,12 +245,11 @@ impl MirrorHost {
     ) -> Option<Result<ReadResult, String>> {
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
-        w.send(worker::WorkerMsg::Read {
+        w.urgent(worker::WorkerMsg::Read {
             pane,
             history,
             reply,
         })
-        .await
         .ok()?;
         answer.await.ok().flatten()
     }
@@ -268,7 +264,7 @@ impl MirrorHost {
         let mut live = Vec::new();
         for w in &self.workers {
             let (reply, answer) = oneshot::channel();
-            if w.send(worker::WorkerMsg::Stats { reply }).await.is_ok() {
+            if w.urgent(worker::WorkerMsg::Stats { reply }).is_ok() {
                 live.extend(answer.await.unwrap_or_default());
             }
         }

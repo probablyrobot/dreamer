@@ -475,6 +475,7 @@ async fn stream(
     let reason = match ended.load(Ordering::SeqCst) {
         mirror::end::LAGGED => api::EndReason::Lagged,
         mirror::end::CONNECTION_LOST => api::EndReason::ConnectionLost,
+        mirror::end::REATTACHED => api::EndReason::Reattached,
         _ => {
             // The mirror went away: a new generation means a respawn.
             let respawned = host
