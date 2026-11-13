@@ -12,6 +12,9 @@
 //! - Scrolling is local: the view asks the owner to move the replica's
 //!   viewport and gets a new frame without any daemon round trip. Typing
 //!   returns a scrolled view to the bottom.
+//! - Selection is local too: gestures go to the owner, which applies them
+//!   to the replica, scrolls while a drag is held past an edge, and hands
+//!   back the selected text on request.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,13 +28,22 @@ use crate::{FollowError, FollowState, Follower, RetryPolicy};
 pub const HOLD_LIMIT: Duration = Duration::from_secs(1);
 
 pub use terminal_ghostty::Scroll;
+pub use terminal_ghostty::selection::{CellPos, SelectEvent};
+
+/// How often a drag held past an edge scrolls one row.
+pub const AUTOSCROLL_TICK: Duration = Duration::from_millis(50);
 
 /// Local view changes, applied by the owner to its replica.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ViewCommand {
     Scroll(Scroll),
     /// Back to the bottom if scrolled (sent before typed input).
     Follow,
+    /// A selection gesture event.
+    Select(SelectEvent),
+    ClearSelection,
+    /// The selected text, if any.
+    Copy(tokio::sync::oneshot::Sender<Option<String>>),
 }
 
 /// Where a feed stands, for the view to show honestly.
@@ -145,6 +157,14 @@ impl Feed {
     /// Change the local view; the owner publishes the resulting frame.
     pub fn view(&self, command: ViewCommand) {
         let _ = self.view.send(command);
+    }
+
+    /// The selected text (wrapped lines joined, trailing blanks trimmed),
+    /// asked of the owner thread; never of the daemon.
+    pub async fn selection_text(&self) -> Option<String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.view(ViewCommand::Copy(tx));
+        rx.await.ok().flatten()
     }
 
     /// The newest unpainted frame, if any.
@@ -311,14 +331,43 @@ impl Owner {
     }
 
     /// Apply a local view change; publish only if the frame changed.
-    fn view(&self, f: &mut Follower, command: ViewCommand) {
-        let Some(Ok(before)) = f.frame() else { return };
-        let to = match command {
-            ViewCommand::Scroll(to) => to,
-            ViewCommand::Follow if before.view.rows_back() > 0 => Scroll::Bottom,
-            ViewCommand::Follow => return,
+    /// `autoscroll` is where a drag held past an edge continues from.
+    fn view(&self, f: &mut Follower, command: ViewCommand, autoscroll: &mut Option<CellPos>) {
+        use terminal_ghostty::selection::Autoscroll;
+        let Some(Ok(before)) = f.frame() else {
+            if let ViewCommand::Copy(reply) = command {
+                let _ = reply.send(None);
+            }
+            return;
         };
-        if f.scroll(to).is_err() {
+        let Some(engine) = f.replica_mut().engine_mut() else {
+            return;
+        };
+        let applied = match command {
+            ViewCommand::Scroll(to) => engine.scroll_viewport(to).is_ok(),
+            ViewCommand::Follow if before.view.rows_back() > 0 => {
+                engine.scroll_viewport(Scroll::Bottom).is_ok()
+            }
+            ViewCommand::Follow => false,
+            ViewCommand::Select(event) => {
+                let ok = engine.select(event).is_ok();
+                *autoscroll = match event {
+                    SelectEvent::Drag { at } | SelectEvent::AutoscrollTick { at }
+                        if engine.selection_autoscroll().ok() != Some(Autoscroll::None) =>
+                    {
+                        Some(at)
+                    }
+                    _ => None,
+                };
+                ok
+            }
+            ViewCommand::ClearSelection => engine.clear_selection().is_ok(),
+            ViewCommand::Copy(reply) => {
+                let _ = reply.send(engine.selection_text().ok().flatten());
+                false
+            }
+        };
+        if !applied {
             return;
         }
         if let Some(Ok(frame)) = f.frame()
@@ -364,10 +413,12 @@ impl Owner {
         self.set(FeedStatus::Following);
         self.target.pane.store(u64::from(pane), Ordering::Release);
         let mut held_since: Option<tokio::time::Instant> = None;
+        let mut autoscroll: Option<CellPos> = None;
         enum Wake {
             Pushed(Result<Option<client::Pushed>, FollowError>),
             View(ViewCommand),
             HoldExpired,
+            Autoscroll(CellPos),
         }
         loop {
             let step = if matches!(f.state, FollowState::Following) {
@@ -377,17 +428,32 @@ impl Owner {
                         None => std::future::pending().await,
                     }
                 };
+                let tick = async {
+                    match autoscroll {
+                        Some(at) => {
+                            tokio::time::sleep(AUTOSCROLL_TICK).await;
+                            at
+                        }
+                        None => std::future::pending().await,
+                    }
+                };
                 // `recv` is cancel-safe: losing the race drops nothing.
                 let wake = tokio::select! {
                     r = f.recv() => Wake::Pushed(r),
                     Some(c) = view_rx.recv() => Wake::View(c),
                     () = hold => Wake::HoldExpired,
+                    at = tick => Wake::Autoscroll(at),
                 };
                 match wake {
                     Wake::Pushed(Ok(first)) => f.apply(first).await,
                     Wake::Pushed(Err(e)) => Err(e),
                     Wake::View(c) => {
-                        self.view(&mut f, c);
+                        self.view(&mut f, c, &mut autoscroll);
+                        continue;
+                    }
+                    Wake::Autoscroll(at) => {
+                        let tick = ViewCommand::Select(SelectEvent::AutoscrollTick { at });
+                        self.view(&mut f, tick, &mut autoscroll);
                         continue;
                     }
                     Wake::HoldExpired => {

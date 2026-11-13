@@ -132,6 +132,12 @@ impl Replica {
         self.engine.as_ref()
     }
 
+    /// The engine, for local view state (scrolling, selection). Never use it
+    /// to change what the terminal holds: that comes only from the daemon.
+    pub fn engine_mut(&mut self) -> Option<&mut Engine> {
+        self.engine.as_mut()
+    }
+
     /// The engine's current frame: shared unchanged rows, damage since the
     /// previous call, and the synchronized-output hold.
     pub fn frame(

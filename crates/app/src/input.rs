@@ -131,6 +131,8 @@ pub fn wheel_arrows(steps: i32) -> Vec<Event> {
 pub enum KeyIntent {
     /// Paste the clipboard.
     Paste,
+    /// Copy the selection.
+    Copy,
     /// Send this event.
     Send(Event),
     /// Not ours: an application shortcut, or text the platform text input
@@ -147,6 +149,14 @@ pub fn intent(k: &Keystroke, held: bool) -> KeyIntent {
     };
     if paste {
         return KeyIntent::Paste;
+    }
+    let copy = if cfg!(target_os = "macos") {
+        m.platform && !m.control && !m.alt && k.key == "c"
+    } else {
+        m.control && m.shift && !m.alt && k.key == "c"
+    };
+    if copy {
+        return KeyIntent::Copy;
     }
     if cfg!(target_os = "macos") && m.platform {
         return KeyIntent::Pass;
@@ -175,6 +185,15 @@ pub struct Grid {
 }
 
 impl Grid {
+    /// A window position in cells, fractional and not clamped: selection
+    /// needs the side of a cell and positions past the edges.
+    pub fn cell_pos(&self, p: Point<Pixels>) -> replica::feed::CellPos {
+        replica::feed::CellPos {
+            x: f32::from(p.x - self.origin.x) / f32::from(self.cell.width).max(1.0),
+            y: f32::from(p.y - self.origin.y) / f32::from(self.cell.height).max(1.0),
+        }
+    }
+
     /// The cell under a window position, clamped to the grid.
     pub fn cell_at(&self, p: Point<Pixels>) -> (u32, u32) {
         let at = |v: Pixels, origin: Pixels, size: Pixels, n: u16| {
@@ -426,10 +445,13 @@ mod tests {
         assert_eq!(intent(&ks("a"), false), KeyIntent::Pass);
         assert_eq!(intent(&ks("shift-a"), false), KeyIntent::Pass);
         if cfg!(target_os = "macos") {
+            assert_eq!(intent(&ks("cmd-c"), false), KeyIntent::Copy);
             assert_eq!(intent(&ks("cmd-v"), false), KeyIntent::Paste);
             assert_eq!(intent(&ks("cmd-q"), false), KeyIntent::Pass);
         } else {
             assert_eq!(intent(&ks("ctrl-shift-v"), false), KeyIntent::Paste);
+            assert_eq!(intent(&ks("ctrl-shift-c"), false), KeyIntent::Copy);
+            assert_eq!(key(intent(&ks("ctrl-c"), false)), ("KeyC".into(), 2));
         }
     }
 }

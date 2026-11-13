@@ -186,6 +186,17 @@ pub struct FrameSnapshot {
     /// Where the viewport is and what the application asked of the mouse:
     /// what a view needs to scroll and select locally.
     pub view: ViewState,
+    /// Selected cells per viewport row, kept apart from the shared rows:
+    /// selection is view state and never changes cell data.
+    pub selection: Vec<SelectedCells>,
+}
+
+/// Selected columns of one viewport row, both ends inclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectedCells {
+    pub row: u16,
+    pub start: u16,
+    pub end: u16,
 }
 
 /// Viewport position and input-relevant modes of a frame.

@@ -61,8 +61,37 @@ Mouse events over the grid become cells using the painted cell size:
 - wheel steps, one per line. Trackpad pixel deltas are added up and sent
   as whole rows (at most 32 steps per event); the remainder carries over.
 
-When the application does not track the mouse, the daemon sends nothing.
-Local selection comes with M2-05b (#124).
+Left-button presses go to the application only when it tracks the mouse
+and Shift is not held. Otherwise they make a selection (below).
+
+## Selection and copy
+
+Selection is local view state on the window's replica, made with
+Ghostty's selection gestures. It never changes the terminal, and selecting
+needs no daemon round trip (spec 9.3, 11.5).
+
+| Gesture | Selects |
+| --- | --- |
+| Drag | The cells between press and pointer. Which half of a cell the pointer is on decides whether that cell is included |
+| Double-click | A word |
+| Triple-click | A line |
+| Drag held above or below the grid | Scrolls history one row every 50 ms and keeps extending the selection |
+| Shift with any of these | Selects even when the application tracks the mouse |
+
+- **Copy:** Cmd-C on macOS, Ctrl-Shift-C on Linux (Ctrl-C still goes to
+  the program). The text comes from the replica on the window's own feed
+  thread. Wrapped lines are joined and trailing blanks are trimmed.
+- **Painting:** the highlight is drawn over cell backgrounds and under the
+  text. Frames carry the selected columns per row, apart from the shared
+  rows.
+- **Lifetime:** Ghostty tracks the selection's ends. It survives new output
+  while its rows exist and goes when they are evicted or the screen is
+  reset. A single click without a drag clears it.
+
+The input smoke ends with a selection. It clears the screen, prints
+`SELECT-ME`, drags across it through GPUI's event dispatch, and requires
+both the highlighted columns and the replica's selected text to match
+exactly. It does not use the system clipboard.
 
 ## Scrolling
 

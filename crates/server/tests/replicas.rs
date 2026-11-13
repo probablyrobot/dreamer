@@ -514,3 +514,50 @@ async fn scrolling_is_local_new_output_keeps_the_view_and_typing_returns() {
     frame_until(&feed, |f| f.view.rows_back() == 0).await;
     feed_until(&feed, |t| t.contains("\nTYPED")).await;
 }
+
+#[tokio::test]
+async fn a_drag_held_past_the_top_scrolls_history_and_selects_into_it() {
+    use replica::feed::{CellPos, SelectEvent, ViewCommand};
+    let s = Setup::new(&[]);
+    drop(s.client().await);
+    let feed = replica::feed::Feed::start(s.socket(), Some(0), None).expect("feed");
+    s.type_line("seq 1 300; echo SEQ''-DONE");
+    let last = feed_until(&feed, |t| t.contains("\nSEQ-DONE")).await;
+    let row = last
+        .lines()
+        .position(|l| l.trim_end() == "SEQ-DONE")
+        .expect("row") as f32;
+
+    feed.view(ViewCommand::Select(SelectEvent::Press {
+        at: CellPos {
+            x: 8.9,
+            y: row + 0.5,
+        },
+        time_ns: 1,
+    }));
+    // Hold the drag above the grid: the owner scrolls a row per tick.
+    feed.view(ViewCommand::Select(SelectEvent::Drag {
+        at: CellPos { x: 0.1, y: -1.0 },
+    }));
+    frame_until(&feed, |f| f.view.rows_back() >= 10).await;
+    feed.view(ViewCommand::Select(SelectEvent::Release {
+        at: CellPos { x: 0.1, y: -1.0 },
+    }));
+    let text = feed.selection_text().await.expect("a selection");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.last(), Some(&"SEQ-DONE"), "{text}");
+    assert!(
+        lines.len() > usize::from(last.lines().count() as u16),
+        "the selection did not reach into history: {} lines",
+        lines.len()
+    );
+    // No more autoscroll after the release: the view goes quiet.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    while feed.wake.try_recv().is_ok() {}
+    let _ = feed.take();
+    tokio::time::sleep(replica::feed::AUTOSCROLL_TICK * 6).await;
+    assert!(
+        feed.wake.try_recv().is_err(),
+        "still scrolling after release"
+    );
+}

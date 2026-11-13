@@ -20,6 +20,7 @@ mod effects;
 mod features;
 mod frame;
 pub mod input;
+pub mod selection;
 pub mod snapshot_fixtures;
 
 pub use features::{Features, features};
@@ -125,6 +126,12 @@ pub struct Engine {
     revision: u64,
     last: Option<Arc<FrameSnapshot>>,
     scratch: frame::Scratch,
+    /// Selection gesture state, created on first use.
+    gesture: GhosttySelectionGesture,
+    /// Bumped whenever the selection may have changed; the value the last
+    /// frame was built at.
+    selection_rev: u64,
+    framed_selection_rev: u64,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -241,6 +248,9 @@ impl Engine {
             revision: 0,
             last: None,
             scratch: frame::Scratch::default(),
+            gesture: ptr::null_mut(),
+            selection_rev: 0,
+            framed_selection_rev: 0,
             _not_send: PhantomData,
         };
         // From here `Drop` frees whatever has been created.
@@ -533,6 +543,7 @@ impl Drop for Engine {
         // or was created by the matching `_new` and is freed exactly once,
         // dependents before the terminal.
         unsafe {
+            ghostty_selection_gesture_free(self.gesture, self.term);
             ghostty_render_state_row_cells_free(self.row_cells);
             ghostty_render_state_row_iterator_free(self.row_iter);
             ghostty_render_state_free(self.render);
