@@ -12,8 +12,8 @@ use ghostty_sys::GhosttyRenderStateRowCellsData::*;
 use ghostty_sys::GhosttyRenderStateRowData::*;
 use ghostty_sys::*;
 use terminal_core::{
-    Attrs, Cell, CellWidth, Color, Colors, Cursor, CursorShape, FrameSnapshot, GridSize, Rgb, Row,
-    SelectedCells, Style, Underline,
+    Attrs, Cell, CellWidth, Color, Colors, Cursor, CursorShape, FrameSnapshot, GridSize,
+    ImageLayer, ImagePixels, ImagePlacement, Rgb, Row, SelectedCells, Style, Underline,
 };
 
 use crate::{Engine, EngineError, check};
@@ -47,12 +47,20 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
         let held = e.callbacks.held;
 
         let view = e.view_state()?;
+        let mut placements_gen: u64 = 0;
+        get(
+            e.render,
+            GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION,
+            &mut placements_gen,
+        )?;
+        let images_changed = e.images.generation != Some(placements_gen);
         let previous = e.last.as_ref().filter(|f| f.size == size);
         if dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE
             && let Some(prev) = previous
             && prev.render_hold == held
             && prev.view == view
             && e.selection_rev == e.framed_selection_rev
+            && !images_changed
         {
             return Ok(Arc::clone(prev));
         }
@@ -135,6 +143,11 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
             "ghostty_render_state_clean",
             ghostty_render_state_clean(e.render),
         )?;
+        let images = if images_changed {
+            read_images(e, placements_gen)?
+        } else {
+            Arc::clone(&e.images.placements)
+        };
         e.revision += 1;
         e.framed_selection_rev = e.selection_rev;
         Ok(Arc::new(FrameSnapshot {
@@ -147,6 +160,7 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
             render_hold: held,
             view,
             selection,
+            images,
         }))
     }
 }
@@ -326,5 +340,218 @@ fn convert_cursor(c: &GhosttyRenderStateCursor) -> Cursor {
         },
         blinking: c.blinking,
         on_wide_tail: c.wide_tail,
+    }
+}
+
+/// Owned image pixels by (image id, generation), the placements last read,
+/// and the render-state placements generation they came from.
+#[derive(Default)]
+pub(crate) struct Images {
+    generation: Option<u64>,
+    placements: Arc<[ImagePlacement]>,
+    pixels: std::collections::HashMap<(u32, u64), Arc<ImagePixels>>,
+    /// Placements skipped because their image data was missing or invalid.
+    pub(crate) skipped: u64,
+}
+
+/// Largest image accepted, in pixels (64 Mi pixels, 256 MiB as RGBA).
+const MAX_IMAGE_PIXELS: u64 = 64 << 20;
+
+unsafe fn image_get<T>(
+    it: GhosttyRenderStateImageIterator,
+    data: GhosttyRenderStateImageData::Type,
+    out: &mut T,
+) -> Result<(), EngineError> {
+    check("ghostty_render_state_image_get", unsafe {
+        ghostty_render_state_image_get(it, data, (out as *mut T).cast())
+    })
+}
+
+/// Read the placements of the last render-state update; pixels are copied
+/// once per (image id, generation) and shared with earlier frames.
+unsafe fn read_images(
+    e: &mut Engine,
+    generation: u64,
+) -> Result<Arc<[ImagePlacement]>, EngineError> {
+    use GhosttyRenderStateImageData::*;
+    // SAFETY (whole function): the iterator and graphics handles belong to
+    // `e` and are read before any terminal mutation; pixel data is copied
+    // out before returning.
+    unsafe {
+        get(
+            e.render,
+            GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR,
+            &mut e.image_iter,
+        )?;
+        let mut graphics: GhosttyKittyGraphics = std::ptr::null_mut();
+        let code = ghostty_terminal_get(
+            e.term,
+            GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+            (&raw mut graphics).cast(),
+        );
+        if code != GhosttyResult::GHOSTTY_SUCCESS {
+            graphics = std::ptr::null_mut();
+        }
+        let mut out = Vec::new();
+        let mut keep = std::collections::HashMap::new();
+        while ghostty_render_state_image_iterator_next(e.image_iter) {
+            let it = e.image_iter;
+            let mut protocol: GhosttyImageProtocol::Type = 0;
+            image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL, &mut protocol)?;
+            if protocol != GhosttyImageProtocol::GHOSTTY_IMAGE_PROTOCOL_KITTY || graphics.is_null()
+            {
+                e.images.skipped += 1;
+                continue;
+            }
+            let (mut id, mut image_gen) = (0u32, 0u64);
+            image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID, &mut id)?;
+            image_get(
+                it,
+                GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION,
+                &mut image_gen,
+            )?;
+            let pixels = match keep
+                .get(&(id, image_gen))
+                .or_else(|| e.images.pixels.get(&(id, image_gen)))
+            {
+                Some(p) => Arc::clone(p),
+                None => match copy_pixels(graphics, id, image_gen) {
+                    Some(p) => Arc::new(p),
+                    None => {
+                        e.images.skipped += 1;
+                        continue;
+                    }
+                },
+            };
+            keep.insert((id, image_gen), Arc::clone(&pixels));
+            let mut layer: GhosttyImageLayer::Type = 0;
+            let (mut z, mut col, mut row) = (0i32, 0i32, 0i32);
+            let mut v = [0u32; 8];
+            image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER, &mut layer)?;
+            image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_Z, &mut z)?;
+            image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL, &mut col)?;
+            image_get(it, GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW, &mut row)?;
+            for (slot, key) in v.iter_mut().zip([
+                GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X,
+                GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y,
+                GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH,
+                GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT,
+                GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X,
+                GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y,
+                GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH,
+                GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT,
+            ]) {
+                image_get(it, key, slot)?;
+            }
+            let layer = match layer {
+                GhosttyImageLayer::GHOSTTY_IMAGE_LAYER_BELOW_BACKGROUND => {
+                    ImageLayer::BelowBackground
+                }
+                GhosttyImageLayer::GHOSTTY_IMAGE_LAYER_BELOW_TEXT => ImageLayer::BelowText,
+                _ => ImageLayer::AboveText,
+            };
+            out.push(ImagePlacement {
+                image: pixels,
+                layer,
+                z,
+                col,
+                row,
+                offset_x: v[0],
+                offset_y: v[1],
+                width: v[2],
+                height: v[3],
+                source_x: v[4],
+                source_y: v[5],
+                source_width: v[6],
+                source_height: v[7],
+            });
+        }
+        // Draw order: by layer, then z; equal z keeps the library's order.
+        out.sort_by_key(|p| (p.layer as u8, p.z));
+        let placements: Arc<[ImagePlacement]> = out.into();
+        e.images.pixels = keep;
+        e.images.generation = Some(generation);
+        e.images.placements = Arc::clone(&placements);
+        Ok(placements)
+    }
+}
+
+/// Copy an image's current pixels as RGBA, or `None` if they are missing,
+/// too large, or inconsistent with the reported size and format.
+unsafe fn copy_pixels(
+    graphics: GhosttyKittyGraphics,
+    id: u32,
+    generation: u64,
+) -> Option<ImagePixels> {
+    use GhosttyKittyGraphicsImageData::*;
+    use GhosttyKittyImageFormat::*;
+    // SAFETY: `graphics` is live; the image handle and the borrowed pixel
+    // string are used before any terminal mutation and copied here.
+    unsafe {
+        let image = ghostty_kitty_graphics_image(graphics, id);
+        if image.is_null() {
+            return None;
+        }
+        let read = |key, out: *mut std::ffi::c_void| {
+            ghostty_kitty_graphics_image_get(image, key, out) == GhosttyResult::GHOSTTY_SUCCESS
+        };
+        let (mut width, mut height) = (0u32, 0u32);
+        let mut format: GhosttyKittyImageFormat::Type = 0;
+        let mut data = GhosttyString::default();
+        if !(read(
+            GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH,
+            (&raw mut width).cast(),
+        ) && read(
+            GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT,
+            (&raw mut height).cast(),
+        ) && read(
+            GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT,
+            (&raw mut format).cast(),
+        ) && read(
+            GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS,
+            (&raw mut data).cast(),
+        )) {
+            return None;
+        }
+        let pixels = u64::from(width) * u64::from(height);
+        if pixels == 0 || pixels > MAX_IMAGE_PIXELS {
+            return None;
+        }
+        let bpp = match format {
+            GHOSTTY_KITTY_IMAGE_FORMAT_RGBA => 4,
+            GHOSTTY_KITTY_IMAGE_FORMAT_RGB => 3,
+            GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA => 2,
+            GHOSTTY_KITTY_IMAGE_FORMAT_GRAY => 1,
+            _ => return None,
+        };
+        let pixels = pixels as usize;
+        if data.ptr.is_null() || data.len != pixels * bpp {
+            return None;
+        }
+        let src = std::slice::from_raw_parts(data.ptr, data.len);
+        let mut rgba = Vec::with_capacity(pixels * 4);
+        match bpp {
+            4 => rgba.extend_from_slice(src),
+            3 => src
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .for_each(|[r, g, b]| rgba.extend_from_slice(&[*r, *g, *b, 255])),
+            2 => src
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .for_each(|[g, a]| rgba.extend_from_slice(&[*g, *g, *g, *a])),
+            _ => src
+                .iter()
+                .for_each(|&g| rgba.extend_from_slice(&[g, g, g, 255])),
+        }
+        Some(ImagePixels {
+            id,
+            generation,
+            width,
+            height,
+            rgba: rgba.into_boxed_slice(),
+        })
     }
 }

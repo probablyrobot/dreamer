@@ -94,6 +94,9 @@ pub struct EngineConfig {
     /// Deliver engine-generated replies in [`Effects::replies`]. Off by
     /// default: in tmux mirror mode tmux owns query responses.
     pub capture_replies: bool,
+    /// Kitty image storage in bytes; applied on creation and on snapshot
+    /// restore (snapshots do not carry it).
+    pub image_storage_bytes: u64,
 }
 
 impl EngineConfig {
@@ -104,6 +107,7 @@ impl EngineConfig {
             scrollback_bytes: None,
             continuation_max_bytes: None,
             capture_replies: false,
+            image_storage_bytes: terminal_core::family::IMAGE_STORAGE_BYTES,
         }
     }
 }
@@ -121,6 +125,9 @@ pub struct Engine {
     render: GhosttyRenderState,
     row_iter: GhosttyRenderStateRowIterator,
     row_cells: GhosttyRenderStateRowCells,
+    image_iter: GhosttyRenderStateImageIterator,
+    /// Owned image pixels and the placements last read.
+    images: frame::Images,
     /// Boxed so its address, registered as callback userdata, never moves.
     callbacks: Box<CallbackState>,
     size: GridSize,
@@ -188,10 +195,17 @@ impl Engine {
                     ghostty_snapshot_decoder_set(decoder, opt, value),
                 )
             };
+            let images = config.image_storage_bytes;
             let result = set(
                 GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES,
                 (&raw const max).cast(),
             )
+            .and_then(|()| {
+                set(
+                    GHOSTTY_SNAPSHOT_DECODER_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                    (&raw const images).cast(),
+                )
+            })
             .and_then(|()| {
                 set(
                     GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION,
@@ -244,6 +258,8 @@ impl Engine {
             render: ptr::null_mut(),
             row_iter: ptr::null_mut(),
             row_cells: ptr::null_mut(),
+            image_iter: ptr::null_mut(),
+            images: frame::Images::default(),
             callbacks: Box::new(CallbackState::new(config.capture_replies)),
             size: config.size,
             revision: 0,
@@ -268,6 +284,10 @@ impl Engine {
             check(
                 "ghostty_render_state_row_cells_new",
                 ghostty_render_state_row_cells_new(ptr::null(), &mut engine.row_cells),
+            )?;
+            check(
+                "ghostty_render_state_image_iterator_new",
+                ghostty_render_state_image_iterator_new(ptr::null(), &mut engine.image_iter),
             )?;
         }
         let set_size = |opt, value: usize| {
@@ -303,6 +323,47 @@ impl Engine {
                     (&raw const bytes).cast(),
                 )
             })?;
+        }
+        // Kitty images: an explicit storage limit, and inline transmission
+        // only. A file or shared-memory reference names something on the
+        // daemon's host that a client must never read (spec 11.7).
+        let limit = config.image_storage_bytes;
+        let off = false;
+        // SAFETY: each option reads the pointed-to local during the call.
+        unsafe {
+            use GhosttyTerminalOption::*;
+            check(
+                "set kitty image storage limit",
+                ghostty_terminal_set(
+                    engine.term,
+                    GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                    (&raw const limit).cast(),
+                ),
+            )?;
+            check(
+                "disable kitty file medium",
+                ghostty_terminal_set(
+                    engine.term,
+                    GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
+                    (&raw const off).cast(),
+                ),
+            )?;
+            check(
+                "disable kitty temp-file medium",
+                ghostty_terminal_set(
+                    engine.term,
+                    GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
+                    ptr::null(),
+                ),
+            )?;
+            check(
+                "disable kitty shared-memory medium",
+                ghostty_terminal_set(
+                    engine.term,
+                    GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
+                    (&raw const off).cast(),
+                ),
+            )?;
         }
         effects::register(engine.term, &mut engine.callbacks)?;
         let (mut cols, mut rows) = (0u16, 0u16);
@@ -511,6 +572,12 @@ impl Engine {
         })
     }
 
+    /// Image placements skipped so far because their image data was
+    /// missing, too large, or inconsistent (diagnostics).
+    pub fn images_skipped(&self) -> u64 {
+        self.images.skipped
+    }
+
     /// Lines of scrollback above the active screen.
     pub fn scrollback_rows(&self) -> Result<usize, EngineError> {
         let mut rows: usize = 0;
@@ -546,6 +613,7 @@ impl Drop for Engine {
         unsafe {
             ghostty_selection_gesture_free(self.gesture, self.term);
             ghostty_render_state_row_cells_free(self.row_cells);
+            ghostty_render_state_image_iterator_free(self.image_iter);
             ghostty_render_state_row_iterator_free(self.row_iter);
             ghostty_render_state_free(self.render);
             ghostty_terminal_free(self.term);

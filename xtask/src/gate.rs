@@ -537,7 +537,9 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
         println!("gate: no container runtime running; ARM64 Linux suite recorded as not run");
         return Ok(Done::NotRun);
     }
-    let script = "set -e; export DEBIAN_FRONTEND=noninteractive; \
+    // `ulimit -c 0`: one test makes dreamerd abort on purpose, and the
+    // container would otherwise write its core into the mounted tree.
+    let script = "set -e; ulimit -c 0; export DEBIAN_FRONTEND=noninteractive; \
         apt-get update -qq && apt-get install -y -qq --no-install-recommends \
           build-essential pkg-config curl ca-certificates xz-utils git libclang-dev \
           libevent-dev libncurses-dev bison python3 >/dev/null; \
@@ -546,7 +548,8 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
         cargo xtask deps prepare --locked; \
         export DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1); \
         cargo test --locked $(cargo xtask headless --cargo-args)";
-    let status = Command::new("docker")
+    let mut docker = Command::new("docker");
+    docker
         .args(["run", "--rm", "--platform", "linux/arm64"])
         .arg("-v")
         .arg(format!("{}:/src", dir.display()))
@@ -565,13 +568,19 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
             "bash",
             "-c",
             script,
-        ])
-        .status()
-        .map_err(|e| format!("docker run: {e}"))?;
-    if status.success() {
+        ]);
+    // Kept when the suite fails, so a failure that does not reproduce on
+    // a rerun can still be read.
+    let log = crate::util::repo_root().join("target/gate/logs/arm64-last-failure.log");
+    let ok = run_teed(docker, &log).map_err(|e| format!("docker run: {e}"))?;
+    if ok {
+        let _ = std::fs::remove_file(&log);
         Ok(Done::Passed)
     } else {
-        Err("ARM64 Linux container suite failed".into())
+        Err(format!(
+            "ARM64 Linux container suite failed; output saved to {}",
+            log.display()
+        ))
     }
 }
 

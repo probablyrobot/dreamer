@@ -189,6 +189,53 @@ pub struct FrameSnapshot {
     /// Selected cells per viewport row, kept apart from the shared rows:
     /// selection is view state and never changes cell data.
     pub selection: Vec<SelectedCells>,
+    /// Image placements in the viewport, in draw order within each layer.
+    /// Shared with the previous frame while the placements are unchanged.
+    pub images: Arc<[ImagePlacement]>,
+}
+
+/// Where an image is drawn relative to the cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ImageLayer {
+    BelowBackground,
+    BelowText,
+    AboveText,
+}
+
+/// An image's decoded pixels, owned and shared across frames. `id` and
+/// `generation` identify the contents: a new generation means new pixels.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ImagePixels {
+    pub id: u32,
+    pub generation: u64,
+    pub width: u32,
+    pub height: u32,
+    /// Straight (not premultiplied) RGBA, `width * height * 4` bytes.
+    pub rgba: Box<[u8]>,
+}
+
+/// One placement of an image. Pixel values are in canonical cell pixels
+/// ([`family::CANONICAL_CELL_PX`]); a view scales them to its cells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImagePlacement {
+    pub image: Arc<ImagePixels>,
+    pub layer: ImageLayer,
+    /// Order within the layer: lower draws first.
+    pub z: i32,
+    /// Top-left cell in the viewport; may be negative (partly off screen).
+    pub col: i32,
+    pub row: i32,
+    /// Offset of the image inside the top-left cell.
+    pub offset_x: u32,
+    pub offset_y: u32,
+    /// Size to draw at.
+    pub width: u32,
+    pub height: u32,
+    /// The part of the image to draw, in image pixels.
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: u32,
+    pub source_height: u32,
 }
 
 /// Selected columns of one viewport row, both ends inclusive.
