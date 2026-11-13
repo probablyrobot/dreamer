@@ -82,4 +82,33 @@ never loosens or takes over such a directory.
 | `DREAMER_RUNTIME_DIR`, `DREAMER_STATE_DIR` | Private directories per test |
 | `DREAMER_FORBID_DEFAULT_TMUX` | The daemon refuses to attach to the default tmux server. Test harnesses set it so no test can reach the user's own tmux, even if it forgets to name an isolated socket |
 | `DREAMER_TEST_ABORT_AFTER_DISPATCH` | Abort the process right after an action reaches tmux, to test crash recovery |
+| `DREAMER_MIRROR_WORKERS` | Number of mirror owner threads (default: cores, 1 to 4). The pressure test sets 1 so two panes share an owner |
 | `DREAMER_TEST_SMALL_QUEUES` | Shrink the subscriber and connection queues, so back-pressure tests behave the same on every platform regardless of socket buffer sizes |
+
+## Under pressure
+
+One busy pane must not slow down another (spec 16.3, 16.5):
+- **Input lanes.** Input is delivered one event at a time per pane, so a
+  paste is never interleaved with other input to the same pane. Each pane
+  has its own lane: a large paste into one pane never holds up typing in
+  another.
+- **Stalled subscribers.** A subscriber that stops reading is ended as
+  `lagged` when its queue fills. The pane's owner never waits for it (see
+  [mirrors.md](mirrors.md)).
+
+`crates/server/tests/pressure.rs` measures this with real tmux and two
+panes on one mirror worker. Pane %0 runs `yes`, a subscriber to %0 never
+reads, and an 8 MiB paste goes into %0 at the same time. Meanwhile
+`echo` round trips are timed into pane %1, from input until the daemon's
+mirror shows the output.
+
+| Build | Machine | %1 round trip p95, quiet | %1 round trip p95, under pressure | %0 ingest |
+| --- | --- | --- | --- | --- |
+| debug, before per-pane lanes | Apple M3 Max (Mac15,11), 36 GiB, macOS 27.2 | 8.5 ms | 19.7 s (waited for the whole paste) | 2.3 MB/s |
+| debug, per-pane lanes | same | 8.7 ms | 38.7 ms | 5.1 MB/s |
+
+The test fails if the p95 under pressure exceeds 250 ms or five times the
+quiet p95, whichever is larger. These numbers come from a debug-build
+test, not the benchmark harness. They show the property, not
+performance. Delivering a paste costs about 0.4 MiB/s through tmux's
+literal-byte path (`send-keys -H`); that is the next thing to measure.

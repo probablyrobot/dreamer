@@ -64,9 +64,10 @@ pub struct State {
     pub shutdown: Notify,
     /// Canonical mirrors of the current connection, if connected.
     pub mirrors: tokio::sync::RwLock<Option<mirror::MirrorHost>>,
-    /// One input delivery at a time, so a large paste is never interleaved
-    /// with other input.
-    pub input: Mutex<()>,
+    /// One input delivery at a time per pane, so a large paste is never
+    /// interleaved with other input to that pane, and never holds up input
+    /// to another pane.
+    pub input: Mutex<std::collections::HashMap<u32, Arc<Mutex<()>>>>,
     /// Pastes arriving in parts, by (pane, paste id), until the last part.
     pub pastes: Mutex<std::collections::HashMap<(u32, u64), Vec<u8>>>,
     /// Connection epochs: each new control connection gets the next one.
@@ -173,6 +174,10 @@ fn mirror_config() -> mirror::MirrorConfig {
     }
     if let Some(b) = env("DREAMER_JOURNAL_HOST_BYTES") {
         c.retention.host_bytes = b;
+    }
+    // Tests put panes on one worker to measure fairness on a shared owner.
+    if let Some(n) = env("DREAMER_MIRROR_WORKERS") {
+        c.workers = n.max(1);
     }
     c
 }
@@ -549,7 +554,8 @@ impl api::Service for DaemonService {
                 format!("pane %{} has no live mirror", p.pane),
             ));
         }
-        let _serial = self.0.input.lock().await;
+        let lane = Arc::clone(self.0.input.lock().await.entry(p.pane).or_default());
+        let _serial = lane.lock().await;
         let bytes = host
             .encode(
                 pane,

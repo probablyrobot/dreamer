@@ -226,7 +226,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             shutting_down: false.into(),
             shutdown: tokio::sync::Notify::new(),
             mirrors: tokio::sync::RwLock::new(None),
-            input: tokio::sync::Mutex::new(()),
+            input: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             pastes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.
