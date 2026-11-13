@@ -148,6 +148,103 @@ pub fn load_hosts() -> Result<Vec<HostProfile>, ConfigError> {
     }
 }
 
+/// One YAML scalar, single-quoted (a `'` is doubled).
+fn yaml_str(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// The file text for `profiles`, after the comment lines `header`.
+pub fn render_hosts(header: &str, profiles: &[HostProfile]) -> String {
+    let mut out = String::from(header);
+    if profiles.is_empty() {
+        out.push_str("hosts: []\n");
+        return out;
+    }
+    out.push_str("hosts:\n");
+    for p in profiles {
+        out.push_str(&format!("  - name: {}\n", yaml_str(&p.name)));
+        out.push_str(&format!("    destination: {}\n", yaml_str(&p.destination)));
+        for (key, value) in [
+            ("dream", &p.dream),
+            ("tmux", &p.tmux),
+            ("tmux_socket", &p.tmux_socket),
+            ("tmux_socket_path", &p.tmux_socket_path),
+            ("workspace", &p.workspace),
+        ] {
+            if let Some(v) = value {
+                out.push_str(&format!("    {key}: {}\n", yaml_str(v)));
+            }
+        }
+        if !p.tags.is_empty() {
+            let tags: Vec<String> = p.tags.iter().map(|t| yaml_str(t)).collect();
+            out.push_str(&format!("    tags: [{}]\n", tags.join(", ")));
+        }
+        if p.reconnect == Reconnect::Manual {
+            out.push_str("    reconnect: manual\n");
+        }
+    }
+    out
+}
+
+/// The comment lines at the top of a file, kept when it is rewritten.
+fn leading_comments(text: &str) -> String {
+    text.lines()
+        .take_while(|l| l.trim_start().starts_with('#') || l.trim().is_empty())
+        .filter(|l| l.trim_start().starts_with('#'))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// Replace the profiles in `path`. The new text is validated with the same
+/// rules as reading before anything is written, and written atomically.
+pub fn save_hosts(path: &Path, profiles: &[HostProfile]) -> Result<(), ConfigError> {
+    let old = std::fs::read_to_string(path).unwrap_or_default();
+    let header = leading_comments(&old);
+    let text = render_hosts(&header, profiles);
+    parse_hosts(&text, Some(path))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| error(Some(path), String::new(), "no directory".into()))?;
+    std::fs::create_dir_all(dir).map_err(|e| error(Some(path), String::new(), e.to_string()))?;
+    let tmp = dir.join(format!(".hosts.yaml.{}", std::process::id()));
+    std::fs::write(&tmp, text).map_err(|e| error(Some(path), String::new(), e.to_string()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        error(Some(path), String::new(), e.to_string())
+    })
+}
+
+/// Add `profile`, or replace the one named `replacing` (keeping its place).
+pub fn put_host(
+    path: &Path,
+    profile: HostProfile,
+    replacing: Option<&str>,
+) -> Result<(), ConfigError> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut profiles = parse_hosts(&text, Some(path))?;
+    let at = replacing
+        .or(Some(profile.name.as_str()))
+        .and_then(|n| profiles.iter().position(|p| p.name == n));
+    match at {
+        Some(i) => profiles[i] = profile,
+        None => profiles.push(profile),
+    }
+    save_hosts(path, &profiles)
+}
+
+/// Remove the profile called `name`; `false` when there is none.
+pub fn remove_host(path: &Path, name: &str) -> Result<bool, ConfigError> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut profiles = parse_hosts(&text, Some(path))?;
+    let before = profiles.len();
+    profiles.retain(|p| p.name != name);
+    if profiles.len() == before {
+        return Ok(false);
+    }
+    save_hosts(path, &profiles)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +271,56 @@ mod tests {
         assert_eq!(hosts[0].tags, ["work", "linux"]);
         assert_eq!(hosts[1].reconnect, Reconnect::Auto);
         assert_eq!(parse_hosts("", None).expect("empty"), []);
+    }
+
+    #[test]
+    fn profiles_round_trip_through_the_file_and_bad_ones_are_never_written() {
+        let dir = std::env::temp_dir().join(format!("drm-hosts-file-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("hosts.yaml");
+        std::fs::write(
+            &path,
+            "# my hosts\n# keep me\nhosts:\n  - {name: a, destination: a}\n",
+        )
+        .expect("seed");
+        let tricky = HostProfile {
+            name: "it's mine".into(),
+            destination: "me@devbox".into(),
+            dream: Some("~/.local/bin/dream".into()),
+            tmux: None,
+            tmux_socket: Some("work: #1".into()),
+            tmux_socket_path: None,
+            workspace: None,
+            tags: vec!["lab".into(), "a, b".into()],
+            reconnect: Reconnect::Manual,
+        };
+        put_host(&path, tricky.clone(), None).expect("add");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.starts_with("# my hosts\n# keep me\n"), "{text}");
+        let back = parse_hosts(&text, None).expect("valid");
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[1], tricky);
+        // Edit in place, keeping order.
+        let mut renamed = tricky.clone();
+        renamed.name = "devbox".into();
+        put_host(&path, renamed, Some("it's mine")).expect("edit");
+        let names: Vec<String> = parse_hosts(&std::fs::read_to_string(&path).expect("read"), None)
+            .expect("valid")
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names, ["a", "devbox"]);
+        // An invalid profile leaves the file as it was.
+        let before = std::fs::read_to_string(&path).expect("read");
+        let mut bad = tricky;
+        bad.destination = "-oProxyCommand=x".into();
+        let e = put_host(&path, bad, None).expect_err("refused");
+        assert!(e.at.ends_with(".destination"), "{e}");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
+        assert!(remove_host(&path, "a").expect("remove"));
+        assert!(!remove_host(&path, "a").expect("gone"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

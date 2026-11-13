@@ -261,6 +261,123 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Open the palette on a form (editing a profile, or showing why a
+    /// submit was refused).
+    fn open_form(
+        &mut self,
+        form: crate::palette::Form,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut p = crate::palette::Palette::new();
+        p.stage = crate::palette::Stage::Form(form);
+        self.palette = Some(p);
+        window.focus(&self.palette_focus, cx);
+        cx.notify();
+    }
+
+    /// Save a submitted host profile form to hosts.yaml, off the UI
+    /// thread. A refused profile reopens the form with the reason; nothing
+    /// is written then.
+    fn submit_host_form(
+        &mut self,
+        form: crate::palette::Form,
+        here: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
+        use workspace_config::hosts::{HostProfile, hosts_path, load_hosts, put_host};
+        let value = |i: usize| form.fields[i].1.trim().to_owned();
+        let optional = |i: usize| Some(value(i)).filter(|v| !v.is_empty());
+        let (name, destination, dream, socket) = (value(0), value(1), optional(2), optional(3));
+        let tags: Vec<String> = value(4)
+            .split(',')
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .collect();
+        let replacing = form.replacing.clone();
+        let any = cx.entity();
+        let task = cx.background_executor().spawn(async move {
+            let path = hosts_path().ok_or("no configuration directory (HOME unset)")?;
+            // An edit keeps what the form does not show.
+            let mut profile = replacing
+                .as_deref()
+                .and_then(|r| load_hosts().ok()?.into_iter().find(|p| p.name == r))
+                .unwrap_or(HostProfile {
+                    name: String::new(),
+                    destination: String::new(),
+                    dream: None,
+                    tmux: None,
+                    tmux_socket: None,
+                    tmux_socket_path: None,
+                    workspace: None,
+                    tags: Vec::new(),
+                    reconnect: Default::default(),
+                });
+            profile.name = name;
+            profile.destination = destination;
+            profile.dream = dream;
+            profile.tmux_socket = socket;
+            if profile.tmux_socket.is_some() {
+                profile.tmux_socket_path = None;
+            }
+            profile.tags = tags;
+            put_host(&path, profile, replacing.as_deref()).map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |_, cx| {
+            let result = task.await;
+            cx.update(|cx| {
+                any.update(cx, |ws, cx| {
+                    if let Err(why) = result {
+                        let mut form = form;
+                        form.error = Some(why);
+                        let _ = here.update(cx, |_, window, cx| {
+                            any.update(cx, |ws, cx| ws.open_form(form, window, cx))
+                        });
+                    }
+                    ws.hosts_changed(cx);
+                })
+            });
+        })
+        .detach();
+    }
+
+    /// Open the profile form for `name`, filled from hosts.yaml (read off
+    /// the UI thread).
+    fn edit_host(&mut self, name: String, here: gpui::AnyWindowHandle, cx: &mut Context<Self>) {
+        let task = cx.background_executor().spawn(async move {
+            workspace_config::hosts::load_hosts()
+                .ok()
+                .and_then(|ps| ps.into_iter().find(|p| p.name == name))
+        });
+        let any = cx.entity();
+        cx.spawn(async move |_, cx| {
+            let Some(p) = task.await else { return };
+            let form = crate::palette::Form::host(
+                crate::palette::Command::EditHost,
+                [
+                    p.name.clone(),
+                    p.destination.clone(),
+                    p.dream.clone().unwrap_or_default(),
+                    p.tmux_socket.clone().unwrap_or_default(),
+                    p.tags.join(", "),
+                ],
+                Some(p.name),
+            );
+            cx.update(|cx| {
+                let _ = here.update(cx, |_, window, cx| {
+                    any.update(cx, |ws, cx| ws.open_form(form, window, cx))
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// The sidebar's host list is read again on its next tick; nothing to
+    /// do beyond a redraw now.
+    fn hosts_changed(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+    }
+
     pub(crate) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
         if let Some(view) = self.focused.and_then(|f| self.panes.get(&f)) {
@@ -277,9 +394,16 @@ impl Workspace {
         let Some(p) = self.palette.as_mut() else {
             return;
         };
-        if let Decision::Run(cmd, name) = p.enter() {
-            self.close_palette(window, cx);
-            self.run_command(cmd, name, window, cx);
+        match p.enter() {
+            Decision::Run(cmd, name) => {
+                self.close_palette(window, cx);
+                self.run_command(cmd, name, window, cx);
+            }
+            Decision::Submit(form) => {
+                self.close_palette(window, cx);
+                self.submit_host_form(form, window.window_handle(), cx);
+            }
+            Decision::Stay => {}
         }
         cx.notify();
     }
@@ -400,6 +524,27 @@ impl Workspace {
             C::ReconnectHost => {
                 if let (Some(name), Some(h)) = (name, self.hosts_feed()) {
                     h.reconnect(&name);
+                }
+                None
+            }
+            C::AddHost => None,
+            C::EditHost => {
+                if let Some(name) = name {
+                    self.edit_host(name, window.window_handle(), cx);
+                }
+                None
+            }
+            C::RemoveHost => {
+                if let Some(name) = name {
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Some(path) = workspace_config::hosts::hosts_path()
+                                && let Err(e) = workspace_config::hosts::remove_host(&path, &name)
+                            {
+                                eprintln!("dreamer: {e}");
+                            }
+                        })
+                        .detach();
                 }
                 None
             }
@@ -1272,6 +1417,20 @@ impl Render for Workspace {
                     Vec::new(),
                 ),
                 Stage::Name(c, name) => (format!("{} {name}", c.label()), Vec::new()),
+                Stage::Form(f) => (
+                    match &f.error {
+                        Some(e) => format!("{} {e}", f.command.label()),
+                        None => format!(
+                            "{} Enter: next field; Up/Down: move; Escape: cancel.",
+                            f.command.label()
+                        ),
+                    },
+                    f.fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (label, value, _))| (format!("{label}: {value}"), i == f.at))
+                        .collect(),
+                ),
             };
             div()
                 .absolute()
@@ -1791,7 +1950,92 @@ mod smoke {
         println!(
             "smoke: reconnecting resumed the window, and typing reached the host again: BACK-5"
         );
+        profiles(any, &ws, cx).await;
         std::process::exit(0);
+    }
+
+    /// Host profiles edited through the palette form: add one, change its
+    /// tags, remove it. Each change lands in hosts.yaml (the smoke's private
+    /// configuration directory), and the other profile is kept intact.
+    async fn profiles(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncApp) {
+        let Some(path) = workspace_config::hosts::hosts_path() else {
+            fail("no configuration directory");
+        };
+        if std::env::var_os("DREAMER_CONFIG_DIR").is_none() {
+            fail("the profile smoke needs a private DREAMER_CONFIG_DIR");
+        }
+        let original = workspace_config::hosts::load_hosts().unwrap_or_default();
+        let file_has = |want: &dyn Fn(&[workspace_config::hosts::HostProfile]) -> bool| {
+            workspace_config::hosts::load_hosts().is_ok_and(|p| want(&p))
+        };
+        async fn until(cx: &mut AsyncApp, what: &str, ok: impl Fn() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !ok() {
+                if Instant::now() > deadline {
+                    fail(&format!("never saw: {what}"));
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+            }
+        }
+        palette(any, ws, cx, "add a host profile");
+        palette_more(any, ws, cx, "smoke-added");
+        palette_more(any, ws, cx, "me@smoke-dest");
+        for _ in 0..3 {
+            palette_more(any, ws, cx, "");
+        }
+        until(cx, "the added profile in hosts.yaml", || {
+            file_has(&|p| {
+                p.iter()
+                    .any(|h| h.name == "smoke-added" && h.destination == "me@smoke-dest")
+            })
+        })
+        .await;
+        // Edit: the form opens filled in; go to Tags and submit.
+        palette(any, ws, cx, "edit a host profile");
+        palette_more(any, ws, cx, "smoke-added");
+        wait_for(any, ws, cx, "the edit form", |w, _| {
+            matches!(
+                w.palette.as_ref().map(|p| &p.stage),
+                Some(crate::palette::Stage::Form(f)) if f.fields[1].1 == "me@smoke-dest"
+            )
+        })
+        .await;
+        let _ = cx.update_window(any, |_, window, cx| {
+            if let Some(ws) = ws.upgrade() {
+                ws.update(cx, |w, cx| {
+                    if let Some(p) = w.palette.as_mut() {
+                        p.move_selection(false);
+                        "lab".chars().for_each(|c| p.type_char(c));
+                    }
+                    w.palette_enter(window, cx);
+                });
+            }
+        });
+        until(cx, "the edited tags", || {
+            file_has(&|p| {
+                p.iter()
+                    .any(|h| h.name == "smoke-added" && h.tags == ["lab"])
+            })
+        })
+        .await;
+        palette(any, ws, cx, "remove a host profile");
+        palette_more(any, ws, cx, "smoke-added");
+        until(cx, "the profile removed", || {
+            file_has(&|p| !p.iter().any(|h| h.name == "smoke-added"))
+        })
+        .await;
+        let after = workspace_config::hosts::load_hosts().unwrap_or_default();
+        if after != original {
+            fail(&format!(
+                "other profiles changed: {original:?} -> {after:?}"
+            ));
+        }
+        println!(
+            "smoke: a host profile was added, edited, and removed from the palette ({})",
+            path.display()
+        );
     }
 
     /// Like `wait_for`, with its own limit (a host connects over SSH).
