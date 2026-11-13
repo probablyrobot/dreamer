@@ -46,6 +46,30 @@ exposes them to local clients through its API (`hosts.connect`,
 
 Remote daemons receive none of the local user's keys or grants.
 
+## First connection
+
+The coordinator's SSH never prompts (`BatchMode=yes`). A host whose key is
+not yet known, or whose key needs a passphrase that no agent holds, fails
+with `host_key` or `auth` and is not retried. The user answers SSH's
+questions in a visible connection instead:
+
+- `dream hosts verify NAME` runs the user's own `ssh -- DESTINATION true`
+  in the current terminal. SSH asks its usual questions there, and the
+  answers go into the user's own `known_hosts` and agent. On success it
+  asks the coordinator to reconnect; on failure SSH's message stays on
+  screen and the host stays as it was. `--wait` waits for Enter before
+  ending.
+- In the desktop, clicking such a host in the sidebar, or "Verify host in a
+  terminal…" in the palette, opens a local tmux window running that
+  command, so the prompt appears in an ordinary pane.
+
+Dreamer never accepts a host key for the user, never turns off host-key
+checking, and never stores a passphrase. A changed host key fails exactly
+as SSH reports it, with no option to bypass it. For the coordinator to keep
+connecting after a passphrase prompt, the key must stay available
+non-interactively, for example in an agent; that is the user's SSH
+configuration.
+
 ## Remote streams
 
 - **`hosts.subscribe`** follows a pane on a connected host. The reply and

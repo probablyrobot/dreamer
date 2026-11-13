@@ -79,6 +79,21 @@ pub fn command(ssh_program: &str, remote: &Remote, mode: Mode) -> Result<Vec<Str
     Ok(argv)
 }
 
+/// The argv for a visible first connection: the user's own `ssh` to the
+/// destination, in a terminal, running `true`. With a terminal, SSH asks
+/// its usual questions there (an unknown host key, a passphrase), and the
+/// answers go into the user's own `known_hosts` and agent. Nothing is
+/// answered or weakened for the user.
+pub fn verify_command(ssh_program: &str, destination: &str) -> Result<Vec<String>, SshError> {
+    check_destination(destination)?;
+    Ok(vec![
+        ssh_program.to_owned(),
+        "--".into(),
+        destination.to_owned(),
+        "true".into(),
+    ])
+}
+
 /// The one string sshd gives the remote shell.
 pub fn remote_command(remote: &Remote) -> Result<String, SshError> {
     let dream = remote.dream.as_deref().unwrap_or("dream");

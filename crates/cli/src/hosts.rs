@@ -21,6 +21,8 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         }
         ["connect", name, rest @ ..] => connect_host(d, name, "", rest),
         ["reconnect", name] => reconnect(d, name),
+        ["verify", name] => verify(name, false),
+        ["verify", name, "--wait"] => verify(name, true),
         ["list"] => list(false),
         ["list", "--json"] => list(true),
         ["disconnect", name] => disconnect(name),
@@ -36,6 +38,7 @@ pub const USAGE: &str = "usage:
                       [--remote-socket NAME | --remote-socket-path PATH]
                       [--auto-reconnect | --manual]
   dream hosts reconnect NAME
+  dream hosts verify NAME [--wait]
   dream hosts list [--json]
   dream hosts call NAME METHOD [JSON-PARAMS]
   dream hosts disconnect NAME";
@@ -91,6 +94,65 @@ fn connect_host(
 fn reconnect(d: &DaemonArgs, name: &str) -> Result<(), String> {
     rt()?.block_on(async {
         let mut c = session(d).await?;
+        match call(
+            &mut c,
+            Request::HostsReconnect(api::HostRef { name: name.into() }),
+        )
+        .await?
+        {
+            Response::HostsReconnect(s) => {
+                print_status(&s);
+                Ok(())
+            }
+            other => Err(format!("unexpected reply {other:?}")),
+        }
+    })
+}
+
+/// A visible first connection: the user's own `ssh` to the host in this
+/// terminal, so its questions (an unknown host key, a passphrase) are
+/// answered by the user. Then the coordinator connects. With `--wait`, wait
+/// for Enter before ending, so a window opened for this stays readable.
+fn verify(name: &str, wait: bool) -> Result<(), String> {
+    let result = verify_inner(name);
+    if let Err(e) = &result {
+        eprintln!("dream: {e}");
+    }
+    if wait {
+        println!("\nPress Enter to close.");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    }
+    result.map_err(|_| "verification did not complete".into())
+}
+
+fn verify_inner(name: &str) -> Result<(), String> {
+    let rt = rt()?;
+    let destination = rt.block_on(async {
+        let mut c = connect().await?;
+        let Response::HostsList(l) = call(&mut c, Request::HostsList(api::Empty {})).await? else {
+            return Err("unexpected reply".to_string());
+        };
+        l.hosts
+            .into_iter()
+            .find(|h| h.name == name)
+            .map(|h| h.destination)
+            .ok_or_else(|| format!("no host named `{name}`"))
+    })?;
+    let ssh = std::env::var("DREAMER_SSH").unwrap_or_else(|_| "ssh".into());
+    let argv = client::ssh::verify_command(&ssh, &destination).map_err(|e| e.to_string())?;
+    println!("Connecting to {destination} with your ssh.");
+    println!("Answer its questions here; Dreamer never answers them for you.\n");
+    let status = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .status()
+        .map_err(|e| format!("{}: {e}", argv[0]))?;
+    if !status.success() {
+        return Err(format!("ssh ended with {status}; `{name}` stays as it was"));
+    }
+    println!("\nSSH works. Connecting Dreamer to `{name}`…");
+    rt.block_on(async {
+        let mut c = connect().await?;
         match call(
             &mut c,
             Request::HostsReconnect(api::HostRef { name: name.into() }),
