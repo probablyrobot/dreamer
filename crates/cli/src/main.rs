@@ -26,6 +26,8 @@
 //!                                       the daemon's protocol over stdin/stdout (for SSH)
 //! dream hosts connect|list|call|disconnect ...
 //!                                       the local daemon's connections to other hosts
+//! dream service install [--no-start] [tmux options] | status | uninstall [--no-stop]
+//!                                       an optional per-user service for dreamerd
 //! dream --version
 //! ```
 
@@ -33,6 +35,7 @@ mod bridge;
 mod daemon;
 mod hosts;
 mod remote;
+mod service;
 
 use std::process::ExitCode;
 
@@ -62,6 +65,9 @@ const USAGE: &str = "usage:
   dream tier %PANE hot|warm
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream hosts connect|list|call|disconnect ... (see `dream hosts`)
+  dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
+  dream service status
+  dream service uninstall [--no-stop]
   dream --version";
 
 fn main() -> ExitCode {
@@ -119,6 +125,16 @@ fn main() -> ExitCode {
         ["hosts", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| hosts::run(&d, &extra))
         }
+        ["service", "install", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| match extra.as_slice() {
+                [] => service::install(&d.start, true),
+                [n] if n == "--no-start" => service::install(&d.start, false),
+                _ => Err(format!("unexpected arguments {extra:?}\n{USAGE}")),
+            })
+        }
+        ["service", "status"] => service::status(),
+        ["service", "uninstall"] => service::uninstall(true),
+        ["service", "uninstall", "--no-stop"] => service::uninstall(false),
         ["bridge", rest @ ..] => daemon::split_daemon_args(rest).and_then(|(d, extra)| {
             if extra == ["--stdio"] {
                 bridge::stdio(&d)

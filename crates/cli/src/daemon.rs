@@ -151,6 +151,16 @@ pub fn ensure(d: &DaemonArgs) -> Result<(), String> {
     })
 }
 
+/// Stop a running daemon, if any, saying nothing. tmux keeps running.
+pub fn shutdown_quietly() -> Result<(), String> {
+    rt()?.block_on(async {
+        if let Ok(c) = Client::connect(&platform::socket_path(), "cli").await {
+            let _ = c.call(Request::DaemonShutdown(api::Empty {})).await;
+        }
+        Ok(())
+    })
+}
+
 pub fn shutdown() -> Result<(), String> {
     rt()?.block_on(async {
         let mut c = match Client::connect(&platform::socket_path(), "cli").await {

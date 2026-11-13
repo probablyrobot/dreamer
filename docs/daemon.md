@@ -69,6 +69,47 @@ never loosens or takes over such a directory.
   then removes its socket and releases the lock. Actions left unfinished by
   a crash are settled at the next start (see [actions.md](actions.md)).
 
+## Running as a service
+
+The daemon needs no service: the desktop, `dream`, and the SSH bridge
+start it on demand, detached from whatever started it. An optional
+per-user service keeps it running from login, and through logout where
+the system ends a user's processes:
+
+| Command | Effect |
+| --- | --- |
+| `dream service install [tmux options]` | Write the definition, stop a daemon started on demand (tmux keeps running), and load it. The commands are printed before they run |
+| `dream service install --no-start` | Write the definition only |
+| `dream service status` | Whether it is installed, and whether the service manager has it running |
+| `dream service uninstall [--no-stop]` | Unload it (unless `--no-stop`) and remove exactly the file `install` wrote |
+
+| Platform | Definition | Loaded with |
+| --- | --- | --- |
+| Linux | `~/.config/systemd/user/dreamerd.service` (or under `$XDG_CONFIG_HOME`) | `systemctl --user daemon-reload`, `systemctl --user enable --now dreamerd.service` |
+| macOS | `~/Library/LaunchAgents/dev.dreamer.dreamerd.plist`, logging to `~/Library/Logs/dreamer/dreamerd.log` | `launchctl bootstrap gui/<uid> <plist>` |
+
+Both run `dreamerd` in the foreground, as the `dreamerd` next to `dream`,
+with the tmux options given, and restart it if it fails. Nothing else is
+written. Without systemd, `install` says so; the daemon still starts on
+demand.
+
+### Survival policy
+
+- **SSH disconnect:** a daemon started by `dream bridge --stdio` is
+  detached into its own session. Ending the SSH connection sends it no
+  hangup, and its tmux and programs keep running.
+- **Logout on Linux:** with systemd-logind's `KillUserProcesses=yes`, which
+  is the default on some distributions, logging out ends every process of
+  the user, including a detached daemon and the tmux server. To keep work
+  running after the last session ends, enable lingering
+  (`loginctl enable-linger`) and install the service. With
+  `KillUserProcesses=no` nothing is needed.
+- **macOS:** a launch agent runs in the user's GUI session, from login to
+  logout. A daemon started over SSH lives until it is stopped or the machine
+  restarts.
+- **Daemon stop:** stopping the daemon, by any means, never stops tmux.
+  Sessions and panes keep running, and the next start reattaches.
+
 ## Settings
 
 | Variable | Effect |
