@@ -123,6 +123,30 @@ down, and requires the pane to read exactly `ESC[<0;4;2M ESC[<0;4;2m
 ESC[<65;4;2M`. The events go through GPUI's own event dispatch to the
 window's mouse listeners.
 
+## Hyperlinks
+
+OSC 8 links are hit-tested on the replica. A link is never opened because
+of terminal output alone.
+
+- **Hover:** with the open modifier held (Cmd on macOS, Ctrl on Linux),
+  the link under the pointer is underlined across all its cells,
+  including where it wraps onto the next row. The pointer becomes a hand.
+- **Open:** a modifier-click opens the link. A plain click never does:
+  it selects, or goes to a program that tracks the mouse.
+- **Schemes:** only allowed schemes open: `http`, `https`, and `mailto`
+  unless `links.schemes` says otherwise (see `docs/settings.md`). Any
+  other scheme is refused, and a notice at the bottom of the grid shows
+  the refused link for four seconds.
+
+The input smoke checks this after the selection step:
+- it prints an OSC 8 link;
+- it clicks the link plainly and requires nothing to open;
+- it hovers with the open modifier and requires the underline to cover
+  exactly the link's cells;
+- it modifier-clicks and requires exactly that URI to open.
+
+In smoke mode, an open is recorded instead of launching a browser.
+
 ## Delivery
 
 Encoded bytes reach the pane through tmux's literal-byte path

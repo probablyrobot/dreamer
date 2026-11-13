@@ -10,6 +10,8 @@ font:
   family: JetBrainsMono Nerd Font Mono   # default
   size: 13                               # points; 6 to 72
   line_height: 1.2                       # multiple of the size; 0.8 to 3.0
+links:
+  schemes: [http, https, mailto]         # default
 ```
 
 ## Font
@@ -32,3 +34,10 @@ never substitutes silently.
 An unknown key or an out-of-range value is reported with the file, line,
 and column, and Dreamer then runs with the defaults. A typo never quietly
 changes behavior.
+
+## Links
+
+`links.schemes` lists the URI schemes a Cmd-click (macOS) or Ctrl-click
+(Linux) on a terminal hyperlink may open. Names are case-insensitive and
+written without the colon. Any other scheme, such as `file`, is refused
+with a notice. An empty list opens nothing.

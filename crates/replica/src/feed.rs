@@ -28,6 +28,7 @@ use crate::{FollowError, FollowState, Follower, RetryPolicy};
 pub const HOLD_LIMIT: Duration = Duration::from_secs(1);
 
 pub use terminal_ghostty::Scroll;
+pub use terminal_ghostty::links::Link;
 pub use terminal_ghostty::selection::{CellPos, SelectEvent};
 
 /// How often a drag held past an edge scrolls one row.
@@ -44,6 +45,12 @@ pub enum ViewCommand {
     ClearSelection,
     /// The selected text, if any.
     Copy(tokio::sync::oneshot::Sender<Option<String>>),
+    /// The hyperlink at a viewport cell, if any.
+    Link {
+        col: u16,
+        row: u16,
+        reply: tokio::sync::oneshot::Sender<Option<Link>>,
+    },
 }
 
 /// Where a feed stands, for the view to show honestly.
@@ -161,6 +168,14 @@ impl Feed {
 
     /// The selected text (wrapped lines joined, trailing blanks trimmed),
     /// asked of the owner thread; never of the daemon.
+    /// The OSC 8 link at a viewport cell and the cells it covers, asked of
+    /// the owner thread. Hit testing only: opening is the caller's choice.
+    pub async fn link_at(&self, col: u16, row: u16) -> Option<Link> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.view(ViewCommand::Link { col, row, reply });
+        rx.await.ok().flatten()
+    }
+
     pub async fn selection_text(&self) -> Option<String> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.view(ViewCommand::Copy(tx));
@@ -335,8 +350,10 @@ impl Owner {
     fn view(&self, f: &mut Follower, command: ViewCommand, autoscroll: &mut Option<CellPos>) {
         use terminal_ghostty::selection::Autoscroll;
         let Some(Ok(before)) = f.frame() else {
-            if let ViewCommand::Copy(reply) = command {
-                let _ = reply.send(None);
+            match command {
+                ViewCommand::Copy(reply) => drop(reply.send(None)),
+                ViewCommand::Link { reply, .. } => drop(reply.send(None)),
+                _ => {}
             }
             return;
         };
@@ -364,6 +381,10 @@ impl Owner {
             ViewCommand::ClearSelection => engine.clear_selection().is_ok(),
             ViewCommand::Copy(reply) => {
                 let _ = reply.send(engine.selection_text().ok().flatten());
+                false
+            }
+            ViewCommand::Link { col, row, reply } => {
+                let _ = reply.send(engine.link_at(col, row).ok().flatten());
                 false
             }
         };
