@@ -708,3 +708,104 @@ async fn an_incompatible_host_is_refused_in_the_handshake_and_an_upgrade_fixes_i
         Some(wire::Identity::current("test").build_family)
     );
 }
+
+async fn connect_devbox(two: &Two, c: &Client) -> api::HostStatus {
+    let Response::HostsConnect(s) = c
+        .call(Request::HostsConnect(api::HostConnect {
+            name: "devbox".into(),
+            destination: "devbox".into(),
+            dream: Some(
+                PathBuf::from(EXE)
+                    .with_file_name("dream")
+                    .display()
+                    .to_string(),
+            ),
+            tmux: Some(tmux_program().display().to_string()),
+            tmux_socket: Some(two.far.socket().into()),
+            tmux_socket_path: None,
+            auto_reconnect: Some(true),
+        }))
+        .await
+        .expect("connect")
+    else {
+        panic!("connect");
+    };
+    s
+}
+
+async fn subscribe_devbox(c: &Client) -> api::Subscription {
+    let Response::HostsSubscribe(s) = c
+        .call(Request::HostsSubscribe(api::HostSubscribe {
+            name: "devbox".into(),
+            subscribe: Some(api::TerminalSubscribe {
+                pane: 0,
+                ..api::TerminalSubscribe::default()
+            }),
+        }))
+        .await
+        .expect("subscribe")
+    else {
+        panic!("subscribe");
+    };
+    s
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_link_outlives_every_local_client_and_ssh_cuts_find_the_same_daemon() {
+    let two = Two::new();
+    // A client (the GUI) connects the host and follows a pane, then goes
+    // away entirely.
+    let first = {
+        let mut c = two.client().await;
+        let mut rx = c.pushed().expect("pushed");
+        let s = connect_devbox(&two, &c).await;
+        let sub = subscribe_devbox(&c).await;
+        let mut replica = Replica::new(0);
+        replica.begin(&sub).expect("begin");
+        let mut seen = Seen::default();
+        two.type_far("echo first-$((1+1))");
+        pump(&mut rx, &mut replica, &mut seen, "first-2", |r, _| {
+            r.text().contains("\nfirst-2")
+        })
+        .await;
+        (s.remote_instance.clone(), sub.epoch)
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The pane keeps working with no client at all.
+    two.type_far("echo unseen-$((2+3))");
+
+    // A new client finds the host still live on the same link, and the
+    // remote mirror still in its first epoch: nothing was recaptured.
+    let mut c = two.client().await;
+    let mut rx = c.pushed().expect("pushed");
+    let s = host_state(&c).await;
+    assert_eq!(s.state, api::LinkState::Live as i32, "{s:?}");
+    assert_eq!(s.remote_instance, first.0);
+    let sub = subscribe_devbox(&c).await;
+    assert_eq!(sub.epoch, first.1, "the remote mirror was recaptured");
+    let mut replica = Replica::new(0);
+    replica.begin(&sub).expect("begin");
+    let mut seen = Seen::default();
+    pump(&mut rx, &mut replica, &mut seen, "unseen-5", |r, _| {
+        r.text().contains("\nunseen-5")
+    })
+    .await;
+
+    // SSH cut. Output typed after it can only arrive over a new link, and
+    // that link reaches the very same remote daemon.
+    two.cut_ssh();
+    two.type_far("echo after-$((3+4))");
+    pump(
+        &mut rx,
+        &mut replica,
+        &mut seen,
+        "after-7 through the resumed relay",
+        |r, _| r.text().contains("\nafter-7"),
+    )
+    .await;
+    let s = host_state(&c).await;
+    assert_eq!(s.state, api::LinkState::Live as i32, "{s:?}");
+    assert_eq!(s.remote_instance, first.0, "a different remote daemon");
+    assert!(seen.ends.is_empty(), "{:?}", seen.ends);
+}
