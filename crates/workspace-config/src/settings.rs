@@ -132,8 +132,10 @@ pub struct FontSettings {
     pub family: String,
     /// Points (logical pixels).
     pub size: f32,
-    /// Multiple of the font size.
+    /// Multiple of the font's own line height (ascent plus descent).
     pub line_height: f32,
+    /// Logical pixels added to every cell's width; negative tightens.
+    pub letter_spacing: f32,
 }
 
 impl Default for Settings {
@@ -143,6 +145,7 @@ impl Default for Settings {
                 family: DEFAULT_FONT_FAMILY.into(),
                 size: DEFAULT_FONT_SIZE,
                 line_height: DEFAULT_LINE_HEIGHT,
+                letter_spacing: 0.0,
             },
             links: LinkSettings {
                 schemes: DEFAULT_LINK_SCHEMES.map(String::from).to_vec(),
@@ -210,6 +213,7 @@ struct FontFile {
     family: Option<String>,
     size: Option<f32>,
     line_height: Option<f32>,
+    letter_spacing: Option<f32>,
 }
 
 /// `<config dir>/dreamer.yaml`.
@@ -268,6 +272,16 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
             ));
         }
         s.font.line_height = lh;
+    }
+    if let Some(ls) = file.font.letter_spacing {
+        if !(-3.0..=10.0).contains(&ls) {
+            return Err(error(
+                origin,
+                "font.letter_spacing",
+                format!("{ls} is outside -3 to 10 pixels"),
+            ));
+        }
+        s.font.letter_spacing = ls;
     }
     if let Some(schemes) = file.links.schemes {
         let valid = |x: &str| {
@@ -382,6 +396,10 @@ mod tests {
         assert!(e.message.contains("sise"), "{e}");
         let e = parse_settings("font: { size: 200 }", None).expect_err("range");
         assert_eq!(e.at, "font.size");
+        let s = parse_settings("font: { letter_spacing: -0.5 }", None).expect("tighter");
+        assert_eq!(s.font.letter_spacing, -0.5);
+        let e = parse_settings("font: { letter_spacing: -8 }", None).expect_err("range");
+        assert_eq!(e.at, "font.letter_spacing");
         assert!(parse_settings("font: { family: '  ' }", None).is_err());
         assert!(parse_settings("colors: {}", None).is_err());
         let e = parse_settings("links: { schemes: ['https:'] }", None).expect_err("scheme");

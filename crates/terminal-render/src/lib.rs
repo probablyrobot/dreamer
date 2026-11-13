@@ -24,7 +24,20 @@ use terminal_core::{
     Attrs, Cell, CellWidth, Color, Colors, CursorShape, FrameSnapshot, Rgb, Underline,
 };
 
-/// Canonical cell geometry in logical pixels, snapped to device pixels.
+/// How far apart cells sit, beyond what the font itself asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spacing {
+    /// Multiple of the font's own line height (ascent plus descent).
+    pub line_height: f32,
+    /// Logical pixels added to (or, negative, taken from) every cell's
+    /// width.
+    pub letter_spacing: f32,
+}
+
+/// Canonical cell geometry in logical pixels. Rows are snapped to device
+/// pixels, because glyphs have no vertical subpixel positions; the width
+/// is the font's exact advance, because they do have horizontal ones, and
+/// rounding it would spread or squeeze every line of text.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CellMetrics {
     pub width: Pixels,
@@ -33,13 +46,14 @@ pub struct CellMetrics {
     pub ascent: Pixels,
 }
 
-/// Derive cell metrics from a font. The width is the advance of `M`; the
-/// height is the font's line height times `line_height`.
+/// Derive cell metrics from a font. The width is the advance of `M` plus
+/// the letter spacing; the height is the font's line height times
+/// `line_height`.
 pub fn cell_metrics(
     window: &Window,
     font: &Font,
     font_size: Pixels,
-    line_height: f32,
+    spacing: Spacing,
 ) -> CellMetrics {
     let ts = window.text_system();
     let id = ts.resolve_font(font);
@@ -52,11 +66,11 @@ pub fn cell_metrics(
     let natural = ascent + descent.abs();
     let scale = window.scale_factor();
     let snap = |p: Pixels| px((f32::from(p) * scale).round() / scale);
-    let height = snap(natural * line_height);
+    let height = snap(natural * spacing.line_height);
     // Center the natural line box inside the (possibly taller) cell.
     let ascent = snap(ascent + (height - natural) / 2.0);
     CellMetrics {
-        width: snap(width),
+        width: (width + px(spacing.letter_spacing)).max(px(1.0)),
         height,
         ascent,
     }
@@ -68,7 +82,7 @@ pub struct TerminalElement {
     pub frame: Arc<FrameSnapshot>,
     pub font: Font,
     pub font_size: Pixels,
-    pub line_height: f32,
+    pub spacing: Spacing,
 }
 
 /// Counts from the last paint, for diagnostics and smoke evidence.
@@ -117,7 +131,7 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Layout) {
-        let metrics = cell_metrics(window, &self.font, self.font_size, self.line_height);
+        let metrics = cell_metrics(window, &self.font, self.font_size, self.spacing);
         let mut style = Style::default();
         style.size.width = (metrics.width * f32::from(self.frame.size.cols)).into();
         style.size.height = (metrics.height * f32::from(self.frame.size.rows)).into();
@@ -556,6 +570,19 @@ fn paint_frame(
     let frame = &el.frame;
     let colors = &frame.colors;
     let origin = bounds.origin;
+    // Column edges on device pixels, so neighbouring backgrounds meet
+    // without a blended seam even when the cell width is fractional.
+    let scale = window.scale_factor();
+    let col_x = |col: usize| {
+        let x = origin.x + m.width * col as f32;
+        px((f32::from(x) * scale).round() / scale)
+    };
+    let span = |start: usize, end: usize, top: Pixels| {
+        Bounds::new(
+            point(col_x(start), top),
+            size(col_x(end) - col_x(start), m.height),
+        )
+    };
     window.paint_quad(fill(bounds, hsla(colors.background)));
 
     // Layer order (spec 9.3): default background, images below cell
@@ -582,11 +609,7 @@ fn paint_frame(
                 x += 1;
             }
             if let Some(bg) = bg {
-                let rect = Bounds::new(
-                    point(origin.x + m.width * start as f32, top),
-                    size(m.width * (x - start) as f32, m.height),
-                );
-                window.paint_quad(fill(rect, bg));
+                window.paint_quad(fill(span(start, x, top), bg));
                 stats.background_quads += 1;
             }
         }
@@ -598,10 +621,7 @@ fn paint_frame(
         // Selection: over backgrounds, under text. View state only; the
         // cells themselves are never changed.
         for sel in frame.selection.iter().filter(|s| usize::from(s.row) == y) {
-            let rect = Bounds::new(
-                point(origin.x + m.width * f32::from(sel.start), top),
-                size(m.width * f32::from(sel.end - sel.start + 1), m.height),
-            );
+            let rect = span(usize::from(sel.start), usize::from(sel.end) + 1, top);
             window.paint_quad(fill(rect, SELECTION));
         }
 

@@ -1165,12 +1165,7 @@ impl Render for Workspace {
         self.sync_title(window, cx);
         let t = *crate::theme::for_window(window);
         let tf = term_font();
-        let m = cell_metrics(
-            window,
-            &font(tf.family.clone()),
-            px(tf.size),
-            tf.line_height,
-        );
+        let m = cell_metrics(window, &font(tf.family.clone()), px(tf.size), tf.spacing());
         let entity = cx.entity();
 
         // Tabs: the session's windows by index.

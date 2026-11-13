@@ -91,7 +91,17 @@ struct TermFont {
     family: String,
     size: f32,
     line_height: f32,
+    letter_spacing: f32,
     source: String,
+}
+
+impl TermFont {
+    fn spacing(&self) -> terminal_render::Spacing {
+        terminal_render::Spacing {
+            line_height: self.line_height,
+            letter_spacing: self.letter_spacing,
+        }
+    }
 }
 
 static TERM_FONT: std::sync::OnceLock<TermFont> = std::sync::OnceLock::new();
@@ -116,6 +126,7 @@ fn term_font() -> TermFont {
             family: d.font.family,
             size: d.font.size,
             line_height: d.font.line_height,
+            letter_spacing: d.font.letter_spacing,
             source: "defaults".into(),
         }
     })
@@ -530,12 +541,7 @@ impl Shell {
     /// The terminal cursor's cell, relative to the terminal's origin.
     fn cursor_cell(&self, window: &mut Window) -> Bounds<Pixels> {
         let tf = term_font();
-        let m = cell_metrics(
-            window,
-            &font(tf.family.clone()),
-            px(tf.size),
-            tf.line_height,
-        );
+        let m = cell_metrics(window, &font(tf.family.clone()), px(tf.size), tf.spacing());
         let c = self.frame.cursor;
         Bounds::new(
             point(m.width * f32::from(c.x), m.height * f32::from(c.y)),
@@ -639,7 +645,7 @@ impl Shell {
     fn report_frame(window: &mut Window) {
         let tf = term_font();
         let terminal_font = font(tf.family.clone());
-        let metrics = cell_metrics(window, &terminal_font, px(tf.size), tf.line_height);
+        let metrics = cell_metrics(window, &terminal_font, px(tf.size), tf.spacing());
         println!(
             "smoke: font {} {}pt x{} ({})",
             tf.family, tf.size, tf.line_height, tf.source
@@ -730,12 +736,7 @@ impl Render for Shell {
             .flat_map(|l| l.cells.iter())
             .map(|c| {
                 let tf = term_font();
-                let m = cell_metrics(
-                    window,
-                    &font(tf.family.clone()),
-                    px(tf.size),
-                    tf.line_height,
-                );
+                let m = cell_metrics(window, &font(tf.family.clone()), px(tf.size), tf.spacing());
                 div()
                     .absolute()
                     .left(m.width * f32::from(c.start))
@@ -796,7 +797,7 @@ impl Render for Shell {
                         frame: Arc::clone(&self.frame),
                         font: font(term.family.clone()),
                         font_size: px(term.size),
-                        line_height: term.line_height,
+                        spacing: term.spacing(),
                     })
                     .children(preedit)
                     .children(scrolled)
@@ -819,7 +820,7 @@ impl Render for Shell {
                                     window,
                                     &font(tf.family.clone()),
                                     px(tf.size),
-                                    tf.line_height,
+                                    tf.spacing(),
                                 );
                                 let grid = input::Grid {
                                     origin: bounds.origin,
@@ -1102,6 +1103,7 @@ fn main() -> ExitCode {
             family: chosen.family,
             size: settings.font.size,
             line_height: settings.font.line_height,
+            letter_spacing: settings.font.letter_spacing,
             source: chosen.source,
         });
         if workspace_mode {
