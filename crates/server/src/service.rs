@@ -781,6 +781,10 @@ impl api::Service for DaemonService {
         crate::install::install(&p.name, &remote, p.artifacts.as_deref(), &p.plan_id).await
     }
 
+    async fn hosts_upgrade(&self, p: api::UpgradeParams) -> Result<api::UpgradeResult, RpcError> {
+        self.0.hosts.upgrade(p).await
+    }
+
     async fn hosts_call(&self, p: api::HostCall) -> Result<api::HostReply, RpcError> {
         self.0.hosts.call(p).await
     }

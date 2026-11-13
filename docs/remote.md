@@ -112,6 +112,31 @@ a host that failed as `not_installed` or `incompatible` says "click to
 install"; the click, or "Install or update the server on a host…" in the
 palette, opens a local tmux window running that command.
 
+## Upgrading a server
+
+`hosts.upgrade` installs the reviewed plan, then restarts the host's
+daemon on it:
+
+1. Install as above.
+2. Ask the running daemon to shut down through the link. Its tmux
+   sessions, panes, and programs keep running.
+3. Reconnect: the bridge starts the new version.
+
+This is a restart, not a handover. Relayed subscriptions end with
+`host_restarted`, and views start again from fresh checkpoints. The
+result says so, with the daemon's process ID before and after.
+
+- **Same version:** if the same version is installed and running, nothing
+  changes.
+- **Older version:** if the host has a newer version than this one, the
+  upgrade is refused unless `allow_older` is set
+  (`dream hosts upgrade NAME --allow-older`).
+
+`dream hosts upgrade NAME [--artifacts DIR] [--yes] [--allow-older]` shows
+the plan plus the restart step and asks first. The desktop's "Install or
+update the server on a host…", and its "click to install" on a host,
+run `dream hosts upgrade NAME`, which installs where nothing is installed.
+
 ## Remote streams
 
 - **`hosts.subscribe`** follows a pane on a connected host. The reply and

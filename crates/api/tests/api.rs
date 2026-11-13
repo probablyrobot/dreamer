@@ -180,6 +180,9 @@ impl Service for Fixed {
     async fn hosts_install(&self, _: api::InstallParams) -> Result<api::InstallResult, RpcError> {
         Ok(api::InstallResult::default())
     }
+    async fn hosts_upgrade(&self, _: api::UpgradeParams) -> Result<api::UpgradeResult, RpcError> {
+        Ok(api::UpgradeResult::default())
+    }
     async fn hosts_call(&self, _: api::HostCall) -> Result<api::HostReply, RpcError> {
         Ok(api::HostReply::default())
     }

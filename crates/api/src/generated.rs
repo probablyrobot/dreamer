@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 17;
+pub const PROTOCOL_MINOR: u32 = 18;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1630,6 +1630,45 @@ pub struct InstallResult {
     pub check: String,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpgradeParams {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<String>,
+    /// The id of the reviewed install plan.
+    #[prost(string, tag = "3")]
+    pub plan_id: String,
+    /// Install even when the host has a newer version.
+    #[prost(bool, tag = "4")]
+    pub allow_older: bool,
+}
+
+/// An upgrade is a restart of the host's daemon, not a handover: its tmux sessions and panes keep running, but views of them start again from fresh checkpoints.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpgradeResult {
+    /// The version installed before, if any.
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[prost(string, tag = "2")]
+    pub to: String,
+    /// The host's daemon was restarted on the new version.
+    #[prost(bool, tag = "3")]
+    pub restarted: bool,
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid_before: Option<u32>,
+    #[prost(uint32, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid_after: Option<u32>,
+    #[prost(string, tag = "6")]
+    pub note: String,
+}
+
 /// The remote daemon's result for a HostCall, as Protobuf.
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
@@ -1664,6 +1703,7 @@ pub mod method {
     pub const HOSTS_WATCH: &str = "hosts.watch";
     pub const HOSTS_INSTALL_PLAN: &str = "hosts.install_plan";
     pub const HOSTS_INSTALL: &str = "hosts.install";
+    pub const HOSTS_UPGRADE: &str = "hosts.upgrade";
     pub const HOSTS_CALL: &str = "hosts.call";
 }
 
@@ -1839,6 +1879,13 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "Install the reviewed plan: stream the archive, verify its SHA-256 on the host, unpack into a versioned directory, switch atomically.",
     },
     MethodInfo {
+        name: "hosts.upgrade",
+        params: "UpgradeParams",
+        result: "UpgradeResult",
+        mutation: true,
+        doc: "Install the reviewed plan, restart the host's daemon on it (tmux keeps running), and reconnect.",
+    },
+    MethodInfo {
         name: "hosts.call",
         params: "HostCall",
         result: "HostReply",
@@ -1873,6 +1920,7 @@ pub enum Request {
     HostsWatch(HostRef),
     HostsInstallPlan(InstallPlanParams),
     HostsInstall(InstallParams),
+    HostsUpgrade(UpgradeParams),
     HostsCall(HostCall),
 }
 
@@ -1902,6 +1950,7 @@ impl Request {
             Self::HostsWatch(_) => "hosts.watch",
             Self::HostsInstallPlan(_) => "hosts.install_plan",
             Self::HostsInstall(_) => "hosts.install",
+            Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
         }
     }
@@ -1932,6 +1981,7 @@ impl Request {
             Self::HostsWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsInstallPlan(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -1963,6 +2013,7 @@ impl Request {
             "hosts.watch" => Ok(Self::HostsWatch(::prost::Message::decode(bytes)?)),
             "hosts.install_plan" => Ok(Self::HostsInstallPlan(::prost::Message::decode(bytes)?)),
             "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
+            "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -1993,6 +2044,7 @@ impl Request {
             Self::HostsWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsInstallPlan(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2022,6 +2074,7 @@ impl Request {
             "hosts.watch" => Ok(Self::HostsWatch(serde_json::from_value(value)?)),
             "hosts.install_plan" => Ok(Self::HostsInstallPlan(serde_json::from_value(value)?)),
             "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
+            "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2054,6 +2107,7 @@ pub enum Response {
     HostsWatch(TopologyUpdate),
     HostsInstallPlan(InstallPlan),
     HostsInstall(InstallResult),
+    HostsUpgrade(UpgradeResult),
     HostsCall(HostReply),
 }
 
@@ -2083,6 +2137,7 @@ impl Response {
             Self::HostsWatch(_) => "hosts.watch",
             Self::HostsInstallPlan(_) => "hosts.install_plan",
             Self::HostsInstall(_) => "hosts.install",
+            Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
         }
     }
@@ -2113,6 +2168,7 @@ impl Response {
             Self::HostsWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsInstallPlan(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2144,6 +2200,7 @@ impl Response {
             "hosts.watch" => Ok(Self::HostsWatch(::prost::Message::decode(bytes)?)),
             "hosts.install_plan" => Ok(Self::HostsInstallPlan(::prost::Message::decode(bytes)?)),
             "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
+            "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2174,6 +2231,7 @@ impl Response {
             Self::HostsWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsInstallPlan(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2203,6 +2261,7 @@ impl Response {
             "hosts.watch" => Ok(Self::HostsWatch(serde_json::from_value(value)?)),
             "hosts.install_plan" => Ok(Self::HostsInstallPlan(serde_json::from_value(value)?)),
             "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
+            "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2324,6 +2383,11 @@ pub trait Service: Sync {
         &self,
         params: InstallParams,
     ) -> impl ::core::future::Future<Output = Result<InstallResult, RpcError>> + Send;
+    /// Install the reviewed plan, restart the host's daemon on it (tmux keeps running), and reconnect.
+    fn hosts_upgrade(
+        &self,
+        params: UpgradeParams,
+    ) -> impl ::core::future::Future<Output = Result<UpgradeResult, RpcError>> + Send;
     /// Forward one typed call to a connected host's daemon.
     fn hosts_call(
         &self,
@@ -2387,6 +2451,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .await
             .map(Response::HostsInstallPlan),
         Request::HostsInstall(p) => service.hosts_install(p).await.map(Response::HostsInstall),
+        Request::HostsUpgrade(p) => service.hosts_upgrade(p).await.map(Response::HostsUpgrade),
         Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
     }
 }

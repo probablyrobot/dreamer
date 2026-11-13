@@ -411,3 +411,244 @@ async fn a_hosts_topology_follows_changes_across_a_reconnect() {
     let b = next_with(&mut rx, a.revision, "beta").await;
     assert!(b.revision > a.revision);
 }
+
+/// Make the stand-in host a Linux x86-64 machine with its own home, with
+/// version `old` installed, and server archives for this version in
+/// `artifacts`. Every installed `dream` runs the real one.
+fn fake_host_with(two: &Two, old: &str) -> PathBuf {
+    let root = &two.root;
+    let home = root.join("far/home");
+    let fakebin = root.join("far/fakebin");
+    std::fs::create_dir_all(&fakebin).expect("dirs");
+    let write_exe = |path: &std::path::Path, body: &str| {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        std::fs::write(path, body).expect("write");
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("chmod");
+    };
+    write_exe(
+        &fakebin.join("uname"),
+        "#!/bin/sh\ncase \"$1\" in -s) echo Linux;; -m) echo x86_64;; esac\n",
+    );
+    let dream = PathBuf::from(EXE).with_file_name("dream");
+    let wrapper = format!("#!/bin/sh\nexec '{}' \"$@\"\n", dream.display());
+    let base = home.join(".local/share/dreamer");
+    write_exe(&base.join(format!("versions/{old}/bin/dream")), &wrapper);
+    std::fs::write(
+        base.join(format!("versions/{old}/VERSION")),
+        format!("version {old}\n"),
+    )
+    .expect("VERSION");
+    let _ = std::fs::remove_file(base.join("current"));
+    std::os::unix::fs::symlink(format!("versions/{old}"), base.join("current")).expect("link");
+    // The stand-in ssh, now with the host's home and uname.
+    write_exe(
+        &root.join("ssh"),
+        &format!(
+            r#"#!/bin/sh
+while [ "$1" != -- ]; do shift; done
+echo $$ > '{pid}'
+export HOME='{home}' PATH='{fakebin}':"$PATH"
+export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
+export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
+exec /bin/sh -c "exec $3"
+"#,
+            pid = root.join("bridge-pid").display(),
+            home = home.display(),
+            fakebin = fakebin.display(),
+            rt = root.join("far/rt").display(),
+            st = root.join("far/st").display(),
+            daemon = EXE,
+        ),
+    );
+    // This version's archive for the host.
+    let version = env!("CARGO_PKG_VERSION");
+    let artifacts = root.join("artifacts");
+    let name = format!("dreamer-server-{version}-x86_64-unknown-linux-gnu");
+    let stage = artifacts.join("stage").join(&name);
+    write_exe(&stage.join("bin/dream"), &wrapper);
+    std::fs::write(stage.join("VERSION"), format!("version {version}\n")).expect("VERSION");
+    let tarball = artifacts.join(format!("{name}.tar.gz"));
+    assert!(
+        Command::new("tar")
+            .arg("-C")
+            .arg(artifacts.join("stage"))
+            .arg("-czf")
+            .arg(&tarball)
+            .arg(&name)
+            .status()
+            .expect("tar")
+            .success()
+    );
+    let out = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(&tarball)
+        .output()
+        .or_else(|_| Command::new("sha256sum").arg(&tarball).output())
+        .expect("sha256");
+    let sum = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .expect("sum")
+        .to_owned();
+    std::fs::write(
+        artifacts.join(format!("{name}.tar.gz.sha256")),
+        format!("{sum}  {name}.tar.gz\n"),
+    )
+    .expect("sha file");
+    artifacts
+}
+
+async fn plan_id(c: &Client, artifacts: &std::path::Path) -> String {
+    let Response::HostsInstallPlan(p) = c
+        .call(Request::HostsInstallPlan(api::InstallPlanParams {
+            name: "devbox".into(),
+            artifacts: Some(artifacts.display().to_string()),
+        }))
+        .await
+        .expect("plan")
+    else {
+        panic!("plan");
+    };
+    assert_eq!(p.target, "x86_64-unknown-linux-gnu");
+    p.plan_id
+}
+
+async fn upgrade(
+    c: &Client,
+    artifacts: &std::path::Path,
+    allow_older: bool,
+) -> Result<api::UpgradeResult, client::ClientError> {
+    let plan_id = plan_id(c, artifacts).await;
+    match c
+        .call(Request::HostsUpgrade(api::UpgradeParams {
+            name: "devbox".into(),
+            artifacts: Some(artifacts.display().to_string()),
+            plan_id,
+            allow_older,
+        }))
+        .await?
+    {
+        Response::HostsUpgrade(r) => Ok(r),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_upgrade_restarts_the_hosts_daemon_and_views_recover_from_a_checkpoint() {
+    let two = Two::new();
+    let artifacts = fake_host_with(&two, "0.0.9");
+    let mut c = two.client().await;
+    let mut rx = c.pushed().expect("pushed");
+    let Response::HostsConnect(s) = c
+        .call(Request::HostsConnect(api::HostConnect {
+            name: "devbox".into(),
+            destination: "devbox".into(),
+            // No dream: the installed one is used.
+            dream: None,
+            tmux: Some(tmux_program().display().to_string()),
+            tmux_socket: Some(two.far.socket().into()),
+            tmux_socket_path: None,
+            auto_reconnect: Some(true),
+        }))
+        .await
+        .expect("connect")
+    else {
+        panic!("connect");
+    };
+    let pid_before = s.remote_pid.expect("remote pid");
+
+    let Response::HostsSubscribe(sub) = c
+        .call(Request::HostsSubscribe(api::HostSubscribe {
+            name: "devbox".into(),
+            subscribe: Some(api::TerminalSubscribe {
+                pane: 0,
+                ..api::TerminalSubscribe::default()
+            }),
+        }))
+        .await
+        .expect("subscribe")
+    else {
+        panic!("subscribe");
+    };
+    let mut replica = Replica::new(0);
+    replica.begin(&sub).expect("begin");
+    let mut seen = Seen::default();
+    two.type_far("echo before-$((40+2))");
+    pump(
+        &mut rx,
+        &mut replica,
+        &mut seen,
+        "showed before-42",
+        |r, _| r.text().contains("\nbefore-42"),
+    )
+    .await;
+
+    let r = upgrade(&c, &artifacts, false).await.expect("upgrade");
+    assert!(r.restarted, "{r:?}");
+    assert_eq!(r.from.as_deref(), Some("0.0.9"));
+    assert_eq!(r.to, env!("CARGO_PKG_VERSION"));
+    assert!(r.note.contains("restarted"), "{}", r.note);
+    assert_eq!(r.pid_before, Some(pid_before));
+    assert!(r.pid_after.is_some_and(|p| p != pid_before), "{r:?}");
+
+    // The view's relay says the daemon restarted; the pane kept running.
+    pump(
+        &mut rx,
+        &mut replica,
+        &mut seen,
+        "the relay ended",
+        |_, s| !s.ends.is_empty(),
+    )
+    .await;
+    assert_eq!(seen.ends[0].reason, api::EndReason::HostRestarted as i32);
+    two.far
+        .run_checked(&["has-session", "-t", "main"])
+        .expect("the remote tmux kept running");
+    // Following again starts from a fresh checkpoint that still shows it.
+    let Response::HostsSubscribe(again) = c
+        .call(Request::HostsSubscribe(api::HostSubscribe {
+            name: "devbox".into(),
+            subscribe: Some(api::TerminalSubscribe {
+                pane: 0,
+                ..api::TerminalSubscribe::default()
+            }),
+        }))
+        .await
+        .expect("subscribe again")
+    else {
+        panic!("subscribe");
+    };
+    assert_eq!(again.mode, api::SubscribeMode::Checkpoint as i32);
+    let mut fresh = Replica::new(0);
+    fresh.begin(&again).expect("begin");
+    let before = seen.checkpoints;
+    pump(
+        &mut rx,
+        &mut fresh,
+        &mut seen,
+        "a fresh checkpoint",
+        |r, s| s.checkpoints > before && r.text().contains("\nbefore-42"),
+    )
+    .await;
+
+    // The same version again: nothing happens.
+    let r = upgrade(&c, &artifacts, false).await.expect("no-op");
+    assert!(!r.restarted, "{r:?}");
+
+    // Going back to an older version needs saying so.
+    std::fs::write(
+        two.root.join(format!(
+            "far/home/.local/share/dreamer/versions/{}/VERSION",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "version 99.0.0\n",
+    )
+    .expect("pretend newer");
+    let e = upgrade(&c, &artifacts, false)
+        .await
+        .expect_err("older refused");
+    assert!(e.to_string().contains("newer"), "{e}");
+    let r = upgrade(&c, &artifacts, true).await.expect("allowed");
+    assert!(r.restarted);
+}

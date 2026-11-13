@@ -609,7 +609,8 @@ impl Workspace {
     /// Install this version's server on a host, in a local tmux window
     /// that shows the plan and asks before installing.
     pub(crate) fn install_on_host(&mut self, name: &str, cx: &mut Context<Self>) {
-        self.host_terminal(name, &["install"], cx);
+        // `upgrade` installs where nothing is, and restarts an older daemon.
+        self.host_terminal(name, &["upgrade"], cx);
     }
 
     /// A local tmux window running `dream hosts <what> NAME --wait`.
