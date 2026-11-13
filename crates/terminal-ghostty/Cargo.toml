@@ -17,6 +17,7 @@ path = "src/bin/snapshot-fixtures.rs"
 
 [dependencies]
 ghostty-sys = { path = "../ghostty-sys" }
+png = "=0.18.1"
 terminal-core = { path = "../terminal-core" }
 
 [lints]

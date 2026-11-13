@@ -21,6 +21,7 @@ mod features;
 mod frame;
 pub mod input;
 pub mod links;
+pub mod png_decode;
 pub mod selection;
 pub mod snapshot_fixtures;
 
@@ -154,6 +155,7 @@ impl std::fmt::Debug for Engine {
 
 impl Engine {
     pub fn new(config: EngineConfig) -> Result<Self, EngineError> {
+        png_decode::register();
         let size = config.size;
         if size.cols == 0 || size.rows == 0 {
             return Err(EngineError::InvalidSize(size));
@@ -172,6 +174,7 @@ impl Engine {
     /// the snapshot: callbacks, reply policy, and scrollback limits come from
     /// `config` (its `size` is ignored; the snapshot carries the grid).
     pub fn from_snapshot(bytes: &[u8], config: &EngineConfig) -> Result<Self, EngineError> {
+        png_decode::register();
         use ghostty_sys::GhosttySnapshotDecoderOption::*;
         let mut decoder: GhosttySnapshotDecoder = ptr::null_mut();
         let mut term: GhosttyTerminal = ptr::null_mut();

@@ -64,6 +64,15 @@ From `deps/libghostty-vt-third-party.json` in the release source:
 
 `aro` (MIT AND Unicode-3.0) runs only during the build.
 
+## Image decoding
+
+| Crate | Version | Used by | License |
+| --- | --- | --- | --- |
+| `png` | `=0.18.1` (pure Rust) | `terminal-ghostty`: Ghostty's PNG decode callback for Kitty images | MIT OR Apache-2.0 |
+
+It is pinned exactly and already in `Cargo.lock` through GPUI's graph. It
+has no native code, and headless crates may use it.
+
 ## GPUI
 
 | Item | Value |

@@ -12,7 +12,7 @@ release (spec 9.4).
 | --- | --- |
 | Inline transmission (`t=d`) of raw RGB, RGBA, gray, or gray+alpha pixels | Supported (RGB and RGBA are covered by tests) |
 | zlib-compressed payloads (`o=z`) | Inflated by Ghostty; not covered by Dreamer's tests yet |
-| PNG (`f=100`) | Needs the PNG decoder (#130); until then PNG images are not stored |
+| PNG (`f=100`) | Decoded by Dreamer's callback (below) |
 | File, temporary-file, and shared-memory transmission (`t=f`, `t=t`, `t=s`) | Refused on every engine |
 | Placements: position, cell offset, size, source crop, z-index and layer | In frames |
 | Delete and replace | Supported |
@@ -22,6 +22,21 @@ release (spec 9.4).
 File and shared-memory transmissions name something on the daemon's host.
 A client can't read that, so every engine refuses them: daemon mirrors and
 window replicas alike (spec 11.7).
+
+## PNG decoding
+
+Ghostty asks the embedder to decode PNGs. Dreamer's callback uses the
+pure-Rust `png` crate:
+- **Registration:** registered once per process, before any engine is
+  created or the library is queried on any thread.
+- **Size checks:** the declared size is checked (at most 64 Mi pixels)
+  before the pixel buffer is allocated, and decoding is capped at 320 MiB
+  of working memory.
+- **Output:** written into memory from Ghostty's allocator and handed over
+  only on success.
+- **Failures:** malformed, truncated, and oversized PNGs are rejected and
+  the program's other output carries on. A panic inside the decoder
+  rejects the image; it never unwinds into C.
 
 ## Limits
 
