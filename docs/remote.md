@@ -296,3 +296,32 @@ remote daemon's tmux options (`--tmux`, `--tmux-socket`,
 `ssh` that hands the command to `/bin/sh -c`, as sshd does, and checks that
 the remote side receives exactly the original words for a socket name full
 of quotes, `$(…)`, backquotes, globs, and separators.
+
+## Acceptance through real OpenSSH
+
+`cargo xtask remote-acceptance` runs the section 18.2 remote cases through
+real OpenSSH on this machine, with nothing of the user's SSH setup
+involved:
+
+- **Setup:** an unprivileged `sshd` listens on a free loopback port. It
+  has a generated host key and accepts only a generated client key, with
+  its own `sshd_config`, `known_hosts`, and client config.
+- **Privacy:** its sessions get a private HOME and private daemon
+  directories through `SetEnv`. Before installing anything, the run
+  checks that the session's HOME really is the private one.
+- **Cases:**
+  - probe and plan;
+  - install this build's server archive;
+  - connect with no PTY and no listener;
+  - cut SSH under a followed pane, which resumes from the journal with no
+    second checkpoint and the same remote daemon;
+  - input sent while the link is down, which is never replayed;
+  - a new view's megabyte checkpoint while timing small calls, to show
+    there is no starvation;
+  - a remote daemon restart, which ends the view with `host_restarted`.
+- **Cleanup:** everything started from the private directory is stopped,
+  and the directory is removed.
+
+It needs `sshd` (on Linux, the `openssh-server` package). CI runs it on
+x86-64 Linux. Incompatible-build cases run against a stand-in SSH in
+`crates/server/tests/hosts.rs`.
