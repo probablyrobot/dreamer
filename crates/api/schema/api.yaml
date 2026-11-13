@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 15 }
+version: { major: 1, minor: 16 }
 package: dreamer.v1
 
 types:
@@ -445,6 +445,8 @@ types:
       - { n: 4, name: connection_lost, doc: "The daemon lost its tmux connection; a new epoch follows." }
       - { n: 5, name: unsubscribed }
       - { n: 6, name: reattached, doc: "The pane's output outran its mirror, so the daemon rebuilt the mirror from a fresh capture. Subscribe again; a checkpoint follows." }
+      - { n: 7, name: host_lost, doc: "A relayed subscription's host connection ended and will not come back by itself (disconnected, or a failure that is not retried). Subscribe again once the host is live." }
+      - { n: 8, name: host_restarted, doc: "A relayed subscription's host daemon restarted, so its journal is gone. Subscribe again; a checkpoint follows." }
 
   - message: SubscriptionEnd
     fields:
@@ -602,6 +604,17 @@ types:
       - { n: 2, name: method, type: string }
       - { n: 3, name: payload, type: bytes }
 
+  - message: HostSubscribe
+    doc: >-
+      Follow a pane on a connected host through this daemon: the reply and
+      the `terminal.*` events are those of terminal.subscribe, with this
+      connection's own subscription id. When SSH drops and the host comes
+      back, the subscription resumes from the host's journal by itself;
+      it ends with host_lost or host_restarted when it cannot.
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: subscribe, type: TerminalSubscribe }
+
   - message: HostReply
     doc: The remote daemon's result for a HostCall, as Protobuf.
     fields:
@@ -627,4 +640,6 @@ methods:
   - { method: hosts.list, params: Empty, result: HostList, doc: "Every remote host this daemon knows and its state." }
   - { method: hosts.disconnect, params: HostRef, result: HostStatus, mutation: true, doc: "Close a host's ssh connection. The remote daemon and its tmux keep running." }
   - { method: hosts.reconnect, params: HostRef, result: HostStatus, mutation: true, doc: "Connect again now, also after a failure that is not retried automatically." }
+  - { method: hosts.subscribe, params: HostSubscribe, result: Subscription, doc: "Follow a pane on a connected host; resumes from the host's journal after SSH loss. End it with terminal.unsubscribe." }
+  - { method: hosts.watch, params: HostRef, result: TopologyUpdate, doc: "A host's topology; afterwards `tmux.topology` events follow every change, across reconnects. One watch (local or a host) per connection." }
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }

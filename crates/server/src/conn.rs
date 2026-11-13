@@ -142,6 +142,14 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                         subscribe(&service, &conn, req).await;
                         return;
                     }
+                    if req.method == api::method::HOSTS_SUBSCRIBE {
+                        host_subscribe(&state, &conn, req).await;
+                        return;
+                    }
+                    if req.method == api::method::HOSTS_WATCH {
+                        host_watch(&state, &conn, req).await;
+                        return;
+                    }
                     let watch = req.method == api::method::TMUX_WATCH;
                     if req.method == api::method::TMUX_SIZE_WINDOW
                         && let Ok(p) = api::SizeWindow::decode(req.payload.as_slice())
@@ -268,12 +276,20 @@ fn ok(id: u64, payload: Vec<u8>) -> wire::Response {
 /// `tmux.topology` event: never an older one, and only the newest when the
 /// client reads slowly. One watcher per connection.
 async fn follow_topology(state: &Arc<State>, conn: &Conn, reply: &wire::Response) {
+    follow(conn, state.topology.subscribe(), reply).await;
+}
+
+/// Push every topology newer than the one in `reply` from `rx`.
+async fn follow(
+    conn: &Conn,
+    mut rx: tokio::sync::watch::Receiver<Option<Arc<api::TopologyUpdate>>>,
+    reply: &wire::Response,
+) {
     let sent = api::TopologyUpdate::decode(reply.payload.as_slice()).map_or(0, |u| u.revision);
     let mut slot = conn.watch.lock().await;
     if slot.is_some() {
         return;
     }
-    let mut rx = state.topology.subscribe();
     let conn = conn.clone();
     *slot = Some(tokio::spawn(async move {
         let mut last = sent;
@@ -290,6 +306,89 @@ async fn follow_topology(state: &Arc<State>, conn: &Conn, reply: &wire::Response
             }
         }
     }));
+}
+
+/// `hosts.watch`: the host's topology, then its changes as `tmux.topology`
+/// events, across reconnects.
+async fn host_watch(state: &Arc<State>, conn: &Conn, req: wire::Request) {
+    let response = match api::HostRef::decode(req.payload.as_slice()) {
+        Err(e) => failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string())),
+        Ok(p) => match state.hosts.watch(&p.name).await {
+            Err(e) => failure(req.id, e),
+            Ok((first, rx)) => {
+                let r = ok(req.id, first.encode_to_vec());
+                follow(conn, rx, &r).await;
+                r
+            }
+        },
+    };
+    let _ = conn
+        .out
+        .send(Out::Frame(Kind::Response, response.encode_to_vec()))
+        .await;
+}
+
+/// `hosts.subscribe`: a relayed subscription under this connection's own
+/// id, ended like any other with `terminal.unsubscribe`.
+async fn host_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
+    let id = req.id;
+    let send = |r: wire::Response| async move {
+        let _ = conn
+            .out
+            .send(Out::Frame(Kind::Response, r.encode_to_vec()))
+            .await;
+    };
+    let p = match api::HostSubscribe::decode(req.payload.as_slice()) {
+        Ok(p) => p,
+        Err(e) => {
+            return send(failure(
+                id,
+                RpcError::new(code::INVALID_PARAMS, e.to_string()),
+            ))
+            .await;
+        }
+    };
+    let mut relay = match state.hosts.subscribe(p).await {
+        Ok(r) => r,
+        Err(e) => return send(failure(id, e)).await,
+    };
+    let local = conn.next_sub.fetch_add(1, Ordering::Relaxed);
+    let mut reply = relay.subscription.clone();
+    reply.id = local;
+    let (go, wait) = tokio::sync::oneshot::channel::<()>();
+    let c = conn.clone();
+    let task = tokio::spawn(async move {
+        let _ = wait.await;
+        while let Some(item) = relay.items.recv().await {
+            let sent = match item {
+                crate::hosts::RelayItem::Records(mut b) => {
+                    b.subscription = local;
+                    c.event(TOPIC_RECORDS, b.encode_to_vec()).await
+                }
+                crate::hosts::RelayItem::Checkpoint(mut d) => {
+                    d.subscription = local;
+                    let bulk = wire::Bulk {
+                        stream: local,
+                        topic: TOPIC_CHECKPOINT.into(),
+                        data: d.encode_to_vec(),
+                    };
+                    c.out.send(Out::Bulk(bulk.encode_to_vec())).await.is_ok()
+                }
+                crate::hosts::RelayItem::End(mut e) => {
+                    e.subscription = local;
+                    c.event(TOPIC_END, e.encode_to_vec()).await;
+                    c.subs.lock().await.remove(&local);
+                    return;
+                }
+            };
+            if !sent {
+                return;
+            }
+        }
+    });
+    conn.subs.lock().await.insert(local, task);
+    send(ok(id, reply.encode_to_vec())).await;
+    let _ = go.send(());
 }
 
 async fn unsubscribe(conn: &Conn, req: wire::Request) -> wire::Response {

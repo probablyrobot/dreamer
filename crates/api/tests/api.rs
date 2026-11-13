@@ -165,6 +165,12 @@ impl Service for Fixed {
     async fn hosts_reconnect(&self, _: api::HostRef) -> Result<api::HostStatus, RpcError> {
         Ok(api::HostStatus::default())
     }
+    async fn hosts_subscribe(&self, _: api::HostSubscribe) -> Result<api::Subscription, RpcError> {
+        Ok(api::Subscription::default())
+    }
+    async fn hosts_watch(&self, _: api::HostRef) -> Result<api::TopologyUpdate, RpcError> {
+        Ok(api::TopologyUpdate::default())
+    }
     async fn hosts_call(&self, _: api::HostCall) -> Result<api::HostReply, RpcError> {
         Ok(api::HostReply::default())
     }

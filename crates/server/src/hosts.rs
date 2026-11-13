@@ -40,8 +40,8 @@ const DIAG_LINE_LEN: usize = 300;
 const BACKOFF_BASE_MS: u64 = 1000;
 const BACKOFF_CAP: u64 = 60;
 
-/// Methods that are never forwarded: streams (their pushed data has no
-/// route back yet) and the coordinator's own methods.
+/// Methods `hosts.call` never forwards: streams, which go through
+/// `hosts.subscribe` and `hosts.watch`, and the coordinator's own methods.
 fn forwardable(method: &str) -> bool {
     !matches!(
         method,
@@ -156,6 +156,9 @@ struct Link {
     /// Bumped on every connect, reconnect, and disconnect, so a watcher or
     /// retry belonging to an earlier one cannot act on a later one.
     generation: u64,
+    /// Bumped each time a link goes live (retries included): pushed data,
+    /// relays, and topology belong to one link.
+    link: u64,
 }
 
 struct Host {
@@ -163,6 +166,100 @@ struct Host {
     config: Mutex<Config>,
     link: Mutex<Link>,
     diag: Arc<Mutex<VecDeque<String>>>,
+    /// Where pushed data from the current link goes.
+    routes: Mutex<Routes>,
+    /// The host's latest topology, renumbered here so revisions keep
+    /// increasing across reconnects and remote restarts.
+    topology: tokio::sync::watch::Sender<Option<Arc<api::TopologyUpdate>>>,
+    topology_revision: std::sync::atomic::AtomicU64,
+    /// The newest remote revision seen, and on which link: a reply can
+    /// arrive after a newer event, and must not overwrite it.
+    remote_revision: Mutex<(u64, u64)>,
+    /// A local client asked for the topology: watch it on every link.
+    watching: std::sync::atomic::AtomicBool,
+}
+
+/// Something a relayed subscription receives from the host.
+#[derive(Debug)]
+pub enum RelayItem {
+    Records(api::RecordBatch),
+    Checkpoint(api::CheckpointData),
+    End(api::SubscriptionEnd),
+}
+
+/// Pushed data still waiting per remote subscription before its relay
+/// claims it (the remote's first records can overtake the reply).
+const UNCLAIMED_ITEMS: usize = 4096;
+/// Items queued per relay before it counts as lagging.
+const RELAY_QUEUE: usize = 1024;
+
+struct Route {
+    tx: tokio::sync::mpsc::Sender<RelayItem>,
+    lagged: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The routes of one live link, by remote subscription id.
+#[derive(Default)]
+struct Routes {
+    link: u64,
+    by_sub: HashMap<u64, Route>,
+    unclaimed: HashMap<u64, Vec<RelayItem>>,
+    spoiled: std::collections::HashSet<u64>,
+}
+
+impl Routes {
+    fn reset(&mut self, link: u64) {
+        *self = Routes {
+            link,
+            ..Routes::default()
+        };
+    }
+
+    fn deliver(&mut self, sub: u64, item: RelayItem) {
+        let end = matches!(item, RelayItem::End(_));
+        if let Some(route) = self.by_sub.get(&sub) {
+            if route.tx.try_send(item).is_err() {
+                // A relay that cannot keep up is dropped; it ends as lagged.
+                route
+                    .lagged
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                self.by_sub.remove(&sub);
+            } else if end {
+                self.by_sub.remove(&sub);
+            }
+        } else if !self.spoiled.contains(&sub) {
+            let q = self.unclaimed.entry(sub).or_default();
+            if q.len() < UNCLAIMED_ITEMS {
+                q.push(item);
+            } else {
+                self.unclaimed.remove(&sub);
+                self.spoiled.insert(sub);
+            }
+        }
+    }
+
+    /// Start routing `sub` to `route`, after anything that arrived first.
+    fn claim(&mut self, sub: u64, route: Route) {
+        if self.spoiled.remove(&sub) {
+            route
+                .lagged
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return;
+        }
+        for item in self.unclaimed.remove(&sub).unwrap_or_default() {
+            let end = matches!(item, RelayItem::End(_));
+            if route.tx.try_send(item).is_err() {
+                route
+                    .lagged
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+            if end {
+                return;
+            }
+        }
+        self.by_sub.insert(sub, route);
+    }
 }
 
 impl Host {
@@ -172,7 +269,65 @@ impl Host {
             config: Mutex::new(config),
             link: Mutex::default(),
             diag: Arc::default(),
+            routes: Mutex::default(),
+            topology: tokio::sync::watch::channel(None).0,
+            topology_revision: 0.into(),
+            remote_revision: Mutex::default(),
+            watching: false.into(),
         })
+    }
+
+    fn publish_topology(&self, generation: u64, u: api::TopologyUpdate) {
+        {
+            let mut seen = lock(&self.remote_revision);
+            if seen.0 == generation && u.revision <= seen.1 {
+                return;
+            }
+            *seen = (generation, u.revision);
+        }
+        let t = u.topology;
+        let revision = self
+            .topology_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        self.topology
+            .send_replace(Some(Arc::new(api::TopologyUpdate {
+                revision,
+                topology: t,
+            })));
+    }
+
+    /// The live link's client, if any.
+    fn client(&self) -> Option<(Arc<Client>, u64, Option<String>)> {
+        let l = lock(&self.link);
+        (l.state == LinkState::Live as i32)
+            .then(|| {
+                l.client
+                    .clone()
+                    .map(|c| (c, l.link, l.remote_instance.clone()))
+            })
+            .flatten()
+    }
+
+    /// Wait for a live link newer than `after`. `None` when the host will
+    /// not come back by itself: disconnected, or failed with no retry.
+    async fn next_live(&self, after: u64) -> Option<(Arc<Client>, u64, Option<String>)> {
+        loop {
+            {
+                let l = lock(&self.link);
+                let waiting = l.state == LinkState::Connecting as i32
+                    || (l.state == LinkState::Failed as i32 && l.next_retry_unix_ms.is_some())
+                    || (l.state == LinkState::Live as i32 && l.link == after);
+                if l.state == LinkState::Live as i32 && l.link != after {
+                    if let Some(c) = l.client.clone() {
+                        return Some((c, l.link, l.remote_instance.clone()));
+                    }
+                } else if !waiting {
+                    return None;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     fn status(&self) -> api::HostStatus {
@@ -199,6 +354,8 @@ impl Host {
     fn restart(&self, state: LinkState) -> (u64, Option<Arc<Client>>, Option<Child>) {
         let mut l = lock(&self.link);
         l.generation += 1;
+        // Link ids start at 1: no link's pushed data matches 0.
+        lock(&self.routes).reset(0);
         l.state = state as i32;
         l.next_retry_unix_ms = None;
         if state == LinkState::Connecting {
@@ -492,11 +649,12 @@ fn attempt(
         };
         let pushed = client.pushed();
         let client = Arc::new(client);
-        {
+        let link = {
             let mut l = lock(&host.link);
             if l.generation != generation {
                 return Err("superseded by another connect".into());
             }
+            l.link += 1;
             l.state = LinkState::Live as i32;
             l.remote = version;
             l.remote_host = Some(client.welcome.host.clone());
@@ -509,13 +667,18 @@ fn attempt(
             l.next_retry_unix_ms = None;
             l.client = Some(client.clone());
             l.child = Some(child);
-        }
+            lock(&host.routes).reset(l.link);
+            l.link
+        };
         log::info(format!(
             "hosts: `{}` live: daemon pid {} on {}",
             host.name, client.welcome.pid, client.welcome.host
         ));
         if let Some(rx) = pushed {
-            tokio::spawn(watch(host.clone(), generation, rx));
+            tokio::spawn(watch(host.clone(), generation, link, rx));
+        }
+        if host.watching.load(std::sync::atomic::Ordering::SeqCst) {
+            watch_topology(&host, &client, link).await;
         }
         Ok(())
     })
@@ -603,14 +766,26 @@ async fn collect_diagnostics(
 
 /// Follow a live connection until it ends, then mark the host failed with
 /// the reason and SSH's last words (and retry under an auto policy).
-async fn watch(host: Arc<Host>, generation: u64, mut pushed: tokio::sync::mpsc::Receiver<Pushed>) {
+async fn watch(
+    host: Arc<Host>,
+    generation: u64,
+    link: u64,
+    mut pushed: tokio::sync::mpsc::Receiver<Pushed>,
+) {
     let error = loop {
         match pushed.recv().await {
             Some(Pushed::Closed { error }) => break error,
-            Some(_) => {}
+            Some(p) => dispatch(&host, link, p),
             None => break None,
         }
     };
+    {
+        // The relays of this link see their channel close: link lost.
+        let mut routes = lock(&host.routes);
+        if routes.link == link {
+            routes.reset(0);
+        }
+    }
     // Let the last diagnostic lines arrive.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let why = host.explain(&match error {
@@ -619,7 +794,7 @@ async fn watch(host: Arc<Host>, generation: u64, mut pushed: tokio::sync::mpsc::
     });
     let child = {
         let mut l = lock(&host.link);
-        if l.generation != generation {
+        if l.generation != generation || l.link != link {
             return;
         }
         l.client = None;
@@ -630,6 +805,304 @@ async fn watch(host: Arc<Host>, generation: u64, mut pushed: tokio::sync::mpsc::
         let _ = c.wait().await;
     }
     failed(&host, generation, HostFailure::Transient, why);
+}
+
+/// Route one pushed item of `link` to its relay or topology.
+fn dispatch(host: &Host, link: u64, p: Pushed) {
+    use prost::Message as _;
+    let (sub, item) = match p {
+        Pushed::Event { topic, payload, .. } => match topic.as_str() {
+            "terminal.records" => match api::RecordBatch::decode(payload.as_slice()) {
+                Ok(b) => (b.subscription, RelayItem::Records(b)),
+                Err(_) => return,
+            },
+            "terminal.end" => match api::SubscriptionEnd::decode(payload.as_slice()) {
+                Ok(e) => (e.subscription, RelayItem::End(e)),
+                Err(_) => return,
+            },
+            "tmux.topology" => {
+                if let Ok(u) = api::TopologyUpdate::decode(payload.as_slice()) {
+                    host.publish_topology(link, u);
+                }
+                return;
+            }
+            _ => return,
+        },
+        Pushed::Bulk { topic, data, .. } if topic == "terminal.checkpoint" => {
+            match api::CheckpointData::decode(data.as_slice()) {
+                Ok(d) => (d.subscription, RelayItem::Checkpoint(d)),
+                Err(_) => return,
+            }
+        }
+        _ => return,
+    };
+    let mut routes = lock(&host.routes);
+    if routes.link == link {
+        routes.deliver(sub, item);
+    }
+}
+
+/// Ask the host's daemon for its topology and the changes after it.
+async fn watch_topology(host: &Host, client: &Client, generation: u64) {
+    if let Ok(api::Response::TmuxWatch(u)) = client
+        .call(api::Request::TmuxWatch(api::TopologyParams::default()))
+        .await
+    {
+        host.publish_topology(generation, u);
+    }
+}
+
+/// The host connection and remote subscription id a relay is on now, so
+/// dropping the relay can unsubscribe there.
+type Current = Arc<Mutex<Option<(Arc<Client>, u64)>>>;
+
+/// A relayed subscription, held by the local connection that asked for it.
+/// Dropping it stops the relay and unsubscribes on the host.
+pub struct Relay {
+    pub subscription: api::Subscription,
+    pub items: tokio::sync::mpsc::Receiver<RelayItem>,
+    task: tokio::task::JoinHandle<()>,
+    current: Current,
+}
+
+impl Drop for Relay {
+    fn drop(&mut self) {
+        self.task.abort();
+        if let Some((client, sub)) = lock(&self.current).take() {
+            tokio::spawn(async move {
+                let _ = client
+                    .call(api::Request::TerminalUnsubscribe(api::Unsubscribe {
+                        subscription: sub,
+                    }))
+                    .await;
+            });
+        }
+    }
+}
+
+fn end(reason: api::EndReason, detail: &str) -> RelayItem {
+    RelayItem::End(api::SubscriptionEnd {
+        subscription: 0,
+        reason: reason as i32,
+        detail: Some(detail.to_owned()),
+    })
+}
+
+/// Subscribe on the host and claim the route for the reply's id.
+async fn subscribe_remote(
+    host: &Host,
+    client: &Arc<Client>,
+    link: u64,
+    params: api::TerminalSubscribe,
+) -> Result<
+    (
+        api::Subscription,
+        tokio::sync::mpsc::Receiver<RelayItem>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ),
+    ClientError,
+> {
+    let api::Response::TerminalSubscribe(s) =
+        client.call(api::Request::TerminalSubscribe(params)).await?
+    else {
+        return Err(ClientError::Wire(wire::WireError::Unexpected(
+            "a reply to another method",
+        )));
+    };
+    let (tx, rx) = tokio::sync::mpsc::channel(RELAY_QUEUE);
+    let lagged = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut routes = lock(&host.routes);
+    if routes.link == link {
+        routes.claim(
+            s.id,
+            Route {
+                tx,
+                lagged: lagged.clone(),
+            },
+        );
+    }
+    // Otherwise the link already ended: `tx` drops here and the relay
+    // sees a lost link straight away.
+    Ok((s, rx, lagged))
+}
+
+/// Carry one subscription across link losses: forward what the host sends,
+/// and after a reconnect resume from the last delivered record. The host's
+/// mirror stayed valid, so its journal replays only what was missed. When
+/// it cannot (the daemon restarted, the journal moved on, the host is
+/// gone), end with the reason.
+#[allow(clippy::too_many_arguments)]
+async fn relay(
+    host: Arc<Host>,
+    mut params: api::TerminalSubscribe,
+    mut sub: api::Subscription,
+    mut rx: tokio::sync::mpsc::Receiver<RelayItem>,
+    mut lagged: Arc<std::sync::atomic::AtomicBool>,
+    mut generation: u64,
+    mut instance: Option<String>,
+    out: tokio::sync::mpsc::Sender<RelayItem>,
+    current: Current,
+) {
+    let mut last = sub.sequence;
+    loop {
+        let item = match rx.recv().await {
+            Some(RelayItem::Records(b)) => {
+                if let Some(r) = b.records.last() {
+                    last = last.max(r.sequence);
+                }
+                RelayItem::Records(b)
+            }
+            Some(RelayItem::Checkpoint(d)) => {
+                last = last.max(d.sequence);
+                RelayItem::Checkpoint(d)
+            }
+            Some(e @ RelayItem::End(_)) => {
+                lock(&current).take();
+                let _ = out.send(e).await;
+                return;
+            }
+            None if lagged.load(std::sync::atomic::Ordering::SeqCst) => {
+                let _ = out
+                    .send(end(api::EndReason::Lagged, "the relay fell behind"))
+                    .await;
+                return;
+            }
+            None => {
+                // The link ended. Wait for the next one, then resume.
+                lock(&current).take();
+                let Some((client, g, now)) = host.next_live(generation).await else {
+                    let _ = out
+                        .send(end(
+                            api::EndReason::HostLost,
+                            "the host is not coming back by itself",
+                        ))
+                        .await;
+                    return;
+                };
+                params.resume_epoch = Some(sub.epoch);
+                params.resume_generation = Some(sub.generation);
+                params.resume_sequence = Some(last);
+                match subscribe_remote(&host, &client, g, params.clone()).await {
+                    Ok((s, r, l)) if s.mode == api::SubscribeMode::Replay as i32 => {
+                        log::info(format!(
+                            "hosts: `{}` pane %{} resumed after sequence {last}",
+                            host.name, s.pane
+                        ));
+                        *lock(&current) = Some((client, s.id));
+                        (sub, rx, lagged, generation) = (s, r, l, g);
+                        instance = now;
+                        continue;
+                    }
+                    Ok((s, _, _)) => {
+                        let _ = client
+                            .call(api::Request::TerminalUnsubscribe(api::Unsubscribe {
+                                subscription: s.id,
+                            }))
+                            .await;
+                        let (reason, why) = if now != instance {
+                            (api::EndReason::HostRestarted, "the host's daemon restarted")
+                        } else if s.epoch != sub.epoch {
+                            (
+                                api::EndReason::ConnectionLost,
+                                "the host's daemon lost its tmux connection",
+                            )
+                        } else {
+                            (
+                                api::EndReason::Lagged,
+                                "the host's journal no longer holds the missed records",
+                            )
+                        };
+                        let _ = out.send(end(reason, why)).await;
+                        return;
+                    }
+                    Err(ClientError::Rpc(e)) if e.code == code::NOT_FOUND => {
+                        let _ = out.send(end(api::EndReason::PaneClosed, &e.message)).await;
+                        return;
+                    }
+                    Err(_) => {
+                        // That link died too; wait for the next.
+                        generation = g;
+                        let (_tx, r) = tokio::sync::mpsc::channel(1);
+                        rx = r;
+                        lagged = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        continue;
+                    }
+                }
+            }
+        };
+        if out.send(item).await.is_err() {
+            return;
+        }
+    }
+}
+
+impl Hosts {
+    /// Follow a pane on a live host through a relay.
+    pub async fn subscribe(&self, p: api::HostSubscribe) -> Result<Relay, RpcError> {
+        let host = self.get(&p.name).await?;
+        let params = p.subscribe.unwrap_or_default();
+        let (client, generation, instance) = host.client().ok_or_else(|| {
+            RpcError::new(
+                code::UNAVAILABLE,
+                format!("host `{}` is not connected", p.name),
+            )
+        })?;
+        let (sub, rx, lagged) = subscribe_remote(&host, &client, generation, params.clone())
+            .await
+            .map_err(|e| match e {
+                ClientError::Rpc(e) => e,
+                other => RpcError::new(code::UNAVAILABLE, format!("host `{}`: {other}", p.name)),
+            })?;
+        touch(&host);
+        let current = Arc::new(Mutex::new(Some((client, sub.id))));
+        let (out, items) = tokio::sync::mpsc::channel(RELAY_QUEUE);
+        let task = tokio::spawn(relay(
+            host,
+            params,
+            sub.clone(),
+            rx,
+            lagged,
+            generation,
+            instance,
+            out,
+            current.clone(),
+        ));
+        Ok(Relay {
+            subscription: sub,
+            items,
+            task,
+            current,
+        })
+    }
+
+    /// The host's topology now, and a receiver of every later one.
+    pub async fn watch(
+        &self,
+        name: &str,
+    ) -> Result<
+        (
+            api::TopologyUpdate,
+            tokio::sync::watch::Receiver<Option<Arc<api::TopologyUpdate>>>,
+        ),
+        RpcError,
+    > {
+        let host = self.get(name).await?;
+        let first = !host
+            .watching
+            .swap(true, std::sync::atomic::Ordering::SeqCst);
+        if first && let Some((client, generation, _)) = host.client() {
+            watch_topology(&host, &client, generation).await;
+        }
+        let rx = host.topology.subscribe();
+        let latest = rx.borrow().clone();
+        match latest {
+            Some(u) => Ok(((*u).clone(), rx)),
+            None => Err(RpcError::new(
+                code::UNAVAILABLE,
+                format!("host `{name}` is not connected"),
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
