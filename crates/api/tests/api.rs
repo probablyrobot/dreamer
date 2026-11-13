@@ -183,6 +183,12 @@ impl Service for Fixed {
     async fn hosts_upgrade(&self, _: api::UpgradeParams) -> Result<api::UpgradeResult, RpcError> {
         Ok(api::UpgradeResult::default())
     }
+    async fn apps_launch(&self, _: api::LaunchApp) -> Result<api::LaunchedApp, RpcError> {
+        Ok(api::LaunchedApp::default())
+    }
+    async fn apps_register(&self, _: api::RegisterApp) -> Result<api::Registration, RpcError> {
+        Ok(api::Registration::default())
+    }
     async fn grants_current(&self, _: Empty) -> Result<api::Grant, RpcError> {
         Ok(api::Grant::default())
     }

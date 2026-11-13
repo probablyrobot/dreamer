@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 19;
+pub const PROTOCOL_MINOR: u32 = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1698,6 +1698,69 @@ pub struct Grant {
     pub expires_unix_ms: Option<u64>,
 }
 
+/// Start a program in a new tmux window as a registered app. The daemon writes a single-use ticket to an owner-only file and gives the program only that file's path (DREAMER_LAUNCH_TICKET) and the launch id (DREAMER_LAUNCH_ID). The program registers with them for `grant`.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LaunchApp {
+    #[prost(string, tag = "1")]
+    pub app_id: String,
+    /// What the app may do; with no panes and not all_panes, its own pane.
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<Grant>,
+    /// Exact program and arguments; never a shell string.
+    #[prost(string, repeated, tag = "3")]
+    pub argv: Vec<String>,
+    #[prost(uint32, tag = "4")]
+    pub session: u32,
+    /// The window name; default the app id.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// How long the ticket is valid; default 60000.
+    #[prost(uint32, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LaunchedApp {
+    #[prost(string, tag = "1")]
+    pub launch_id: String,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    #[prost(uint64, tag = "3")]
+    pub expires_unix_ms: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RegisterApp {
+    #[prost(string, tag = "1")]
+    pub launch_id: String,
+    /// The contents of the ticket file.
+    #[prost(string, tag = "2")]
+    pub ticket: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Registration {
+    #[prost(string, tag = "1")]
+    pub instance: String,
+    #[prost(string, tag = "2")]
+    pub app_id: String,
+    #[prost(uint32, tag = "3")]
+    pub pane: u32,
+    #[prost(message, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<Grant>,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -1726,6 +1789,8 @@ pub mod method {
     pub const HOSTS_UPGRADE: &str = "hosts.upgrade";
     pub const HOSTS_CALL: &str = "hosts.call";
     pub const GRANTS_CURRENT: &str = "grants.current";
+    pub const APPS_LAUNCH: &str = "apps.launch";
+    pub const APPS_REGISTER: &str = "apps.register";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1920,6 +1985,20 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: false,
         doc: "The calling connection's own grant.",
     },
+    MethodInfo {
+        name: "apps.launch",
+        params: "LaunchApp",
+        result: "LaunchedApp",
+        mutation: true,
+        doc: "Start a program in a new tmux window with a single-use registration ticket (owner only).",
+    },
+    MethodInfo {
+        name: "apps.register",
+        params: "RegisterApp",
+        result: "Registration",
+        mutation: true,
+        doc: "Trade a launch ticket for the app's narrow grant on this connection.",
+    },
 ];
 
 /// A typed request for one method.
@@ -1951,6 +2030,8 @@ pub enum Request {
     HostsUpgrade(UpgradeParams),
     HostsCall(HostCall),
     GrantsCurrent(Empty),
+    AppsLaunch(LaunchApp),
+    AppsRegister(RegisterApp),
 }
 
 impl Request {
@@ -1982,6 +2063,8 @@ impl Request {
             Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
             Self::GrantsCurrent(_) => "grants.current",
+            Self::AppsLaunch(_) => "apps.launch",
+            Self::AppsRegister(_) => "apps.register",
         }
     }
 
@@ -2014,6 +2097,8 @@ impl Request {
             Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -2047,6 +2132,8 @@ impl Request {
             "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
+            "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
+            "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -2079,6 +2166,8 @@ impl Request {
             Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -2110,6 +2199,8 @@ impl Request {
             "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
+            "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
+            "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -2144,6 +2235,8 @@ pub enum Response {
     HostsUpgrade(UpgradeResult),
     HostsCall(HostReply),
     GrantsCurrent(Grant),
+    AppsLaunch(LaunchedApp),
+    AppsRegister(Registration),
 }
 
 impl Response {
@@ -2175,6 +2268,8 @@ impl Response {
             Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
             Self::GrantsCurrent(_) => "grants.current",
+            Self::AppsLaunch(_) => "apps.launch",
+            Self::AppsRegister(_) => "apps.register",
         }
     }
 
@@ -2207,6 +2302,8 @@ impl Response {
             Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -2240,6 +2337,8 @@ impl Response {
             "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
+            "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
+            "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -2272,6 +2371,8 @@ impl Response {
             Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -2303,6 +2404,8 @@ impl Response {
             "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
+            "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
+            "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -2438,6 +2541,16 @@ pub trait Service: Sync {
         &self,
         params: Empty,
     ) -> impl ::core::future::Future<Output = Result<Grant, RpcError>> + Send;
+    /// Start a program in a new tmux window with a single-use registration ticket (owner only).
+    fn apps_launch(
+        &self,
+        params: LaunchApp,
+    ) -> impl ::core::future::Future<Output = Result<LaunchedApp, RpcError>> + Send;
+    /// Trade a launch ticket for the app's narrow grant on this connection.
+    fn apps_register(
+        &self,
+        params: RegisterApp,
+    ) -> impl ::core::future::Future<Output = Result<Registration, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -2499,5 +2612,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::HostsUpgrade(p) => service.hosts_upgrade(p).await.map(Response::HostsUpgrade),
         Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
         Request::GrantsCurrent(p) => service.grants_current(p).await.map(Response::GrantsCurrent),
+        Request::AppsLaunch(p) => service.apps_launch(p).await.map(Response::AppsLaunch),
+        Request::AppsRegister(p) => service.apps_register(p).await.map(Response::AppsRegister),
     }
 }

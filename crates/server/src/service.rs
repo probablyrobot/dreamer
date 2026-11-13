@@ -80,6 +80,8 @@ pub struct State {
     pub epochs: std::sync::atomic::AtomicU64,
     /// Outbound connections to other hosts' daemons (the coordinator role).
     pub hosts: crate::hosts::Hosts,
+    /// Pane app launches waiting for registration.
+    pub apps: crate::apps::Apps,
 }
 
 #[derive(Debug, Clone)]
@@ -525,14 +527,27 @@ impl api::Service for DaemonService {
         let history = p.history.unwrap_or(0).min(10_000) as usize;
         let mut read = host.read(pane, history).await;
         if read.is_none() {
-            // A pane that is still attaching is worth a short wait.
-            let attaching = host.status().await.iter().any(|s| s.pane == pane);
-            if attaching
-                && host
-                    .wait_live(&[pane], std::time::Duration::from_secs(3))
-                    .await
-            {
-                read = host.read(pane, history).await;
+            // A pane that exists in tmux but is still attaching (or so new
+            // the mirrors have not seen it yet, such as an app's own pane
+            // right after launch) is worth a short wait. A pane tmux does
+            // not know fails at once.
+            let exists = {
+                let guard = self.0.endpoint().await?;
+                match guard.as_ref() {
+                    Some(ep) => tmux_backend::ops::pane_pid(&ep.conn, pane).await.is_ok(),
+                    None => false,
+                }
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while exists && std::time::Instant::now() < deadline {
+                if host.status().await.iter().any(|s| s.pane == pane) {
+                    let left = deadline.saturating_duration_since(std::time::Instant::now());
+                    if host.wait_live(&[pane], left).await {
+                        read = host.read(pane, history).await;
+                    }
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
         }
         let r = read
@@ -816,6 +831,55 @@ impl api::Service for DaemonService {
 
     async fn hosts_upgrade(&self, p: api::UpgradeParams) -> Result<api::UpgradeResult, RpcError> {
         self.0.hosts.upgrade(p).await
+    }
+
+    async fn apps_launch(&self, p: api::LaunchApp) -> Result<api::LaunchedApp, RpcError> {
+        let (id, env, expires) = self.0.apps.prepare(&p).await?;
+        let launched = async {
+            let guard = self.0.endpoint().await?;
+            let ep = guard
+                .as_ref()
+                .ok_or_else(|| unavailable("endpoint not connected".into()))?;
+            let launch = tmux_backend::ops::Launch {
+                argv: p.argv.clone(),
+                cwd: p.cwd.clone(),
+                env,
+            };
+            let name = p.name.clone().unwrap_or_else(|| p.app_id.clone());
+            tmux_backend::ops::new_window(
+                &ep.conn,
+                domain::TmuxSessionId(p.session),
+                Some(&name),
+                &launch,
+            )
+            .await
+            .map_err(|e| {
+                RpcError::new(code::INVALID_PARAMS, tmux_backend::ops::failure_message(&e))
+            })
+        }
+        .await;
+        match launched {
+            Ok(pane) => {
+                self.0.apps.launched(&id, pane.0).await;
+                crate::log::info(format!("apps: launched `{}` in pane %{}", p.app_id, pane.0));
+                Ok(api::LaunchedApp {
+                    launch_id: id,
+                    pane: pane.0,
+                    expires_unix_ms: expires,
+                })
+            }
+            Err(e) => {
+                self.0.apps.abandon(&id).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn apps_register(&self, _: api::RegisterApp) -> Result<api::Registration, RpcError> {
+        Err(RpcError::new(
+            code::INVALID_REQUEST,
+            "apps.register is answered for a connection",
+        ))
     }
 
     async fn grants_current(&self, _: api::Empty) -> Result<api::Grant, RpcError> {
