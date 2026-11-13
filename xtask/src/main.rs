@@ -2,6 +2,7 @@
 
 mod api;
 mod bindings;
+mod color_schemes;
 mod deps;
 mod desktop;
 mod doctor;
@@ -31,6 +32,7 @@ commands:
   package --platform macos|arch|linux|current [--debug] [--source-only] [--nodeps]
                                build, ad hoc sign, and zip the macOS app bundle
   policy                       check repository rules (workflow runners, pinned actions)
+  schemes [--check]            generate the terminal color scheme table from the vendored files
   scenes [NAME]                open the design review's reference scenes in both skins, to capture
   gate linux-desktop [--allow-missing wayland|x11]
                                real-display smoke on a Linux desktop (second machine)
@@ -53,6 +55,7 @@ fn main() -> ExitCode {
         Some("gate") => gate::run(&args[1..]),
         Some("policy") => policy::run(&args[1..]),
         Some("scenes") => scenes::run(&args[1..]),
+        Some("schemes") => color_schemes::run(&args[1..]),
         Some("package") => package::run(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");

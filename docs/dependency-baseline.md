@@ -133,3 +133,13 @@ the cache; it never downloads or builds.
 | Item | Pinned by |
 | --- | --- |
 | tmux | Baseline 3.8 (runtime dependency, not bundled); CI build of 3.8 lands with the tmux integration tests |
+
+## Terminal color schemes
+
+| Item | Value |
+| --- | --- |
+| Source | alacritty-theme, <https://github.com/alacritty/alacritty-theme> |
+| Commit | `95615789c5eddee1c5407a520cd9959a86fa4716` (2026-10-29) |
+| Files | 31 schemes, vendored unchanged in `crates/terminal-core/schemes/` (list and original projects in `SOURCES.md`) |
+| Built into | `crates/terminal-core/src/schemes_data.rs` by `cargo xtask schemes`; `--check` runs in the gate and CI |
+| License | Apache-2.0 (collection); original projects MIT, MIT/X11, or Apache-2.0 (Nord); see `THIRD_PARTY_NOTICES.md` |

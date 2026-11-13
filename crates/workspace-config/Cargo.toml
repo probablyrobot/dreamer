@@ -8,6 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+terminal-core = { path = "../terminal-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_norway = "0.9.42"
 

@@ -466,3 +466,32 @@ fn clipboard_writes_are_captured_only_when_asked_and_never_cut() {
     assert!(fx.clipboard.is_empty());
     assert_eq!(fx.clipboard_refused, 1);
 }
+
+#[test]
+fn a_color_scheme_and_default_cursor_travel_in_the_snapshot() {
+    let scheme = terminal_ghostty::core::schemes::find("catppuccin-mocha").expect("scheme");
+    let mut canonical = engine();
+    canonical.set_scheme(scheme).expect("scheme");
+    canonical
+        .set_default_cursor(terminal_ghostty::core::CursorShape::Bar, false)
+        .expect("cursor");
+    canonical
+        .feed(b"hello \x1b[31mred\x1b[0m\r\n")
+        .expect("feed");
+    let colors = canonical.frame().expect("frame").colors.clone();
+    assert_eq!(colors.background, scheme.background);
+    assert_eq!(colors.foreground, scheme.foreground);
+    assert_eq!(colors.palette[1], scheme.ansi[1]);
+    assert_eq!(colors.palette[100], scheme.palette()[100]);
+    let shape = canonical.frame().expect("frame").cursor.shape;
+    assert_eq!(shape, terminal_ghostty::core::CursorShape::Bar);
+
+    // A replica restored from the checkpoint, with no scheme of its own,
+    // shows the same colors and cursor.
+    let snapshot = canonical.snapshot().expect("snapshot");
+    let replica = Engine::from_snapshot(&snapshot, &EngineConfig::new(SIZE)).expect("restore");
+    let mut replica = replica;
+    let restored = replica.frame().expect("frame");
+    assert_eq!(*restored.colors, *colors, "colors differ after restore");
+    assert_eq!(restored.cursor.shape, shape);
+}

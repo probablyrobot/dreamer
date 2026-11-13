@@ -325,6 +325,7 @@ async fn journal_retention_holds_per_pane_and_per_host_under_load() {
             workers: 2,
             worker_queue: 256,
             retention,
+            terminal: mirror::TerminalDefaults::default(),
         },
     )
     .await;

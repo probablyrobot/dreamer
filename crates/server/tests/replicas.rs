@@ -746,3 +746,29 @@ async fn a_clipboard_read_gets_no_clipboard_contents() {
             .is_empty()
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_configured_color_scheme_reaches_a_view_through_the_checkpoint() {
+    let config = PathBuf::from(format!("/tmp/drm-theme-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&config);
+    std::fs::create_dir_all(&config).expect("config");
+    std::fs::write(
+        config.join("dreamer.yaml"),
+        "terminal:\n  theme: gruvbox-dark\n  cursor:\n    style: underline\n",
+    )
+    .expect("settings");
+    let s = Setup::new(&[("DREAMER_CONFIG_DIR", config.to_str().expect("utf-8"))]);
+    let mut f = s.follower().await;
+    s.type_line("echo themed");
+    converge(&s, &mut f).await;
+    let scheme = terminal_ghostty::core::schemes::find("gruvbox-dark").expect("scheme");
+    let frame = f.replica_mut().frame().expect("an engine").expect("frame");
+    assert_eq!(frame.colors.background, scheme.background);
+    assert_eq!(frame.colors.foreground, scheme.foreground);
+    assert_eq!(frame.colors.palette[2], scheme.ansi[2]);
+    assert_eq!(
+        frame.cursor.shape,
+        terminal_ghostty::core::CursorShape::Underline
+    );
+    let _ = std::fs::remove_dir_all(&config);
+}
