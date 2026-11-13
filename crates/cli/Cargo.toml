@@ -18,7 +18,7 @@ platform = { path = "../platform" }
 serde_json = "1.0.154"
 terminal-core = { path = "../terminal-core" }
 tmux-backend = { path = "../tmux-backend" }
-tokio = { version = "1.54.1", features = ["macros", "rt", "net", "time"] }
+tokio = { version = "1.54.1", features = ["macros", "rt", "net", "time", "io-std", "io-util"] }
 workspace-config = { path = "../workspace-config" }
 workspace-host = { path = "../workspace-host" }
 
@@ -26,5 +26,6 @@ workspace-host = { path = "../workspace-host" }
 workspace = true
 
 [dev-dependencies]
+tokio = { version = "1.54.1", features = ["process"] }
 platform = { path = "../platform" }
 serde_json = "1.0.154"

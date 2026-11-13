@@ -1,5 +1,7 @@
-//! A connection to `dreamerd` over its Unix socket: the wire handshake,
-//! typed API calls, and starting the daemon when it is not running.
+//! A connection to `dreamerd`: the wire handshake, typed API calls, and
+//! starting the daemon when it is not running. The connection is normally
+//! the daemon's Unix socket; [`Client::over`] runs it over any byte stream,
+//! such as an SSH child's pipes to a remote `dream bridge --stdio`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prost::Message as _;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{mpsc, oneshot};
 use wire::io::{HandshakeError, Reader, client_handshake, write_frame};
 use wire::{Identity, Kind, Limits, Welcome, WireError};
@@ -69,9 +71,10 @@ type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<wire::Response>>>>;
 
 /// A connection to the daemon. Calls may run concurrently; pushed data
 /// arrives on [`Client::pushed`].
-#[derive(Debug)]
+type Writer = Box<dyn AsyncWrite + Send + Unpin>;
+
 pub struct Client {
-    writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
+    writer: Arc<tokio::sync::Mutex<Writer>>,
     pending: Pending,
     limits: Limits,
     next_id: AtomicU64,
@@ -80,6 +83,14 @@ pub struct Client {
 }
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("welcome", &self.welcome)
+            .finish_non_exhaustive()
+    }
+}
 
 impl Client {
     pub async fn connect(socket: &Path, role: &str) -> Result<Client, ClientError> {
@@ -96,7 +107,23 @@ impl Client {
         let stream = UnixStream::connect(socket)
             .await
             .map_err(|e| ClientError::NotRunning(format!("{}: {e}", socket.display())))?;
-        let (r, mut writer) = stream.into_split();
+        let (r, w) = stream.into_split();
+        Client::over(r, w, role, pushed_capacity).await
+    }
+
+    /// Handshake and run over any byte stream: the read and write halves of
+    /// a connection that reaches a daemon, however it is carried.
+    pub async fn over<R, W>(
+        r: R,
+        w: W,
+        role: &str,
+        pushed_capacity: usize,
+    ) -> Result<Client, ClientError>
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        let mut writer: Writer = Box::new(w);
         let me = Identity::current(role);
         let mut reader = Reader::new(r, me.limits);
         let (welcome, limits) = tokio::time::timeout(
@@ -157,8 +184,8 @@ impl Client {
     }
 }
 
-async fn read_loop(
-    mut reader: Reader<OwnedReadHalf>,
+async fn read_loop<R: AsyncRead + Unpin>(
+    mut reader: Reader<R>,
     pending: Pending,
     pushed: mpsc::Sender<Pushed>,
 ) {
@@ -297,6 +324,48 @@ pub async fn ensure_running(launch: &Launch, role: &str) -> Result<(Client, bool
         Err(ClientError::NotRunning(_)) => {}
         Err(e) => return Err(e),
     }
+    start(launch)?;
+    let deadline = tokio::time::Instant::now() + launch.wait;
+    loop {
+        match Client::connect(&launch.socket, role).await {
+            Ok(c) => return Ok((c, true)),
+            Err(ClientError::NotRunning(_)) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(ClientError::NotRunning(_)) => return Err(start_timeout()),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// The daemon's socket as a plain byte stream, starting the daemon first
+/// if nothing answers. Nothing is read or written: the caller (the stdio
+/// bridge) carries a whole protocol session through it unchanged.
+pub async fn ensure_running_raw(launch: &Launch) -> Result<(UnixStream, bool), ClientError> {
+    let connect = || async {
+        UnixStream::connect(&launch.socket)
+            .await
+            .map_err(|e| ClientError::NotRunning(format!("{}: {e}", launch.socket.display())))
+    };
+    if let Ok(s) = connect().await {
+        return Ok((s, false));
+    }
+    start(launch)?;
+    let deadline = tokio::time::Instant::now() + launch.wait;
+    loop {
+        match connect().await {
+            Ok(s) => return Ok((s, true)),
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(_) => return Err(start_timeout()),
+        }
+    }
+}
+
+/// Start a detached daemon: no standard streams of ours, so it outlives
+/// whoever started it (a CLI call, or a bridge under SSH).
+fn start(launch: &Launch) -> Result<(), ClientError> {
     Command::new(&launch.daemon)
         .arg("--background")
         .args(&launch.args)
@@ -306,20 +375,10 @@ pub async fn ensure_running(launch: &Launch, role: &str) -> Result<(Client, bool
         .stderr(Stdio::null())
         .current_dir("/")
         .spawn()
-        .map_err(|e| ClientError::Spawn(format!("{}: {e}", launch.daemon.display())))?;
-    let deadline = tokio::time::Instant::now() + launch.wait;
-    loop {
-        match Client::connect(&launch.socket, role).await {
-            Ok(c) => return Ok((c, true)),
-            Err(ClientError::NotRunning(_)) if tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            Err(ClientError::NotRunning(_)) => {
-                return Err(ClientError::Timeout(
-                    "waiting for dreamerd to start; see its log for the reason",
-                ));
-            }
-            Err(e) => return Err(e),
-        }
-    }
+        .map(drop)
+        .map_err(|e| ClientError::Spawn(format!("{}: {e}", launch.daemon.display())))
+}
+
+fn start_timeout() -> ClientError {
+    ClientError::Timeout("waiting for dreamerd to start; see its log for the reason")
 }

@@ -1,8 +1,9 @@
 # Wire protocol
 
-Dreamer clients (the GUI, `dream`, extensions, and later the SSH bridge)
-talk to `dreamerd` over a Unix socket using the protocol in `crates/wire`.
-It does not depend on tmux's protocol or on Ghostty's C ABI.
+Dreamer clients (the GUI, `dream`, extensions) talk to `dreamerd` using
+the protocol in `crates/wire`, over its Unix socket or over SSH through
+`dream bridge --stdio` ([cli.md](cli.md)). It does not depend on tmux's
+protocol or on Ghostty's C ABI.
 
 ## Byte layout
 

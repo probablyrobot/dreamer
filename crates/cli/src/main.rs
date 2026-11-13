@@ -22,9 +22,12 @@
 //!                                       a pane's text from the daemon's mirror
 //! dream mirrors [--json]                mirror state, tier, and journal of every pane
 //! dream tier %PANE hot|warm             set a pane's observation tier
+//! dream bridge --stdio [-L socket | --tmux-socket-path P] [--tmux PATH]
+//!                                       the daemon's protocol over stdin/stdout (for SSH)
 //! dream --version
 //! ```
 
+mod bridge;
 mod daemon;
 mod remote;
 
@@ -54,6 +57,7 @@ const USAGE: &str = "usage:
   dream read %PANE [--history N] [--json]
   dream mirrors [--json]
   dream tier %PANE hot|warm
+  dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream --version";
 
 fn main() -> ExitCode {
@@ -108,6 +112,13 @@ fn main() -> ExitCode {
                 _ => Err(format!("unexpected arguments {extra:?}\n{USAGE}")),
             })
         }
+        ["bridge", rest @ ..] => daemon::split_daemon_args(rest).and_then(|(d, extra)| {
+            if extra == ["--stdio"] {
+                bridge::stdio(&d)
+            } else {
+                Err(format!("dream bridge needs --stdio\n{USAGE}"))
+            }
+        }),
         ["ensure-running", rest @ ..] => daemon::split_daemon_args(rest).and_then(|(d, extra)| {
             if extra.is_empty() {
                 daemon::ensure(&d)
