@@ -364,8 +364,10 @@ fn the_stdio_bridge_carries_a_whole_session_and_leaves_the_daemon_running() {
     // With no daemon to reach, the bridge says why on standard error and
     // writes nothing at all where protocol bytes would go.
     let _ = cli.run(&["shutdown"]);
+    // Wait until nothing answers (an unreaped daemon in a container with no
+    // init still looks alive by pid, so ask the socket).
     let deadline = Instant::now() + Duration::from_secs(10);
-    while cli.daemon_pid().is_some_and(platform::process_alive) {
+    while cli.run(&["status"]).status.success() {
         assert!(Instant::now() < deadline, "daemon did not stop");
         std::thread::sleep(Duration::from_millis(50));
     }
