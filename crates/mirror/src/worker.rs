@@ -39,10 +39,25 @@ pub mod end {
     pub const CONNECTION_LOST: u8 = 3;
 }
 
+/// What applying a live record did besides changing the screen. Only
+/// subscribers live at the time see it; it is never journaled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Effect {
+    /// Increasing per mirror.
+    pub id: u64,
+    pub bells: u32,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+}
+
+/// A record on its way to a subscriber, with the live effects it produced
+/// (empty for replayed records).
+pub type Live = (u64, Record, Option<Effect>);
+
 /// A subscriber's side of the stream: records after its starting point.
 #[derive(Debug)]
 pub struct Sink {
-    pub records: mpsc::Sender<(u64, Record)>,
+    pub records: mpsc::Sender<Live>,
     pub ended: Arc<AtomicU8>,
 }
 
@@ -66,6 +81,9 @@ pub enum Start {
 pub struct Started {
     /// Scrollback lines the mirror keeps.
     pub scrollback: usize,
+    /// Current title and working directory: state, sent with the start.
+    pub title: Option<String>,
+    pub cwd: Option<String>,
     pub pane: PaneKey,
     pub epoch: ConnectionEpoch,
     pub generation: PaneGeneration,
@@ -133,6 +151,8 @@ pub struct LiveStats {
     pub journal_records: usize,
     /// Oldest retained record; `sequence + 1` when nothing is retained.
     pub journal_first: u64,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug)]
@@ -195,6 +215,9 @@ struct Mirror {
     journal: Journal,
     subscribers: Vec<Sink>,
     scrollback: usize,
+    title: Option<String>,
+    cwd: Option<String>,
+    effects: u64,
 }
 
 impl Drop for Mirror {
@@ -244,6 +267,8 @@ impl Mirror {
         self.subscribers.push(sink);
         Ok(Started {
             scrollback: self.scrollback,
+            title: self.title.clone(),
+            cwd: self.cwd.clone(),
             pane: self.pane.clone(),
             epoch: self.epoch,
             generation: self.generation,
@@ -253,16 +278,17 @@ impl Mirror {
 
     /// Hand a committed record to every subscriber. One that is full has
     /// fallen behind: it is ended as lagged, never skipped silently.
-    fn publish(&mut self, seq: u64, record: &Record) {
-        self.subscribers
-            .retain(|s| match s.records.try_send((seq, record.clone())) {
+    fn publish(&mut self, seq: u64, record: &Record, effect: Option<Effect>) {
+        self.subscribers.retain(|s| {
+            match s.records.try_send((seq, record.clone(), effect.clone())) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     s.ended.store(end::LAGGED, Ordering::SeqCst);
                     false
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
-            });
+            }
+        });
     }
 
     fn stats(&self) -> LiveStats {
@@ -280,6 +306,8 @@ impl Mirror {
             journal_bytes: self.journal.bytes(),
             journal_records: self.journal.len(),
             journal_first: self.journal.first_sequence(),
+            title: self.title.clone(),
+            cwd: self.cwd.clone(),
         }
     }
 
@@ -288,12 +316,30 @@ impl Mirror {
         if self.error.is_some() {
             return;
         }
+        let mut effect = None;
         let r = match &record {
             Record::Bytes(b) => {
                 self.ingested += b.len() as u64;
-                // Effects and replies are not acted on here; the reply policy
-                // is a later ticket. Mirrors never answer the application.
-                self.engine.feed(b).map(drop)
+                // Mirrors never answer the application (tmux owns replies).
+                // Title and cwd become state; they and bells are live
+                // effects for subscribers present now, never journaled.
+                self.engine.feed(b).map(|fx| {
+                    if fx.title.is_some() {
+                        self.title.clone_from(&fx.title);
+                    }
+                    if fx.pwd.is_some() {
+                        self.cwd.clone_from(&fx.pwd);
+                    }
+                    if fx.bells > 0 || fx.title.is_some() || fx.pwd.is_some() {
+                        self.effects += 1;
+                        effect = Some(Effect {
+                            id: self.effects,
+                            bells: fx.bells,
+                            title: fx.title,
+                            cwd: fx.pwd,
+                        });
+                    }
+                })
             }
             Record::Resize { cols, rows } => self.engine.resize(
                 GridSize {
@@ -306,7 +352,7 @@ impl Mirror {
         match r {
             Ok(()) => {
                 if !self.subscribers.is_empty() {
-                    self.publish(self.journal.next_sequence(), &record);
+                    self.publish(self.journal.next_sequence(), &record, effect);
                 }
                 self.sequence = self.journal.push(record, Instant::now());
             }
@@ -419,6 +465,8 @@ pub fn spawn(
                                         journal_bytes: 0,
                                         journal_records: 0,
                                         journal_first: 1,
+                                        title: None,
+                                        cwd: None,
                                     },
                                 );
                                 continue;
@@ -436,6 +484,11 @@ pub fn spawn(
                             journal: Journal::new(1, retention, host_bytes.clone()),
                             subscribers: Vec::new(),
                             scrollback: state.history_limit as usize,
+                            // Only what the program sets after attach; the
+                            // tmux pane title is in the topology.
+                            title: None,
+                            cwd: None,
+                            effects: 0,
                         };
                         for r in continuation {
                             m.apply(r);

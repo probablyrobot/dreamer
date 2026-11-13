@@ -410,6 +410,8 @@ impl api::Service for DaemonService {
                     journal_bytes: m.live.as_ref().map_or(0, |l| l.journal_bytes as u64),
                     journal_first_sequence: m.live.as_ref().map_or(0, |l| l.journal_first),
                     journal_records: m.live.as_ref().map_or(0, |l| l.journal_records as u32),
+                    title: m.live.as_ref().and_then(|l| l.title.clone()),
+                    cwd: m.live.as_ref().and_then(|l| l.cwd.clone()),
                 }
             })
             .collect();

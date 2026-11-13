@@ -561,3 +561,78 @@ async fn a_drag_held_past_the_top_scrolls_history_and_selects_into_it() {
         "still scrolling after release"
     );
 }
+
+/// Step `f` until `until` holds for (bells so far, follower) or `wait`
+/// passes; returns the bells counted.
+async fn bells_until(
+    f: &mut Follower,
+    wait: Duration,
+    until: impl Fn(u32, &Follower) -> bool,
+) -> u32 {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut bells = 0;
+    while !until(bells, f) {
+        match tokio::time::timeout_at(deadline, f.step()).await {
+            Ok(Ok(s)) => bells += s.bells,
+            Ok(Err(e)) => panic!("follow: {e}"),
+            Err(_) => break,
+        }
+    }
+    bells
+}
+
+#[tokio::test]
+async fn a_bell_reaches_each_live_subscriber_once_and_is_never_replayed() {
+    let s = Setup::new(&[]);
+    let mut a = s.follower().await;
+    let mut b = s.follower().await;
+    s.type_line("printf '\\033]2;TITLE-ONE\\007\\033]7;file://localhost/tmp/cwd-one\\007\\007'; echo BELL''-RUNG");
+    let rung = |n: u32, f: &Follower| n >= 1 && f.replica().text().contains("\nBELL-RUNG");
+    let ring_a = bells_until(&mut a, Duration::from_secs(20), rung).await;
+    let ring_b = bells_until(&mut b, Duration::from_secs(20), rung).await;
+    // Nothing more arrives for that one bell.
+    let more_a = bells_until(&mut a, Duration::from_millis(500), |_, _| false).await;
+    assert_eq!(
+        (ring_a + more_a, ring_b),
+        (1, 1),
+        "one bell per live subscriber"
+    );
+    assert_eq!(a.meta.title.as_deref(), Some("TITLE-ONE"));
+    assert!(
+        a.meta.cwd.as_deref().is_some_and(|c| c.contains("cwd-one")),
+        "{:?}",
+        a.meta
+    );
+
+    // Reconnecting resumes by replay: the labels are current and the bell
+    // is not rung again.
+    a.disconnect();
+    a.reconnect().await.expect("reconnect");
+    assert_eq!(a.last_mode, Some(api::SubscribeMode::Replay));
+    assert_eq!(a.meta.title.as_deref(), Some("TITLE-ONE"));
+    assert_eq!(
+        bells_until(&mut a, Duration::from_millis(500), |_, _| false).await,
+        0
+    );
+
+    // A new follower starts from a checkpoint: labels, no old bells.
+    let mut c = s.follower().await;
+    assert_eq!(c.last_mode, Some(api::SubscribeMode::Checkpoint));
+    assert_eq!(c.meta.title.as_deref(), Some("TITLE-ONE"));
+    assert_eq!(
+        bells_until(&mut c, Duration::from_millis(500), |_, _| false).await,
+        0
+    );
+
+    // The daemon reports the labels as state too.
+    let Response::TerminalMirrors(m) = s
+        .client()
+        .await
+        .call(Request::TerminalMirrors(api::TopologyParams::default()))
+        .await
+        .expect("mirrors")
+    else {
+        panic!("mirrors")
+    };
+    assert_eq!(m.mirrors[0].title.as_deref(), Some("TITLE-ONE"));
+}

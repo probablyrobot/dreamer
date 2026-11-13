@@ -86,6 +86,10 @@ pub struct Feed {
     latest: Arc<Mutex<Option<Arc<FrameSnapshot>>>>,
     status: Arc<Mutex<FeedStatus>>,
     pub stats: Arc<FeedStats>,
+    /// The pane's title and working directory, and bells rung by live
+    /// output that the view has not shown yet.
+    meta: Arc<Mutex<crate::PaneMeta>>,
+    bells: Arc<AtomicU64>,
     /// One signal means "a newer frame is waiting"; never more than one.
     pub wake: async_channel::Receiver<()>,
 }
@@ -100,6 +104,8 @@ impl Feed {
         launch: Option<client::Launch>,
     ) -> std::io::Result<Feed> {
         let latest = Arc::new(Mutex::new(None));
+        let meta = Arc::new(Mutex::new(crate::PaneMeta::default()));
+        let bells = Arc::new(AtomicU64::new(0));
         let status = Arc::new(Mutex::new(FeedStatus::Connecting));
         let stats = Arc::new(FeedStats::default());
         let (wake_tx, wake) = async_channel::bounded(1);
@@ -116,6 +122,8 @@ impl Feed {
         };
         let owner = Owner {
             target,
+            meta: meta.clone(),
+            bells: bells.clone(),
             latest: latest.clone(),
             status: status.clone(),
             stats: stats.clone(),
@@ -145,6 +153,8 @@ impl Feed {
             latest,
             status,
             stats,
+            meta,
+            bells,
             wake,
         })
     }
@@ -180,6 +190,16 @@ impl Feed {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.view(ViewCommand::Copy(tx));
         rx.await.ok().flatten()
+    }
+
+    /// The pane's current title and working directory.
+    pub fn meta(&self) -> crate::PaneMeta {
+        self.meta.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// Bells rung since the last call (live output only).
+    pub fn take_bells(&self) -> u64 {
+        self.bells.swap(0, Ordering::Relaxed)
     }
 
     /// The newest unpainted frame, if any.
@@ -269,6 +289,8 @@ impl InputSender {
 
 struct Owner {
     target: Arc<Target>,
+    meta: Arc<Mutex<crate::PaneMeta>>,
+    bells: Arc<AtomicU64>,
     latest: Arc<Mutex<Option<Arc<FrameSnapshot>>>>,
     status: Arc<Mutex<FeedStatus>>,
     stats: Arc<FeedStats>,
@@ -491,6 +513,29 @@ impl Owner {
                 f.step().await
             };
             self.stats.owner_wakeups.fetch_add(1, Ordering::Relaxed);
+            // Labels and bells reach the view with the next frame; with no
+            // new records, the current frame is published again to wake it.
+            let mut wake_view = false;
+            if let Ok(s) = &step {
+                if s.meta_changed {
+                    if let Ok(mut m) = self.meta.lock() {
+                        *m = f.meta.clone();
+                    }
+                    wake_view = true;
+                }
+                if s.bells > 0 {
+                    self.bells.fetch_add(u64::from(s.bells), Ordering::Relaxed);
+                    wake_view = true;
+                }
+            }
+            if wake_view
+                && let Ok(s) = &step
+                && s.records == 0
+                && !s.restored
+                && let Some(Ok(frame)) = f.frame()
+            {
+                self.publish(frame);
+            }
             match step {
                 Ok(s) if s.records > 0 || s.restored => {
                     if let Some((_, generation, _)) = f.replica().position() {
