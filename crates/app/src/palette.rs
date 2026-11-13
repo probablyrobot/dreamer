@@ -22,9 +22,12 @@ pub(crate) enum Command {
     VerifyHost,
     InstallOnHost,
     DisconnectHost,
+    AddHost,
+    EditHost,
+    RemoveHost,
 }
 
-pub(crate) const ALL: [Command; 17] = [
+pub(crate) const ALL: [Command; 20] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -42,6 +45,9 @@ pub(crate) const ALL: [Command; 17] = [
     Command::VerifyHost,
     Command::InstallOnHost,
     Command::DisconnectHost,
+    Command::AddHost,
+    Command::EditHost,
+    Command::RemoveHost,
 ];
 
 impl Command {
@@ -61,6 +67,9 @@ impl Command {
             Command::ToggleSidebar => "Toggle sidebar (sessions and hosts)",
             Command::OpenHost => "Open host…",
             Command::ReconnectHost => "Reconnect host…",
+            Command::AddHost => "Add a host profile…",
+            Command::EditHost => "Edit a host profile…",
+            Command::RemoveHost => "Remove a host profile… (the host is not touched)",
             Command::InstallOnHost => "Install or update the server on a host…",
             Command::VerifyHost => "Verify host in a terminal (host key, passphrase)…",
             Command::DisconnectHost => "Disconnect host… (its programs keep running)",
@@ -82,6 +91,8 @@ impl Command {
                 | Command::VerifyHost
                 | Command::InstallOnHost
                 | Command::DisconnectHost
+                | Command::EditHost
+                | Command::RemoveHost
         )
     }
 }
@@ -106,6 +117,47 @@ pub(crate) enum Stage {
     Confirm(Command),
     /// A command waits for a name.
     Name(Command, String),
+    /// A command waits for several values, one field at a time.
+    Form(Form),
+}
+
+/// Fields typed one after another: Enter moves to the next, and the last
+/// Enter submits. Up and Down move between fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Form {
+    pub command: Command,
+    /// (label, value, required)
+    pub fields: Vec<(&'static str, String, bool)>,
+    pub at: usize,
+    /// Why the last submit was refused, shown until the next edit.
+    pub error: Option<String>,
+    /// For an edit: the profile name being replaced.
+    pub replacing: Option<String>,
+}
+
+/// The fields of a host profile form, in order.
+pub(crate) const HOST_FIELDS: [(&str, bool); 5] = [
+    ("Name", true),
+    ("SSH destination (host alias or user@host)", true),
+    ("Remote dream path (blank: installed, else PATH)", false),
+    ("Remote tmux socket name (blank: default)", false),
+    ("Tags, comma separated", false),
+];
+
+impl Form {
+    pub(crate) fn host(command: Command, values: [String; 5], replacing: Option<String>) -> Form {
+        Form {
+            command,
+            fields: HOST_FIELDS
+                .iter()
+                .zip(values)
+                .map(|((label, required), v)| (*label, v, *required))
+                .collect(),
+            at: 0,
+            error: None,
+            replacing,
+        }
+    }
 }
 
 /// What Enter decided.
@@ -113,6 +165,8 @@ pub(crate) enum Stage {
 pub(crate) enum Decision {
     /// Run this command (with a name, for those that need one).
     Run(Command, Option<String>),
+    /// Submit a form's values.
+    Submit(Form),
     /// Stay open: confirm or name next, or nothing matches.
     Stay,
 }
@@ -148,6 +202,10 @@ impl Palette {
             }
             Stage::Name(_, name) => name.push(c),
             Stage::Confirm(_) => {}
+            Stage::Form(f) => {
+                f.fields[f.at].1.push(c);
+                f.error = None;
+            }
         }
     }
 
@@ -161,10 +219,23 @@ impl Palette {
                 name.pop();
             }
             Stage::Confirm(_) => self.stage = Stage::Choose,
+            Stage::Form(f) => {
+                f.fields[f.at].1.pop();
+                f.error = None;
+            }
         }
     }
 
     pub(crate) fn move_selection(&mut self, down: bool) {
+        if let Stage::Form(f) = &mut self.stage {
+            let n = f.fields.len();
+            f.at = if down {
+                (f.at + 1) % n
+            } else {
+                (f.at + n - 1) % n
+            };
+            return;
+        }
         let n = self.shown().len();
         if n == 0 {
             return;
@@ -188,6 +259,9 @@ impl Palette {
                 } else if c.needs_name() {
                     self.stage = Stage::Name(c, String::new());
                     Decision::Stay
+                } else if c == Command::AddHost {
+                    self.stage = Stage::Form(Form::host(c, Default::default(), None));
+                    Decision::Stay
                 } else {
                     Decision::Run(c, None)
                 }
@@ -197,6 +271,25 @@ impl Palette {
                 Decision::Run(c, Some(name.trim().to_owned()))
             }
             Stage::Name(..) => Decision::Stay,
+            Stage::Form(mut f) => {
+                let (label, value, required) = &f.fields[f.at];
+                if *required && value.trim().is_empty() {
+                    f.error = Some(format!("{label} is required"));
+                } else if f.at + 1 < f.fields.len() {
+                    f.at += 1;
+                } else if let Some(i) = f
+                    .fields
+                    .iter()
+                    .position(|(_, v, required)| *required && v.trim().is_empty())
+                {
+                    f.at = i;
+                    f.error = Some(format!("{} is required", f.fields[i].0));
+                } else {
+                    return Decision::Submit(f);
+                }
+                self.stage = Stage::Form(f);
+                Decision::Stay
+            }
         }
     }
 }
@@ -215,6 +308,33 @@ mod tests {
             p.type_char(c);
         }
         assert_eq!(p.shown(), vec![Command::KillPane, Command::KillWindow]);
+    }
+
+    #[test]
+    fn a_host_form_takes_fields_in_turn_and_insists_on_required_ones() {
+        let mut p = Palette::new();
+        "add a host".chars().for_each(|c| p.type_char(c));
+        assert_eq!(p.shown()[0], Command::AddHost);
+        assert_eq!(p.enter(), Decision::Stay);
+        // Name is required.
+        assert_eq!(p.enter(), Decision::Stay);
+        let Stage::Form(f) = &p.stage else {
+            panic!("form")
+        };
+        assert_eq!(f.at, 0);
+        assert!(f.error.is_some());
+        "devbox".chars().for_each(|c| p.type_char(c));
+        assert_eq!(p.enter(), Decision::Stay);
+        "me@devbox".chars().for_each(|c| p.type_char(c));
+        for _ in 0..3 {
+            assert_eq!(p.enter(), Decision::Stay);
+        }
+        let Decision::Submit(f) = p.enter() else {
+            panic!("submit")
+        };
+        assert_eq!(f.fields[0].1, "devbox");
+        assert_eq!(f.fields[1].1, "me@devbox");
+        assert!(f.fields[2..].iter().all(|(_, v, _)| v.is_empty()));
     }
 
     #[test]

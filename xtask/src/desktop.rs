@@ -248,7 +248,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         let passed = out.status.success()
             && stdout.contains(&format!("smoke: backend {expected}"))
-            && stdout.contains("smoke: reconnecting resumed the window");
+            && stdout.contains("smoke: reconnecting resumed the window")
+            && stdout.contains("smoke: a host profile was added, edited, and removed");
         println!(
             "linux-desktop: {backend:<7} {:<18} {}",
             "remote",

@@ -166,8 +166,26 @@ with `hosts.watch`, `hosts.subscribe`, and `hosts.call`.
   fallback attach command for floating panes and tmux modes is not offered
   yet, because a local `tmux attach` cannot reach a remote server.
 
-Profiles are edited in `hosts.yaml` for now; editing them in the desktop is
-tracked in #169.
+**Profiles.** "Add a host profile…", "Edit a host profile…", and "Remove a
+host profile…" in the palette change `hosts.yaml`
+([remote.md](remote.md#profiles)). Add and edit open a short form, one
+field at a time:
+
+- name (required);
+- SSH destination (required);
+- remote `dream` path (blank: the installed one, else `PATH`);
+- remote tmux socket name (blank: the default);
+- tags, comma separated.
+
+Enter moves to the next field, Up and Down move between fields, and the
+last Enter saves. The new file is checked with the same rules as reading
+it before anything is written. A refused profile reopens the form with the
+reason, and the file stays as it was. Saving keeps the file's leading
+comments and the order of the profiles. Settings the form does not show
+(the remote tmux executable, a socket path, the workspace, the reconnect
+policy) are kept from the profile being edited. Removing a profile never
+touches the host. The daemon reads the file on use, so changes need no
+restart. Comments between profiles are not kept.
 
 The `remote` gate stage (macOS) and the Linux desktop gate run
 `dreamer --smoke-remote --host devbox` against a second isolated tmux and
