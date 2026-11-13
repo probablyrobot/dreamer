@@ -240,7 +240,7 @@ fn paint_images(
         let Some(texture) = TEXTURES.with(|t| t.borrow_mut().get(&p.image, stats)) else {
             continue;
         };
-        if visible != whole_dest(p, bounds, m) {
+        if clipped(visible, whole_dest(p, bounds, m)) {
             stats.images_clipped += 1;
         }
         if window
@@ -250,6 +250,26 @@ fn paint_images(
             stats.images += 1;
         }
     }
+}
+
+/// Whether the grid cut part of a placement off. Edges are compared with a
+/// small tolerance: with fractional cell sizes (a 1.5 scale factor gives
+/// 20.67 px cells) intersecting the same rectangle can move an edge by a
+/// rounding error, which is not a clip.
+fn clipped(visible: Bounds<Pixels>, dest: Bounds<Pixels>) -> bool {
+    const EPS: f32 = 0.01;
+    let far = |b: Bounds<Pixels>| {
+        (
+            f32::from(b.origin.x + b.size.width),
+            f32::from(b.origin.y + b.size.height),
+        )
+    };
+    let (vr, vb) = far(visible);
+    let (dr, db) = far(dest);
+    (f32::from(visible.origin.x) - f32::from(dest.origin.x)).abs() > EPS
+        || (f32::from(visible.origin.y) - f32::from(dest.origin.y)).abs() > EPS
+        || (vr - dr).abs() > EPS
+        || (vb - db).abs() > EPS
 }
 
 /// Where a placement lands: its destination rectangle in this view.
@@ -751,5 +771,36 @@ mod tests {
         assert!(placement_rects(&placement(0, -5, 10, 20, (0, 0, 40, 40)), grid(), M).is_none());
         // A zero-sized crop is never drawn.
         assert!(placement_rects(&placement(0, 0, 10, 20, (0, 0, 0, 40)), grid(), M).is_none());
+    }
+
+    #[test]
+    fn fractional_cells_do_not_count_a_whole_image_as_clipped() {
+        // X11 at scale 1.5: 8 x 20.666666 px cells in a grid whose origin is
+        // fractional too.
+        let m = CellMetrics {
+            width: px(8.0),
+            height: px(20.666_666),
+            ascent: px(15.333_333),
+        };
+        let mut exact_differs = 0;
+        for k in 0..30 {
+            let bounds = Bounds::new(
+                point(px(0.0), px(k as f32 / 3.0)),
+                size(px(900.0), m.height * 20.0),
+            );
+            for row in 0..17 {
+                let p = placement(0, row, 20, 40, (0, 0, 40, 40));
+                let (visible, _) = placement_rects(&p, bounds, m).expect("visible");
+                let dest = whole_dest(&p, bounds, m);
+                exact_differs += usize::from(visible != dest);
+                assert!(!clipped(visible, dest), "row {row}, origin {k}/3");
+            }
+            // A real cut is still a clip.
+            let p = placement(110, 0, 40, 20, (0, 0, 40, 40));
+            let (visible, _) = placement_rects(&p, bounds, m).expect("partly visible");
+            assert!(clipped(visible, whole_dest(&p, bounds, m)));
+        }
+        // The case this guards against does occur with these sizes.
+        assert!(exact_differs > 0, "no rounding difference to guard against");
     }
 }
