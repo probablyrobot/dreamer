@@ -29,6 +29,10 @@ struct PaneView {
 pub(crate) struct Workspace {
     /// The daemon's tmux options, for the fallback attach command.
     daemon_args: Vec<String>,
+    /// The local daemon's tmux, or a host through its coordinator.
+    pub(crate) via: replica::Via,
+    /// The local daemon's remote hosts, while the sidebar shows them.
+    hosts: Option<Arc<replica::hosts::HostsFeed>>,
     topology: Arc<TopologyFeed>,
     socket: PathBuf,
     /// The latest topology, and the session this window shows.
@@ -92,6 +96,8 @@ impl Workspace {
     ) -> Workspace {
         Workspace {
             daemon_args,
+            via: replica::Via::Local,
+            hosts: None,
             topology,
             socket,
             current: None,
@@ -385,6 +391,24 @@ impl Workspace {
                 self.toggle_sidebar(cx);
                 None
             }
+            C::OpenHost => {
+                if let Some(name) = name {
+                    self.open_host(&name, cx);
+                }
+                None
+            }
+            C::ReconnectHost => {
+                if let (Some(name), Some(h)) = (name, self.hosts_feed()) {
+                    h.reconnect(&name);
+                }
+                None
+            }
+            C::DisconnectHost => {
+                if let (Some(name), Some(h)) = (name, self.hosts_feed()) {
+                    h.disconnect(&name);
+                }
+                None
+            }
         };
         if let Some(kind) = action {
             self.topology.act(kind);
@@ -515,8 +539,131 @@ impl Workspace {
 
     pub(crate) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar = !self.sidebar;
+        self.follow_hosts(cx);
         self.save_state(cx);
         cx.notify();
+    }
+
+    /// Keep a hosts feed while the sidebar is open, and redraw on news.
+    fn follow_hosts(&mut self, cx: &mut Context<Self>) {
+        if !self.sidebar {
+            self.hosts = None;
+            return;
+        }
+        if self.hosts.is_some() {
+            return;
+        }
+        let Ok(feed) = replica::hosts::HostsFeed::start(self.socket.clone()) else {
+            return;
+        };
+        let feed = Arc::new(feed);
+        self.hosts = Some(feed.clone());
+        cx.spawn(async move |ws, cx| {
+            while feed.wake.recv().await.is_ok() {
+                let alive = ws.update(cx, |ws, cx| {
+                    // A newer feed replaced this one, or the sidebar closed.
+                    let current = ws.hosts.as_ref().is_some_and(|h| Arc::ptr_eq(h, &feed));
+                    cx.notify();
+                    current
+                });
+                if !matches!(alive, Ok(true)) {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The hosts feed, starting one for a single command if the sidebar
+    /// has none.
+    fn hosts_feed(&mut self) -> Option<Arc<replica::hosts::HostsFeed>> {
+        if let Some(h) = &self.hosts {
+            return Some(h.clone());
+        }
+        replica::hosts::HostsFeed::start(self.socket.clone())
+            .ok()
+            .map(Arc::new)
+    }
+
+    /// Open a window on a host's tmux, connecting the host first unless it
+    /// is live.
+    pub(crate) fn open_host(&mut self, name: &str, cx: &mut Context<Self>) {
+        let launch = client::Launch::new(self.daemon_args.clone());
+        replica::hosts::connect_once(launch.clone(), name.to_owned());
+        if let Err(e) = open_via(
+            cx,
+            launch,
+            replica::Via::Host(name.to_owned()),
+            None,
+            Vec::new(),
+        )
+        .map(drop)
+        {
+            eprintln!("dreamer: {e}");
+        }
+    }
+
+    /// The sidebar's hosts: each with its state; a click opens a window on
+    /// it (connecting first). Nothing when the daemon knows no hosts.
+    fn hosts_section(
+        &self,
+        t: crate::theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let Some(feed) = &self.hosts else {
+            return Vec::new();
+        };
+        let list = feed.list().unwrap_or_default();
+        let error = feed.error();
+        if list.hosts.is_empty() && error.is_none() {
+            return Vec::new();
+        }
+        let mut out: Vec<gpui::AnyElement> = vec![
+            div()
+                .mt_2()
+                .text_color(c(t.faint))
+                .child("Hosts")
+                .into_any_element(),
+        ];
+        for (i, h) in list.hosts.into_iter().enumerate() {
+            let state = api::LinkState::try_from(h.state).unwrap_or(api::LinkState::Unspecified);
+            let (mark, color, word) = match state {
+                api::LinkState::Live => ("●", t.accent, "live".to_owned()),
+                api::LinkState::Connecting => ("◐", t.warning, "connecting".to_owned()),
+                api::LinkState::Failed => (
+                    "○",
+                    t.danger,
+                    match h.next_retry_unix_ms {
+                        Some(_) => format!("retrying ({})", h.attempts),
+                        None => api::HostFailure::try_from(h.failure)
+                            .map_or("failed".into(), |f| f.name().replace('_', " ")),
+                    },
+                ),
+                api::LinkState::Closed => ("○", t.faint, "disconnected".to_owned()),
+                api::LinkState::Unspecified => ("○", t.faint, "not connected".to_owned()),
+            };
+            let here = self.via.host() == Some(h.name.as_str());
+            let name = h.name.clone();
+            out.push(
+                div()
+                    .id(("host", i))
+                    .px_2()
+                    .rounded_sm()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .when(here, |d| d.bg(c(t.selected)))
+                    .child(div().text_color(c(color)).child(mark))
+                    .child(div().text_color(c(t.text)).child(h.name.clone()))
+                    .child(div().text_color(c(t.faint)).child(word))
+                    .on_click(cx.listener(move |ws, _, _, cx| ws.open_host(&name, cx)))
+                    .into_any_element(),
+            );
+        }
+        if let Some(e) = error {
+            out.push(div().text_color(c(t.danger)).child(e).into_any_element());
+        }
+        out
     }
 
     /// The tmux mode a pane is in (copy-mode, ...), which Dreamer does not
@@ -533,6 +680,10 @@ impl Workspace {
 
     /// The attach command for the shown session and a window of it.
     pub(crate) fn attach_for(&self, window: Option<u32>) -> Option<crate::fallback::Attach> {
+        // A host's tmux is not reachable with a local tmux command.
+        if self.via != replica::Via::Local {
+            return None;
+        }
         Some(crate::fallback::attach_command(
             &self.daemon_args,
             self.session?,
@@ -642,6 +793,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A sidebar restored open shows hosts too.
+        if self.sidebar && self.hosts.is_none() {
+            self.follow_hosts(cx);
+        }
         if !self.restored {
             // The first topology: the saved session, by id only for the same
             // server incarnation, else by name (spec 15.2: never reopen a
@@ -692,7 +847,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<PaneView> {
-        let feed = Feed::start(self.socket.clone(), Some(pane), None)
+        let feed = Feed::start_via(self.socket.clone(), self.via.clone(), Some(pane), None)
             .ok()
             .map(Arc::new);
         let frame = load_frame(b"").ok()?;
@@ -765,6 +920,10 @@ impl Workspace {
             .and_then(|f| self.panes.get(&f))
             .map(|p| p.shell.read(cx).wanted_title())
             .unwrap_or_else(|| "Dreamer".into());
+        let title = match self.via.host() {
+            Some(host) => format!("{host}: {title}"),
+            None => title,
+        };
         if title != self.title {
             window.set_window_title(&title);
             self.title = title;
@@ -879,6 +1038,7 @@ impl Render for Workspace {
                             cx.listener(move |ws, _, window, cx| ws.switch_session(id, window, cx)),
                         )
                 }))
+                .children(self.hosts_section(t, cx))
         });
 
         // Panes at their tmux cell rectangles, in canonical cells scaled to
@@ -1226,16 +1386,41 @@ pub(crate) fn open(
     smoke: Option<(Vec<String>, bool)>,
     open_at_start: Vec<String>,
 ) -> Result<(), String> {
+    open_via(cx, launch, replica::Via::Local, smoke, open_at_start).map(drop)
+}
+
+/// Run the remote smoke in a window opened with [`open_via`].
+pub(crate) fn smoke_remote(
+    cx: &mut gpui::App,
+    window: (gpui::AnyWindowHandle, gpui::WeakEntity<Workspace>),
+) {
+    let (any, ws) = window;
+    cx.spawn(async move |cx| smoke::remote(any, ws, cx).await)
+        .detach();
+}
+
+/// Like [`open`], showing the tmux reached `via` (a host, through the
+/// local daemon's coordinator).
+pub(crate) fn open_via(
+    cx: &mut gpui::App,
+    launch: client::Launch,
+    via: replica::Via,
+    smoke: Option<(Vec<String>, bool)>,
+    open_at_start: Vec<String>,
+) -> Result<(gpui::AnyWindowHandle, gpui::WeakEntity<Workspace>), String> {
     use gpui::{Bounds, WindowBounds, WindowOptions, size};
     let socket = launch.socket.clone();
     let daemon_args = launch.args.clone();
     let topology = Arc::new(
-        TopologyFeed::start(socket.clone(), Some(launch))
+        TopologyFeed::start_via(socket.clone(), via.clone(), Some(launch))
             .map_err(|e| format!("cannot follow the tmux topology: {e}"))?,
     );
     // The saved arrangement. A smoke run uses one only in a private
-    // directory it was given, never the user's.
-    let state_path = if smoke.is_some() && std::env::var_os("DREAMER_DESKTOP_STATE_DIR").is_none() {
+    // directory it was given, never the user's. A host's window does not
+    // save one: the arrangement is the local tmux's.
+    let state_path = if via != replica::Via::Local
+        || (smoke.is_some() && std::env::var_os("DREAMER_DESKTOP_STATE_DIR").is_none())
+    {
         None
     } else {
         workspace_config::desktop_state::desktop_state_path()
@@ -1260,6 +1445,7 @@ pub(crate) fn open(
             |window, cx| {
                 let ws = cx.new(|cx| {
                     let mut ws = Workspace::new(cx, t, socket, daemon_args);
+                    ws.via = via.clone();
                     ws.with_state(state_path);
                     ws
                 });
@@ -1309,7 +1495,7 @@ pub(crate) fn open(
                 .detach();
         }
     }
-    Ok(())
+    Ok((any, ws.downgrade()))
 }
 
 mod smoke {
@@ -1411,6 +1597,137 @@ mod smoke {
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default()
+    }
+
+    /// Text into the first visible pane, through its feed (and so through
+    /// the coordinator for a host).
+    fn type_into_first(
+        any: AnyWindowHandle,
+        ws: &WeakEntity<Workspace>,
+        cx: &mut AsyncApp,
+        line: &str,
+    ) {
+        let text = format!("{line}\r");
+        let _ = cx.update_window(any, move |_, _, cx| {
+            let _ = ws.read_with(cx, |w, cx| {
+                if let Some(s) = w.pane_ids().first().and_then(|id| w.pane_shell(*id)) {
+                    s.read(cx)
+                        .send_all([api::terminal_input::Event::Text(api::TextInput { text })]);
+                }
+            });
+        });
+    }
+
+    fn first_pane_has_line(w: &Workspace, cx: &gpui::App, line: &str) -> bool {
+        w.pane_ids()
+            .first()
+            .and_then(|id| w.pane_shell(*id))
+            .is_some_and(|s| {
+                s.read(cx)
+                    .frame
+                    .text_dump()
+                    .lines()
+                    .any(|l| l.trim_end() == line)
+            })
+    }
+
+    fn panes_following(w: &Workspace, cx: &gpui::App) -> bool {
+        let ids = w.pane_ids();
+        !ids.is_empty()
+            && ids.iter().all(|id| {
+                w.pane_shell(*id).is_some_and(|s| {
+                    s.read(cx)
+                        .feed
+                        .as_ref()
+                        .is_some_and(|f| matches!(f.status(), replica::feed::FeedStatus::Following))
+                })
+            })
+    }
+
+    /// `dreamer --smoke-remote --host NAME`: a host's session through the
+    /// local daemon's coordinator. Its pane shows what the host's tmux has
+    /// (`READY-REMOTE`); typed text reaches it; disconnecting the host marks
+    /// the window stale and keeps the pane's content; reconnecting resumes.
+    pub(super) async fn remote(any: AnyWindowHandle, ws: WeakEntity<Workspace>, cx: &mut AsyncApp) {
+        let host = read(any, &ws, cx, |w, _| w.via.host().map(str::to_owned))
+            .flatten()
+            .unwrap_or_else(|| fail("the remote smoke needs --host"));
+        let deadline = Duration::from_secs(20);
+        wait_long(any, &ws, cx, "the host's pane", deadline, |w, cx| {
+            panes_following(w, cx) && first_pane_has_line(w, cx, "READY-REMOTE")
+        })
+        .await;
+        println!("smoke: host `{host}`: its session's pane is shown through the coordinator");
+        type_into_first(any, &ws, cx, "echo REMOTE-$((6*7))");
+        wait_long(any, &ws, cx, "REMOTE-42", deadline, |w, cx| {
+            first_pane_has_line(w, cx, "REMOTE-42")
+        })
+        .await;
+        println!("smoke: text typed in the window ran on the host: REMOTE-42");
+
+        let socket = read(any, &ws, cx, |w, _| w.socket.clone())
+            .unwrap_or_else(|| fail("the window went away"));
+        let hosts = replica::hosts::HostsFeed::start(socket)
+            .unwrap_or_else(|e| fail(&format!("hosts feed: {e}")));
+        let stale = |w: &Workspace| {
+            matches!(
+                w.topology.status(),
+                replica::topology::TopologyStatus::Reconnecting(_)
+            )
+        };
+        hosts.disconnect(&host);
+        wait_long(any, &ws, cx, "the window marked stale", deadline, |w, _| {
+            stale(w)
+        })
+        .await;
+        if read(any, &ws, cx, |w, cx| {
+            first_pane_has_line(w, cx, "REMOTE-42")
+        }) != Some(true)
+        {
+            fail("the pane lost its content when the host went away");
+        }
+        println!(
+            "smoke: disconnecting the host marked the window stale and the pane kept its content"
+        );
+        hosts.reconnect(&host);
+        wait_long(
+            any,
+            &ws,
+            cx,
+            "the window current again",
+            deadline,
+            |w, cx| !stale(w) && panes_following(w, cx),
+        )
+        .await;
+        type_into_first(any, &ws, cx, "echo BACK-$((2+3))");
+        wait_long(any, &ws, cx, "BACK-5", deadline, |w, cx| {
+            first_pane_has_line(w, cx, "BACK-5")
+        })
+        .await;
+        println!(
+            "smoke: reconnecting resumed the window, and typing reached the host again: BACK-5"
+        );
+        std::process::exit(0);
+    }
+
+    /// Like `wait_for`, with its own limit (a host connects over SSH).
+    async fn wait_long(
+        any: AnyWindowHandle,
+        ws: &WeakEntity<Workspace>,
+        cx: &mut AsyncApp,
+        what: &str,
+        limit: Duration,
+        check: impl Fn(&Workspace, &gpui::App) -> bool,
+    ) {
+        let deadline = Instant::now() + limit;
+        while read(any, ws, cx, &check) != Some(true) {
+            if Instant::now() > deadline {
+                fail(&format!("never saw: {what}"));
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+        }
     }
 
     pub(super) async fn run(

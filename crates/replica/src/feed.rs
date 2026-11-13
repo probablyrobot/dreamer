@@ -104,6 +104,17 @@ impl Feed {
         pane: Option<u32>,
         launch: Option<client::Launch>,
     ) -> std::io::Result<Feed> {
+        Feed::start_via(socket, crate::Via::Local, pane, launch)
+    }
+
+    /// Like [`Feed::start`], following a pane `via` a host connected
+    /// through the local daemon.
+    pub fn start_via(
+        socket: PathBuf,
+        via: crate::Via,
+        pane: Option<u32>,
+        launch: Option<client::Launch>,
+    ) -> std::io::Result<Feed> {
         let latest = Arc::new(Mutex::new(None));
         let meta = Arc::new(Mutex::new(crate::PaneMeta::default()));
         let bells = Arc::new(AtomicU64::new(0));
@@ -121,11 +132,13 @@ impl Feed {
         });
         let sender = InputSender {
             socket: socket.clone(),
+            via: via.clone(),
             target: target.clone(),
             sent: inputs_sent.clone(),
             dropped: inputs_dropped.clone(),
         };
         let owner = Owner {
+            via,
             target,
             meta: meta.clone(),
             bells: bells.clone(),
@@ -242,6 +255,7 @@ struct Target {
 /// interrupts, the follow loop.
 struct InputSender {
     socket: PathBuf,
+    via: crate::Via,
     target: Arc<Target>,
     sent: Arc<AtomicU64>,
     dropped: Arc<AtomicU64>,
@@ -270,16 +284,20 @@ impl InputSender {
                 Some(self.target.generation.load(Ordering::Acquire)).filter(|g| *g != 0);
             let result = match event {
                 api::terminal_input::Event::Paste(p) => {
-                    client::paste(c, pane, generation, &p.data).await.map(drop)
+                    self.via.paste(c, pane, generation, &p.data).await
                 }
-                other => c
-                    .call(api::Request::TerminalInput(api::TerminalInput {
-                        pane,
-                        generation,
-                        endpoint: None,
-                        client: Some(self.target.client),
-                        event: Some(other),
-                    }))
+                other => self
+                    .via
+                    .call(
+                        c,
+                        api::Request::TerminalInput(api::TerminalInput {
+                            pane,
+                            generation,
+                            endpoint: None,
+                            client: Some(self.target.client),
+                            event: Some(other),
+                        }),
+                    )
                     .await
                     .map(drop),
             };
@@ -304,6 +322,7 @@ impl InputSender {
 }
 
 struct Owner {
+    via: crate::Via,
     target: Arc<Target>,
     meta: Arc<Mutex<crate::PaneMeta>>,
     bells: Arc<AtomicU64>,
@@ -334,8 +353,9 @@ impl Owner {
     async fn connect(&self, socket: &std::path::Path, pane: u32) -> Follower {
         let mut backoff = Duration::from_millis(100);
         loop {
-            match Follower::start_as(
+            match Follower::start_via(
                 socket.to_path_buf(),
+                self.via.clone(),
                 pane,
                 RetryPolicy::default(),
                 Some(self.target.client),
@@ -374,8 +394,12 @@ impl Owner {
         let c = client::Client::connect(socket, "gui")
             .await
             .map_err(|e| e.to_string())?;
-        let api::Response::TmuxTopology(t) = c
-            .call(api::Request::TmuxTopology(api::TopologyParams::default()))
+        let api::Response::TmuxTopology(t) = self
+            .via
+            .call(
+                &c,
+                api::Request::TmuxTopology(api::TopologyParams::default()),
+            )
             .await
             .map_err(|e| e.to_string())?
         else {

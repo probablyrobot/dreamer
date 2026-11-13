@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use api::{Request, Response};
+use api::Request;
 use client::{Client, ClientError, Pushed};
 use prost::Message as _;
 use tokio::sync::mpsc::Receiver;
@@ -90,6 +90,8 @@ pub struct PaneMeta {
 #[derive(Debug)]
 pub struct Follower {
     socket: PathBuf,
+    /// The local daemon's tmux, or a host through its coordinator.
+    via: crate::Via,
     replica: Replica,
     client: Option<Client>,
     pushed: Option<Receiver<Pushed>>,
@@ -128,10 +130,22 @@ impl Follower {
         policy: RetryPolicy,
         client: Option<u64>,
     ) -> Result<Follower, FollowError> {
+        Follower::start_via(socket, crate::Via::Local, pane, policy, client).await
+    }
+
+    /// Like [`Follower::start_as`], following a pane `via` a host.
+    pub async fn start_via(
+        socket: PathBuf,
+        via: crate::Via,
+        pane: u32,
+        policy: RetryPolicy,
+        client: Option<u64>,
+    ) -> Result<Follower, FollowError> {
         let mut f = Follower {
             client_id: client,
             clipboard: None,
             socket,
+            via,
             replica: Replica::new(pane),
             client: None,
             pushed: None,
@@ -192,10 +206,7 @@ impl Follower {
             client: self.client_id,
             ..api::TerminalSubscribe::default()
         };
-        let Response::TerminalSubscribe(s) = client.call(Request::TerminalSubscribe(req)).await?
-        else {
-            return Err(FollowError::Disconnected);
-        };
+        let s = self.via.subscribe(client, req).await?;
         self.last_mode = api::SubscribeMode::try_from(s.mode).ok();
         self.subscription = Some(s.id);
         // Labels are state: the subscription carries their current values,
@@ -384,6 +395,10 @@ impl Follower {
                     // from a fresh checkpoint.
                     Ok(api::EndReason::Reattached) => self.subscribe(false).await?,
                     Ok(api::EndReason::PaneClosed) => self.state = FollowState::PaneClosed,
+                    // The host's daemon restarted: its journal is new.
+                    Ok(api::EndReason::HostRestarted) => self.subscribe(false).await?,
+                    // The host is gone for now: reconnect (and resume) later.
+                    Ok(api::EndReason::HostLost) => self.disconnect(),
                     // The daemon reattaches tmux under a new epoch.
                     Ok(api::EndReason::ConnectionLost) => {
                         self.resnapshot("the daemon lost tmux".into()).await?;

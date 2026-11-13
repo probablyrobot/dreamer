@@ -217,6 +217,11 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         });
         stages.push(Stage {
+            name: "remote",
+            action: Builtin(remote_smoke),
+            when: When::Code,
+        });
+        stages.push(Stage {
             name: "package",
             action: Builtin(package_away_from_tree),
             when: When::Full,
@@ -484,6 +489,168 @@ pub fn desktop_state_dir(name: &str) -> PathBuf {
 
 /// Tabs and panes laid out from tmux, an external split, a tab switch,
 /// and (with a refreshing display) click-to-focus and typing.
+/// A host's session in a desktop window, through the local daemon's
+/// coordinator: typing reaches the host, a disconnect marks the window
+/// stale, a reconnect resumes it. Needs a GUI session but not a refreshing
+/// display (text arrives from the feeds).
+fn remote_smoke(dir: &Path) -> Result<Done, String> {
+    if !require_gui()? {
+        return Ok(Done::NotRun);
+    }
+    let out = remote_smoke_output(dir, &[])?;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        println!("gate:   {line}");
+    }
+    if out.status.success() {
+        Ok(Done::Passed)
+    } else {
+        Err(format!(
+            "remote smoke failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Run `dreamer --smoke-remote --host devbox`. The "host" is a second
+/// isolated tmux server and daemon with private directories, reached only
+/// through a stand-in `ssh` that runs the remote command in a shell, as
+/// sshd does, and a `hosts.yaml` profile in a private configuration
+/// directory. Nothing touches the user's tmux, SSH, or settings.
+pub fn remote_smoke_output(
+    dir: &Path,
+    env_remove: &[&str],
+) -> Result<std::process::Output, String> {
+    let build = clean_git_env(Command::new("cargo"))
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "dreamer-app",
+            "-p",
+            "dreamer-server",
+            "-p",
+            "dreamer-cli",
+        ])
+        .current_dir(dir)
+        .status()
+        .map_err(|e| format!("cargo build: {e}"))?;
+    if !build.success() {
+        return Err("building dreamer, dreamerd, and dream failed".into());
+    }
+    let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
+    let id = std::process::id();
+    let (near, far) = (
+        format!("dreamer-gate-near-{id}"),
+        format!("dreamer-gate-far-{id}"),
+    );
+    let root = PathBuf::from(format!("/tmp/drm-gate-remote-{id}"));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("config")).map_err(|e| e.to_string())?;
+    for (socket, ready) in [(&near, "echo READY-LOCAL"), (&far, "echo READY-REMOTE")] {
+        let started = Command::new(&tmux)
+            .args([
+                "-L",
+                socket,
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                "main",
+            ])
+            .args(["-x", "100", "-y", "30", "env PS1='$ ' /bin/sh"])
+            .status()
+            .map_err(|e| format!("{tmux}: {e}"))?;
+        if !started.success() {
+            return Err("could not start an isolated tmux server".into());
+        }
+        let _ = Command::new(&tmux)
+            .args(["-L", socket, "send-keys", "-t", "main", ready, "Enter"])
+            .status();
+    }
+    let bin = dir.join("target/debug");
+    let ssh = root.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\n\
+             export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'\n\
+             export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'\n\
+             exec /bin/sh -c \"exec $3\"\n",
+            rt = root.join("far/rt").display(),
+            st = root.join("far/st").display(),
+            daemon = bin.join("dreamerd").display(),
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+    let tmux_path = which(&tmux).unwrap_or_else(|| PathBuf::from(&tmux));
+    std::fs::write(
+        root.join("config/hosts.yaml"),
+        format!(
+            "hosts:\n  - name: devbox\n    destination: devbox\n    dream: '{}'\n    tmux: '{}'\n    tmux_socket: '{far}'\n",
+            bin.join("dream").display(),
+            tmux_path.display(),
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut app = Command::new(bin.join("dreamer"));
+    for var in env_remove {
+        app.env_remove(var);
+    }
+    let out = app
+        .args([
+            "--smoke-remote",
+            "--host",
+            "devbox",
+            "-L",
+            &near,
+            "--tmux",
+            &tmux,
+        ])
+        .env("DREAMER_RUNTIME_DIR", root.join("rt"))
+        .env("DREAMER_STATE_DIR", root.join("st"))
+        .env("DREAMER_CONFIG_DIR", root.join("config"))
+        .env("DREAMER_DESKTOP_STATE_DIR", root.join("desktop"))
+        .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+        .env("DREAMER_SSH", &ssh)
+        .env("DREAMER_TEST_BACKOFF_MS", "200")
+        .output();
+    for lock in ["rt/dreamerd.lock", "far/rt/dreamerd.lock"] {
+        if let Some(pid) = std::fs::read_to_string(root.join(lock))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+        {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+        }
+    }
+    for socket in [&near, &far] {
+        let _ = Command::new(&tmux)
+            .args(["-L", socket, "kill-server"])
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    out.map_err(|e| format!("dreamer: {e}"))
+}
+
+/// `program` resolved on `PATH` (the remote side gets an absolute path).
+fn which(program: &str) -> Option<PathBuf> {
+    if program.contains('/') {
+        return Some(PathBuf::from(program));
+    }
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join(program))
+            .find(|p| p.is_file())
+    })
+}
+
 fn workspace_smoke(dir: &Path) -> Result<Done, String> {
     if !require_gui()? {
         return Ok(Done::NotRun);

@@ -4410,6 +4410,7 @@ dependencies = [
  "prost",
  "terminal-ghostty",
  "tokio",
+ "wire",
 ]
 
 [[package]]
