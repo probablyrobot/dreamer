@@ -818,6 +818,13 @@ impl api::Service for DaemonService {
         self.0.hosts.upgrade(p).await
     }
 
+    async fn grants_current(&self, _: api::Empty) -> Result<api::Grant, RpcError> {
+        Err(RpcError::new(
+            code::INVALID_REQUEST,
+            "grants.current is answered for a connection",
+        ))
+    }
+
     async fn hosts_call(&self, p: api::HostCall) -> Result<api::HostReply, RpcError> {
         self.0.hosts.call(p).await
     }

@@ -12,6 +12,7 @@
 //! startup, and nothing but protocol frames to the socket.
 
 mod conn;
+mod grants;
 mod hosts;
 mod install;
 mod log;

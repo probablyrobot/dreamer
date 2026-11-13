@@ -394,3 +394,21 @@ async fn when_the_last_dreamer_window_goes_the_tmux_window_returns_to_the_termin
     let _ = terminal.kill();
     let _ = terminal.wait();
 }
+
+#[tokio::test]
+async fn the_user_s_own_clients_hold_the_owner_grant() {
+    let s = Setup::new();
+    let c = s.client().await;
+    let Response::GrantsCurrent(g) = c
+        .call(Request::GrantsCurrent(api::Empty {}))
+        .await
+        .expect("grants.current")
+    else {
+        panic!("grant");
+    };
+    assert!(g.owner, "{g:?}");
+    // And it can do what it always could.
+    c.call(Request::TmuxTopology(api::TopologyParams::default()))
+        .await
+        .expect("topology");
+}
