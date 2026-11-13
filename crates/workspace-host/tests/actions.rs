@@ -287,17 +287,33 @@ async fn every_action_reports_what_tmux_shows_afterwards() {
     completed(&r);
     h.wait_for_text(first, "\nkeys").await;
 
-    // A second window to select and kill.
-    h.server
-        .run_checked(&[
-            "new-window",
-            "-d",
-            "-t",
-            &format!("${session}:"),
-            "sleep 600",
-        ])
-        .expect("window");
+    // A second window, through the typed action, to select and kill.
+    let r = actions
+        .submit(
+            &mut h.ep,
+            submit(Kind::NewWindow(api::NewWindow {
+                session,
+                name: Some("second".into()),
+                argv: vec!["sleep".into(), "600".into()],
+                cwd: None,
+            })),
+        )
+        .await
+        .expect("new window");
+    assert!(
+        completed(&r).starts_with("created window @"),
+        "{}",
+        completed(&r)
+    );
     h.ep.tracker.refresh().await.expect("refresh");
+    assert!(
+        h.ep.tracker
+            .inventory()
+            .windows
+            .values()
+            .any(|w| w.name == "second"),
+        "the new window is not named"
+    );
     let other = *h
         .ep
         .tracker
@@ -332,7 +348,7 @@ async fn every_action_reports_what_tmux_shows_afterwards() {
 
     // Every transition is on disk, newest first in the listing.
     let listed = actions.list(100);
-    assert_eq!(listed.len(), 13);
+    assert_eq!(listed.len(), 14);
     assert!(
         listed
             .iter()
@@ -341,7 +357,7 @@ async fn every_action_reports_what_tmux_shows_afterwards() {
     let lines = std::fs::read_to_string(h.ledger_path()).expect("ledger");
     assert_eq!(
         lines.lines().count(),
-        13 * 4,
+        14 * 4,
         "accepted, prepared, dispatching, completed"
     );
     let _ = std::fs::remove_dir_all(&h.dir);

@@ -21,6 +21,7 @@
 
 mod fonts;
 mod input;
+mod palette;
 mod workspace;
 
 use std::process::ExitCode;

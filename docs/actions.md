@@ -14,6 +14,7 @@ settles with an outcome observed in tmux.
 | `send_input` | Exact bytes to the program in the pane | That the bytes were delivered. What the program does with them is not observed |
 | `send_keys` | tmux key names such as `Enter` or `C-c` | That the keys were delivered |
 | `kill_pane`, `kill_window` | Close | That the target is gone |
+| `new_window` | Add a window at the end of a session. It runs the default shell, or an exact `argv` | The new window and its pane |
 
 ## Lifecycle
 

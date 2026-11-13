@@ -109,6 +109,40 @@ pub async fn split_pane(
         .ok_or(CommandError::Closed)
 }
 
+/// Create a window at the end of a session; returns its first pane.
+pub async fn new_window(
+    conn: &Connection,
+    target: TmuxSessionId,
+    name: Option<&str>,
+    launch: &Launch,
+) -> Result<TmuxPaneId, CommandError> {
+    let mut cmd = TmuxCommand::new("new-window")
+        .flag("-P")
+        .opt_format("-F", "#{pane_id}")
+        .opt("-t", format!("{}:", session(target)));
+    if let Some(n) = name {
+        cmd = cmd.opt("-n", n.to_owned());
+    }
+    if let Some(cwd) = &launch.cwd {
+        cmd = cmd.opt("-c", cwd.clone());
+    }
+    // One argument would go through `sh -c`; wrapping it keeps argv exact.
+    let argv: Vec<String> = match launch.argv.as_slice() {
+        [] => Vec::new(),
+        [one] => vec!["/usr/bin/env".into(), one.clone()],
+        many => many.to_vec(),
+    };
+    for a in argv {
+        cmd = cmd.arg(a);
+    }
+    let r = conn.execute(cmd).await?;
+    let line = r.first().map(first_line).unwrap_or_default();
+    line.strip_prefix('%')
+        .and_then(|n| n.parse().ok())
+        .map(TmuxPaneId)
+        .ok_or(CommandError::Closed)
+}
+
 pub async fn resize_pane(
     conn: &Connection,
     target: TmuxPaneId,

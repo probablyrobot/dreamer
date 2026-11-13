@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 10;
+pub const PROTOCOL_MINOR: u32 = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -719,6 +719,23 @@ pub struct SplitPane {
     pub cwd: Option<String>,
 }
 
+/// A window at the end of a session; it runs the default shell unless argv is given.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NewWindow {
+    #[prost(uint32, tag = "1")]
+    pub session: u32,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Exact program and arguments; never a shell string.
+    #[prost(string, repeated, tag = "3")]
+    pub argv: Vec<String>,
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ResizePane {
@@ -816,7 +833,7 @@ pub struct KillWindow {
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Action {
-    #[prost(oneof = "action::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(oneof = "action::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<action::Kind>,
 }
@@ -849,6 +866,8 @@ pub mod action {
         KillPane(super::KillPane),
         #[prost(message, tag = "11")]
         KillWindow(super::KillWindow),
+        #[prost(message, tag = "12")]
+        NewWindow(super::NewWindow),
     }
 }
 

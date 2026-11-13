@@ -56,6 +56,27 @@ A workspace window shows one tmux session:
   `zoom` control on the focused pane, toggles zoom through the typed zoom
   action. The shortcut is never sent to the pane.
 
+## Command palette
+
+Cmd-Shift-P on macOS, or Ctrl-Shift-P on Linux, opens the command palette;
+the shortcut is never sent to the pane. Type letters to filter (each one,
+in order, anywhere in a command's name). Up and Down move, Enter runs, and
+Escape closes.
+
+| Command | Does |
+| --- | --- |
+| Split pane right, Split pane down | Splits the focused pane (`split_pane`) |
+| New window | Adds a window at the end of the session (`new_window`) |
+| Rename window… | Asks for a name, then renames the shown window |
+| Next window, Previous window | Switches windows, wrapping around |
+| Focus next pane | Moves focus here and in tmux |
+| Zoom or unzoom pane | Toggles zoom |
+| Close view (programs keep running) | Closes this desktop window only; tmux and every program keep running |
+| Kill pane (ends its program)…, Kill window (ends its programs)… | Destructive. Shown in red; the first Enter only asks, a second Enter runs it, and Backspace backs out |
+
+No destructive action is hidden behind "close". Every command goes
+through the typed actions, and its result shows only in a newer topology.
+
 `dreamer --smoke-workspace` checks this against an isolated tmux whose
 session `main` has two windows, the first split into three panes, each
 pane printing `READY-%<id>`. The macOS gate runs it as the `workspace`
@@ -68,6 +89,10 @@ step, and `gate linux-desktop` runs it on each backend. It checks that:
 - tmux sizes the shown window to the workspace's area;
 - dragging the vertical divider 10 cells in 10 moves resizes the pane to
   exactly that width, with at most 11 resize commands;
+- the palette splits, kills only after the second Enter, moves focus,
+  makes and renames a window, and switches windows (wrapping both ways);
+- with a refreshing display, the palette opens from its shortcut and
+  Escape closes it;
 - a tab click switches the tmux window and shows only its pane.
 
 Sizing, clicking, typing, and dragging need a refreshing display. With a locked screen they
