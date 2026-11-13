@@ -363,14 +363,19 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         checkpoint_bytes: bytes,
         checkpoint_pause_us: pause_us,
         scrollback_lines: started.scrollback as u32,
+        title: started.title.clone(),
+        cwd: started.cwd.clone(),
     };
     let (pane_id, epoch, generation) = (p.pane, started.epoch.0, started.generation.0);
-    let batch = move |records: Vec<api::TerminalRecord>| api::RecordBatch {
-        subscription: sub,
-        pane: pane_id,
-        epoch,
-        generation,
-        records,
+    let batch = move |records: Vec<api::TerminalRecord>, effects: Vec<api::TerminalEffect>| {
+        api::RecordBatch {
+            subscription: sub,
+            pane: pane_id,
+            epoch,
+            generation,
+            records,
+            effects,
+        }
     };
     // Register the stream before replying, so an immediate unsubscribe
     // finds it; it waits for `go` so live records follow the reply and the
@@ -385,7 +390,7 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         sub,
         p.pane,
         started.generation,
-        move |r| batch(r).encode_to_vec(),
+        move |r, e| batch(r, e).encode_to_vec(),
     ));
     conn.subs.lock().await.insert(sub, task);
     reply(ok(id, s.encode_to_vec())).await;
@@ -410,7 +415,11 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         }
         mirror::Start::Replay { records, .. } => {
             for chunk in records.chunks(BATCH_RECORDS) {
-                let b = batch(chunk.iter().map(|(s, r)| to_api(*s, r)).collect());
+                // Replayed records carry no effects: they already happened.
+                let b = batch(
+                    chunk.iter().map(|(s, r)| to_api(*s, r)).collect(),
+                    Vec::new(),
+                );
                 conn.event(TOPIC_RECORDS, b.encode_to_vec()).await;
             }
         }
@@ -425,29 +434,39 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
 async fn stream(
     conn: Conn,
     go: tokio::sync::oneshot::Receiver<()>,
-    mut rx: mpsc::Receiver<(u64, mirror::Record)>,
+    mut rx: mpsc::Receiver<mirror::Live>,
     ended: Arc<AtomicU8>,
     host: mirror::MirrorHost,
     sub: u64,
     pane: u32,
     generation: domain::PaneGeneration,
-    encode: impl Fn(Vec<api::TerminalRecord>) -> Vec<u8> + Send,
+    encode: impl Fn(Vec<api::TerminalRecord>, Vec<api::TerminalEffect>) -> Vec<u8> + Send,
 ) {
     let _ = go.await;
-    while let Some((seq, r)) = rx.recv().await {
+    let effect = |seq: u64, e: mirror::Effect| api::TerminalEffect {
+        id: e.id,
+        sequence: seq,
+        bells: e.bells,
+        title: e.title,
+        cwd: e.cwd,
+    };
+    while let Some((seq, r, fx)) = rx.recv().await {
         let mut records = vec![to_api(seq, &r)];
+        let mut effects: Vec<api::TerminalEffect> =
+            fx.map(|e| effect(seq, e)).into_iter().collect();
         let mut bytes = records[0].data.len();
         while records.len() < BATCH_RECORDS && bytes < BATCH_BYTES {
             match rx.try_recv() {
-                Ok((seq, r)) => {
+                Ok((seq, r, fx)) => {
                     let r = to_api(seq, &r);
                     bytes += r.data.len();
                     records.push(r);
+                    effects.extend(fx.map(|e| effect(seq, e)));
                 }
                 Err(_) => break,
             }
         }
-        if !conn.event(TOPIC_RECORDS, encode(records)).await {
+        if !conn.event(TOPIC_RECORDS, encode(records, effects)).await {
             return;
         }
     }

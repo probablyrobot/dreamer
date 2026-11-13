@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 5;
+pub const PROTOCOL_MINOR: u32 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -952,6 +952,14 @@ pub struct MirrorStatus {
     pub journal_first_sequence: u64,
     #[prost(uint32, tag = "14")]
     pub journal_records: u32,
+    /// Latest title the program set (OSC 0/2).
+    #[prost(string, optional, tag = "15")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Latest working directory the program reported (OSC 7).
+    #[prost(string, optional, tag = "16")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -1029,6 +1037,14 @@ pub struct Subscription {
     /// The mirror's scrollback limit; a replica uses the same so both keep the same history.
     #[prost(uint32, tag = "9")]
     pub scrollback_lines: u32,
+    /// The pane's current title: state, not an event.
+    #[prost(string, optional, tag = "10")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The pane's current working directory: state, not an event.
+    #[prost(string, optional, tag = "11")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 /// One journaled change. A resize when cols and rows are set, otherwise output bytes.
@@ -1061,6 +1077,31 @@ pub struct RecordBatch {
     pub generation: u64,
     #[prost(message, repeated, tag = "5")]
     pub records: Vec<TerminalRecord>,
+    /// Live effects of these records; never present in replayed records.
+    #[prost(message, repeated, tag = "6")]
+    pub effects: Vec<TerminalEffect>,
+}
+
+/// What applying one live record did besides changing the screen. Sent only to subscribers live when it happened: never replayed from the journal, a checkpoint, bootstrap, or a reconnect.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalEffect {
+    /// Increasing per pane mirror.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// The record that produced it.
+    #[prost(uint64, tag = "2")]
+    pub sequence: u64,
+    #[prost(uint32, tag = "3")]
+    pub bells: u32,
+    /// New title.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// New working directory.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]

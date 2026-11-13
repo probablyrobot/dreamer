@@ -70,6 +70,19 @@ pub struct Step {
     pub records: usize,
     /// A checkpoint was restored (the whole view changed).
     pub restored: bool,
+    /// Bells rung by live output during this step (never from replay,
+    /// restore, or reconnect).
+    pub bells: u32,
+    /// The pane's title or working directory changed.
+    pub meta_changed: bool,
+}
+
+/// A pane's labels: state from the daemon, current after every
+/// (re)subscription, updated by live effects.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PaneMeta {
+    pub title: Option<String>,
+    pub cwd: Option<String>,
 }
 
 /// A replica kept current from a daemon. Not `Send`: the engine has one
@@ -88,6 +101,10 @@ pub struct Follower {
     pub last_mode: Option<api::SubscribeMode>,
     /// Checkpoints restored over this follower's life.
     pub checkpoints: u32,
+    pub meta: PaneMeta,
+    /// Effects of the current step, collected by `handle`.
+    bells: u32,
+    meta_changed: bool,
 }
 
 impl Follower {
@@ -107,6 +124,9 @@ impl Follower {
             state: FollowState::Disconnected,
             last_mode: None,
             checkpoints: 0,
+            meta: PaneMeta::default(),
+            bells: 0,
+            meta_changed: false,
         };
         f.reconnect().await?;
         Ok(f)
@@ -160,6 +180,16 @@ impl Follower {
         };
         self.last_mode = api::SubscribeMode::try_from(s.mode).ok();
         self.subscription = Some(s.id);
+        // Labels are state: the subscription carries their current values,
+        // so a reconnect never needs old events.
+        let meta = PaneMeta {
+            title: s.title.clone(),
+            cwd: s.cwd.clone(),
+        };
+        if meta != self.meta {
+            self.meta = meta;
+            self.meta_changed = true;
+        }
         self.state = FollowState::Following;
         self.replica.begin(&s).map_err(FollowError::Replica)
     }
@@ -222,6 +252,7 @@ impl Follower {
     /// Apply an item from [`Self::recv`] and everything queued behind it.
     pub async fn apply(&mut self, first: Option<Pushed>) -> Result<Step, FollowError> {
         let checkpoints = self.checkpoints;
+        self.bells = 0;
         let mut records = self.handle(first).await?;
         loop {
             if !matches!(self.state, FollowState::Following) {
@@ -236,6 +267,8 @@ impl Follower {
         Ok(Step {
             records,
             restored: self.checkpoints != checkpoints,
+            bells: std::mem::take(&mut self.bells),
+            meta_changed: std::mem::take(&mut self.meta_changed),
         })
     }
 
@@ -288,7 +321,22 @@ impl Follower {
                     return Ok(0);
                 };
                 match self.replica.records(&b) {
-                    Ok(Outcome::Applied(n)) => applied += n,
+                    Ok(Outcome::Applied(n)) => {
+                        applied += n;
+                        // Effects ride only with live records the replica
+                        // applied, so a duplicate batch rings nothing.
+                        for e in &b.effects {
+                            self.bells = self.bells.saturating_add(e.bells);
+                            if e.title.is_some() && e.title != self.meta.title {
+                                self.meta.title.clone_from(&e.title);
+                                self.meta_changed = true;
+                            }
+                            if e.cwd.is_some() && e.cwd != self.meta.cwd {
+                                self.meta.cwd.clone_from(&e.cwd);
+                                self.meta_changed = true;
+                            }
+                        }
+                    }
                     Ok(_) => {}
                     Err(e) => self.resnapshot(e.to_string()).await?,
                 }

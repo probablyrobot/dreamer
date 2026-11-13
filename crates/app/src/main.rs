@@ -126,6 +126,9 @@ struct Shell {
     link: Option<replica::feed::Link>,
     /// A short message shown over the grid (a refused link).
     notice: Option<String>,
+    /// The window title last set, and when the last bell flashed.
+    title: String,
+    flash: Option<std::time::Instant>,
     grid: Option<input::Grid>,
     /// Progress of the input smoke after typing.
     input_phase: u8,
@@ -249,6 +252,39 @@ impl Shell {
             } else {
                 cx.update(|cx| cx.open_url(&link.uri));
             }
+        })
+        .detach();
+    }
+
+    /// The window title follows the pane: its title, else its working
+    /// directory, else the app name.
+    fn show_meta(&mut self, meta: &replica::PaneMeta, window: &mut Window) {
+        let title = meta
+            .title
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| meta.cwd.clone())
+            .unwrap_or_else(|| "Dreamer".into());
+        if title != self.title {
+            window.set_window_title(&title);
+            self.title = title;
+        }
+    }
+
+    /// A visual bell: a brief flash, at most one per `BELL_FLASH` so a
+    /// stream of bells does not strobe.
+    fn bell(&mut self, cx: &mut Context<Self>) {
+        let now = std::time::Instant::now();
+        if self
+            .flash
+            .is_some_and(|t| now.duration_since(t) < BELL_FLASH * 2)
+        {
+            return;
+        }
+        self.flash = Some(now);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BELL_FLASH).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();
     }
@@ -592,6 +628,11 @@ impl Render for Shell {
                 .text_size(px(term.size * 0.85))
                 .child(text)
         });
+        // A bell flashes the grid briefly.
+        let flash = self
+            .flash
+            .filter(|t| t.elapsed() < BELL_FLASH)
+            .map(|_| div().absolute().size_full().bg(gpui::rgba(0xffffff22)));
         // Shown only while scrolled back into history.
         let back = self.frame.view.rows_back();
         let scrolled = (back > 0).then(|| {
@@ -632,6 +673,7 @@ impl Render for Shell {
                     .children(scrolled)
                     .children(underline)
                     .children(notice)
+                    .children(flash)
                     .when(self.link.is_some(), |d| d.cursor_pointer())
                     // Registers the platform text input (IME) each frame.
                     .child(
@@ -669,6 +711,9 @@ impl Render for Shell {
             )
     }
 }
+
+/// How long a visual bell shows.
+const BELL_FLASH: Duration = Duration::from_millis(120);
 
 /// Monotonic nanoseconds for counting repeat clicks.
 fn monotonic_ns() -> u64 {
@@ -882,6 +927,8 @@ fn main() -> ExitCode {
                     pointer_at: None,
                     link: None,
                     notice: None,
+                    title: String::new(),
+                    flash: None,
                     grid: None,
                     input_phase: 0,
                 });
@@ -913,9 +960,15 @@ fn main() -> ExitCode {
                 while feed.wake.recv().await.is_ok() {
                     let Some(frame) = feed.take() else { continue };
                     let text = frame.text_dump();
+                    let meta = feed.meta();
+                    let bells = feed.take_bells();
                     let done = window.update(cx, |shell, window, cx| {
                         shell.frame = frame;
                         shell.live_frames += 1;
+                        shell.show_meta(&meta, window);
+                        if bells > 0 {
+                            shell.bell(cx);
+                        }
                         cx.notify();
                         match &shell.smoke {
                             Smoke::Expect(want) | Smoke::Input(want)
@@ -1020,6 +1073,12 @@ fn main() -> ExitCode {
                                             })
                                             .detach();
                                         }
+                                    }
+                                    10 if line("TITLED") && shell.title == SMOKE_TITLE && shell.flash.is_some() => {
+                                        println!(
+                                            "smoke: the window title follows the pane ({SMOKE_TITLE:?}) and a bell flashed"
+                                        );
+                                        std::process::exit(0);
                                     }
                                     8 => {
                                         let row = shell
@@ -1156,6 +1215,10 @@ async fn click_and_scroll(any: gpui::AnyWindowHandle, grid: input::Grid, cx: &mu
     .await;
 }
 
+/// Sets the pane title and rings the bell, then prints a marker.
+const TITLE_PROBE: &str = "printf '\\033]2;SMOKE-TITLE\\007\\007'; echo T''ITLED\r";
+const SMOKE_TITLE: &str = "SMOKE-TITLE";
+
 /// Clears the screen and prints an OSC 8 link followed by plain text.
 const LINK_PROBE: &str = "clear; printf '\\033]8;;https://example.com/dreamer-smoke\\033\\\\LINK-HERE\\033]8;;\\033\\\\ plain\\n'\r";
 const LINK_LINE: &str = "LINK-HERE plain";
@@ -1271,7 +1334,19 @@ async fn link_check(
                 "smoke: the link opened only on modifier-click ({LINK_URI}, cells {:?})",
                 link.cells
             );
-            std::process::exit(0);
+            // Next: a title and a bell from the program.
+            let _ = cx.update_window(any, |view, _, cx| {
+                if let Ok(shell) = view.downcast::<Shell>() {
+                    shell.update(cx, |s, _| {
+                        s.input_phase = 10;
+                        s.send_all([api::terminal_input::Event::Text(api::TextInput {
+                            text: TITLE_PROBE.into(),
+                        })]);
+                    });
+                }
+            });
+            fail_unless_past(any, 10, cx, "the title and bell never reached the window").await;
+            return;
         }
     }
     fail("the modifier-click never opened the link".into())

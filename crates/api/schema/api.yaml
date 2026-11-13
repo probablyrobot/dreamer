@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 5 }
+version: { major: 1, minor: 6 }
 package: dreamer.v1
 
 types:
@@ -293,6 +293,8 @@ types:
       - { n: 12, name: journal_bytes, type: u64 }
       - { n: 13, name: journal_first_sequence, type: u64, doc: "Oldest retained journal record; sequence + 1 when none is retained." }
       - { n: 14, name: journal_records, type: u32 }
+      - { n: 15, name: title, type: string, optional: true, doc: "Latest title the program set (OSC 0/2)." }
+      - { n: 16, name: cwd, type: string, optional: true, doc: "Latest working directory the program reported (OSC 7)." }
 
   - message: MirrorList
     fields:
@@ -350,6 +352,8 @@ types:
       - { n: 7, name: checkpoint_bytes, type: u64 }
       - { n: 8, name: checkpoint_pause_us, type: u64, doc: How long the snapshot held the pane's owner. }
       - { n: 9, name: scrollback_lines, type: u32, doc: "The mirror's scrollback limit; a replica uses the same so both keep the same history." }
+      - { n: 10, name: title, type: string, optional: true, doc: "The pane's current title: state, not an event." }
+      - { n: 11, name: cwd, type: string, optional: true, doc: "The pane's current working directory: state, not an event." }
 
   - message: TerminalRecord
     doc: One journaled change. A resize when cols and rows are set, otherwise output bytes.
@@ -366,6 +370,19 @@ types:
       - { n: 3, name: epoch, type: u64 }
       - { n: 4, name: generation, type: u64 }
       - { n: 5, name: records, type: TerminalRecord, repeated: true }
+      - { n: 6, name: effects, type: TerminalEffect, repeated: true, doc: "Live effects of these records; never present in replayed records." }
+
+  - message: TerminalEffect
+    doc: >-
+      What applying one live record did besides changing the screen. Sent
+      only to subscribers live when it happened: never replayed from the
+      journal, a checkpoint, bootstrap, or a reconnect.
+    fields:
+      - { n: 1, name: id, type: u64, doc: "Increasing per pane mirror." }
+      - { n: 2, name: sequence, type: u64, doc: "The record that produced it." }
+      - { n: 3, name: bells, type: u32 }
+      - { n: 4, name: title, type: string, optional: true, doc: "New title." }
+      - { n: 5, name: cwd, type: string, optional: true, doc: "New working directory." }
 
   - message: CheckpointData
     fields:

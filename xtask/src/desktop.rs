@@ -179,7 +179,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         };
         let passed = out.status.success()
             && stdout.contains(&format!("smoke: backend {expected}"))
-            && stdout.contains("smoke: the link opened only on modifier-click");
+            && stdout.contains("smoke: the window title follows the pane");
         println!(
             "linux-desktop: {backend:<7} {:<18} {}",
             "input",

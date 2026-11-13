@@ -23,7 +23,7 @@ use terminal_ghostty::core::GridSize;
 use terminal_ghostty::core::family::{CANONICAL_CELL_PX, CONTINUATION_MAX_BYTES};
 use terminal_ghostty::{Engine, EngineConfig};
 
-pub use follow::{FollowError, FollowState, Follower, RetryPolicy, Step};
+pub use follow::{FollowError, FollowState, Follower, PaneMeta, RetryPolicy, Step};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicaError {
@@ -343,6 +343,7 @@ mod tests {
             epoch: 7,
             generation: 2,
             records,
+            effects: Vec::new(),
         }
     }
 
