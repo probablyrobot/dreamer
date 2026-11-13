@@ -150,29 +150,123 @@ fn zig_host_key() -> Result<&'static str, String> {
 /// files listed in the baseline). Returns the directory holding them.
 pub fn ensure_fonts(manifest: &Manifest) -> Result<PathBuf, String> {
     let version = manifest.get("nerdfonts", "version")?;
-    let files: Vec<&str> = manifest
-        .get("nerdfonts", "files")?
-        .split_whitespace()
-        .collect();
     let dir = deps_dir()?.join("fonts").join("nerdfonts").join(version);
-    if files.iter().all(|f| dir.join(f).is_file()) {
-        return Ok(dir);
+    // (section, archive name, files to copy as (from, to)).
+    let mut sets = vec![(
+        "nerdfonts",
+        "JetBrainsMono".to_owned(),
+        manifest
+            .get("nerdfonts", "files")?
+            .split_whitespace()
+            .map(|f| (f.to_owned(), f.to_owned()))
+            .collect::<Vec<_>>(),
+    )];
+    for section in manifest.get("nerdfonts", "extra")?.split_whitespace() {
+        let mut files: Vec<(String, String)> = manifest
+            .get(section, "files")?
+            .split_whitespace()
+            .map(|f| (f.to_owned(), f.to_owned()))
+            .collect();
+        files.push((
+            manifest.get(section, "license")?.to_owned(),
+            manifest.get(section, "license_as")?.to_owned(),
+        ));
+        sets.push((section, section.to_owned(), files));
     }
-    let name = format!("JetBrainsMono-nerdfonts-{version}.tar.xz");
-    let archive = download(
-        manifest.get("nerdfonts", "url")?,
-        &name,
-        manifest.get("nerdfonts", "sha256")?,
-    )?;
-    let all = dir.with_extension("all");
-    extract(&archive, &all, false)?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    for f in &files {
-        std::fs::copy(all.join(f), dir.join(f))
-            .map_err(|e| format!("{f} missing from {name}: {e}"))?;
+    for (section, label, files) in sets {
+        if files.iter().all(|(_, to)| dir.join(to).is_file()) {
+            continue;
+        }
+        let name = format!("{label}-nerdfonts-{version}.tar.xz");
+        let archive = download(
+            manifest.get(section, "url")?,
+            &name,
+            manifest.get(section, "sha256")?,
+        )?;
+        let all = dir.with_extension(format!("{label}.all"));
+        extract(&archive, &all, false)?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        for (from, to) in &files {
+            std::fs::copy(all.join(from), dir.join(to))
+                .map_err(|e| format!("{from} missing from {name}: {e}"))?;
+        }
+        let _ = std::fs::remove_dir_all(&all);
     }
-    let _ = std::fs::remove_dir_all(&all);
+    // Settings find a font by its family name: every shipped file must
+    // carry the family its manifest section says.
+    let mut sections = vec!["nerdfonts"];
+    sections.extend(manifest.get("nerdfonts", "extra")?.split_whitespace());
+    for section in sections {
+        let family = manifest.get(section, "family")?;
+        for f in manifest.get(section, "files")?.split_whitespace() {
+            if !f.ends_with(".ttf") {
+                continue;
+            }
+            let bytes = std::fs::read(dir.join(f)).map_err(|e| format!("{f}: {e}"))?;
+            let names = font_families(&bytes).map_err(|e| format!("{f}: {e}"))?;
+            if !names.iter().any(|n| n == family) {
+                return Err(format!(
+                    "{f} names its family {names:?}, not `{family}` (deps/baseline.toml [{section}])"
+                ));
+            }
+        }
+    }
     Ok(dir)
+}
+
+/// The family names in a TrueType file's `name` table (IDs 1 and 16, the
+/// Windows Unicode and Mac Roman records).
+pub fn font_families(font: &[u8]) -> Result<Vec<String>, String> {
+    let u16_at = |o: usize| -> Result<usize, String> {
+        font.get(o..o + 2)
+            .map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
+            .ok_or_else(|| "truncated font".to_string())
+    };
+    let u32_at = |o: usize| -> Result<usize, String> {
+        font.get(o..o + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
+            .ok_or_else(|| "truncated font".to_string())
+    };
+    let tables = u16_at(4)?;
+    let mut name_at = None;
+    for i in 0..tables {
+        let rec = 12 + 16 * i;
+        if font.get(rec..rec + 4) == Some(b"name") {
+            name_at = Some(u32_at(rec + 8)?);
+        }
+    }
+    let base = name_at.ok_or("no name table")?;
+    let count = u16_at(base + 2)?;
+    let strings = base + u16_at(base + 4)?;
+    let mut out = Vec::new();
+    for i in 0..count {
+        let r = base + 6 + 12 * i;
+        let (platform, encoding, id) = (u16_at(r)?, u16_at(r + 2)?, u16_at(r + 6)?);
+        if id != 1 && id != 16 {
+            continue;
+        }
+        let (len, off) = (u16_at(r + 8)?, u16_at(r + 10)?);
+        let raw = font
+            .get(strings + off..strings + off + len)
+            .ok_or("truncated name")?;
+        let name = match (platform, encoding) {
+            (3, 1) | (0, _) => {
+                let units: Vec<u16> = raw
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_be_bytes(*c))
+                    .collect();
+                String::from_utf16_lossy(&units)
+            }
+            (1, 0) => raw.iter().map(|b| char::from(*b)).collect(),
+            _ => continue,
+        };
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Ok(out)
 }
 
 fn ensure_zig(manifest: &Manifest) -> Result<PathBuf, String> {

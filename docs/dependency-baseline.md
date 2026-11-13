@@ -143,3 +143,16 @@ the cache; it never downloads or builds.
 | Files | 31 schemes, vendored unchanged in `crates/terminal-core/schemes/` (list and original projects in `SOURCES.md`) |
 | Built into | `crates/terminal-core/src/schemes_data.rs` by `cargo xtask schemes`; `--check` runs in the gate and CI |
 | License | Apache-2.0 (collection); original projects MIT, MIT/X11, or Apache-2.0 (Nord); see `THIRD_PARTY_NOTICES.md` |
+
+## Bundled fonts
+
+| Family | Archive (Nerd Fonts 3.5.1) | SHA-256 |
+| --- | --- | --- |
+| JetBrainsMono Nerd Font Mono | `JetBrainsMono.tar.xz` | `04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf` |
+| FiraCode Nerd Font Mono | `FiraCode.tar.xz` | `68e3bd6164864b8b514605bc34e3a87ac401c8c48682fcce6478c70263340207` |
+| Hack Nerd Font Mono | `Hack.tar.xz` | `cdd389472e10e2261520140ff1b382b4f8a226af5fd0b2735b975d31151d9c3c` |
+| CaskaydiaCove Nerd Font Mono | `CascadiaCode.tar.xz` | `ae598e9401e2846aa3ee364513715de0490b844a4b54f0768991f45f23aa8369` |
+| SauceCodePro Nerd Font Mono | `SourceCodePro.tar.xz` | `50ead7bb7addce27cf4b55f4fffb669b5f1899fece675fad623a2a75a478c8c7` |
+
+Pinned in `deps/baseline.toml`. `cargo xtask deps fonts` fetches them and
+checks that each file's `name` table carries the family settings use.

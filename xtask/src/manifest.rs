@@ -96,6 +96,18 @@ mod tests {
                 "nerdfonts.{key}"
             );
         }
+        for section in m
+            .get("nerdfonts", "extra")
+            .expect("extra")
+            .split_whitespace()
+        {
+            for key in ["url", "sha256", "family", "files", "license", "license_as"] {
+                assert!(
+                    !m.get(section, key).expect(key).is_empty(),
+                    "{section}.{key}"
+                );
+            }
+        }
         for triple in [
             "aarch64-apple-darwin",
             "x86_64-unknown-linux-gnu",

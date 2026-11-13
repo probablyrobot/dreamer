@@ -31,10 +31,21 @@ The default is JetBrains Mono, IntelliJ's font, patched with Nerd Fonts
 icons. Dreamer uses the **Mono** variant, whose icons are one cell wide like
 every other character.
 
-The font comes with Dreamer: it's inside the macOS app, and the Arch package
-depends on `ttf-jetbrains-mono-nerd`. Any other installed font can be named
-in `font.family`, using the family name the system shows (on Linux,
-`fc-list : family`).
+These families come with Dreamer, all in the Nerd Fonts Mono variant:
+
+| `font.family` | Font | License |
+| --- | --- | --- |
+| `JetBrainsMono Nerd Font Mono` (default) | JetBrains Mono | SIL OFL 1.1 |
+| `FiraCode Nerd Font Mono` | Fira Code (regular and bold; it has no italics) | SIL OFL 1.1 |
+| `Hack Nerd Font Mono` | Hack | MIT and the Bitstream Vera license |
+| `CaskaydiaCove Nerd Font Mono` | Cascadia Code | SIL OFL 1.1 |
+| `SauceCodePro Nerd Font Mono` | Source Code Pro | SIL OFL 1.1 |
+
+They are inside the macOS app and the generic Linux tarball, with their
+license files. The Arch package depends on `ttf-jetbrains-mono-nerd` and
+lists the others' distribution packages as optional. Any other installed
+font can be named in `font.family`, using the family name the system shows
+(on Linux, `fc-list : family`).
 
 If the configured family is not available, Dreamer says so on standard
 error and falls back to Menlo on macOS or DejaVu Sans Mono on Linux. It

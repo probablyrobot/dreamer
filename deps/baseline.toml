@@ -49,3 +49,42 @@ url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/JetBrain
 sha256 = "04d5e8f903693f9dd13e16f867e994834e681eb3c72c0d337a770dcda09010cf"
 family = "JetBrainsMono Nerd Font Mono"
 files = "JetBrainsMonoNerdFontMono-Regular.ttf JetBrainsMonoNerdFontMono-Bold.ttf JetBrainsMonoNerdFontMono-Italic.ttf JetBrainsMonoNerdFontMono-BoldItalic.ttf OFL.txt"
+# More bundled families, same Nerd Fonts release; each license file is
+# shipped renamed (`license` in the archive -> `license_as`).
+extra = "nerdfonts-fira-code nerdfonts-hack nerdfonts-cascadia-code nerdfonts-source-code-pro"
+
+# Fira Code, SIL OFL 1.1 (no italic styles).
+[nerdfonts-fira-code]
+url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/FiraCode.tar.xz"
+sha256 = "68e3bd6164864b8b514605bc34e3a87ac401c8c48682fcce6478c70263340207"
+family = "FiraCode Nerd Font Mono"
+files = "FiraCodeNerdFontMono-Regular.ttf FiraCodeNerdFontMono-Bold.ttf"
+license = "LICENSE"
+license_as = "OFL-FiraCode.txt"
+
+# Hack, MIT plus the Bitstream Vera license.
+[nerdfonts-hack]
+url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/Hack.tar.xz"
+sha256 = "cdd389472e10e2261520140ff1b382b4f8a226af5fd0b2735b975d31151d9c3c"
+family = "Hack Nerd Font Mono"
+files = "HackNerdFontMono-Regular.ttf HackNerdFontMono-Bold.ttf HackNerdFontMono-Italic.ttf HackNerdFontMono-BoldItalic.ttf"
+license = "LICENSE.md"
+license_as = "LICENSE-Hack.md"
+
+# Cascadia Code (as CaskaydiaCove, the Nerd Fonts name), SIL OFL 1.1.
+[nerdfonts-cascadia-code]
+url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/CascadiaCode.tar.xz"
+sha256 = "ae598e9401e2846aa3ee364513715de0490b844a4b54f0768991f45f23aa8369"
+family = "CaskaydiaCove Nerd Font Mono"
+files = "CaskaydiaCoveNerdFontMono-Regular.ttf CaskaydiaCoveNerdFontMono-Bold.ttf CaskaydiaCoveNerdFontMono-Italic.ttf CaskaydiaCoveNerdFontMono-BoldItalic.ttf"
+license = "LICENSE"
+license_as = "OFL-CascadiaCode.txt"
+
+# Source Code Pro (as SauceCodePro, the Nerd Fonts name), SIL OFL 1.1.
+[nerdfonts-source-code-pro]
+url = "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/SourceCodePro.tar.xz"
+sha256 = "50ead7bb7addce27cf4b55f4fffb669b5f1899fece675fad623a2a75a478c8c7"
+family = "SauceCodePro Nerd Font Mono"
+files = "SauceCodeProNerdFontMono-Regular.ttf SauceCodeProNerdFontMono-Bold.ttf SauceCodeProNerdFontMono-Italic.ttf SauceCodeProNerdFontMono-BoldItalic.ttf"
+license = "LICENSE.txt"
+license_as = "OFL-SourceCodePro.txt"

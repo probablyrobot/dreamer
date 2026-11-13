@@ -77,3 +77,19 @@ Regular, Bold, Italic, Bold Italic). JetBrains Mono is Copyright 2020 The
 JetBrains Mono Project Authors; Nerd Fonts patches are by Ryan L McIntyre.
 Both are licensed under the SIL Open Font License 1.1; the license text
 (`OFL.txt`) is shipped next to the font files.
+
+## More bundled fonts
+
+The macOS app bundle and the generic Linux package also ship these Nerd
+Fonts 3.5.1 families (the Mono variant; patches by Ryan L McIntyre), each
+with its license file next to the font files:
+
+| Family | Upstream | License | License file |
+| --- | --- | --- | --- |
+| FiraCode Nerd Font Mono | Fira Code, Copyright (c) 2014, The Fira Code Project Authors | SIL OFL 1.1 | `OFL-FiraCode.txt` |
+| Hack Nerd Font Mono | Hack, Copyright 2018 Source Foundry Authors; Bitstream Vera Sans Mono, Copyright 2003 Bitstream Inc. | MIT and the Bitstream Vera license | `LICENSE-Hack.md` |
+| CaskaydiaCove Nerd Font Mono | Cascadia Code, Copyright (c) 2019 - Present, Microsoft Corporation | SIL OFL 1.1 | `OFL-CascadiaCode.txt` |
+| SauceCodePro Nerd Font Mono | Source Code Pro, Copyright 2010-2020 Adobe, with Reserved Font Name 'Source' | SIL OFL 1.1 | `OFL-SourceCodePro.txt` |
+
+Nerd Fonts' patched names (CaskaydiaCove, SauceCodePro) avoid the
+upstream Reserved Font Names, as the OFL requires of modified versions.
