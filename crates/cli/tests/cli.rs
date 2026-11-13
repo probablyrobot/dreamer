@@ -670,6 +670,85 @@ exec /bin/sh -c "exec $3"
     assert_eq!(host_json(&cli)["state"], "closed");
 }
 
+#[test]
+fn a_service_definition_is_written_valid_and_removed_exactly() {
+    let root = PathBuf::from(format!("/tmp/drm-service-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    let dream = |args: &[&str]| {
+        let out = Command::new(DREAM)
+            .args(args)
+            .env("HOME", &home)
+            .env_remove("XDG_CONFIG_HOME")
+            .env("DREAMER_DAEMON", Cli::daemon())
+            .output()
+            .expect("dream");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "dream {args:?}: {text}");
+        text
+    };
+    // Write only: no service manager is asked to load anything.
+    let out = dream(&["service", "install", "--no-start", "-L", "work"]);
+    let path = if cfg!(target_os = "macos") {
+        home.join("Library/LaunchAgents/dev.dreamer.dreamerd.plist")
+    } else {
+        home.join(".config/systemd/user/dreamerd.service")
+    };
+    assert!(out.contains(&path.display().to_string()), "{out}");
+    let text = std::fs::read_to_string(&path).expect("definition");
+    assert!(text.contains("--tmux-socket"), "{text}");
+    assert!(text.contains("work"), "{text}");
+    if cfg!(target_os = "macos") {
+        let lint = Command::new("plutil")
+            .arg("-lint")
+            .arg(&path)
+            .output()
+            .expect("plutil");
+        assert!(
+            lint.status.success(),
+            "{}",
+            String::from_utf8_lossy(&lint.stdout)
+        );
+    } else if let Ok(v) = Command::new("systemd-analyze")
+        .args(["verify", "--man=no"])
+        .arg(&path)
+        .output()
+    {
+        let said = String::from_utf8_lossy(&v.stderr);
+        // Only problems with this unit count; the host's own units may warn.
+        assert!(
+            !said.lines().any(|l| l.contains("dreamerd.service")),
+            "systemd-analyze: {said}"
+        );
+    }
+    let before: Vec<PathBuf> = walk(&home);
+    dream(&["service", "uninstall", "--no-stop"]);
+    assert!(!path.exists());
+    let after: Vec<PathBuf> = walk(&home);
+    let gone: Vec<&PathBuf> = before.iter().filter(|p| !after.contains(p)).collect();
+    assert_eq!(gone, [&path], "uninstall removed exactly the definition");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Every file under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            out.extend(walk(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
 impl Cli {
     /// `dream <args>` with `input` on standard input.
     fn run_with_input(&self, args: &[&str], input: &str) -> Output {
