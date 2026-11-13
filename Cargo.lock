@@ -5119,6 +5119,7 @@ name = "terminal-ghostty"
 version = "0.0.0"
 dependencies = [
  "ghostty-sys",
+ "png 0.18.1",
  "terminal-core",
 ]
 

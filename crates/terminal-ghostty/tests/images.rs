@@ -198,3 +198,84 @@ fn a_restored_snapshot_shows_the_same_images() {
         "placements differ after restore"
     );
 }
+
+mod png_images {
+    use super::*;
+
+    fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().expect("header");
+        writer.write_image_data(rgba).expect("data");
+        writer.finish().expect("finish");
+        out
+    }
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut c = 0xffff_ffffu32;
+        for &b in bytes {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+
+    /// A PNG signature and IHDR claiming `w` x `h`, then an empty IDAT:
+    /// the header parses, and the pixel data is missing.
+    fn header_only(w: u32, h: u32) -> Vec<u8> {
+        let mut ihdr = b"IHDR".to_vec();
+        ihdr.extend_from_slice(&w.to_be_bytes());
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        out.extend_from_slice(&13u32.to_be_bytes());
+        out.extend_from_slice(&ihdr);
+        out.extend_from_slice(&crc32(&ihdr).to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(b"IDAT");
+        out.extend_from_slice(&crc32(b"IDAT").to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn a_png_image_decodes_to_its_pixels() {
+        let mut e = engine();
+        let pixels: Vec<u8> = (0..3 * 2)
+            .flat_map(|i| [i as u8 * 40, 7, 200, 255])
+            .collect();
+        e.feed(&kitty("a=T,f=100,i=3,q=2", &encode_png(3, 2, &pixels)))
+            .expect("png");
+        let p = placements(&mut e);
+        assert_eq!(p.len(), 1, "the PNG was not decoded");
+        assert_eq!((p[0].image.width, p[0].image.height), (3, 2));
+        assert_eq!(&*p[0].image.rgba, &pixels[..]);
+    }
+
+    #[test]
+    fn malformed_truncated_and_oversized_pngs_are_rejected() {
+        let mut e = engine();
+        let good = encode_png(4, 4, &solid(4, 4, [1, 2, 3, 255]));
+        e.feed(&kitty("a=T,f=100,i=4,q=2", b"this is not a png"))
+            .expect("garbage");
+        e.feed(&kitty("a=T,f=100,i=5,q=2", &good[..good.len() / 2]))
+            .expect("truncated");
+        e.feed(&kitty("a=T,f=100,i=6,q=2", &header_only(20_000, 20_000)))
+            .expect("oversized");
+        assert!(placements(&mut e).is_empty(), "a bad PNG produced an image");
+        // Refused by size before any pixel buffer is allocated.
+        let err = terminal_ghostty::png_decode::decode(&header_only(20_000, 20_000))
+            .expect_err("oversized");
+        assert!(err.contains("size limit"), "{err}");
+        // The engine still works afterwards.
+        e.feed(&kitty("a=T,f=100,i=7,q=2", &good)).expect("good");
+        assert_eq!(placements(&mut e).len(), 1);
+    }
+}

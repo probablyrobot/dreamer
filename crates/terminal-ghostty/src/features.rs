@@ -50,6 +50,7 @@ fn flag(info: GhosttyBuildInfo::Type) -> bool {
 }
 
 pub fn features() -> Features {
+    crate::png_decode::register();
     let mut s = GhosttyString::default();
     // SAFETY: VERSION_STRING writes a GhosttyString pointing at static data.
     let rc = unsafe { ghostty_build_info(GHOSTTY_BUILD_INFO_VERSION_STRING, (&raw mut s).cast()) };
