@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 8;
+pub const PROTOCOL_MINOR: u32 = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 8 }
+version: { major: 1, minor: 9 }
 package: dreamer.v1
 
 types:
