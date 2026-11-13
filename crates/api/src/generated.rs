@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 13;
+pub const PROTOCOL_MINOR: u32 = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1356,6 +1356,104 @@ pub struct InputResult {
     pub batches: u32,
 }
 
+/// Connect the local daemon (the coordinator) to the daemon on another host through system ssh, running `dream bridge --stdio` there. SSH configuration, keys, and host verification stay the user's.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostConnect {
+    /// A local label for this host; unique among hosts.
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// SSH destination: host alias, user@host, or ssh:// URI.
+    #[prost(string, tag = "2")]
+    pub destination: String,
+    /// Remote dream executable; default `dream` on the remote PATH. A leading ~/ is the remote home.
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dream: Option<String>,
+    /// Remote tmux executable, for a remote daemon that has to be started.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmux: Option<String>,
+    /// Remote tmux -L name.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmux_socket: Option<String>,
+    /// Remote tmux -S path.
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmux_socket_path: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostStatus {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub destination: String,
+    #[prost(enumeration = "LinkState", tag = "3")]
+    #[serde(with = "link_state_json")]
+    pub state: i32,
+    /// The remote daemon's protocol and build, once live.
+    #[prost(message, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<VersionInfo>,
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_host: Option<String>,
+    #[prost(uint32, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_pid: Option<u32>,
+    /// Changes when the remote daemon restarts.
+    #[prost(string, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_instance: Option<String>,
+    /// Last successful exchange with the remote daemon.
+    #[prost(uint64, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_contact_unix_ms: Option<u64>,
+    /// Why the host is not live: the reason and SSH's last diagnostic lines.
+    #[prost(string, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostList {
+    #[prost(message, repeated, tag = "1")]
+    pub hosts: Vec<HostStatus>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostRef {
+    #[prost(string, tag = "1")]
+    pub name: String,
+}
+
+/// One typed call forwarded to a connected host's daemon: `payload` is the method's parameters as Protobuf, exactly as in a local call. Methods that stream (subscriptions and watches) are refused.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostCall {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub method: String,
+    #[prost(bytes = "vec", tag = "3")]
+    #[serde(with = "crate::json::base64")]
+    pub payload: Vec<u8>,
+}
+
+/// The remote daemon's result for a HostCall, as Protobuf.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostReply {
+    #[prost(bytes = "vec", tag = "1")]
+    #[serde(with = "crate::json::base64")]
+    pub payload: Vec<u8>,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -1373,6 +1471,10 @@ pub mod method {
     pub const TERMINAL_SUBSCRIBE: &str = "terminal.subscribe";
     pub const TERMINAL_UNSUBSCRIBE: &str = "terminal.unsubscribe";
     pub const TERMINAL_INPUT: &str = "terminal.input";
+    pub const HOSTS_CONNECT: &str = "hosts.connect";
+    pub const HOSTS_LIST: &str = "hosts.list";
+    pub const HOSTS_DISCONNECT: &str = "hosts.disconnect";
+    pub const HOSTS_CALL: &str = "hosts.call";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1490,6 +1592,34 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state.",
     },
+    MethodInfo {
+        name: "hosts.connect",
+        params: "HostConnect",
+        result: "HostStatus",
+        mutation: true,
+        doc: "Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller.",
+    },
+    MethodInfo {
+        name: "hosts.list",
+        params: "Empty",
+        result: "HostList",
+        mutation: false,
+        doc: "Every remote host this daemon knows and its state.",
+    },
+    MethodInfo {
+        name: "hosts.disconnect",
+        params: "HostRef",
+        result: "HostStatus",
+        mutation: true,
+        doc: "Close a host's ssh connection. The remote daemon and its tmux keep running.",
+    },
+    MethodInfo {
+        name: "hosts.call",
+        params: "HostCall",
+        result: "HostReply",
+        mutation: true,
+        doc: "Forward one typed call to a connected host's daemon.",
+    },
 ];
 
 /// A typed request for one method.
@@ -1510,6 +1640,10 @@ pub enum Request {
     TerminalSubscribe(TerminalSubscribe),
     TerminalUnsubscribe(Unsubscribe),
     TerminalInput(TerminalInput),
+    HostsConnect(HostConnect),
+    HostsList(Empty),
+    HostsDisconnect(HostRef),
+    HostsCall(HostCall),
 }
 
 impl Request {
@@ -1530,6 +1664,10 @@ impl Request {
             Self::TerminalSubscribe(_) => "terminal.subscribe",
             Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
             Self::TerminalInput(_) => "terminal.input",
+            Self::HostsConnect(_) => "hosts.connect",
+            Self::HostsList(_) => "hosts.list",
+            Self::HostsDisconnect(_) => "hosts.disconnect",
+            Self::HostsCall(_) => "hosts.call",
         }
     }
 
@@ -1551,6 +1689,10 @@ impl Request {
             Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalInput(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsConnect(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsDisconnect(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -1573,6 +1715,10 @@ impl Request {
                 Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
             }
             "terminal.input" => Ok(Self::TerminalInput(::prost::Message::decode(bytes)?)),
+            "hosts.connect" => Ok(Self::HostsConnect(::prost::Message::decode(bytes)?)),
+            "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
+            "hosts.disconnect" => Ok(Self::HostsDisconnect(::prost::Message::decode(bytes)?)),
+            "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1594,6 +1740,10 @@ impl Request {
             Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalInput(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsConnect(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsDisconnect(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -1614,6 +1764,10 @@ impl Request {
             "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
             "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
             "terminal.input" => Ok(Self::TerminalInput(serde_json::from_value(value)?)),
+            "hosts.connect" => Ok(Self::HostsConnect(serde_json::from_value(value)?)),
+            "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
+            "hosts.disconnect" => Ok(Self::HostsDisconnect(serde_json::from_value(value)?)),
+            "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1637,6 +1791,10 @@ pub enum Response {
     TerminalSubscribe(Subscription),
     TerminalUnsubscribe(Empty),
     TerminalInput(InputResult),
+    HostsConnect(HostStatus),
+    HostsList(HostList),
+    HostsDisconnect(HostStatus),
+    HostsCall(HostReply),
 }
 
 impl Response {
@@ -1657,6 +1815,10 @@ impl Response {
             Self::TerminalSubscribe(_) => "terminal.subscribe",
             Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
             Self::TerminalInput(_) => "terminal.input",
+            Self::HostsConnect(_) => "hosts.connect",
+            Self::HostsList(_) => "hosts.list",
+            Self::HostsDisconnect(_) => "hosts.disconnect",
+            Self::HostsCall(_) => "hosts.call",
         }
     }
 
@@ -1678,6 +1840,10 @@ impl Response {
             Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalInput(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsConnect(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsDisconnect(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -1700,6 +1866,10 @@ impl Response {
                 Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
             }
             "terminal.input" => Ok(Self::TerminalInput(::prost::Message::decode(bytes)?)),
+            "hosts.connect" => Ok(Self::HostsConnect(::prost::Message::decode(bytes)?)),
+            "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
+            "hosts.disconnect" => Ok(Self::HostsDisconnect(::prost::Message::decode(bytes)?)),
+            "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1721,6 +1891,10 @@ impl Response {
             Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalInput(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsConnect(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsDisconnect(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -1741,6 +1915,10 @@ impl Response {
             "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
             "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
             "terminal.input" => Ok(Self::TerminalInput(serde_json::from_value(value)?)),
+            "hosts.connect" => Ok(Self::HostsConnect(serde_json::from_value(value)?)),
+            "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
+            "hosts.disconnect" => Ok(Self::HostsDisconnect(serde_json::from_value(value)?)),
+            "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -1821,6 +1999,26 @@ pub trait Service: Sync {
         &self,
         params: TerminalInput,
     ) -> impl ::core::future::Future<Output = Result<InputResult, RpcError>> + Send;
+    /// Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller.
+    fn hosts_connect(
+        &self,
+        params: HostConnect,
+    ) -> impl ::core::future::Future<Output = Result<HostStatus, RpcError>> + Send;
+    /// Every remote host this daemon knows and its state.
+    fn hosts_list(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<HostList, RpcError>> + Send;
+    /// Close a host's ssh connection. The remote daemon and its tmux keep running.
+    fn hosts_disconnect(
+        &self,
+        params: HostRef,
+    ) -> impl ::core::future::Future<Output = Result<HostStatus, RpcError>> + Send;
+    /// Forward one typed call to a connected host's daemon.
+    fn hosts_call(
+        &self,
+        params: HostCall,
+    ) -> impl ::core::future::Future<Output = Result<HostReply, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -1859,5 +2057,12 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .await
             .map(Response::TerminalUnsubscribe),
         Request::TerminalInput(p) => service.terminal_input(p).await.map(Response::TerminalInput),
+        Request::HostsConnect(p) => service.hosts_connect(p).await.map(Response::HostsConnect),
+        Request::HostsList(p) => service.hosts_list(p).await.map(Response::HostsList),
+        Request::HostsDisconnect(p) => service
+            .hosts_disconnect(p)
+            .await
+            .map(Response::HostsDisconnect),
+        Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
     }
 }

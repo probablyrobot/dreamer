@@ -84,6 +84,7 @@ never loosens or takes over such a directory.
 | `DREAMER_TEST_ABORT_AFTER_DISPATCH` | Abort the process right after an action reaches tmux, to test crash recovery |
 | `DREAMER_TEST_SLOW_PANE` | `PANE:MICROS`: sleep that long before applying each output chunk of that pane, so it outruns its mirror |
 | `DREAMER_MIRROR_WORKERS` | Number of mirror owner threads (default: cores, 1 to 4). The pressure test sets 1 so two panes share an owner |
+| `DREAMER_SSH` | The `ssh` program the coordinator runs (default `ssh` from `PATH`). Tests point it at a stand-in so no real SSH configuration is used |
 | `DREAMER_TEST_SMALL_QUEUES` | Shrink the subscriber and connection queues, so back-pressure tests behave the same on every platform regardless of socket buffer sizes |
 
 ## Under pressure

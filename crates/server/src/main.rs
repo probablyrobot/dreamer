@@ -12,6 +12,7 @@
 //! startup, and nothing but protocol frames to the socket.
 
 mod conn;
+mod hosts;
 mod log;
 mod service;
 
@@ -230,6 +231,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             topology: tokio::sync::watch::channel(None).0,
             sizing: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             pastes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            hosts: hosts::Hosts::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.
             epochs: (started_unix_ms * 1000).into(),

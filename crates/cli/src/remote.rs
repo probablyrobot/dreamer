@@ -15,7 +15,7 @@ fn rt() -> Result<tokio::runtime::Runtime, String> {
 
 /// Connect, starting the daemon with these tmux options if needed. A
 /// running daemon that drives another tmux server is reported, not used.
-async fn session(d: &DaemonArgs) -> Result<Client, String> {
+pub(crate) async fn session(d: &DaemonArgs) -> Result<Client, String> {
     let (mut c, _) = ensure_running(&Launch::new(d.start.clone()), "cli")
         .await
         .map_err(explain)?;
