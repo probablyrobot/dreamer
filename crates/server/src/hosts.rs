@@ -560,6 +560,14 @@ impl Hosts {
         }
     }
 
+    /// How `name` is reached: a host the daemon knows, else its profile.
+    pub async fn remote_of(&self, name: &str) -> Result<Remote, RpcError> {
+        if let Some(h) = self.hosts.lock().await.get(name) {
+            return Ok(lock(&h.config).remote.clone());
+        }
+        Ok(Config::from(&profile(name)?).remote)
+    }
+
     async fn get(&self, name: &str) -> Result<Arc<Host>, RpcError> {
         self.hosts
             .lock()

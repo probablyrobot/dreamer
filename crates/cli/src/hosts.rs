@@ -21,6 +21,7 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         }
         ["connect", name, rest @ ..] => connect_host(d, name, "", rest),
         ["reconnect", name] => reconnect(d, name),
+        ["install", name, rest @ ..] => install(name, rest),
         ["verify", name] => verify(name, false),
         ["verify", name, "--wait"] => verify(name, true),
         ["list"] => list(false),
@@ -39,6 +40,7 @@ pub const USAGE: &str = "usage:
                       [--auto-reconnect | --manual]
   dream hosts reconnect NAME
   dream hosts verify NAME [--wait]
+  dream hosts install NAME [--artifacts DIR] [--yes] [--wait]
   dream hosts list [--json]
   dream hosts call NAME METHOD [JSON-PARAMS]
   dream hosts disconnect NAME";
@@ -106,6 +108,114 @@ fn reconnect(d: &DaemonArgs, name: &str) -> Result<(), String> {
             }
             other => Err(format!("unexpected reply {other:?}")),
         }
+    })
+}
+
+/// Install this version's server on a host: show the plan, ask, install
+/// exactly that plan, then connect.
+fn install(name: &str, rest: &[&str]) -> Result<(), String> {
+    let mut artifacts = None;
+    let (mut yes, mut wait) = (false, false);
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match *a {
+            "--artifacts" => {
+                artifacts = Some(
+                    it.next()
+                        .ok_or("--artifacts needs a directory")?
+                        .to_string(),
+                );
+            }
+            "--yes" => yes = true,
+            "--wait" => wait = true,
+            other => return Err(format!("unknown option {other}\n{USAGE}")),
+        }
+    }
+    let result = install_inner(name, artifacts, yes);
+    if let Err(e) = &result {
+        eprintln!("dream: {e}");
+    }
+    if wait {
+        println!("\nPress Enter to close.");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    }
+    result.map_err(|_| "the install did not complete".into())
+}
+
+fn install_inner(name: &str, artifacts: Option<String>, yes: bool) -> Result<(), String> {
+    let rt = rt()?;
+    let plan = rt.block_on(async {
+        let mut c = connect().await?;
+        match call(
+            &mut c,
+            Request::HostsInstallPlan(api::InstallPlanParams {
+                name: name.into(),
+                artifacts: artifacts.clone(),
+            }),
+        )
+        .await?
+        {
+            Response::HostsInstallPlan(p) => Ok(p),
+            other => Err(format!("unexpected reply {other:?}")),
+        }
+    })?;
+    println!(
+        "{} ({}) is {} {}: target {}",
+        plan.name, plan.destination, plan.remote_os, plan.remote_arch, plan.target
+    );
+    println!(
+        "installed now: {}",
+        plan.installed.as_deref().unwrap_or("nothing")
+    );
+    println!("would install dreamer server {}:", plan.version);
+    for (i, step) in plan.steps.iter().enumerate() {
+        println!("  {}. {step}", i + 1);
+    }
+    if !yes {
+        print!("Install? [y/N] ");
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().read_line(&mut answer);
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Err("not installed".into());
+        }
+    }
+    rt.block_on(async {
+        let mut c = connect().await?;
+        let Response::HostsInstall(r) = call(
+            &mut c,
+            Request::HostsInstall(api::InstallParams {
+                name: name.into(),
+                artifacts,
+                plan_id: plan.plan_id.clone(),
+            }),
+        )
+        .await?
+        else {
+            return Err("unexpected reply".to_string());
+        };
+        println!(
+            "installed {} at {} ({}){}",
+            r.version,
+            r.remote_dream,
+            r.check,
+            r.previous
+                .map(|p| format!("; previous: {p}"))
+                .unwrap_or_default()
+        );
+        match call(
+            &mut c,
+            Request::HostsReconnect(api::HostRef { name: name.into() }),
+        )
+        .await
+        {
+            Ok(Response::HostsReconnect(s)) => print_status(&s),
+            Ok(_) => {}
+            Err(e) => println!("connecting afterwards failed: {e}"),
+        }
+        Ok(())
     })
 }
 

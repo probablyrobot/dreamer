@@ -786,3 +786,181 @@ exit 255
     assert!(text.contains("devbox (devbox) live"), "{text}");
     assert_eq!(host_json(&cli)["state"], "live");
 }
+
+#[test]
+fn a_server_is_installed_on_each_host_for_its_architecture_and_kept_on_a_bad_transfer() {
+    let cli = Cli::new();
+    let far = TmuxServer::start(100, 30, "/bin/sh").expect("remote tmux");
+    let r = |name: &str| cli.root.join(name);
+    let _guards: Vec<DaemonGuard> = ["x86box", "armbox"]
+        .iter()
+        .map(|d| DaemonGuard(r(&format!("{d}/rt"))))
+        .collect();
+    let version = env!("CARGO_PKG_VERSION");
+    // Each "host": its own home, and a uname saying what it is.
+    for (dest, arch) in [("x86box", "x86_64"), ("armbox", "aarch64")] {
+        let bin = r(&format!("{dest}/fakebin"));
+        std::fs::create_dir_all(&bin).expect("dirs");
+        std::fs::create_dir_all(r(&format!("{dest}/home"))).expect("home");
+        let uname = bin.join("uname");
+        std::fs::write(
+            &uname,
+            format!("#!/bin/sh\ncase \"$1\" in -s) echo Linux;; -m) echo {arch};; esac\n"),
+        )
+        .expect("uname");
+        std::fs::set_permissions(&uname, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("chmod");
+    }
+    // ssh: the host's environment, then the command in a shell as sshd
+    // does. With `corrupt`, the bytes sent are changed on the way.
+    std::fs::write(
+        r("ssh"),
+        format!(
+            r#"#!/bin/sh
+while [ "$1" != -- ]; do shift; done
+h='{root}'/"$2"
+export HOME="$h/home" PATH="$h/fakebin:/usr/bin:/bin"
+export DREAMER_RUNTIME_DIR="$h/rt" DREAMER_STATE_DIR="$h/st"
+export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
+if [ -e '{root}/corrupt' ]; then {{ cat; echo junk; }} | /bin/sh -c "$3"; exit $?; fi
+exec /bin/sh -c "$3"
+"#,
+            root = cli.root.display(),
+            daemon = Cli::daemon().display(),
+        ),
+    )
+    .expect("stand-in ssh");
+    std::fs::set_permissions(
+        r("ssh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+    // Server archives whose dream runs the real one, each marked with its
+    // target.
+    let artifacts = r("artifacts");
+    for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+        let name = format!("dreamer-server-{version}-{target}");
+        let stage = artifacts.join("stage").join(&name);
+        std::fs::create_dir_all(stage.join("bin")).expect("stage");
+        std::fs::write(
+            stage.join("bin/dream"),
+            format!("#!/bin/sh\nexec '{DREAM}' \"$@\"\n"),
+        )
+        .expect("dream");
+        std::fs::set_permissions(
+            stage.join("bin/dream"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .expect("chmod");
+        std::fs::write(
+            stage.join("VERSION"),
+            format!("version {version} for {target}\n"),
+        )
+        .expect("VERSION");
+        let tarball = artifacts.join(format!("{name}.tar.gz"));
+        assert!(
+            Command::new("tar")
+                .arg("-C")
+                .arg(artifacts.join("stage"))
+                .arg("-czf")
+                .arg(&tarball)
+                .arg(&name)
+                .status()
+                .expect("tar")
+                .success()
+        );
+        let sum = Command::new("shasum")
+            .args(["-a", "256"])
+            .arg(&tarball)
+            .output()
+            .or_else(|_| Command::new("sha256sum").arg(&tarball).output())
+            .expect("sha256");
+        let sum = String::from_utf8_lossy(&sum.stdout);
+        let sum = sum.split_whitespace().next().expect("sum");
+        std::fs::write(
+            artifacts.join(format!("{name}.tar.gz.sha256")),
+            format!("{sum}  {name}.tar.gz\n"),
+        )
+        .expect("sha file");
+    }
+    std::fs::create_dir_all(r("config")).expect("config dir");
+    std::fs::write(
+        r("config/hosts.yaml"),
+        format!(
+            "hosts:\n  - {{name: x86, destination: x86box, tmux: '{t}', tmux_socket: '{s}'}}\n  \
+             - {{name: arm, destination: armbox, tmux: '{t}', tmux_socket: '{s}'}}\n",
+            t = tmux_program().display(),
+            s = far.socket()
+        ),
+    )
+    .expect("hosts.yaml");
+    cli.ok(&["ensure-running"]);
+    let host = |name: &str| -> serde_json::Value {
+        let list: serde_json::Value =
+            serde_json::from_str(&cli.ok(&["hosts", "list", "--json"])).expect("json");
+        list["hosts"]
+            .as_array()
+            .and_then(|a| a.iter().find(|h| h["name"] == name).cloned())
+            .expect("host")
+    };
+    let artifacts_arg = artifacts.display().to_string();
+
+    // Nothing installed and no dream on the host's PATH.
+    assert!(!cli.on_tmux(&["hosts", "connect", "x86"]).status.success());
+    assert_eq!(host("x86")["failure"], "not_installed", "{}", host("x86"));
+
+    for (name, dest, target) in [
+        ("x86", "x86box", "x86_64-unknown-linux-gnu"),
+        ("arm", "armbox", "aarch64-unknown-linux-gnu"),
+    ] {
+        let out = cli.ok(&[
+            "hosts",
+            "install",
+            name,
+            "--artifacts",
+            &artifacts_arg,
+            "--yes",
+        ]);
+        assert!(out.contains("is Linux "), "{out}");
+        assert!(out.contains(&format!("target {target}")), "{out}");
+        assert!(out.contains("Check its SHA-256 on the host"), "{out}");
+        assert!(out.contains(&format!("{name} ({dest}) live")), "{out}");
+        let current = r(&format!("{dest}/home/.local/share/dreamer/current"));
+        assert_eq!(
+            std::fs::read_link(&current).expect("current is a symlink"),
+            PathBuf::from(format!("versions/{version}"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(current.join("VERSION")).expect("VERSION"),
+            format!("version {version} for {target}\n")
+        );
+        assert_eq!(host(name)["state"], "live");
+    }
+
+    // A transfer changed on the way is refused on the host; the installed
+    // version stays.
+    std::fs::write(r("corrupt"), "").expect("marker");
+    let out = cli.on_tmux(&[
+        "hosts",
+        "install",
+        "arm",
+        "--artifacts",
+        &artifacts_arg,
+        "--yes",
+    ]);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(said.contains("checksum mismatch"), "{said}");
+    let current = r("armbox/home/.local/share/dreamer/current");
+    assert_eq!(
+        std::fs::read_to_string(current.join("VERSION")).expect("kept"),
+        format!("version {version} for aarch64-unknown-linux-gnu\n")
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(r("armbox/home/.local/share/dreamer"))
+        .expect("dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+}
