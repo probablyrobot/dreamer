@@ -25,3 +25,7 @@ rustc-ice-*.txt
 
 # macOS
 .DS_Store
+
+# Core dumps from crashed test processes.
+core
+core.[0-9]*
