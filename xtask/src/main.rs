@@ -12,6 +12,7 @@ mod manifest;
 mod package;
 mod policy;
 mod render;
+mod scenes;
 mod util;
 
 use std::process::ExitCode;
@@ -30,6 +31,7 @@ commands:
   package --platform macos|arch|linux|current [--debug] [--source-only] [--nodeps]
                                build, ad hoc sign, and zip the macOS app bundle
   policy                       check repository rules (workflow runners, pinned actions)
+  scenes [NAME]                open the design review's reference scenes in both skins, to capture
   gate linux-desktop [--allow-missing wayland|x11]
                                real-display smoke on a Linux desktop (second machine)
   gate [mac|linux] [--staged|--full]
@@ -50,6 +52,7 @@ fn main() -> ExitCode {
         }
         Some("gate") => gate::run(&args[1..]),
         Some("policy") => policy::run(&args[1..]),
+        Some("scenes") => scenes::run(&args[1..]),
         Some("package") => package::run(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");

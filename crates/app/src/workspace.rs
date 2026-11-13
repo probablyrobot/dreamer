@@ -9,12 +9,13 @@ use std::sync::Arc;
 
 use gpui::{
     Context, Entity, FocusHandle, MouseButton, MouseDownEvent, Render, Window, div, font,
-    prelude::*, px, rgb,
+    prelude::*, px,
 };
 use replica::feed::Feed;
 use replica::topology::TopologyFeed;
 use terminal_render::cell_metrics;
 
+use crate::theme::c;
 use crate::{Shell, Smoke, load_frame, term_font};
 
 /// Height of the tab strip.
@@ -542,6 +543,7 @@ impl Workspace {
     /// The command, a Copy button, and (when configured) Open in terminal.
     fn fallback_ui(
         &self,
+        t: crate::theme::Theme,
         id: usize,
         attach: crate::fallback::Attach,
         cx: &mut Context<Self>,
@@ -558,7 +560,7 @@ impl Workspace {
             .child(
                 div()
                     .px_1()
-                    .bg(rgb(0x101216))
+                    .bg(c(t.surface))
                     .font_family(term_font().family)
                     .child(attach.display.clone()),
             )
@@ -567,7 +569,7 @@ impl Workspace {
                     .id(("fallback-copy", id))
                     .px_1()
                     .rounded_sm()
-                    .bg(rgb(0x2a2f38))
+                    .bg(c(t.selected))
                     .child("Copy")
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))
@@ -578,7 +580,7 @@ impl Workspace {
                     .id(("fallback-open", id))
                     .px_1()
                     .rounded_sm()
-                    .bg(rgb(0x2a2f38))
+                    .bg(c(t.selected))
                     .child("Open in terminal")
                     .on_click(cx.listener(move |_, _, _, cx| {
                         let argv = argv.clone();
@@ -773,6 +775,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_title(window, cx);
+        let t = *crate::theme::for_window(window);
         let tf = term_font();
         let m = cell_metrics(
             window,
@@ -827,7 +830,7 @@ impl Render for Workspace {
             .gap_1()
             .px_2()
             .items_center()
-            .bg(rgb(0x101216))
+            .bg(c(t.surface))
             .text_size(px(12.0))
             .children(tabs.into_iter().map(|w| {
                 let id = w.id;
@@ -836,17 +839,13 @@ impl Render for Workspace {
                     .id(("tab", id as usize))
                     .px_2()
                     .rounded_sm()
-                    .text_color(if is_active {
-                        rgb(0xe6e6e6)
-                    } else {
-                        rgb(0x8a909a)
-                    })
-                    .when(is_active, |d| d.bg(rgb(0x2a2f38)))
+                    .text_color(if is_active { c(t.text) } else { c(t.muted) })
+                    .when(is_active, |d| d.bg(c(t.selected)))
                     .child(format!("{} {}", w.index, w.name))
                     .on_click(cx.listener(move |ws, _, _, cx| ws.click_tab(id, cx)))
             }))
             .child(div().flex_1())
-            .children(status.map(|s| div().px_2().text_color(rgb(0xd7b46a)).child(s)));
+            .children(status.map(|s| div().px_2().text_color(c(t.warning)).child(s)));
 
         // The sidebar, on demand: sessions, the shown one highlighted.
         let sidebar = self.sidebar.then(|| {
@@ -863,9 +862,9 @@ impl Render for Workspace {
                 .flex_col()
                 .gap_1()
                 .p_2()
-                .bg(rgb(0x101216))
+                .bg(c(t.surface))
                 .text_size(px(12.0))
-                .child(div().text_color(rgb(0x8a909a)).child("Sessions"))
+                .child(div().text_color(c(t.faint)).child("Sessions"))
                 .children(sessions.into_iter().map(|s| {
                     let id = s.id;
                     let here = Some(id) == shown;
@@ -873,8 +872,8 @@ impl Render for Workspace {
                         .id(("session", id as usize))
                         .px_2()
                         .rounded_sm()
-                        .text_color(if here { rgb(0xe6e6e6) } else { rgb(0xb8bec8) })
-                        .when(here, |d| d.bg(rgb(0x2a2f38)))
+                        .text_color(if here { c(t.text) } else { c(t.muted) })
+                        .when(here, |d| d.bg(c(t.selected)))
                         .child(s.name)
                         .on_click(
                             cx.listener(move |ws, _, window, cx| ws.switch_session(id, window, cx)),
@@ -908,13 +907,13 @@ impl Render for Workspace {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .bg(rgb(0x3a2f1c))
+                        .bg(c(t.warning_surface))
                         .text_size(px(12.0))
-                        .text_color(rgb(0xf0dcb0))
+                        .text_color(c(t.warning_text))
                         .child(format!(
                             "tmux {mode} is open in this pane; Dreamer does not draw tmux's own screens. To use it:"
                         ))
-                        .child(self.fallback_ui(id as usize + 1, attach, cx)),
+                        .child(self.fallback_ui(t, id as usize + 1, attach, cx)),
                 ))
             })
             .collect();
@@ -937,7 +936,7 @@ impl Render for Workspace {
                         .w(m.width * cols as f32)
                         .h(m.height * rows as f32)
                         .when(Some(id) == focused && !zoomed, |d| {
-                            d.border_1().border_color(rgb(0x3d4a5c))
+                            d.border_1().border_color(c(t.focus))
                         })
                         .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, window, cx| {
                             entity.update(cx, |ws, cx| {
@@ -958,8 +957,8 @@ impl Render for Workspace {
                                     .right_0()
                                     .px_1()
                                     .text_size(px(11.0))
-                                    .text_color(rgb(0x8a909a))
-                                    .hover(|s| s.text_color(rgb(0xe6e6e6)))
+                                    .text_color(c(t.faint))
+                                    .hover(|s| s.text_color(c(t.text)))
                                     .child(if zoomed { "unzoom" } else { "zoom" })
                                     .on_click(cx.listener(|ws, _, _, cx| ws.toggle_zoom(cx))),
                             )
@@ -996,7 +995,7 @@ impl Render for Workspace {
         let preview = self.drag.map(|drag| {
             let d = drag.divider;
             let at = d.base + drag.size;
-            let line = div().absolute().bg(rgb(0x8ab4f8));
+            let line = div().absolute().bg(c(t.accent));
             match d.axis {
                 Axis::Cols => line
                     .left(m.width * at as f32)
@@ -1044,18 +1043,18 @@ impl Render for Workspace {
                         .w(px(460.0))
                         .p_2()
                         .rounded_md()
-                        .bg(rgb(0x1f232a))
+                        .bg(c(t.raised))
                         .border_1()
-                        .border_color(rgb(0x3d4a5c))
+                        .border_color(c(t.focus))
                         .text_size(px(13.0))
-                        .text_color(rgb(0xe6e6e6))
+                        .text_color(c(t.text))
                         .child(div().pb_1().child(prompt))
                         .children(rows.into_iter().map(|(label, selected)| {
                             div()
                                 .px_2()
                                 .rounded_sm()
-                                .when(selected, |d| d.bg(rgb(0x2a2f38)))
-                                .when(label.starts_with("Kill"), |d| d.text_color(rgb(0xf28b82)))
+                                .when(selected, |d| d.bg(c(t.selected)))
+                                .when(label.starts_with("Kill"), |d| d.text_color(c(t.danger)))
                                 .child(label)
                         })),
                 )
@@ -1068,9 +1067,9 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .text_color(rgb(0xb8bec8))
+                    .text_color(c(t.muted))
                     .child("This window uses a layout Dreamer cannot draw yet (floating panes). Open it in an ordinary tmux client:")
-                    .children(attach.map(|a| self.fallback_ui(0, a, cx))),
+                    .children(attach.map(|a| self.fallback_ui(t, 0, a, cx))),
             )
         } else {
             None
@@ -1088,12 +1087,13 @@ impl Render for Workspace {
                 .collect(),
             preview.map(IntoElement::into_any_element),
             notice.map(IntoElement::into_any_element),
+            t,
         );
         div()
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x14161a))
+            .bg(c(t.background))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|ws, ev: &gpui::KeyDownEvent, window, cx| {
                 if crate::input::is_zoom_shortcut(&ev.keystroke) {
@@ -1130,13 +1130,14 @@ impl Workspace {
         handles: Vec<gpui::AnyElement>,
         preview: Option<gpui::AnyElement>,
         notice: Option<gpui::AnyElement>,
+        t: crate::theme::Theme,
     ) -> gpui::Div {
         div()
             .relative()
             .flex_1()
             .overflow_hidden()
             // tmux leaves one cell between panes: the divider.
-            .bg(rgb(0x1f232a))
+            .bg(c(t.divider))
             .children(panes)
             .children(handles)
             .children(preview)
@@ -1223,6 +1224,7 @@ pub(crate) fn open(
     cx: &mut gpui::App,
     launch: client::Launch,
     smoke: Option<(Vec<String>, bool)>,
+    open_at_start: Vec<String>,
 ) -> Result<(), String> {
     use gpui::{Bounds, WindowBounds, WindowOptions, size};
     let socket = launch.socket.clone();
@@ -1287,6 +1289,16 @@ pub(crate) fn open(
         .update(cx, |_, _, cx| cx.entity())
         .map_err(|e| format!("{e:#}"))?;
     follow_topology(any, ws.clone(), topology, cx);
+    if !open_at_start.is_empty() {
+        let _ = window.update(cx, |ws, window, cx| {
+            if open_at_start.iter().any(|o| o == "sidebar") && !ws.sidebar {
+                ws.toggle_sidebar(cx);
+            }
+            if open_at_start.iter().any(|o| o == "palette") {
+                ws.open_palette(window, cx);
+            }
+        });
+    }
     if let Some((daemon, restore)) = smoke {
         let weak = ws.downgrade();
         if restore {

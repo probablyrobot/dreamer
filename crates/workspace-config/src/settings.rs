@@ -22,6 +22,18 @@ pub struct Settings {
     pub links: LinkSettings,
     pub clipboard: ClipboardSettings,
     pub fallback: FallbackSettings,
+    pub appearance: Appearance,
+}
+
+/// The desktop's skin: the dark or light default, or whichever the system
+/// uses (followed live).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    #[default]
+    System,
+    Dark,
+    Light,
 }
 
 /// How to open what Dreamer cannot draw (floating panes, tmux modes) in an
@@ -96,6 +108,7 @@ impl Default for Settings {
             },
             clipboard: ClipboardSettings::default(),
             fallback: FallbackSettings::default(),
+            appearance: Appearance::default(),
         }
     }
 }
@@ -111,6 +124,7 @@ struct File {
     clipboard: ClipboardFile,
     #[serde(default)]
     fallback: FallbackFile,
+    appearance: Option<Appearance>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -214,6 +228,9 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(w) = file.clipboard.write {
         s.clipboard.write = w;
     }
+    if let Some(a) = file.appearance {
+        s.appearance = a;
+    }
     if let Some(launch) = file.fallback.launch {
         let slots = launch.iter().filter(|a| *a == "{command}").count();
         if !launch.is_empty() && slots != 1 {
@@ -273,6 +290,14 @@ mod tests {
         assert!(parse_settings("colors: {}", None).is_err());
         let e = parse_settings("links: { schemes: ['https:'] }", None).expect_err("scheme");
         assert_eq!(e.at, "links.schemes");
+    }
+
+    #[test]
+    fn appearance_follows_the_system_unless_set() {
+        assert_eq!(Settings::default().appearance, Appearance::System);
+        let s = parse_settings("appearance: light", None).expect("light");
+        assert_eq!(s.appearance, Appearance::Light);
+        assert!(parse_settings("appearance: sepia", None).is_err());
     }
 
     #[test]

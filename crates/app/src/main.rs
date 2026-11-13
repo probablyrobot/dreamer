@@ -23,6 +23,9 @@ mod fallback;
 mod fonts;
 mod input;
 mod palette;
+mod theme;
+
+use theme::{c, ca};
 mod workspace;
 
 use std::process::ExitCode;
@@ -34,7 +37,7 @@ use gpui::{
     App, Bounds, Context, DispatchPhase, ElementInputHandler, EntityInputHandler, FocusHandle,
     KeyDownEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollEvent,
     UTF16Selection, Window, WindowBounds, WindowOptions, canvas, div, font, point, prelude::*, px,
-    rgb, size,
+    size,
 };
 use replica::feed::{Feed, SelectEvent};
 use terminal_ghostty::core::{FrameSnapshot, GridSize};
@@ -88,6 +91,9 @@ struct TermFont {
 
 static TERM_FONT: std::sync::OnceLock<TermFont> = std::sync::OnceLock::new();
 static LINKS: std::sync::OnceLock<workspace_config::LinkSettings> = std::sync::OnceLock::new();
+/// The skin setting (`system`, `dark`, or `light`).
+pub(crate) static APPEARANCE: std::sync::OnceLock<workspace_config::Appearance> =
+    std::sync::OnceLock::new();
 /// The terminal command for the fallback attach, if configured.
 pub(crate) static FALLBACK_LAUNCH: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 static CLIPBOARD: std::sync::OnceLock<workspace_config::ClipboardWrite> =
@@ -632,6 +638,7 @@ impl Shell {
             f32::from(metrics.height),
             f32::from(metrics.ascent)
         );
+        println!("smoke: skin {}", theme::for_window(window).name);
         println!("smoke: painted {:?}", last_paint_stats());
     }
 }
@@ -679,6 +686,7 @@ impl Render for Shell {
             });
             cx.notify();
         }
+        let t = *theme::for_window(window);
         let term = term_font();
         let entity = cx.entity();
         let grid_size = self.frame.size;
@@ -689,8 +697,8 @@ impl Render for Shell {
                 .absolute()
                 .left(cell.origin.x)
                 .top(cell.origin.y)
-                .bg(rgb(0x2a2f38))
-                .text_color(rgb(0xe6e6e6))
+                .bg(c(t.selected))
+                .text_color(c(t.text))
                 .font_family(term.family.clone())
                 .text_size(px(term.size))
                 .underline()
@@ -715,7 +723,7 @@ impl Render for Shell {
                     .top(m.height * f32::from(c.row + 1) - px(2.0))
                     .w(m.width * f32::from(c.end - c.start + 1))
                     .h(px(1.0))
-                    .bg(rgb(0x8ab4f8))
+                    .bg(theme::c(t.accent))
             })
             .collect();
         let notice = self.notice.clone().map(|text| {
@@ -724,8 +732,8 @@ impl Render for Shell {
                 .bottom_0()
                 .left_0()
                 .px_2()
-                .bg(rgb(0x5a2a2a))
-                .text_color(rgb(0xf0d0d0))
+                .bg(c(t.danger_surface))
+                .text_color(c(t.danger_text))
                 .text_size(px(term.size * 0.85))
                 .child(text)
         });
@@ -733,7 +741,7 @@ impl Render for Shell {
         let flash = self
             .flash
             .filter(|t| t.elapsed() < BELL_FLASH)
-            .map(|_| div().absolute().size_full().bg(gpui::rgba(0xffffff22)));
+            .map(|_| div().absolute().size_full().bg(ca(t.flash)));
         // Shown only while scrolled back into history.
         let back = self.frame.view.rows_back();
         let scrolled = (back > 0).then(|| {
@@ -742,15 +750,15 @@ impl Render for Shell {
                 .top_0()
                 .right_0()
                 .px_2()
-                .bg(rgb(0x2a2f38))
-                .text_color(rgb(0xb8bec8))
+                .bg(c(t.selected))
+                .text_color(c(t.muted))
                 .font_family(term.family.clone())
                 .text_size(px(term.size * 0.85))
                 .child(format!("↑ {back} lines"))
         });
         div()
             .size_full()
-            .bg(rgb(0x14161a))
+            .bg(c(t.background))
             .when(!self.embedded, |d| d.p_2())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
@@ -905,6 +913,8 @@ struct Args {
     workspace: bool,
     /// The workspace smoke's second run: check the restored arrangement.
     restore: bool,
+    /// Parts of the workspace to open at start (`sidebar`, `palette`).
+    open: Vec<String>,
     /// `dreamerd` options for a daemon started on demand.
     daemon: Vec<String>,
 }
@@ -925,6 +935,10 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 a.repaint = true;
             }
             "--workspace" => a.workspace = true,
+            // Reference scenes (spec 14.4): open with the sidebar or the
+            // command palette showing.
+            "--open-sidebar" => a.open.push("sidebar".into()),
+            "--open-palette" => a.open.push("palette".into()),
             "--smoke-workspace" => {
                 a.smoke = true;
                 a.workspace = true;
@@ -1035,6 +1049,7 @@ fn main() -> ExitCode {
         let _ = LINKS.set(settings.links.clone());
         let _ = CLIPBOARD.set(settings.clipboard.write);
         let _ = FALLBACK_LAUNCH.set(settings.fallback.launch.clone());
+        let _ = APPEARANCE.set(settings.appearance);
         let _ = TERM_FONT.set(TermFont {
             family: chosen.family,
             size: settings.font.size,
@@ -1044,7 +1059,7 @@ fn main() -> ExitCode {
         if workspace_mode {
             let launch = client::Launch::new(args.daemon.clone());
             let smoke = args.smoke.then(|| (args.daemon.clone(), args.restore));
-            if let Err(e) = workspace::open(cx, launch, smoke) {
+            if let Err(e) = workspace::open(cx, launch, smoke, args.open.clone()) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
