@@ -16,6 +16,7 @@ clipboard:
   write: focused                         # focused (default), allow, or deny
 fallback:
   launch: [kitty, -e, "{command}"]       # optional; no default
+appearance: system                       # system (default), dark, or light
 ```
 
 ## Font
@@ -69,3 +70,11 @@ command. Examples:
 - `[open, -na, Ghostty, --args, -e, "{command}"]`
 
 Without it, the workspace only offers the copyable command.
+
+## Appearance
+
+`appearance` chooses the desktop's skin:
+- `system` (the default) follows the OS appearance live;
+- `dark` and `light` fix it.
+
+Both skins are described in [design.md](design.md).
