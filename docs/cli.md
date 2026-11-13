@@ -67,6 +67,7 @@ See [daemon.md](daemon.md) for files, directories, and lifecycle.
 | `dream hosts connect PROFILE` | Connect to a profile from `hosts.yaml`. `--auto-reconnect` or `--manual` overrides its policy (also for a destination given directly) |
 | `dream hosts verify NAME [--wait]` | Run your own `ssh` to the host in this terminal so you can answer its questions (host key, passphrase), then connect the coordinator. See [remote.md](remote.md#first-connection) |
 | `dream hosts install NAME [--artifacts DIR] [--yes] [--wait]` | Install this version's server on the host after showing the plan; see [remote.md](remote.md#installing-a-server) |
+| `dream hosts upgrade NAME [--artifacts DIR] [--yes] [--allow-older] [--wait]` | Install, restart the host's daemon on the new version (tmux keeps running), and reconnect; see [remote.md](remote.md#upgrading-a-server) |
 | `dream hosts reconnect NAME` | Connect again now, also after a failure that is not retried automatically |
 | `dream hosts list [--json]` | Every host, its state, the remote daemon, and why a host is not live |
 | `dream hosts call NAME METHOD [JSON]` | Forward one typed call, for example `dream hosts call devbox tmux.topology`, and print the remote result as JSON |

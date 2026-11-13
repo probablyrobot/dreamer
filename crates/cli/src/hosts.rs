@@ -21,7 +21,8 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         }
         ["connect", name, rest @ ..] => connect_host(d, name, "", rest),
         ["reconnect", name] => reconnect(d, name),
-        ["install", name, rest @ ..] => install(name, rest),
+        ["install", name, rest @ ..] => install(name, rest, false),
+        ["upgrade", name, rest @ ..] => install(name, rest, true),
         ["verify", name] => verify(name, false),
         ["verify", name, "--wait"] => verify(name, true),
         ["list"] => list(false),
@@ -41,6 +42,7 @@ pub const USAGE: &str = "usage:
   dream hosts reconnect NAME
   dream hosts verify NAME [--wait]
   dream hosts install NAME [--artifacts DIR] [--yes] [--wait]
+  dream hosts upgrade NAME [--artifacts DIR] [--yes] [--allow-older] [--wait]
   dream hosts list [--json]
   dream hosts call NAME METHOD [JSON-PARAMS]
   dream hosts disconnect NAME";
@@ -113,9 +115,9 @@ fn reconnect(d: &DaemonArgs, name: &str) -> Result<(), String> {
 
 /// Install this version's server on a host: show the plan, ask, install
 /// exactly that plan, then connect.
-fn install(name: &str, rest: &[&str]) -> Result<(), String> {
+fn install(name: &str, rest: &[&str], upgrade: bool) -> Result<(), String> {
     let mut artifacts = None;
-    let (mut yes, mut wait) = (false, false);
+    let (mut yes, mut wait, mut allow_older) = (false, false, false);
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match *a {
@@ -128,10 +130,11 @@ fn install(name: &str, rest: &[&str]) -> Result<(), String> {
             }
             "--yes" => yes = true,
             "--wait" => wait = true,
+            "--allow-older" if upgrade => allow_older = true,
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
     }
-    let result = install_inner(name, artifacts, yes);
+    let result = install_inner(name, artifacts, yes, upgrade.then_some(allow_older));
     if let Err(e) = &result {
         eprintln!("dream: {e}");
     }
@@ -143,7 +146,14 @@ fn install(name: &str, rest: &[&str]) -> Result<(), String> {
     result.map_err(|_| "the install did not complete".into())
 }
 
-fn install_inner(name: &str, artifacts: Option<String>, yes: bool) -> Result<(), String> {
+/// Show the plan, ask, and install it; with `upgrade` (`Some(allow
+/// older)`), also restart the host's daemon on it.
+fn install_inner(
+    name: &str,
+    artifacts: Option<String>,
+    yes: bool,
+    upgrade: Option<bool>,
+) -> Result<(), String> {
     let rt = rt()?;
     let plan = rt.block_on(async {
         let mut c = connect().await?;
@@ -172,6 +182,12 @@ fn install_inner(name: &str, artifacts: Option<String>, yes: bool) -> Result<(),
     for (i, step) in plan.steps.iter().enumerate() {
         println!("  {}. {step}", i + 1);
     }
+    if upgrade.is_some() {
+        println!(
+            "  {}. Restart the host's daemon on it. tmux sessions and panes keep running; views start again from fresh checkpoints",
+            plan.steps.len() + 1
+        );
+    }
     if !yes {
         print!("Install? [y/N] ");
         use std::io::Write as _;
@@ -181,6 +197,34 @@ fn install_inner(name: &str, artifacts: Option<String>, yes: bool) -> Result<(),
         if !matches!(answer.trim(), "y" | "Y" | "yes") {
             return Err("not installed".into());
         }
+    }
+    if let Some(allow_older) = upgrade {
+        return rt.block_on(async {
+            let mut c = connect().await?;
+            let Response::HostsUpgrade(r) = call(
+                &mut c,
+                Request::HostsUpgrade(api::UpgradeParams {
+                    name: name.into(),
+                    artifacts,
+                    plan_id: plan.plan_id.clone(),
+                    allow_older,
+                }),
+            )
+            .await?
+            else {
+                return Err("unexpected reply".to_string());
+            };
+            println!(
+                "{} -> {}: {}",
+                r.from.as_deref().unwrap_or("nothing"),
+                r.to,
+                r.note
+            );
+            if let (Some(a), Some(b)) = (r.pid_before, r.pid_after) {
+                println!("daemon pid {a} -> {b}");
+            }
+            Ok(())
+        });
     }
     rt.block_on(async {
         let mut c = connect().await?;

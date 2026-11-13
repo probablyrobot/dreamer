@@ -270,9 +270,45 @@ pub async fn install(
     })
 }
 
+/// The version in an installed `VERSION` file's first line
+/// (`version 0.1.0`), if any.
+pub fn installed_version(first_line: Option<&str>) -> Option<String> {
+    first_line?
+        .split_whitespace()
+        .skip_while(|w| *w != "version")
+        .nth(1)
+        .map(str::to_owned)
+}
+
+/// `a` is older than `b`, comparing dotted numbers (a missing or
+/// non-numeric part counts as 0).
+pub fn older(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> {
+        v.split(['.', '-', '+'])
+            .take(3)
+            .map(|p| p.parse().unwrap_or(0))
+            .collect()
+    };
+    parts(a) < parts(b)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::target_for;
+    use super::{installed_version, older, target_for};
+
+    #[test]
+    fn versions_are_read_and_compared_as_numbers() {
+        assert_eq!(
+            installed_version(Some("version 0.1.0")),
+            Some("0.1.0".into())
+        );
+        assert_eq!(installed_version(Some("0.1.0")), None);
+        assert_eq!(installed_version(None), None);
+        assert!(older("0.9.0", "0.10.0"));
+        assert!(older("0.1.0", "0.1.1"));
+        assert!(!older("1.0.0", "0.99.0"));
+        assert!(!older("0.1.0", "0.1.0"));
+    }
 
     #[test]
     fn hosts_get_the_archive_for_their_os_and_architecture() {

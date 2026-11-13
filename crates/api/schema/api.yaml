@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 17 }
+version: { major: 1, minor: 18 }
 package: dreamer.v1
 
 types:
@@ -654,6 +654,26 @@ types:
       - { n: 3, name: previous, type: string, optional: true }
       - { n: 4, name: check, type: string, doc: "What the installed dream --version printed on the host." }
 
+  - message: UpgradeParams
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: artifacts, type: string, optional: true }
+      - { n: 3, name: plan_id, type: string, doc: "The id of the reviewed install plan." }
+      - { n: 4, name: allow_older, type: bool, doc: "Install even when the host has a newer version." }
+
+  - message: UpgradeResult
+    doc: >-
+      An upgrade is a restart of the host's daemon, not a handover: its
+      tmux sessions and panes keep running, but views of them start again
+      from fresh checkpoints.
+    fields:
+      - { n: 1, name: from, type: string, optional: true, doc: "The version installed before, if any." }
+      - { n: 2, name: to, type: string }
+      - { n: 3, name: restarted, type: bool, doc: "The host's daemon was restarted on the new version." }
+      - { n: 4, name: pid_before, type: u32, optional: true }
+      - { n: 5, name: pid_after, type: u32, optional: true }
+      - { n: 6, name: note, type: string }
+
   - message: HostReply
     doc: The remote daemon's result for a HostCall, as Protobuf.
     fields:
@@ -683,4 +703,5 @@ methods:
   - { method: hosts.watch, params: HostRef, result: TopologyUpdate, doc: "A host's topology; afterwards `tmux.topology` events follow every change, across reconnects. One watch (local or a host) per connection." }
   - { method: hosts.install_plan, params: InstallPlanParams, result: InstallPlan, doc: "Probe a host over SSH and say what installing this daemon's server version there would do." }
   - { method: hosts.install, params: InstallParams, result: InstallResult, mutation: true, doc: "Install the reviewed plan: stream the archive, verify its SHA-256 on the host, unpack into a versioned directory, switch atomically." }
+  - { method: hosts.upgrade, params: UpgradeParams, result: UpgradeResult, mutation: true, doc: "Install the reviewed plan, restart the host's daemon on it (tmux keeps running), and reconnect." }
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }

@@ -560,6 +560,99 @@ impl Hosts {
         }
     }
 
+    /// Install the reviewed plan, then restart the host's daemon on it and
+    /// reconnect. A restart, not a handover: tmux keeps running, views
+    /// start again from fresh checkpoints (their relays end with
+    /// `host_restarted`).
+    pub async fn upgrade(&self, p: api::UpgradeParams) -> Result<api::UpgradeResult, RpcError> {
+        let remote = self.remote_of(&p.name).await?;
+        let plan = crate::install::plan(&p.name, &remote, p.artifacts.as_deref()).await?;
+        if plan.plan_id != p.plan_id {
+            return Err(RpcError::new(
+                code::CONFLICT,
+                "the plan changed since it was reviewed; review it again",
+            ));
+        }
+        let from = crate::install::installed_version(plan.installed.as_deref());
+        let host = self.get(&p.name).await.ok();
+        let running = host.as_ref().and_then(|h| {
+            let l = lock(&h.link);
+            (l.state == LinkState::Live as i32).then(|| {
+                (
+                    l.remote.as_ref().map(|v| v.daemon_version.clone()),
+                    l.remote_pid,
+                )
+            })
+        });
+        if from.as_deref() == Some(plan.version.as_str())
+            && running
+                .as_ref()
+                .is_some_and(|(v, _)| v.as_deref() == Some(plan.version.as_str()))
+        {
+            return Ok(api::UpgradeResult {
+                from: from.clone(),
+                to: plan.version.clone(),
+                restarted: false,
+                pid_before: running.and_then(|r| r.1),
+                pid_after: None,
+                note: format!(
+                    "`{}` already runs {}; nothing changed",
+                    p.name, plan.version
+                ),
+            });
+        }
+        if let Some(f) = &from
+            && crate::install::older(&plan.version, f)
+            && !p.allow_older
+        {
+            return Err(RpcError::new(
+                code::PRECONDITION,
+                format!(
+                    "`{}` has {f}, newer than {}; allow an older version explicitly to go back",
+                    p.name, plan.version
+                ),
+            ));
+        }
+        crate::install::install(&p.name, &remote, p.artifacts.as_deref(), &p.plan_id).await?;
+        let pid_before = running.as_ref().and_then(|r| r.1);
+        // Stop the old daemon through the link; tmux keeps running.
+        if let Some(h) = &host
+            && let Some((client, link, _)) = h.client()
+        {
+            log::info(format!(
+                "hosts: `{}` restarting its daemon on {}",
+                p.name, plan.version
+            ));
+            let _ = client
+                .call(api::Request::DaemonShutdown(api::Empty {}))
+                .await;
+            drop(client);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while tokio::time::Instant::now() < deadline {
+                let ended = {
+                    let l = lock(&h.link);
+                    l.link != link || l.state != LinkState::Live as i32
+                };
+                if ended {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        let status = self.reconnect(&p.name).await?;
+        Ok(api::UpgradeResult {
+            from,
+            to: plan.version.clone(),
+            restarted: true,
+            pid_before,
+            pid_after: status.remote_pid,
+            note: format!(
+                "`{}`'s daemon was restarted on {}: tmux sessions and panes kept running; views start again from fresh checkpoints",
+                p.name, plan.version
+            ),
+        })
+    }
+
     /// How `name` is reached: a host the daemon knows, else its profile.
     pub async fn remote_of(&self, name: &str) -> Result<Remote, RpcError> {
         if let Some(h) = self.hosts.lock().await.get(name) {
