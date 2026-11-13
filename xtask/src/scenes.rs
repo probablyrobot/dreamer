@@ -187,7 +187,11 @@ fn show(root: &Path, scene: &Scene, skin: &str) -> Result<(), String> {
     {
         let _ = Command::new("kill").arg(pid.to_string()).status();
     }
-    t(&["kill-server"]);
+    // The server may already be gone with its last session.
+    let _ = Command::new(&tmux)
+        .args(["-L", &socket, "kill-server"])
+        .stderr(std::process::Stdio::null())
+        .status();
     let _ = std::fs::remove_dir_all(PathBuf::from(&dir));
     Ok(())
 }
