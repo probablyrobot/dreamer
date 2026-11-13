@@ -77,6 +77,32 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The Linux icons as a hicolor theme tree under `to`, named after the
+/// desktop file.
+fn copy_icons(from: &Path, to: &Path) -> Result<(), String> {
+    let mut files = vec![(
+        from.join("dreamer.svg"),
+        to.join("scalable/apps/dev.dreamer.Dreamer.svg"),
+    )];
+    for entry in std::fs::read_dir(from.join("linux"))
+        .map_err(|e| e.to_string())?
+        .flatten()
+    {
+        let path = entry.path();
+        if let Some(size) = path.file_stem().and_then(|s| s.to_str()) {
+            files.push((
+                path.clone(),
+                to.join(format!("{size}x{size}/apps/dev.dreamer.Dreamer.png")),
+            ));
+        }
+    }
+    for (src, dst) in files {
+        std::fs::create_dir_all(dst.parent().expect("icon dir")).map_err(|e| e.to_string())?;
+        std::fs::copy(&src, &dst).map_err(|e| format!("{}: {e}", src.display()))?;
+    }
+    Ok(())
+}
+
 fn sha256_of(path: &Path) -> Result<String, String> {
     crate::util::sha256_file(path)
 }
@@ -153,6 +179,10 @@ fn linux_tarball(root: &Path) -> Result<(), String> {
     copy(
         &root.join("packaging/linux/dev.dreamer.Dreamer.desktop"),
         &stage.join("share/applications/dev.dreamer.Dreamer.desktop"),
+    )?;
+    copy_icons(
+        &root.join("packaging/icons"),
+        &stage.join("share/icons/hicolor"),
     )?;
     copy(
         &root.join("packaging/linux/dreamerd.service"),
@@ -558,6 +588,11 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
         std::fs::copy(entry.path(), font_dir.join(entry.file_name()))
             .map_err(|e| format!("copy font: {e}"))?;
     }
+    std::fs::copy(
+        root.join("packaging/icons/macos/Dreamer.icns"),
+        resources.join("Dreamer.icns"),
+    )
+    .map_err(|e| format!("copy icon: {e}"))?;
     for notice in ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"] {
         std::fs::copy(root.join(notice), resources.join(notice))
             .map_err(|e| format!("copy {notice}: {e}"))?;
@@ -574,6 +609,7 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Dreamer</string>
   <key>CFBundleDisplayName</key><string>Dreamer</string>
+  <key>CFBundleIconFile</key><string>Dreamer</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>{version}</string>
   <key>CFBundleVersion</key><string>{version}</string>
@@ -636,6 +672,9 @@ pub fn verify_bundle(app: &Path) -> Result<(), String> {
                 "{name}: deployment target {found}, expected {MIN_MACOS} (MACOSX_DEPLOYMENT_TARGET)"
             ));
         }
+    }
+    if !app.join("Contents/Resources/Dreamer.icns").is_file() {
+        return Err("the bundle has no Dreamer.icns".into());
     }
     let fonts = app.join("Contents/Resources/Fonts");
     let ttf = std::fs::read_dir(&fonts)

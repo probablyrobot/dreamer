@@ -1683,6 +1683,7 @@ pub(crate) fn open_via(
         .open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                app_id: Some(crate::APP_ID.into()),
                 ..Default::default()
             },
             |window, cx| {

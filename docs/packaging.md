@@ -20,7 +20,8 @@ tested against the tmux baseline in
 `Dreamer.app/Contents/MacOS` holds `dreamer`, `dreamerd`, and `dream`. The
 app starts the daemon from there. `Contents/Resources/Fonts` holds the
 default font (four styles and its license), which the app loads itself, so
-nothing has to be installed system-wide. Every executable is arm64 with a minimum
+nothing has to be installed system-wide. `Contents/Resources/Dreamer.icns`
+is the application icon. Every executable is arm64 with a minimum
 of macOS 15.0. Each helper is signed, then the bundle is ad hoc signed over
 them. `cargo xtask package` verifies all of this, and runs
 `dreamerd --self-check` and `dream --version` from inside the bundle.
@@ -57,6 +58,7 @@ verifies its SHA-256, and installs:
 | `~/.local/bin/dreamer`, `dreamerd`, `dream` | Links to the active version |
 | `~/.local/share/fonts/dreamer/` | JetBrains Mono Nerd Font, for other applications too. Dreamer loads its own copy regardless |
 | `~/.local/share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
+| `~/.local/share/icons/hicolor/*/apps/dev.dreamer.Dreamer.{png,svg}` | Application icon, 16 to 512 px and scalable |
 | `~/.config/systemd/user/dreamerd.service` | Optional user service. Enable it with `--enable-service` |
 
 Options:
@@ -162,6 +164,7 @@ Installed files:
 | --- | --- |
 | `/usr/bin/dreamer`, `/usr/bin/dreamerd`, `/usr/bin/dream` | The executables |
 | `/usr/share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
+| `/usr/share/icons/hicolor/*/apps/dev.dreamer.Dreamer.{png,svg}` | Application icon, 16 to 512 px and scalable |
 | `/usr/lib/systemd/user/dreamerd.service` | Optional user service: `systemctl --user enable --now dreamerd`. Not needed, since `dreamer` and `dream` start the daemon on demand |
 | `/usr/share/licenses/dreamer/` | License and notices |
 | `/usr/share/doc/dreamer/` | These documents |
