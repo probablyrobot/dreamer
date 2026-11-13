@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 10 }
+version: { major: 1, minor: 11 }
 package: dreamer.v1
 
 types:
@@ -165,6 +165,14 @@ types:
       - { n: 5, name: argv, type: string, repeated: true, doc: Exact program and arguments; never a shell string. }
       - { n: 6, name: cwd, type: string, optional: true }
 
+  - message: NewWindow
+    doc: A window at the end of a session; it runs the default shell unless argv is given.
+    fields:
+      - { n: 1, name: session, type: u32 }
+      - { n: 2, name: name, type: string, optional: true }
+      - { n: 3, name: argv, type: string, repeated: true, doc: Exact program and arguments; never a shell string. }
+      - { n: 4, name: cwd, type: string, optional: true }
+
   - message: ResizePane
     fields:
       - { n: 1, name: pane, type: u32 }
@@ -233,6 +241,7 @@ types:
         - { n: 9, name: send_keys, type: SendKeys }
         - { n: 10, name: kill_pane, type: KillPane }
         - { n: 11, name: kill_window, type: KillWindow }
+        - { n: 12, name: new_window, type: NewWindow }
 
   - message: SubmitAction
     fields:

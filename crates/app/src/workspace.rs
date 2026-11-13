@@ -48,6 +48,9 @@ pub(crate) struct Workspace {
     drag: Option<Drag>,
     /// Resize actions sent for divider drags (smoke evidence).
     pub(crate) resizes_sent: u32,
+    /// The command palette while open, and where its keys go.
+    pub(crate) palette: Option<crate::palette::Palette>,
+    palette_focus: FocusHandle,
 }
 
 /// A divider being dragged: the size the pointer asks for, the last size
@@ -87,6 +90,8 @@ impl Workspace {
             cell: None,
             drag: None,
             resizes_sent: 0,
+            palette: None,
+            palette_focus: cx.focus_handle(),
         }
     }
 
@@ -217,6 +222,145 @@ impl Workspace {
                 width,
                 height,
             }));
+    }
+
+    pub(crate) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette = Some(crate::palette::Palette::new());
+        window.focus(&self.palette_focus, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette = None;
+        if let Some(view) = self.focused.and_then(|f| self.panes.get(&f)) {
+            let handle = view.shell.read(cx).focus.clone();
+            window.focus(&handle, cx);
+        }
+        cx.notify();
+    }
+
+    /// Enter in the palette: run the command, or move on to its confirm or
+    /// name step.
+    pub(crate) fn palette_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::palette::Decision;
+        let Some(p) = self.palette.as_mut() else {
+            return;
+        };
+        if let Decision::Run(cmd, name) = p.enter() {
+            self.close_palette(window, cx);
+            self.run_command(cmd, name, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn palette_key(
+        &mut self,
+        ev: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let k = &ev.keystroke;
+        let Some(p) = self.palette.as_mut() else {
+            return;
+        };
+        match k.key.as_str() {
+            "escape" => return self.close_palette(window, cx),
+            "enter" => return self.palette_enter(window, cx),
+            "backspace" => p.backspace(),
+            "up" => p.move_selection(false),
+            "down" => p.move_selection(true),
+            _ => {
+                let m = &k.modifiers;
+                if !(m.control || m.platform || m.alt)
+                    && let Some(text) = &k.key_char
+                {
+                    text.chars().for_each(|c| p.type_char(c));
+                }
+            }
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Run a palette command. Every effect is seen in a newer topology;
+    /// "Close view" closes only this window.
+    pub(crate) fn run_command(
+        &mut self,
+        cmd: crate::palette::Command,
+        name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::palette::Command as C;
+        use api::action::Kind;
+        let pane = self.focused;
+        let win = self.active_window().map(|w| w.id);
+        let mut windows: Vec<(u32, u32)> = match (&self.current, self.session) {
+            (Some(t), Some(s)) => t
+                .windows
+                .iter()
+                .filter(|w| w.sessions.contains(&s))
+                .map(|w| (w.index, w.id))
+                .collect(),
+            _ => Vec::new(),
+        };
+        windows.sort_unstable();
+        let step = |by: isize| -> Option<u32> {
+            let i = windows.iter().position(|(_, id)| Some(*id) == win)?;
+            let n = windows.len() as isize;
+            Some(windows[((i as isize + by).rem_euclid(n)) as usize].1)
+        };
+        let split = |direction: api::SplitDirection| {
+            pane.map(|pane| {
+                Kind::SplitPane(api::SplitPane {
+                    pane,
+                    direction: direction as i32,
+                    ..api::SplitPane::default()
+                })
+            })
+        };
+        let action = match cmd {
+            C::SplitRight => split(api::SplitDirection::Horizontal),
+            C::SplitDown => split(api::SplitDirection::Vertical),
+            C::NewWindow => self.session.map(|session| {
+                Kind::NewWindow(api::NewWindow {
+                    session,
+                    ..api::NewWindow::default()
+                })
+            }),
+            C::RenameWindow => win
+                .zip(name)
+                .map(|(window, name)| Kind::RenameWindow(api::RenameWindow { window, name })),
+            C::NextWindow => step(1).map(|window| Kind::SelectWindow(api::SelectWindow { window })),
+            C::PreviousWindow => {
+                step(-1).map(|window| Kind::SelectWindow(api::SelectWindow { window }))
+            }
+            C::NextPane => {
+                let ids = self.pane_ids();
+                let next = pane
+                    .and_then(|p| ids.iter().position(|i| *i == p))
+                    .map(|i| ids[(i + 1) % ids.len()])
+                    .or(ids.first().copied());
+                if let Some(next) = next {
+                    self.click_pane(next, window, cx);
+                }
+                None
+            }
+            C::Zoom => {
+                self.toggle_zoom(cx);
+                None
+            }
+            C::CloseView => {
+                window.remove_window();
+                None
+            }
+            C::KillPane => pane.map(|pane| Kind::KillPane(api::KillPane { pane })),
+            C::KillWindow => win.map(|window| Kind::KillWindow(api::KillWindow { window })),
+        };
+        if let Some(kind) = action {
+            self.topology.act(kind);
+        }
+        cx.notify();
     }
 
     /// Zoom the focused pane, or unzoom; the view follows the topology.
@@ -527,6 +671,56 @@ impl Render for Workspace {
                     .h(px(2.0)),
             }
         });
+        let palette = self.palette.clone().map(|p| {
+            use crate::palette::Stage;
+            let (prompt, rows): (String, Vec<(String, bool)>) = match &p.stage {
+                Stage::Choose => (
+                    format!("> {}", p.filter),
+                    p.shown()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| (c.label().to_owned(), i == p.selected))
+                        .collect(),
+                ),
+                Stage::Confirm(c) => (
+                    format!(
+                        "{} Press Enter to confirm, Backspace to go back.",
+                        c.label()
+                    ),
+                    Vec::new(),
+                ),
+                Stage::Name(c, name) => (format!("{} {name}", c.label()), Vec::new()),
+            };
+            div()
+                .absolute()
+                .top(px(TAB_STRIP + 8.0))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .track_focus(&self.palette_focus)
+                        .on_key_down(cx.listener(Self::palette_key))
+                        .w(px(460.0))
+                        .p_2()
+                        .rounded_md()
+                        .bg(rgb(0x1f232a))
+                        .border_1()
+                        .border_color(rgb(0x3d4a5c))
+                        .text_size(px(13.0))
+                        .text_color(rgb(0xe6e6e6))
+                        .child(div().pb_1().child(prompt))
+                        .children(rows.into_iter().map(|(label, selected)| {
+                            div()
+                                .px_2()
+                                .rounded_sm()
+                                .when(selected, |d| d.bg(rgb(0x2a2f38)))
+                                .when(label.starts_with("Kill"), |d| d.text_color(rgb(0xf28b82)))
+                                .child(label)
+                        })),
+                )
+        });
         let notice = unsupported.then(|| {
             div()
                 .p_4()
@@ -539,12 +733,16 @@ impl Render for Workspace {
             .flex_col()
             .bg(rgb(0x14161a))
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|ws, ev: &gpui::KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|ws, ev: &gpui::KeyDownEvent, window, cx| {
                 if crate::input::is_zoom_shortcut(&ev.keystroke) {
                     ws.toggle_zoom(cx);
                     cx.stop_propagation();
+                } else if crate::input::is_palette_shortcut(&ev.keystroke) {
+                    ws.open_palette(window, cx);
+                    cx.stop_propagation();
                 }
             }))
+            .children(palette)
             .child(strip)
             .child(
                 div()
@@ -805,6 +1003,7 @@ mod smoke {
         })
         .await;
         println!("smoke: zoom showed the focused pane alone, and unzoom brought all four back");
+        palette_commands(any, &ws, cx).await;
 
         let painted = click_and_type(any, &ws, cx).await;
 
@@ -830,6 +1029,116 @@ mod smoke {
         .await;
         println!("smoke: a tab click switched the tmux window, and only its pane is shown");
         std::process::exit(if painted { 0 } else { crate::INCONCLUSIVE });
+    }
+
+    /// Type `filter` into a freshly opened palette and press Enter; then
+    /// type `name` and press Enter, if given.
+    fn palette(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncApp, filter: &str) {
+        let filter = filter.to_owned();
+        let _ = cx.update_window(any, |_, window, cx| {
+            if let Some(ws) = ws.upgrade() {
+                ws.update(cx, |w, cx| {
+                    w.open_palette(window, cx);
+                    if let Some(p) = w.palette.as_mut() {
+                        filter.chars().for_each(|c| p.type_char(c));
+                    }
+                    w.palette_enter(window, cx);
+                });
+            }
+        });
+    }
+
+    fn palette_more(
+        any: AnyWindowHandle,
+        ws: &WeakEntity<Workspace>,
+        cx: &mut AsyncApp,
+        text: &str,
+    ) {
+        let text = text.to_owned();
+        let _ = cx.update_window(any, |_, window, cx| {
+            if let Some(ws) = ws.upgrade() {
+                ws.update(cx, |w, cx| {
+                    if let Some(p) = w.palette.as_mut() {
+                        text.chars().for_each(|c| p.type_char(c));
+                    }
+                    w.palette_enter(window, cx);
+                });
+            }
+        });
+    }
+
+    /// Every palette command's effect shows up in tmux; a kill needs the
+    /// second Enter.
+    async fn palette_commands(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncApp) {
+        palette(any, ws, cx, "split pane right");
+        wait_for(any, ws, cx, "a fifth pane from the palette", |w, _| {
+            w.pane_ids().len() == 5
+        })
+        .await;
+
+        palette(any, ws, cx, "kill pane");
+        cx.background_executor()
+            .timer(Duration::from_millis(400))
+            .await;
+        let still = read(any, ws, cx, |w, _| {
+            (w.pane_ids().len(), w.palette.is_some())
+        });
+        if still != Some((5, true)) {
+            fail(&format!(
+                "the first Enter on a kill must only ask: {still:?}"
+            ));
+        }
+        palette_more(any, ws, cx, "");
+        wait_for(any, ws, cx, "the pane killed after confirming", |w, _| {
+            w.pane_ids().len() == 4
+        })
+        .await;
+
+        let before = read(any, ws, cx, |w, _| w.focused).flatten();
+        palette(any, ws, cx, "focus next pane");
+        wait_for(any, ws, cx, "focus on the next pane", |w, _| {
+            w.focused != before
+        })
+        .await;
+
+        palette(any, ws, cx, "new window");
+        wait_for(any, ws, cx, "a third window from the palette", |w, _| {
+            w.topology().is_some_and(|t| t.windows.len() == 3) && w.pane_ids().len() == 1
+        })
+        .await;
+        palette(any, ws, cx, "rename window");
+        palette_more(any, ws, cx, "from-palette");
+        wait_for(
+            any,
+            ws,
+            cx,
+            "the window renamed from the palette",
+            |w, _| w.active_window().is_some_and(|x| x.name == "from-palette"),
+        )
+        .await;
+        // From the last window, next wraps to the first; previous wraps back.
+        palette(any, ws, cx, "next window");
+        wait_for(any, ws, cx, "the first window after wrapping", |w, _| {
+            w.active_window().is_some_and(|x| x.index == 0) && w.pane_ids().len() == 4
+        })
+        .await;
+        palette(any, ws, cx, "previous window");
+        wait_for(
+            any,
+            ws,
+            cx,
+            "the last window after wrapping back",
+            |w, _| w.active_window().is_some_and(|x| x.name == "from-palette"),
+        )
+        .await;
+        palette(any, ws, cx, "next window");
+        wait_for(any, ws, cx, "the first window again", |w, _| {
+            w.active_window().is_some_and(|x| x.index == 0) && w.pane_ids().len() == 4
+        })
+        .await;
+        println!(
+            "smoke: the palette split, killed only after confirming, moved focus, made and renamed a window, and switched windows"
+        );
     }
 
     /// With a refreshing display: click a pane that is not focused, require
@@ -955,6 +1264,31 @@ mod smoke {
             fail(&format!("typed text also reached {elsewhere:?}"));
         }
         println!("smoke: typed text reached only the focused pane %{target}");
+        // The palette opens from the keyboard and Escape closes it.
+        let shortcut = if cfg!(target_os = "macos") {
+            "cmd-shift-p"
+        } else {
+            "ctrl-shift-p"
+        };
+        let _ = cx.update_window(any, move |_, window, cx| {
+            if let Ok(ks) = gpui::Keystroke::parse(shortcut) {
+                window.dispatch_keystroke(ks, cx);
+            }
+        });
+        wait_for(any, ws, cx, "the palette opened by its shortcut", |w, _| {
+            w.palette.is_some()
+        })
+        .await;
+        let _ = cx.update_window(any, |_, window, cx| {
+            if let Ok(ks) = gpui::Keystroke::parse("escape") {
+                window.dispatch_keystroke(ks, cx);
+            }
+        });
+        wait_for(any, ws, cx, "the palette closed by Escape", |w, _| {
+            w.palette.is_none()
+        })
+        .await;
+        println!("smoke: the palette opened from the keyboard and Escape closed it");
         drag_divider(any, ws, cx).await;
         true
     }

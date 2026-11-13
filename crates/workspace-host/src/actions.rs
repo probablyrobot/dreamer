@@ -252,6 +252,26 @@ fn validate(ep: &Endpoint, kind: &Kind) -> Result<(), String> {
         Kind::KillPane(a) => has_pane(ep, a.pane),
         Kind::SelectWindow(a) => has_window(ep, a.window),
         Kind::KillWindow(a) => has_window(ep, a.window),
+        Kind::NewWindow(a) => {
+            if !ep
+                .tracker
+                .inventory()
+                .sessions
+                .contains_key(&TmuxSessionId(a.session))
+            {
+                return Err(format!(
+                    "session ${} does not exist on endpoint `{}`",
+                    a.session, ep.name
+                ));
+            }
+            if a.name.as_deref().is_some_and(str::is_empty) {
+                return Err("a window name cannot be empty".into());
+            }
+            if a.argv.first().is_some_and(String::is_empty) {
+                return Err("the program name is empty".into());
+            }
+            Ok(())
+        }
         Kind::RenameWindow(a) => {
             has_window(ep, a.window)?;
             if a.name.is_empty() {
@@ -342,6 +362,15 @@ async fn dispatch(conn: &Connection, kind: &Kind) -> Result<Option<u32>, Command
         Kind::KillWindow(a) => ops::kill_window(conn, TmuxWindowId(a.window))
             .await
             .map(|()| None),
+        Kind::NewWindow(a) => {
+            let launch = Launch {
+                argv: a.argv.clone(),
+                cwd: a.cwd.clone(),
+            };
+            ops::new_window(conn, TmuxSessionId(a.session), a.name.as_deref(), &launch)
+                .await
+                .map(|p| Some(p.0))
+        }
     }
 }
 
@@ -373,6 +402,18 @@ async fn observe(ep: &mut Endpoint, kind: &Kind, new_pane: Option<u32>) -> Outco
                     new_pane: Some(p),
                 },
                 None => not_seen("the new pane is not in the inventory".into()),
+            }
+        }
+        Kind::NewWindow(a) => {
+            match new_pane.and_then(|p| inv.panes.get(&TmuxPaneId(p)).map(|i| (p, i))) {
+                Some((p, info)) => Outcome::Completed {
+                    observed: format!(
+                        "created window @{} with pane %{p} in session ${}",
+                        info.window.0, a.session
+                    ),
+                    new_pane: Some(p),
+                },
+                None => not_seen("the new window's pane is not in the inventory".into()),
             }
         }
         Kind::ResizePane(a) => match inv.panes.get(&TmuxPaneId(a.pane)) {

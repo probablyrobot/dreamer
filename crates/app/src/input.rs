@@ -162,9 +162,21 @@ pub fn is_zoom_shortcut(k: &Keystroke) -> bool {
     k.key == "enter" && primary && m.shift && !m.alt
 }
 
+/// The workspace's command palette: Cmd-Shift-P on macOS, Ctrl-Shift-P
+/// elsewhere. Never sent to the pane.
+pub fn is_palette_shortcut(k: &Keystroke) -> bool {
+    let m = &k.modifiers;
+    let primary = if cfg!(target_os = "macos") {
+        m.platform && !m.control
+    } else {
+        m.control && !m.platform
+    };
+    k.key == "p" && primary && m.shift && !m.alt
+}
+
 pub fn intent(k: &Keystroke, held: bool) -> KeyIntent {
     let m = &k.modifiers;
-    if is_zoom_shortcut(k) {
+    if is_zoom_shortcut(k) || is_palette_shortcut(k) {
         return KeyIntent::Pass;
     }
     let paste = if cfg!(target_os = "macos") {
