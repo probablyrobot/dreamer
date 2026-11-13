@@ -113,6 +113,9 @@ impl Service for Fixed {
     async fn tmux_topology(&self, _: api::TopologyParams) -> Result<api::Topology, RpcError> {
         Err(RpcError::new(api::code::UNAVAILABLE, "test"))
     }
+    async fn tmux_watch(&self, _: api::TopologyParams) -> Result<api::TopologyUpdate, RpcError> {
+        Err(RpcError::new(api::code::UNAVAILABLE, "test"))
+    }
     async fn actions_submit(&self, p: SubmitAction) -> Result<ActionRecord, RpcError> {
         Ok(ActionRecord {
             action: p.action,

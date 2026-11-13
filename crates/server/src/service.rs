@@ -68,6 +68,9 @@ pub struct State {
     /// interleaved with other input to that pane, and never holds up input
     /// to another pane.
     pub input: Mutex<std::collections::HashMap<u32, Arc<Mutex<()>>>>,
+    /// The latest topology and its revision, for `tmux.watch` connections.
+    /// A watch channel: a slow watcher only ever sees the newest.
+    pub topology: tokio::sync::watch::Sender<Option<Arc<api::TopologyUpdate>>>,
     /// Pastes arriving in parts, by (pane, paste id), until the last part.
     pub pastes: Mutex<std::collections::HashMap<(u32, u64), Vec<u8>>>,
     /// Connection epochs: each new control connection gets the next one.
@@ -214,11 +217,31 @@ async fn reconcile(
             log::warn(format!("re-reading tmux for mirrors: {e}"));
             continue;
         }
+        publish_topology(&state, ep);
         let tmux = ep.tracker.inventory().server.clone();
         let panes = mirrored_panes(&ep.tracker);
         drop(guard);
         host.sync(tmux, panes).await;
     }
+}
+
+/// Publish the endpoint's topology to watchers if it changed.
+pub fn publish_topology(state: &State, ep: &Endpoint) {
+    let topology = workspace_host::topology(&ep.name, &ep.tracker);
+    state.topology.send_if_modified(|current| {
+        if current
+            .as_ref()
+            .is_some_and(|c| c.topology.as_ref() == Some(&topology))
+        {
+            return false;
+        }
+        let revision = current.as_ref().map_or(1, |c| c.revision + 1);
+        *current = Some(Arc::new(api::TopologyUpdate {
+            revision,
+            topology: Some(topology),
+        }));
+        true
+    });
 }
 
 fn now_ms() -> u64 {
@@ -313,7 +336,18 @@ impl api::Service for DaemonService {
             .refresh()
             .await
             .map_err(|e| unavailable(format!("cannot read tmux: {e}")))?;
+        publish_topology(&self.0, ep);
         Ok(workspace_host::topology(&ep.name, &ep.tracker))
+    }
+
+    async fn tmux_watch(&self, p: api::TopologyParams) -> Result<api::TopologyUpdate, RpcError> {
+        // Read tmux now, so the reply is current; the connection then
+        // follows `State::topology` (see conn.rs).
+        self.tmux_topology(p).await?;
+        let current = self.0.topology.borrow().clone();
+        current
+            .map(|u| (*u).clone())
+            .ok_or_else(|| unavailable("no topology yet".into()))
     }
 
     async fn actions_submit(&self, p: api::SubmitAction) -> Result<api::ActionRecord, RpcError> {

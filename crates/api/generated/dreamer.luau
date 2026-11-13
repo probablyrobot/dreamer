@@ -102,6 +102,12 @@ export type Topology = {
 	panes: {Pane}?,
 }
 
+--- A topology with its revision. After tmux.watch, the connection gets one as a `tmux.topology` event whenever the topology changes (including changes another tmux client made), coalesced to the latest.
+export type TopologyUpdate = {
+	revision: number?,
+	topology: Topology?,
+}
+
 --- Split a pane; the new pane runs the default shell unless argv is given.
 export type SplitPane = {
 	pane: number?,
@@ -412,6 +418,10 @@ return function(call: Call)
 	--- Sessions, windows, and panes of one endpoint.
 	function dreamer.tmux.topology(params: TopologyParams?): Topology
 		return call("tmux.topology", params or {})
+	end
+	--- The current topology; afterwards `tmux.topology` events follow every change.
+	function dreamer.tmux.watch(params: TopologyParams?): TopologyUpdate
+		return call("tmux.watch", params or {})
 	end
 	--- Run a typed action and report its observed outcome.
 	function dreamer.actions.submit(params: SubmitAction?): ActionRecord

@@ -41,6 +41,7 @@ fn queues() -> (usize, usize) {
 pub const TOPIC_RECORDS: &str = "terminal.records";
 pub const TOPIC_END: &str = "terminal.end";
 pub const TOPIC_CHECKPOINT: &str = "terminal.checkpoint";
+pub const TOPIC_TOPOLOGY: &str = "tmux.topology";
 
 enum Out {
     Frame(Kind, Vec<u8>),
@@ -51,6 +52,8 @@ enum Out {
 struct Conn {
     out: mpsc::Sender<Out>,
     subs: Arc<Mutex<HashMap<u64, JoinHandle<()>>>>,
+    /// The `tmux.watch` task, once this connection asked for one.
+    watch: Arc<Mutex<Option<JoinHandle<()>>>>,
     next_sub: Arc<AtomicU64>,
     events: Arc<AtomicU64>,
 }
@@ -104,6 +107,7 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
     let conn = Conn {
         out,
         subs: Arc::default(),
+        watch: Arc::default(),
         next_sub: Arc::new(AtomicU64::new(1)),
         events: Arc::new(AtomicU64::new(1)),
     };
@@ -134,11 +138,15 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                         subscribe(&service, &conn, req).await;
                         return;
                     }
+                    let watch = req.method == api::method::TMUX_WATCH;
                     let response = if req.method == api::method::TERMINAL_UNSUBSCRIBE {
                         unsubscribe(&conn, req).await
                     } else {
                         answer(&service, req).await
                     };
+                    if watch && response.error_code.is_none() {
+                        follow_topology(&state, &conn, &response).await;
+                    }
                     let _ = conn
                         .out
                         .send(Out::Frame(Kind::Response, response.encode_to_vec()))
@@ -161,6 +169,9 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         }
     }
     for (_, task) in conn.subs.lock().await.drain() {
+        task.abort();
+    }
+    if let Some(task) = conn.watch.lock().await.take() {
         task.abort();
     }
     drop(conn);
@@ -240,6 +251,34 @@ fn ok(id: u64, payload: Vec<u8>) -> wire::Response {
         error_code: None,
         error_message: String::new(),
     }
+}
+
+/// After a `tmux.watch` reply, push every newer topology as a
+/// `tmux.topology` event: never an older one, and only the newest when the
+/// client reads slowly. One watcher per connection.
+async fn follow_topology(state: &Arc<State>, conn: &Conn, reply: &wire::Response) {
+    let sent = api::TopologyUpdate::decode(reply.payload.as_slice()).map_or(0, |u| u.revision);
+    let mut slot = conn.watch.lock().await;
+    if slot.is_some() {
+        return;
+    }
+    let mut rx = state.topology.subscribe();
+    let conn = conn.clone();
+    *slot = Some(tokio::spawn(async move {
+        let mut last = sent;
+        loop {
+            let next = rx.borrow_and_update().clone();
+            if let Some(u) = next.filter(|u| u.revision > last) {
+                last = u.revision;
+                if !conn.event(TOPIC_TOPOLOGY, u.encode_to_vec()).await {
+                    return;
+                }
+            }
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    }));
 }
 
 async fn unsubscribe(conn: &Conn, req: wire::Request) -> wire::Response {

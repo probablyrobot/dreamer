@@ -118,6 +118,15 @@ types:
       - { n: 3, name: windows, type: Window, repeated: true }
       - { n: 4, name: panes, type: Pane, repeated: true }
 
+  - message: TopologyUpdate
+    doc: >-
+      A topology with its revision. After tmux.watch, the connection gets
+      one as a `tmux.topology` event whenever the topology changes
+      (including changes another tmux client made), coalesced to the latest.
+    fields:
+      - { n: 1, name: revision, type: u64, doc: "Increases with every change; never repeats within a daemon run." }
+      - { n: 2, name: topology, type: Topology }
+
   # ---- actions ------------------------------------------------------------
 
   - enum: SplitDirection
@@ -502,6 +511,7 @@ methods:
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
   - { method: daemon.shutdown, params: Empty, result: ShutdownResult, mutation: true, doc: "Stop the daemon; tmux sessions and panes keep running." }
   - { method: tmux.topology, params: TopologyParams, result: Topology, doc: "Sessions, windows, and panes of one endpoint." }
+  - { method: tmux.watch, params: TopologyParams, result: TopologyUpdate, doc: "The current topology; afterwards `tmux.topology` events follow every change." }
   - { method: actions.submit, params: SubmitAction, result: ActionRecord, mutation: true, doc: "Run a typed action and report its observed outcome." }
   - { method: actions.get, params: ActionQuery, result: ActionRecord }
   - { method: actions.list, params: ActionListParams, result: ActionList }

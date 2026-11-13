@@ -53,7 +53,7 @@ pub fn topology(endpoint: &str, tracker: &InventoryTracker) -> api::Topology {
                 index,
                 panes,
                 active_pane: w.active_pane.map(|p| p.0),
-                zoomed: false,
+                zoomed: w.zoomed,
                 layout_supported: supported,
                 width,
                 height,

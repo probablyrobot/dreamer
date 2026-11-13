@@ -48,6 +48,8 @@ pub struct WindowInfo {
     /// Every session the window is linked into.
     pub sessions: BTreeSet<TmuxSessionId>,
     pub active_pane: Option<TmuxPaneId>,
+    /// The active pane fills the window (`resize-pane -Z`).
+    pub zoomed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,7 +182,13 @@ impl Inventory {
             .push(list(
                 "list-windows",
                 true,
-                fields(&["session_id", "window_id", "window_index", "window_active"]),
+                fields(&[
+                    "session_id",
+                    "window_id",
+                    "window_index",
+                    "window_active",
+                    "window_zoomed_flag",
+                ]),
             ))
             .push(list("list-windows", true, "#{window_name}".into()))
             .push(list("list-windows", true, "#{window_layout}".into()))
@@ -230,7 +238,7 @@ impl Inventory {
             );
         }
 
-        let window_rows = rows(&r[3], 4, "window")?;
+        let window_rows = rows(&r[3], 5, "window")?;
         let window_names = text_rows(&r[4]);
         let window_layouts = text_rows(&r[5]);
         aligned(window_rows.len(), &window_names, "window names")?;
@@ -253,6 +261,7 @@ impl Inventory {
                     layout: parse_layout(&layout),
                     sessions: BTreeSet::new(),
                     active_pane: None,
+                    zoomed: f[4] == "1",
                 })
                 .sessions
                 .insert(session);

@@ -648,6 +648,18 @@ pub struct Topology {
     pub panes: Vec<Pane>,
 }
 
+/// A topology with its revision. After tmux.watch, the connection gets one as a `tmux.topology` event whenever the topology changes (including changes another tmux client made), coalesced to the latest.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TopologyUpdate {
+    /// Increases with every change; never repeats within a daemon run.
+    #[prost(uint64, tag = "1")]
+    pub revision: u64,
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topology: Option<Topology>,
+}
+
 /// Split a pane; the new pane runs the default shell unless argv is given.
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
@@ -1288,6 +1300,7 @@ pub mod method {
     pub const DAEMON_STATUS: &str = "daemon.status";
     pub const DAEMON_SHUTDOWN: &str = "daemon.shutdown";
     pub const TMUX_TOPOLOGY: &str = "tmux.topology";
+    pub const TMUX_WATCH: &str = "tmux.watch";
     pub const ACTIONS_SUBMIT: &str = "actions.submit";
     pub const ACTIONS_GET: &str = "actions.get";
     pub const ACTIONS_LIST: &str = "actions.list";
@@ -1336,6 +1349,13 @@ pub const METHODS: &[MethodInfo] = &[
         result: "Topology",
         mutation: false,
         doc: "Sessions, windows, and panes of one endpoint.",
+    },
+    MethodInfo {
+        name: "tmux.watch",
+        params: "TopologyParams",
+        result: "TopologyUpdate",
+        mutation: false,
+        doc: "The current topology; afterwards `tmux.topology` events follow every change.",
     },
     MethodInfo {
         name: "actions.submit",
@@ -1409,6 +1429,7 @@ pub enum Request {
     DaemonStatus(Empty),
     DaemonShutdown(Empty),
     TmuxTopology(TopologyParams),
+    TmuxWatch(TopologyParams),
     ActionsSubmit(SubmitAction),
     ActionsGet(ActionQuery),
     ActionsList(ActionListParams),
@@ -1427,6 +1448,7 @@ impl Request {
             Self::DaemonStatus(_) => "daemon.status",
             Self::DaemonShutdown(_) => "daemon.shutdown",
             Self::TmuxTopology(_) => "tmux.topology",
+            Self::TmuxWatch(_) => "tmux.watch",
             Self::ActionsSubmit(_) => "actions.submit",
             Self::ActionsGet(_) => "actions.get",
             Self::ActionsList(_) => "actions.list",
@@ -1446,6 +1468,7 @@ impl Request {
             Self::DaemonStatus(v) => ::prost::Message::encode_to_vec(v),
             Self::DaemonShutdown(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
+            Self::TmuxWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsGet(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsList(v) => ::prost::Message::encode_to_vec(v),
@@ -1464,6 +1487,7 @@ impl Request {
             "daemon.status" => Ok(Self::DaemonStatus(::prost::Message::decode(bytes)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(::prost::Message::decode(bytes)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
+            "tmux.watch" => Ok(Self::TmuxWatch(::prost::Message::decode(bytes)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
             "actions.get" => Ok(Self::ActionsGet(::prost::Message::decode(bytes)?)),
             "actions.list" => Ok(Self::ActionsList(::prost::Message::decode(bytes)?)),
@@ -1485,6 +1509,7 @@ impl Request {
             Self::DaemonStatus(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DaemonShutdown(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TmuxWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsList(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -1503,6 +1528,7 @@ impl Request {
             "daemon.status" => Ok(Self::DaemonStatus(serde_json::from_value(value)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(serde_json::from_value(value)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
+            "tmux.watch" => Ok(Self::TmuxWatch(serde_json::from_value(value)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
             "actions.get" => Ok(Self::ActionsGet(serde_json::from_value(value)?)),
             "actions.list" => Ok(Self::ActionsList(serde_json::from_value(value)?)),
@@ -1524,6 +1550,7 @@ pub enum Response {
     DaemonStatus(DaemonStatus),
     DaemonShutdown(ShutdownResult),
     TmuxTopology(Topology),
+    TmuxWatch(TopologyUpdate),
     ActionsSubmit(ActionRecord),
     ActionsGet(ActionRecord),
     ActionsList(ActionList),
@@ -1542,6 +1569,7 @@ impl Response {
             Self::DaemonStatus(_) => "daemon.status",
             Self::DaemonShutdown(_) => "daemon.shutdown",
             Self::TmuxTopology(_) => "tmux.topology",
+            Self::TmuxWatch(_) => "tmux.watch",
             Self::ActionsSubmit(_) => "actions.submit",
             Self::ActionsGet(_) => "actions.get",
             Self::ActionsList(_) => "actions.list",
@@ -1561,6 +1589,7 @@ impl Response {
             Self::DaemonStatus(v) => ::prost::Message::encode_to_vec(v),
             Self::DaemonShutdown(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
+            Self::TmuxWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsGet(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsList(v) => ::prost::Message::encode_to_vec(v),
@@ -1579,6 +1608,7 @@ impl Response {
             "daemon.status" => Ok(Self::DaemonStatus(::prost::Message::decode(bytes)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(::prost::Message::decode(bytes)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
+            "tmux.watch" => Ok(Self::TmuxWatch(::prost::Message::decode(bytes)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
             "actions.get" => Ok(Self::ActionsGet(::prost::Message::decode(bytes)?)),
             "actions.list" => Ok(Self::ActionsList(::prost::Message::decode(bytes)?)),
@@ -1600,6 +1630,7 @@ impl Response {
             Self::DaemonStatus(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DaemonShutdown(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TmuxWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsList(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -1618,6 +1649,7 @@ impl Response {
             "daemon.status" => Ok(Self::DaemonStatus(serde_json::from_value(value)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(serde_json::from_value(value)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
+            "tmux.watch" => Ok(Self::TmuxWatch(serde_json::from_value(value)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
             "actions.get" => Ok(Self::ActionsGet(serde_json::from_value(value)?)),
             "actions.list" => Ok(Self::ActionsList(serde_json::from_value(value)?)),
@@ -1655,6 +1687,11 @@ pub trait Service: Sync {
         &self,
         params: TopologyParams,
     ) -> impl ::core::future::Future<Output = Result<Topology, RpcError>> + Send;
+    /// The current topology; afterwards `tmux.topology` events follow every change.
+    fn tmux_watch(
+        &self,
+        params: TopologyParams,
+    ) -> impl ::core::future::Future<Output = Result<TopologyUpdate, RpcError>> + Send;
     /// Run a typed action and report its observed outcome.
     fn actions_submit(
         &self,
@@ -1709,6 +1746,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .await
             .map(Response::DaemonShutdown),
         Request::TmuxTopology(p) => service.tmux_topology(p).await.map(Response::TmuxTopology),
+        Request::TmuxWatch(p) => service.tmux_watch(p).await.map(Response::TmuxWatch),
         Request::ActionsSubmit(p) => service.actions_submit(p).await.map(Response::ActionsSubmit),
         Request::ActionsGet(p) => service.actions_get(p).await.map(Response::ActionsGet),
         Request::ActionsList(p) => service.actions_list(p).await.map(Response::ActionsList),

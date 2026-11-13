@@ -1120,6 +1120,20 @@
         },
         "type": "object"
       },
+      "TopologyUpdate": {
+        "description": "A topology with its revision. After tmux.watch, the connection gets one as a `tmux.topology` event whenever the topology changes (including changes another tmux client made), coalesced to the latest.",
+        "properties": {
+          "revision": {
+            "description": "Increases with every change; never repeats within a daemon run.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "topology": {
+            "$ref": "#/components/schemas/Topology"
+          }
+        },
+        "type": "object"
+      },
       "Unsubscribe": {
         "properties": {
           "subscription": {
@@ -1283,6 +1297,27 @@
         }
       },
       "summary": "Sessions, windows, and panes of one endpoint.",
+      "x-mutation": false
+    },
+    {
+      "name": "tmux.watch",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Endpoint name; the default endpoint when absent.",
+          "name": "endpoint",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/TopologyUpdate"
+        }
+      },
+      "summary": "The current topology; afterwards `tmux.topology` events follow every change.",
       "x-mutation": false
     },
     {
