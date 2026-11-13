@@ -26,6 +26,8 @@ struct PaneView {
 }
 
 pub(crate) struct Workspace {
+    /// The daemon's tmux options, for the fallback attach command.
+    daemon_args: Vec<String>,
     topology: Arc<TopologyFeed>,
     socket: PathBuf,
     /// The latest topology, and the session this window shows.
@@ -85,8 +87,10 @@ impl Workspace {
         cx: &mut Context<Self>,
         topology: Arc<TopologyFeed>,
         socket: PathBuf,
+        daemon_args: Vec<String>,
     ) -> Workspace {
         Workspace {
+            daemon_args,
             topology,
             socket,
             current: None,
@@ -514,6 +518,81 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The tmux mode a pane is in (copy-mode, ...), which Dreamer does not
+    /// draw.
+    pub(crate) fn pane_mode(&self, pane: u32) -> Option<String> {
+        self.current
+            .as_ref()?
+            .panes
+            .iter()
+            .find(|p| p.id == pane)?
+            .mode
+            .clone()
+    }
+
+    /// The attach command for the shown session and a window of it.
+    pub(crate) fn attach_for(&self, window: Option<u32>) -> Option<crate::fallback::Attach> {
+        Some(crate::fallback::attach_command(
+            &self.daemon_args,
+            self.session?,
+            window,
+        ))
+    }
+
+    /// The command, a Copy button, and (when configured) Open in terminal.
+    fn fallback_ui(
+        &self,
+        id: usize,
+        attach: crate::fallback::Attach,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let copy = attach.display.clone();
+        let launch = crate::FALLBACK_LAUNCH
+            .get()
+            .and_then(|t| crate::fallback::launch_argv(t, &attach));
+        div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .px_1()
+                    .bg(rgb(0x101216))
+                    .font_family(term_font().family)
+                    .child(attach.display.clone()),
+            )
+            .child(
+                div()
+                    .id(("fallback-copy", id))
+                    .px_1()
+                    .rounded_sm()
+                    .bg(rgb(0x2a2f38))
+                    .child("Copy")
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))
+                    })),
+            )
+            .children(launch.map(|argv| {
+                div()
+                    .id(("fallback-open", id))
+                    .px_1()
+                    .rounded_sm()
+                    .bg(rgb(0x2a2f38))
+                    .child("Open in terminal")
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        let argv = argv.clone();
+                        // Exact argv, never a shell string; off the UI thread.
+                        cx.background_spawn(async move {
+                            if let Some((program, args)) = argv.split_first() {
+                                let _ = std::process::Command::new(program).args(args).spawn();
+                            }
+                        })
+                        .detach();
+                    }))
+            }))
+    }
+
     /// Windows in the session shown: the tabs.
     pub(crate) fn tab_count(&self) -> usize {
         match (&self.current, self.session) {
@@ -809,71 +888,111 @@ impl Render for Workspace {
         let zoomed = w.as_ref().is_some_and(|w| w.zoomed);
         let unsupported = w.as_ref().is_some_and(|w| !w.layout_supported);
         let focused = self.focused;
-        let panes = self.visible().into_iter().filter_map(|p| {
-            let shell = self.panes.get(&p.id)?.shell.clone();
-            let (left, top, cols, rows) = match (&w, zoomed) {
-                (Some(w), true) => (0, 0, w.width, w.height),
-                _ => (p.left, p.top, p.width, p.height),
-            };
-            let id = p.id;
-            let entity = entity.clone();
-            Some(
+        // Panes in a tmux-drawn mode: marked, with the attach command.
+        let mut mode_banners: HashMap<u32, gpui::Div> = self
+            .visible()
+            .iter()
+            .filter_map(|p| Some((p.id, self.pane_mode(p.id)?)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|(id, mode)| {
+                let attach = self.attach_for(w.as_ref().map(|w| w.id))?;
+                Some((
+                    id,
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .p_1()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .bg(rgb(0x3a2f1c))
+                        .text_size(px(12.0))
+                        .text_color(rgb(0xf0dcb0))
+                        .child(format!(
+                            "tmux {mode} is open in this pane; Dreamer does not draw tmux's own screens. To use it:"
+                        ))
+                        .child(self.fallback_ui(id as usize + 1, attach, cx)),
+                ))
+            })
+            .collect();
+        let panes: Vec<_> = self
+            .visible()
+            .into_iter()
+            .filter_map(|p| {
+                let shell = self.panes.get(&p.id)?.shell.clone();
+                let (left, top, cols, rows) = match (&w, zoomed) {
+                    (Some(w), true) => (0, 0, w.width, w.height),
+                    _ => (p.left, p.top, p.width, p.height),
+                };
+                let id = p.id;
+                let entity = entity.clone();
+                Some(
+                    div()
+                        .absolute()
+                        .left(m.width * left as f32)
+                        .top(m.height * top as f32)
+                        .w(m.width * cols as f32)
+                        .h(m.height * rows as f32)
+                        .when(Some(id) == focused && !zoomed, |d| {
+                            d.border_1().border_color(rgb(0x3d4a5c))
+                        })
+                        .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, window, cx| {
+                            entity.update(cx, |ws, cx| {
+                                if ws.focused != Some(id) {
+                                    ws.click_pane(id, window, cx);
+                                }
+                            });
+                        })
+                        .child(shell)
+                        .children(mode_banners.remove(&id))
+                        .when(Some(id) == focused, |d| {
+                            // Zoom control on the focused pane.
+                            d.child(
+                                div()
+                                    .id(("zoom", id as usize))
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .px_1()
+                                    .text_size(px(11.0))
+                                    .text_color(rgb(0x8a909a))
+                                    .hover(|s| s.text_color(rgb(0xe6e6e6)))
+                                    .child(if zoomed { "unzoom" } else { "zoom" })
+                                    .on_click(cx.listener(|ws, _, _, cx| ws.toggle_zoom(cx))),
+                            )
+                        }),
+                )
+            })
+            .collect();
+        // Divider hit zones in tmux's one-cell gaps, and a preview line
+        // while one is dragged.
+        let handles: Vec<_> = self
+            .dividers()
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let (left, top, w, h) = match d.axis {
+                    Axis::Cols => (d.at, d.from, 1, d.to - d.from),
+                    Axis::Rows => (d.from, d.at, d.to - d.from, 1),
+                };
                 div()
+                    .id(("divider", i))
                     .absolute()
                     .left(m.width * left as f32)
                     .top(m.height * top as f32)
-                    .w(m.width * cols as f32)
-                    .h(m.height * rows as f32)
-                    .when(Some(id) == focused && !zoomed, |d| {
-                        d.border_1().border_color(rgb(0x3d4a5c))
-                    })
-                    .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, window, cx| {
-                        entity.update(cx, |ws, cx| {
-                            if ws.focused != Some(id) {
-                                ws.click_pane(id, window, cx);
-                            }
-                        });
-                    })
-                    .child(shell)
-                    .when(Some(id) == focused, |d| {
-                        // Zoom control on the focused pane.
-                        d.child(
-                            div()
-                                .id(("zoom", id as usize))
-                                .absolute()
-                                .top_0()
-                                .right_0()
-                                .px_1()
-                                .text_size(px(11.0))
-                                .text_color(rgb(0x8a909a))
-                                .hover(|s| s.text_color(rgb(0xe6e6e6)))
-                                .child(if zoomed { "unzoom" } else { "zoom" })
-                                .on_click(cx.listener(|ws, _, _, cx| ws.toggle_zoom(cx))),
-                        )
-                    }),
-            )
-        });
-        // Divider hit zones in tmux's one-cell gaps, and a preview line
-        // while one is dragged.
-        let handles = self.dividers().into_iter().enumerate().map(|(i, d)| {
-            let (left, top, w, h) = match d.axis {
-                Axis::Cols => (d.at, d.from, 1, d.to - d.from),
-                Axis::Rows => (d.from, d.at, d.to - d.from, 1),
-            };
-            div()
-                .id(("divider", i))
-                .absolute()
-                .left(m.width * left as f32)
-                .top(m.height * top as f32)
-                .w(m.width * w as f32)
-                .h(m.height * h as f32)
-                .when(d.axis == Axis::Cols, |x| x.cursor_col_resize())
-                .when(d.axis == Axis::Rows, |x| x.cursor_row_resize())
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |ws, _: &MouseDownEvent, _, cx| ws.start_drag(d, cx)),
-                )
-        });
+                    .w(m.width * w as f32)
+                    .h(m.height * h as f32)
+                    .when(d.axis == Axis::Cols, |x| x.cursor_col_resize())
+                    .when(d.axis == Axis::Rows, |x| x.cursor_row_resize())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |ws, _: &MouseDownEvent, _, cx| ws.start_drag(d, cx)),
+                    )
+            })
+            .collect();
         let preview = self.drag.map(|drag| {
             let d = drag.divider;
             let at = d.base + drag.size;
@@ -941,17 +1060,32 @@ impl Render for Workspace {
                         })),
                 )
         });
-        let notice = unsupported.then(|| {
-            div()
-                .p_4()
-                .text_color(rgb(0xb8bec8))
-                .child("This window uses a layout Dreamer cannot draw yet (floating panes). Attach a normal tmux client to use it.")
-        });
+        let notice = if unsupported {
+            let attach = self.attach_for(w.as_ref().map(|w| w.id));
+            Some(
+                div()
+                    .p_4()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .text_color(rgb(0xb8bec8))
+                    .child("This window uses a layout Dreamer cannot draw yet (floating panes). Open it in an ordinary tmux client:")
+                    .children(attach.map(|a| self.fallback_ui(0, a, cx))),
+            )
+        } else {
+            None
+        };
         let area = self.pane_area(
             entity.clone(),
             m,
-            panes.map(IntoElement::into_any_element).collect(),
-            handles.map(IntoElement::into_any_element).collect(),
+            panes
+                .into_iter()
+                .map(IntoElement::into_any_element)
+                .collect(),
+            handles
+                .into_iter()
+                .map(IntoElement::into_any_element)
+                .collect(),
             preview.map(IntoElement::into_any_element),
             notice.map(IntoElement::into_any_element),
         );
@@ -1092,6 +1226,7 @@ pub(crate) fn open(
 ) -> Result<(), String> {
     use gpui::{Bounds, WindowBounds, WindowOptions, size};
     let socket = launch.socket.clone();
+    let daemon_args = launch.args.clone();
     let topology = Arc::new(
         TopologyFeed::start(socket.clone(), Some(launch))
             .map_err(|e| format!("cannot follow the tmux topology: {e}"))?,
@@ -1122,7 +1257,7 @@ pub(crate) fn open(
             },
             |window, cx| {
                 let ws = cx.new(|cx| {
-                    let mut ws = Workspace::new(cx, t, socket);
+                    let mut ws = Workspace::new(cx, t, socket, daemon_args);
                     ws.with_state(state_path);
                     ws
                 });
@@ -1248,6 +1383,24 @@ mod smoke {
         }
     }
 
+    fn tmux_output(daemon: &[String], args: &[&str]) -> String {
+        let opt = |name: &str| {
+            daemon
+                .iter()
+                .position(|a| a == name)
+                .and_then(|i| daemon.get(i + 1))
+                .cloned()
+        };
+        let program = opt("--tmux").unwrap_or_else(|| "tmux".into());
+        let socket = opt("--tmux-socket").unwrap_or_default();
+        std::process::Command::new(program)
+            .args(["-L", &socket])
+            .args(args)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    }
+
     pub(super) async fn run(
         any: AnyWindowHandle,
         ws: WeakEntity<Workspace>,
@@ -1268,6 +1421,45 @@ mod smoke {
         })
         .await;
         println!("smoke: a split made by another tmux client appeared");
+
+        // Another client opens tmux copy mode in a pane: marked, with an
+        // attach command whose target resolves to exactly this window.
+        tmux(&daemon, &["copy-mode", "-t", "%0"]);
+        wait_for(any, &ws, cx, "pane %0 marked as in copy-mode", |w, _| {
+            w.pane_mode(0).as_deref() == Some("copy-mode")
+        })
+        .await;
+        let (attach, window, session) = read(any, &ws, cx, |w, _| {
+            let window = w.active_window()?.id;
+            Some((w.attach_for(Some(window))?, window, w.session?))
+        })
+        .flatten()
+        .unwrap_or_else(|| fail("no attach command"));
+        let target = attach.argv.last().cloned().unwrap_or_default();
+        let resolved = tmux_output(
+            &daemon,
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                &target,
+                "#{session_id}:#{window_id}",
+            ],
+        );
+        if resolved.trim() != format!("${session}:@{window}") {
+            fail(&format!(
+                "the attach target {target:?} resolves to {resolved:?}"
+            ));
+        }
+        tmux(&daemon, &["send-keys", "-t", "%0", "-X", "cancel"]);
+        wait_for(any, &ws, cx, "pane %0 out of copy-mode", |w, _| {
+            w.pane_mode(0).is_none()
+        })
+        .await;
+        println!(
+            "smoke: tmux copy-mode in a pane was marked with `{}`, whose target resolves to this window",
+            attach.display
+        );
 
         // Zoom the focused pane and back, through the typed zoom action.
         let toggle = |cx: &mut AsyncApp| {

@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 12 }
+version: { major: 1, minor: 13 }
 package: dreamer.v1
 
 types:
@@ -110,6 +110,7 @@ types:
       - { n: 10, name: title, type: string }
       - { n: 11, name: dead, type: bool }
       - { n: 12, name: generation, type: u64, doc: Process generation; changes when the pane is respawned. }
+      - { n: 13, name: mode, type: string, optional: true, doc: "A tmux-drawn mode the pane is in (copy-mode, tree-mode, ...). Its screen is tmux's, not the program's, and Dreamer does not draw it." }
 
   - message: Topology
     fields:

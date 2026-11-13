@@ -56,6 +56,32 @@ A workspace window shows one tmux session:
   `zoom` control on the focused pane, toggles zoom through the typed zoom
   action. The shortcut is never sent to the pane.
 
+## What the workspace does not draw
+
+Two things are tmux's own screens, not a program's output, so independent
+panes do not draw them:
+- windows with floating panes (`layout_supported: false`);
+- panes in a tmux-drawn mode such as copy mode or the choose tree,
+  started by another tmux client. The topology reports these as the pane's
+  `mode`.
+
+They are never hidden. An unsupported window shows a notice instead of a
+partial layout, and a pane in a mode gets a banner across its top. Both
+offer the fallback:
+- **The attach command.** It targets the same tmux server and window, as
+  an ordinary tmux client. It is built from the daemon's tmux options
+  (`--tmux`, `-L`, or `--tmux-socket-path`). It uses ids (`'$SESSION:@WINDOW'`),
+  never names, and each word is quoted for a POSIX shell when needed.
+  **Copy** puts it on the clipboard; only an explicit click does.
+- **Open in terminal**, if `fallback.launch` is set in `dreamer.yaml`. It
+  runs that argv with the `{command}` element replaced by the attach
+  command's words. That is an exact argv, never a shell string. See
+  [settings.md](settings.md).
+
+Either way it is a normal tmux client with its own terminal, clearly apart
+from Dreamer's pane rendering. It does not count as Dreamer drawing these
+screens.
+
 ## Sidebar, status, and the saved arrangement
 
 - **Sidebar.** "Toggle sidebar (sessions)" in the palette opens or closes
@@ -104,6 +130,9 @@ pane printing `READY-%<id>`. The macOS gate runs it as the `workspace`
 step, and `gate linux-desktop` runs it on each backend. It checks that:
 - the workspace has two tabs and three panes, each showing its own
   output;
+- copy mode started with the plain `tmux` command marks the pane, and the
+  attach command's target resolves (`tmux display-message`) to exactly
+  that session and window;
 - a split made with the plain `tmux` command appears;
 - clicking a pane focuses it, and typed text reaches only that pane;
 - zoom shows the focused pane alone, and unzoom brings all four back;

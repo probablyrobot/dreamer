@@ -19,6 +19,7 @@
 //! In attach mode it waits for a frame containing `--expect` and then
 //! checks that 1.5 s of idle pane cause no view wakeups and no paints.
 
+mod fallback;
 mod fonts;
 mod input;
 mod palette;
@@ -87,6 +88,8 @@ struct TermFont {
 
 static TERM_FONT: std::sync::OnceLock<TermFont> = std::sync::OnceLock::new();
 static LINKS: std::sync::OnceLock<workspace_config::LinkSettings> = std::sync::OnceLock::new();
+/// The terminal command for the fallback attach, if configured.
+pub(crate) static FALLBACK_LAUNCH: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 static CLIPBOARD: std::sync::OnceLock<workspace_config::ClipboardWrite> =
     std::sync::OnceLock::new();
 /// Clipboard writes the smoke received: recorded, never put on the
@@ -1031,6 +1034,7 @@ fn main() -> ExitCode {
         let chosen = fonts::choose(cx, &settings);
         let _ = LINKS.set(settings.links.clone());
         let _ = CLIPBOARD.set(settings.clipboard.write);
+        let _ = FALLBACK_LAUNCH.set(settings.fallback.launch.clone());
         let _ = TERM_FONT.set(TermFont {
             family: chosen.family,
             size: settings.font.size,
