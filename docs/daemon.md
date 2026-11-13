@@ -98,8 +98,10 @@ One busy pane must not slow down another (spec 16.3, 16.5):
   [mirrors.md](mirrors.md)).
 - **A pane that outruns its mirror.** The router reads every pane's
   output from the one tmux connection, and it never waits on a single
-  pane. When a pane's output arrives faster than its mirror can apply it,
-  the pane's lane to its worker fills, and the router rebuilds that mirror:
+  pane. Output the pane's worker has no room for is held in order, up to
+  8 MiB per pane, and offered again every 5 ms. This absorbs bursts without
+  a re-capture. Once a pane's held output passes 8 MiB, it has outrun its
+  mirror, and the router rebuilds that mirror:
   1. It pauses the pane in tmux and captures it fresh. Output between the
      overflow and the pause is part of that capture, so nothing is lost
      silently.
@@ -138,10 +140,12 @@ router that waits on %0 could then delay %1. The test requires:
 
 | Build | Machine | %1 round trip p95, quiet | %1 round trip p95 while %0 is re-attached | Re-attaches |
 | --- | --- | --- | --- | --- |
-| debug | Apple M3 Max (Mac15,11), 36 GiB, macOS 27.2 | 8.7 ms | 163 ms | 6 |
+| debug, re-attach on a full lane (first version) | Apple M3 Max (Mac15,11), 36 GiB, macOS 27.2 | 8.7 ms | 163 ms (255.8 ms on Linux CI) | 6 |
+| debug, 8 MiB held per pane before re-attaching | same | 8.2 to 8.8 ms | 11.0 ms (three runs) | 1 |
 
-The extra latency comes from the re-attach captures, which share the tmux
-command channel with %1's input.
+Each re-attach's fresh capture shares the tmux command channel with %1's
+input. Holding a backlog first makes re-attaches rarer, and that is
+where most of the improvement comes from.
 
 Both tests fail if the p95 under pressure exceeds 250 ms or five times the
 quiet p95, whichever is larger. These numbers come from a debug-build

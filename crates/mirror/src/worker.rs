@@ -66,12 +66,12 @@ pub enum LaneError {
 pub struct WorkerGone;
 
 impl WorkerHandle {
-    /// In order with the pane's output, without waiting. The message is
-    /// dropped when the lane is full.
-    pub fn try_send(&self, m: WorkerMsg) -> Result<(), LaneError> {
-        self.data.try_send(m).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(_) => LaneError::Full,
-            mpsc::error::TrySendError::Closed(_) => LaneError::Gone,
+    /// A slot on the data lane, without waiting: send into it to keep
+    /// order with the pane's output. Nothing is lost when there is none.
+    pub fn try_reserve(&self) -> Result<mpsc::Permit<'_, WorkerMsg>, LaneError> {
+        self.data.try_reserve().map_err(|e| match e {
+            mpsc::error::TrySendError::Full(()) => LaneError::Full,
+            mpsc::error::TrySendError::Closed(()) => LaneError::Gone,
         })
     }
 

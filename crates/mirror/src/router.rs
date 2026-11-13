@@ -15,6 +15,13 @@ use tokio::sync::{mpsc, watch};
 use crate::worker::{Record, WorkerHandle, WorkerMsg};
 use crate::{Control, MirrorState, worker_of};
 
+/// Output held for a pane whose worker lane is full, before the pane is
+/// declared overrun and re-attached. Absorbs bursts without a re-capture.
+const BACKLOG_BYTES: usize = 8 << 20;
+
+/// How often held output is offered to its worker again.
+const BACKLOG_TICK: std::time::Duration = std::time::Duration::from_millis(5);
+
 /// Subscription that reports pane process changes (respawns) as
 /// `%subscription-changed`; tmux checks it about once a second.
 const PID_SUBSCRIPTION: &str = "dreamer-pid";
@@ -67,6 +74,9 @@ pub(crate) struct Router {
     /// Each pane's current attach; output is tagged with it so a worker can
     /// drop output queued before a re-attach.
     attaches: HashMap<TmuxPaneId, u32>,
+    /// Output waiting for room in a full worker lane, in order, with its
+    /// size: the router itself never waits on one pane.
+    backlog: HashMap<TmuxPaneId, (std::collections::VecDeque<Record>, usize)>,
     epoch: ConnectionEpoch,
     changes: watch::Sender<u64>,
     flows: HashMap<TmuxPaneId, Flow>,
@@ -99,6 +109,7 @@ impl Router {
             workers,
             tmux: None,
             attaches: HashMap::new(),
+            backlog: HashMap::new(),
             epoch,
             changes,
             flows: HashMap::new(),
@@ -125,7 +136,9 @@ impl Router {
                 .await;
         });
         loop {
+            let held = !self.backlog.is_empty();
             tokio::select! {
+                () = tokio::time::sleep(BACKLOG_TICK), if held => self.drain(),
                 c = self.control.recv() => match c {
                     Some(c) => self.on_control(c).await,
                     None => break,
@@ -234,6 +247,8 @@ impl Router {
 
     fn start(&mut self, pane: TmuxPaneId, generation: PaneGeneration) {
         *self.attaches.entry(pane).or_default() += 1;
+        // Held output belongs to the old attach; the capture covers it.
+        self.backlog.remove(&pane);
         self.flows.insert(pane, Flow::Pausing { generation });
         let conn = self.conn.clone();
         let back = self.to_self.clone();
@@ -268,6 +283,45 @@ impl Router {
         }
         self.sizes.remove(&pane);
         self.attaches.remove(&pane);
+        self.backlog.remove(&pane);
+    }
+
+    /// Offer held output to the workers again, oldest first per pane.
+    fn drain(&mut self) {
+        let panes: Vec<TmuxPaneId> = self.backlog.keys().copied().collect();
+        for pane in panes {
+            let Some(Flow::Live { generation }) = self.flows.get(&pane) else {
+                self.backlog.remove(&pane);
+                continue;
+            };
+            let generation = *generation;
+            let attach = self.attaches.get(&pane).copied().unwrap_or_default();
+            let worker = &self.workers[worker_of(pane, self.workers.len())];
+            let Some((queue, bytes)) = self.backlog.get_mut(&pane) else {
+                continue;
+            };
+            while !queue.is_empty() {
+                match worker.try_reserve() {
+                    Ok(slot) => {
+                        let Some(record) = queue.pop_front() else {
+                            break;
+                        };
+                        *bytes -= record_size(&record);
+                        slot.send(WorkerMsg::Apply {
+                            pane,
+                            generation,
+                            attach,
+                            record,
+                        });
+                    }
+                    Err(crate::worker::LaneError::Full) => break,
+                    Err(crate::worker::LaneError::Gone) => queue.clear(),
+                }
+            }
+            if queue.is_empty() {
+                self.backlog.remove(&pane);
+            }
+        }
     }
 
     async fn try_finish(&mut self, pane: TmuxPaneId) {
@@ -325,17 +379,25 @@ impl Router {
                 let generation = *generation;
                 let attach = self.attaches.get(&pane).copied().unwrap_or_default();
                 // Never wait on one pane: the router reads every pane's
-                // output. A full lane means this pane outran its mirror, so
-                // it is rebuilt from a fresh capture; output from here to
-                // its %pause is part of that capture.
-                if let Err(crate::worker::LaneError::Full) =
-                    self.worker(pane).try_send(WorkerMsg::Apply {
+                // output. Output the worker has no room for is held, in
+                // order; held output beyond BACKLOG_BYTES means the pane
+                // outran its mirror, so it is rebuilt from a fresh capture
+                // (output from here to its %pause is part of that capture).
+                if !self.backlog.contains_key(&pane)
+                    && let Ok(slot) = self.worker(pane).try_reserve()
+                {
+                    slot.send(WorkerMsg::Apply {
                         pane,
                         generation,
                         attach,
                         record,
-                    })
-                {
+                    });
+                    return;
+                }
+                let (queue, bytes) = self.backlog.entry(pane).or_default();
+                *bytes += record_size(&record);
+                queue.push_back(record);
+                if *bytes > BACKLOG_BYTES {
                     self.start(pane, generation);
                     self.changed();
                 }
@@ -429,5 +491,12 @@ impl Router {
             }
             _ => {}
         }
+    }
+}
+
+fn record_size(r: &Record) -> usize {
+    match r {
+        Record::Bytes(b) => b.len(),
+        Record::Resize { .. } => 0,
     }
 }
