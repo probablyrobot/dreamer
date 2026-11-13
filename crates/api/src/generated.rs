@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 15;
+pub const PROTOCOL_MINOR: u32 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -315,6 +315,10 @@ pub enum EndReason {
     Unsubscribed = 5,
     /// The pane's output outran its mirror, so the daemon rebuilt the mirror from a fresh capture. Subscribe again; a checkpoint follows.
     Reattached = 6,
+    /// A relayed subscription's host connection ended and will not come back by itself (disconnected, or a failure that is not retried). Subscribe again once the host is live.
+    HostLost = 7,
+    /// A relayed subscription's host daemon restarted, so its journal is gone. Subscribe again; a checkpoint follows.
+    HostRestarted = 8,
 }
 
 impl EndReason {
@@ -328,6 +332,8 @@ impl EndReason {
             Self::ConnectionLost => "connection_lost",
             Self::Unsubscribed => "unsubscribed",
             Self::Reattached => "reattached",
+            Self::HostLost => "host_lost",
+            Self::HostRestarted => "host_restarted",
         }
     }
 
@@ -340,6 +346,8 @@ impl EndReason {
             "connection_lost" => Some(Self::ConnectionLost),
             "unsubscribed" => Some(Self::Unsubscribed),
             "reattached" => Some(Self::Reattached),
+            "host_lost" => Some(Self::HostLost),
+            "host_restarted" => Some(Self::HostRestarted),
             _ => None,
         }
     }
@@ -1532,6 +1540,17 @@ pub struct HostCall {
     pub payload: Vec<u8>,
 }
 
+/// Follow a pane on a connected host through this daemon: the reply and the `terminal.*` events are those of terminal.subscribe, with this connection's own subscription id. When SSH drops and the host comes back, the subscription resumes from the host's journal by itself; it ends with host_lost or host_restarted when it cannot.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostSubscribe {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscribe: Option<TerminalSubscribe>,
+}
+
 /// The remote daemon's result for a HostCall, as Protobuf.
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
@@ -1562,6 +1581,8 @@ pub mod method {
     pub const HOSTS_LIST: &str = "hosts.list";
     pub const HOSTS_DISCONNECT: &str = "hosts.disconnect";
     pub const HOSTS_RECONNECT: &str = "hosts.reconnect";
+    pub const HOSTS_SUBSCRIBE: &str = "hosts.subscribe";
+    pub const HOSTS_WATCH: &str = "hosts.watch";
     pub const HOSTS_CALL: &str = "hosts.call";
 }
 
@@ -1709,6 +1730,20 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "Connect again now, also after a failure that is not retried automatically.",
     },
     MethodInfo {
+        name: "hosts.subscribe",
+        params: "HostSubscribe",
+        result: "Subscription",
+        mutation: false,
+        doc: "Follow a pane on a connected host; resumes from the host's journal after SSH loss. End it with terminal.unsubscribe.",
+    },
+    MethodInfo {
+        name: "hosts.watch",
+        params: "HostRef",
+        result: "TopologyUpdate",
+        mutation: false,
+        doc: "A host's topology; afterwards `tmux.topology` events follow every change, across reconnects. One watch (local or a host) per connection.",
+    },
+    MethodInfo {
         name: "hosts.call",
         params: "HostCall",
         result: "HostReply",
@@ -1739,6 +1774,8 @@ pub enum Request {
     HostsList(Empty),
     HostsDisconnect(HostRef),
     HostsReconnect(HostRef),
+    HostsSubscribe(HostSubscribe),
+    HostsWatch(HostRef),
     HostsCall(HostCall),
 }
 
@@ -1764,6 +1801,8 @@ impl Request {
             Self::HostsList(_) => "hosts.list",
             Self::HostsDisconnect(_) => "hosts.disconnect",
             Self::HostsReconnect(_) => "hosts.reconnect",
+            Self::HostsSubscribe(_) => "hosts.subscribe",
+            Self::HostsWatch(_) => "hosts.watch",
             Self::HostsCall(_) => "hosts.call",
         }
     }
@@ -1790,6 +1829,8 @@ impl Request {
             Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsDisconnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsReconnect(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -1817,6 +1858,8 @@ impl Request {
             "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
             "hosts.disconnect" => Ok(Self::HostsDisconnect(::prost::Message::decode(bytes)?)),
             "hosts.reconnect" => Ok(Self::HostsReconnect(::prost::Message::decode(bytes)?)),
+            "hosts.subscribe" => Ok(Self::HostsSubscribe(::prost::Message::decode(bytes)?)),
+            "hosts.watch" => Ok(Self::HostsWatch(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -1843,6 +1886,8 @@ impl Request {
             Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsDisconnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsReconnect(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -1868,6 +1913,8 @@ impl Request {
             "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
             "hosts.disconnect" => Ok(Self::HostsDisconnect(serde_json::from_value(value)?)),
             "hosts.reconnect" => Ok(Self::HostsReconnect(serde_json::from_value(value)?)),
+            "hosts.subscribe" => Ok(Self::HostsSubscribe(serde_json::from_value(value)?)),
+            "hosts.watch" => Ok(Self::HostsWatch(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -1896,6 +1943,8 @@ pub enum Response {
     HostsList(HostList),
     HostsDisconnect(HostStatus),
     HostsReconnect(HostStatus),
+    HostsSubscribe(Subscription),
+    HostsWatch(TopologyUpdate),
     HostsCall(HostReply),
 }
 
@@ -1921,6 +1970,8 @@ impl Response {
             Self::HostsList(_) => "hosts.list",
             Self::HostsDisconnect(_) => "hosts.disconnect",
             Self::HostsReconnect(_) => "hosts.reconnect",
+            Self::HostsSubscribe(_) => "hosts.subscribe",
+            Self::HostsWatch(_) => "hosts.watch",
             Self::HostsCall(_) => "hosts.call",
         }
     }
@@ -1947,6 +1998,8 @@ impl Response {
             Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsDisconnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsReconnect(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -1974,6 +2027,8 @@ impl Response {
             "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
             "hosts.disconnect" => Ok(Self::HostsDisconnect(::prost::Message::decode(bytes)?)),
             "hosts.reconnect" => Ok(Self::HostsReconnect(::prost::Message::decode(bytes)?)),
+            "hosts.subscribe" => Ok(Self::HostsSubscribe(::prost::Message::decode(bytes)?)),
+            "hosts.watch" => Ok(Self::HostsWatch(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2000,6 +2055,8 @@ impl Response {
             Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsDisconnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsReconnect(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2025,6 +2082,8 @@ impl Response {
             "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
             "hosts.disconnect" => Ok(Self::HostsDisconnect(serde_json::from_value(value)?)),
             "hosts.reconnect" => Ok(Self::HostsReconnect(serde_json::from_value(value)?)),
+            "hosts.subscribe" => Ok(Self::HostsSubscribe(serde_json::from_value(value)?)),
+            "hosts.watch" => Ok(Self::HostsWatch(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2126,6 +2185,16 @@ pub trait Service: Sync {
         &self,
         params: HostRef,
     ) -> impl ::core::future::Future<Output = Result<HostStatus, RpcError>> + Send;
+    /// Follow a pane on a connected host; resumes from the host's journal after SSH loss. End it with terminal.unsubscribe.
+    fn hosts_subscribe(
+        &self,
+        params: HostSubscribe,
+    ) -> impl ::core::future::Future<Output = Result<Subscription, RpcError>> + Send;
+    /// A host's topology; afterwards `tmux.topology` events follow every change, across reconnects. One watch (local or a host) per connection.
+    fn hosts_watch(
+        &self,
+        params: HostRef,
+    ) -> impl ::core::future::Future<Output = Result<TopologyUpdate, RpcError>> + Send;
     /// Forward one typed call to a connected host's daemon.
     fn hosts_call(
         &self,
@@ -2179,6 +2248,11 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .hosts_reconnect(p)
             .await
             .map(Response::HostsReconnect),
+        Request::HostsSubscribe(p) => service
+            .hosts_subscribe(p)
+            .await
+            .map(Response::HostsSubscribe),
+        Request::HostsWatch(p) => service.hosts_watch(p).await.map(Response::HostsWatch),
         Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
     }
 }

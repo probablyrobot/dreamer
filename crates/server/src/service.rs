@@ -756,6 +756,17 @@ impl api::Service for DaemonService {
         self.0.hosts.reconnect(&p.name).await
     }
 
+    async fn hosts_subscribe(&self, _: api::HostSubscribe) -> Result<api::Subscription, RpcError> {
+        Err(RpcError::new(
+            code::INVALID_REQUEST,
+            "hosts.subscribe needs a streaming connection to the daemon",
+        ))
+    }
+
+    async fn hosts_watch(&self, p: api::HostRef) -> Result<api::TopologyUpdate, RpcError> {
+        Ok(self.0.hosts.watch(&p.name).await?.0)
+    }
+
     async fn hosts_call(&self, p: api::HostCall) -> Result<api::HostReply, RpcError> {
         self.0.hosts.call(p).await
     }

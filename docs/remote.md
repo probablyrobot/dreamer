@@ -31,8 +31,11 @@ exposes them to local clients through its API (`hosts.connect`,
 - **Forwarding.** `hosts.call` sends one typed call to the remote daemon
   as encoded Protobuf, without decoding it, and returns the encoded result.
   Streaming methods (`terminal.subscribe`, `terminal.unsubscribe`,
-  `tmux.watch`) are refused, as are `hosts.*` methods: a remote daemon
-  never becomes a path to further hosts.
+  `tmux.watch`) are refused there; they go through `hosts.subscribe` and
+  `hosts.watch` ([Remote streams](#remote-streams)). `hosts.*` methods are
+  refused too: a remote daemon never becomes a path to further hosts.
+  A call in flight when the link drops fails and is never sent again, so
+  input and actions are never replayed automatically.
 - **Disconnecting.** `hosts.disconnect` closes SSH's input; the remote
   bridge ends, and the remote daemon, its tmux, and every pane keep running.
 - **Non-interactive.** The daemon has no terminal to prompt on, so it runs
@@ -42,6 +45,48 @@ exposes them to local clients through its API (`hosts.connect`,
   `detail`.
 
 Remote daemons receive none of the local user's keys or grants.
+
+## Remote streams
+
+- **`hosts.subscribe`** follows a pane on a connected host. The reply and
+  the `terminal.records`, `terminal.checkpoint`, and `terminal.end` events
+  are exactly those of `terminal.subscribe`, under a subscription id of the
+  local connection. `terminal.unsubscribe` ends it and unsubscribes on the
+  host.
+- **`hosts.watch`** returns the host's topology, then sends it as
+  `tmux.topology` events after every change. The coordinator renumbers
+  revisions, so they keep increasing across reconnects and remote
+  restarts. One topology watch (local or a host) per connection.
+
+**When SSH drops.** The local subscription stays open while the host
+reconnects ([Reconnecting](#reconnecting)). On the new link the
+coordinator subscribes again, resuming after the last record it
+delivered. The remote daemon kept running and its mirror stayed valid, so
+its journal replays only what was missed. tmux is not captured again and
+no checkpoint is sent. Records already delivered are not sent twice.
+
+When it cannot resume, the subscription ends with a reason, and the client
+subscribes again for a fresh checkpoint:
+
+| End reason | When |
+| --- | --- |
+| `host_restarted` | The remote daemon restarted (new instance), so its journal is gone |
+| `connection_lost` | The remote daemon lost its tmux connection (new epoch) |
+| `lagged` | The remote journal no longer holds the missed records, or the local client fell behind the relay |
+| `pane_closed` | The pane no longer exists on the host |
+| `host_lost` | The host was disconnected, or failed in a way that is not retried |
+
+Relayed data waits in bounded queues: up to 1024 items per relay, and up
+to 4096 per remote subscription that arrived before its reply. A relay
+that overflows them ends as `lagged` rather than holding up other panes on
+the same host.
+
+`crates/server/tests/hosts.rs` follows a remote pane through the
+coordinator into a replica and cuts SSH under it while the pane keeps
+printing. The replica catches up from the journal with no second
+checkpoint and matches the remote mirror. Killing the remote daemon then
+ends the subscription with `host_restarted`. A second test keeps a host's
+topology updating across a cut.
 
 ## Profiles
 
