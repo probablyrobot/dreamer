@@ -161,10 +161,12 @@ async fn keys_are_encoded_against_the_pane_s_current_modes() {
     let s = Setup::new();
     let c = s.client().await;
     // Normal cursor mode: the program reads three raw bytes and shows them.
-    s.type_line("stty raw -echo; printf 'K''1\\r\\n'; od -An -tx1 -N3; stty sane");
+    s.type_line("stty raw -echo; printf 'K''1\\r\\n'; od -An -tx1 -N3; stty sane; echo D''ONE1");
     s.wait_mirror(&c, "K1").await;
     input(&c, key("ArrowUp"), None).await.expect("key");
     s.wait_line("1b 5b 41");
+    // Type the next command only once the terminal is back in normal mode.
+    s.wait_line("DONE1");
     // The program switches to application cursor mode first.
     s.type_line(
         "printf '\\033[?1h'; stty raw -echo; printf 'K''2\\r\\n'; od -An -tx1 -N3; stty sane",
