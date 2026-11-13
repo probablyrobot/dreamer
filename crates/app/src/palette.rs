@@ -19,10 +19,11 @@ pub(crate) enum Command {
     ToggleSidebar,
     OpenHost,
     ReconnectHost,
+    VerifyHost,
     DisconnectHost,
 }
 
-pub(crate) const ALL: [Command; 15] = [
+pub(crate) const ALL: [Command; 16] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -37,6 +38,7 @@ pub(crate) const ALL: [Command; 15] = [
     Command::ToggleSidebar,
     Command::OpenHost,
     Command::ReconnectHost,
+    Command::VerifyHost,
     Command::DisconnectHost,
 ];
 
@@ -57,6 +59,7 @@ impl Command {
             Command::ToggleSidebar => "Toggle sidebar (sessions and hosts)",
             Command::OpenHost => "Open host…",
             Command::ReconnectHost => "Reconnect host…",
+            Command::VerifyHost => "Verify host in a terminal (host key, passphrase)…",
             Command::DisconnectHost => "Disconnect host… (its programs keep running)",
         }
     }
@@ -73,6 +76,7 @@ impl Command {
             Command::RenameWindow
                 | Command::OpenHost
                 | Command::ReconnectHost
+                | Command::VerifyHost
                 | Command::DisconnectHost
         )
     }

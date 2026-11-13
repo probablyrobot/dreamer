@@ -403,6 +403,12 @@ impl Workspace {
                 }
                 None
             }
+            C::VerifyHost => {
+                if let Some(name) = name {
+                    self.verify_host(&name, cx);
+                }
+                None
+            }
             C::DisconnectHost => {
                 if let (Some(name), Some(h)) = (name, self.hosts_feed()) {
                     h.disconnect(&name);
@@ -585,6 +591,37 @@ impl Workspace {
             .map(Arc::new)
     }
 
+    /// A visible first connection to a host: a local tmux window running
+    /// `dream hosts verify NAME`, so SSH's questions (an unknown host key,
+    /// a passphrase) are asked in an ordinary pane and answered by the
+    /// user. Dreamer never answers them. Only from a local window: a host's
+    /// window would open it on the host.
+    pub(crate) fn verify_host(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.via != replica::Via::Local {
+            return;
+        }
+        let Some(session) = self.session else { return };
+        let dream = std::env::current_exe()
+            .ok()
+            .map(|e| e.with_file_name("dream"))
+            .filter(|p| p.exists())
+            .map_or_else(|| "dream".to_owned(), |p| p.display().to_string());
+        self.topology
+            .act(api::action::Kind::NewWindow(api::NewWindow {
+                session,
+                name: Some(format!("ssh {name}")),
+                argv: vec![
+                    dream,
+                    "hosts".into(),
+                    "verify".into(),
+                    name.to_owned(),
+                    "--wait".into(),
+                ],
+                cwd: None,
+            }));
+        cx.notify();
+    }
+
     /// Open a window on a host's tmux, connecting the host first unless it
     /// is live.
     pub(crate) fn open_host(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -644,6 +681,19 @@ impl Workspace {
             };
             let here = self.via.host() == Some(h.name.as_str());
             let name = h.name.clone();
+            // A host that failed on authentication or its host key needs
+            // the user's answer: a click opens the visible connection.
+            let needs_user = h.state == api::LinkState::Failed as i32
+                && matches!(
+                    api::HostFailure::try_from(h.failure),
+                    Ok(api::HostFailure::Auth | api::HostFailure::HostKey)
+                )
+                && self.via == replica::Via::Local;
+            let word = if needs_user {
+                format!("{word}: click to verify")
+            } else {
+                word
+            };
             out.push(
                 div()
                     .id(("host", i))
@@ -656,7 +706,13 @@ impl Workspace {
                     .child(div().text_color(c(color)).child(mark))
                     .child(div().text_color(c(t.text)).child(h.name.clone()))
                     .child(div().text_color(c(t.faint)).child(word))
-                    .on_click(cx.listener(move |ws, _, _, cx| ws.open_host(&name, cx)))
+                    .on_click(cx.listener(move |ws, _, _, cx| {
+                        if needs_user {
+                            ws.verify_host(&name, cx);
+                        } else {
+                            ws.open_host(&name, cx);
+                        }
+                    }))
                     .into_any_element(),
             );
         }

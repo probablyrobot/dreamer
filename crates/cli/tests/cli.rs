@@ -669,3 +669,120 @@ exec /bin/sh -c "exec $3"
     assert_eq!(lines_in(&r("attempts")), count, "retried after disconnect");
     assert_eq!(host_json(&cli)["state"], "closed");
 }
+
+impl Cli {
+    /// `dream <args>` with `input` on standard input.
+    fn run_with_input(&self, args: &[&str], input: &str) -> Output {
+        use std::io::Write as _;
+        let mut c = Command::new(DREAM);
+        c.args(args)
+            .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
+            .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .env("DREAMER_DAEMON", Self::daemon())
+            .env("DREAMER_SSH", self.root.join("ssh"))
+            .env("DREAMER_CONFIG_DIR", self.root.join("config"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = c.spawn().expect("dream");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(input.as_bytes())
+            .expect("write");
+        child.wait_with_output().expect("dream")
+    }
+}
+
+#[test]
+fn an_unknown_host_key_is_answered_by_the_user_in_a_visible_connection() {
+    let cli = Cli::new();
+    let far = TmuxServer::start(100, 30, "/bin/sh").expect("remote tmux");
+    let far_root = cli.root.join("far");
+    let _far_daemon = DaemonGuard(far_root.join("rt"));
+    let r = |name: &str| cli.root.join(name);
+    // The coordinator's ssh (-T, BatchMode) refuses an unknown host key, as
+    // OpenSSH does. The visible one asks, and remembers a "yes".
+    std::fs::write(
+        r("ssh"),
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = -T ]; then
+  while [ "$1" != -- ]; do shift; done
+  if [ ! -e '{known}' ]; then echo "Host key verification failed." >&2; exit 255; fi
+  export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
+  export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
+  exec /bin/sh -c "exec $3"
+fi
+[ "$1" = -- ] && [ "$3" = true ] || exit 91
+echo "The authenticity of host '$2' can't be established."
+printf 'Are you sure you want to continue connecting (yes/no)? '
+read answer
+if [ "$answer" = yes ]; then touch '{known}'; exit 0; fi
+echo "Host key verification failed." >&2
+exit 255
+"#,
+            known = r("known_hosts").display(),
+            rt = far_root.join("rt").display(),
+            st = far_root.join("st").display(),
+            daemon = Cli::daemon().display(),
+        ),
+    )
+    .expect("stand-in ssh");
+    std::fs::set_permissions(
+        r("ssh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+    std::fs::create_dir_all(r("config")).expect("config dir");
+    std::fs::write(
+        r("config/hosts.yaml"),
+        format!(
+            "hosts:\n  - name: devbox\n    destination: devbox\n    dream: '{}'\n    \
+             tmux: '{}'\n    tmux_socket: '{}'\n",
+            DREAM,
+            tmux_program().display(),
+            far.socket()
+        ),
+    )
+    .expect("hosts.yaml");
+    cli.ok(&["ensure-running"]);
+
+    // The coordinator never prompts: the unknown key is a host_key failure,
+    // not retried.
+    let out = cli.on_tmux(&["hosts", "connect", "devbox"]);
+    assert!(!out.status.success());
+    let host = host_json(&cli);
+    assert_eq!(host["failure"], "host_key", "{host}");
+    assert!(host["next_retry_unix_ms"].is_null(), "{host}");
+
+    // Declined in the visible connection: nothing changes, and SSH's own
+    // message is shown.
+    let out = cli.run_with_input(&["hosts", "verify", "devbox"], "no\n");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.status.success(), "{text}");
+    assert!(
+        text.contains("Are you sure you want to continue connecting"),
+        "{text}"
+    );
+    assert!(text.contains("Host key verification failed."), "{text}");
+    assert!(!r("known_hosts").exists());
+    assert_eq!(host_json(&cli)["failure"], "host_key");
+
+    // Accepted by the user: the coordinator connects.
+    let out = cli.run_with_input(&["hosts", "verify", "devbox"], "yes\n");
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("devbox (devbox) live"), "{text}");
+    assert_eq!(host_json(&cli)["state"], "live");
+}
