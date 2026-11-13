@@ -26,8 +26,8 @@ exposes them to local clients through its API (`hosts.connect`,
   `closed`, the remote daemon's host, process ID, instance, and version,
   and the time of the last successful exchange. When the connection drops
   (SSH ends, the network goes, the remote daemon stops), the host becomes
-  `failed` with the reason and SSH's last lines. There is no automatic
-  reconnect yet.
+  `failed` with the reason, the kind of failure, and SSH's last lines.
+  See [Reconnecting](#reconnecting).
 - **Forwarding.** `hosts.call` sends one typed call to the remote daemon
   as encoded Protobuf, without decoding it, and returns the encoded result.
   Streaming methods (`terminal.subscribe`, `terminal.unsubscribe`,
@@ -42,6 +42,55 @@ exposes them to local clients through its API (`hosts.connect`,
   `detail`.
 
 Remote daemons receive none of the local user's keys or grants.
+
+## Profiles
+
+Hosts can be defined in `hosts.yaml` in the configuration directory
+(`~/.config/dreamer/hosts.yaml`, or under `DREAMER_CONFIG_DIR`):
+
+```yaml
+hosts:
+  - name: devbox                  # the label; unique
+    destination: devbox           # SSH host alias, user@host, or ssh:// URI
+    dream: ~/.local/bin/dream     # optional; default `dream` on the remote PATH
+    tmux: /usr/bin/tmux           # optional remote tmux executable
+    tmux_socket: work             # optional; or tmux_socket_path, not both
+    workspace: default            # optional workspace namespace
+    tags: [work, linux]           # optional, for grouping
+    reconnect: auto               # auto (default) or manual
+```
+
+Profiles hold no credentials. Unknown keys and invalid values are errors
+with the file, line, and column; `hosts.list` reports such an error in
+`profiles_error` and still lists hosts connected directly. The daemon reads
+the file on every `hosts.list`, `hosts.connect`, and `hosts.reconnect`, so
+edits take effect without a restart.
+
+`hosts.connect` with only a name connects to that profile. `hosts.list`
+shows every profile (`not connected` until first used), then hosts given
+directly with a destination, which reconnect only when asked unless
+`auto_reconnect` is set.
+
+## Reconnecting
+
+Every failed attempt is classified, and only a `transient` failure is
+retried by itself:
+
+| Failure | Seen as | Retried automatically |
+| --- | --- | --- |
+| `transient` | Network errors, SSH ending, the remote daemon going away | Yes, under `reconnect: auto` |
+| `auth` | SSH says `Permission denied`, `Too many authentication failures`, or `No more authentication methods` | No |
+| `host_key` | `Host key verification failed`, a changed host identification, or no matching host key type | No |
+| `incompatible` | The remote daemon rejects the handshake (protocol or build family) | No |
+| `not_installed` | The remote shell cannot find `dream` (exit status 127 or `command not found`), or `ssh` itself cannot be run | No |
+
+Retries wait 1 s, doubling to at most 60 s, with up to a fifth taken off at
+random so hosts that dropped together do not retry together. The status
+shows the failed attempts and the next retry time. A failure that is not
+retried stays until `hosts.reconnect` (`dream hosts reconnect NAME`), so a
+refused login never becomes a loop. `hosts.disconnect` cancels any pending
+retry. A reconnect reaches the same remote daemon if it kept running; the
+remote side's `remote_instance` changes only when that daemon restarted.
 
 ## The SSH command
 

@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 14 }
+version: { major: 1, minor: 15 }
 package: dreamer.v1
 
 types:
@@ -551,6 +551,17 @@ types:
       - { n: 4, name: tmux, type: string, optional: true, doc: "Remote tmux executable, for a remote daemon that has to be started." }
       - { n: 5, name: tmux_socket, type: string, optional: true, doc: "Remote tmux -L name." }
       - { n: 6, name: tmux_socket_path, type: string, optional: true, doc: "Remote tmux -S path." }
+      - { n: 7, name: auto_reconnect, type: bool, optional: true, doc: "Retry a dropped connection by itself; default: the profile's policy, or off for a host given here." }
+
+  - enum: HostFailure
+    doc: Why the last attempt failed, and so whether retrying can help.
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: transient, doc: "Network, SSH ending, the remote daemon going away: retried under an auto policy." }
+      - { n: 2, name: auth, doc: "SSH authentication was refused: never retried automatically." }
+      - { n: 3, name: host_key, doc: "The host key is unknown or changed: never retried automatically." }
+      - { n: 4, name: incompatible, doc: "The remote daemon's protocol or build does not match: needs an upgrade." }
+      - { n: 5, name: not_installed, doc: "The remote dream executable was not found." }
 
   - message: HostStatus
     fields:
@@ -563,10 +574,19 @@ types:
       - { n: 7, name: remote_instance, type: string, optional: true, doc: "Changes when the remote daemon restarts." }
       - { n: 8, name: last_contact_unix_ms, type: u64, optional: true, doc: "Last successful exchange with the remote daemon." }
       - { n: 9, name: detail, type: string, optional: true, doc: "Why the host is not live: the reason and SSH's last diagnostic lines." }
+      - { n: 10, name: failure, type: HostFailure }
+      - { n: 11, name: attempts, type: u32, doc: "Failed attempts since the last live connection." }
+      - { n: 12, name: next_retry_unix_ms, type: u64, optional: true, doc: "When the next automatic attempt starts, if one is scheduled." }
+      - { n: 13, name: auto_reconnect, type: bool }
+      - { n: 14, name: tags, type: string, repeated: true }
+      - { n: 15, name: workspace, type: string, optional: true }
+      - { n: 16, name: profile, type: bool, doc: "Defined in hosts.yaml." }
 
   - message: HostList
+    doc: Every profile in hosts.yaml and every other host connected since the daemon started.
     fields:
       - { n: 1, name: hosts, type: HostStatus, repeated: true }
+      - { n: 2, name: profiles_error, type: string, optional: true, doc: "hosts.yaml exists but is invalid: the error, with its location." }
 
   - message: HostRef
     fields:
@@ -603,7 +623,8 @@ methods:
   - { method: terminal.subscribe, params: TerminalSubscribe, result: Subscription, doc: "Follow a pane's canonical mirror: checkpoint or replay, then ordered records." }
   - { method: terminal.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: terminal.input, params: TerminalInput, result: InputResult, mutation: true, doc: "Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state." }
-  - { method: hosts.connect, params: HostConnect, result: HostStatus, mutation: true, doc: "Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller." }
+  - { method: hosts.connect, params: HostConnect, result: HostStatus, mutation: true, doc: "Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller. With no destination, `name` is a profile from hosts.yaml." }
   - { method: hosts.list, params: Empty, result: HostList, doc: "Every remote host this daemon knows and its state." }
   - { method: hosts.disconnect, params: HostRef, result: HostStatus, mutation: true, doc: "Close a host's ssh connection. The remote daemon and its tmux keep running." }
+  - { method: hosts.reconnect, params: HostRef, result: HostStatus, mutation: true, doc: "Connect again now, also after a failure that is not retried automatically." }
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }

@@ -22,6 +22,7 @@ terminal-core = { path = "../terminal-core" }
 tmux-backend = { path = "../tmux-backend" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "signal", "macros", "process"] }
 wire = { path = "../wire" }
+workspace-config = { path = "../workspace-config" }
 workspace-host = { path = "../workspace-host" }
 
 [dev-dependencies]

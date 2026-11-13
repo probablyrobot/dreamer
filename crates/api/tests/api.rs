@@ -162,6 +162,9 @@ impl Service for Fixed {
     async fn hosts_disconnect(&self, _: api::HostRef) -> Result<api::HostStatus, RpcError> {
         Ok(api::HostStatus::default())
     }
+    async fn hosts_reconnect(&self, _: api::HostRef) -> Result<api::HostStatus, RpcError> {
+        Ok(api::HostStatus::default())
+    }
     async fn hosts_call(&self, _: api::HostCall) -> Result<api::HostReply, RpcError> {
         Ok(api::HostReply::default())
     }

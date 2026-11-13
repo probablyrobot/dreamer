@@ -3,7 +3,8 @@
 Dreamer reads `dreamer.yaml` from its configuration directory:
 `~/.config/dreamer/dreamer.yaml` on macOS and Linux, or `$XDG_CONFIG_HOME`
 or `DREAMER_CONFIG_DIR` when set. Every field is optional; without the file
-everything is a default.
+everything is a default. Remote host profiles live beside it in
+`hosts.yaml` ([remote.md](remote.md#profiles)).
 
 ```yaml
 font:
