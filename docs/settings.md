@@ -10,7 +10,8 @@ everything is a default. Remote host profiles live beside it in
 font:
   family: JetBrainsMono Nerd Font Mono   # default
   size: 13                               # points; 6 to 72
-  line_height: 1.2                       # multiple of the size; 0.8 to 3.0
+  line_height: 1.2                       # multiple of the font's own line height; 0.8 to 3.0
+  letter_spacing: 0                      # pixels added to each cell's width; -3 to 10
 links:
   schemes: [http, https, mailto]         # default
 clipboard:
