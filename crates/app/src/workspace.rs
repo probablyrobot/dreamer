@@ -1095,15 +1095,15 @@ impl Render for Workspace {
             .flex_col()
             .bg(c(t.background))
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|ws, ev: &gpui::KeyDownEvent, window, cx| {
-                if crate::input::is_zoom_shortcut(&ev.keystroke) {
-                    ws.toggle_zoom(cx);
-                    cx.stop_propagation();
-                } else if crate::input::is_palette_shortcut(&ev.keystroke) {
-                    ws.open_palette(window, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .on_action(cx.listener(|ws, _: &crate::keymap::ZoomPane, _, cx| ws.toggle_zoom(cx)))
+            .on_action(
+                cx.listener(|ws, _: &crate::keymap::CommandPalette, window, cx| {
+                    ws.open_palette(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|ws, _: &crate::keymap::ToggleSidebar, _, cx| ws.toggle_sidebar(cx)),
+            )
             .children(palette)
             .child(strip)
             .child(

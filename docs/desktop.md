@@ -84,8 +84,8 @@ screens.
 
 ## Sidebar, status, and the saved arrangement
 
-- **Sidebar.** "Toggle sidebar (sessions)" in the palette opens or closes
-  a narrow sidebar listing the endpoint's sessions. Clicking one shows it
+- **Sidebar.** Cmd-Shift-S on macOS, Ctrl-Shift-S on Linux, or "Toggle
+  sidebar (sessions)" in the palette opens or closes a narrow sidebar listing the endpoint's sessions. Clicking one shows it
   in this window. This is local: it does not switch any tmux client.
 - **Status.** The tab strip says something only when something is not
   normal: "connecting…", "reconnecting: why", or "N panes catching up"
@@ -102,6 +102,37 @@ screens.
   only for the same incarnation. After the server restarts, the session is
   found again by name, and otherwise the first session is shown. An id
   from another server is never reopened (spec 15.2).
+
+## Menus and shortcuts
+
+Commands, their shortcuts, and the macOS menu bar come from one table
+(`crates/app/src/keymap.rs`). macOS uses Cmd; Linux uses Ctrl-Shift, so
+plain Ctrl and Alt combinations (Ctrl-C, Ctrl-W, Ctrl-Q, …) always reach
+the program in the pane.
+
+| Command | macOS | Linux |
+| --- | --- | --- |
+| Quit | Cmd-Q | Ctrl-Shift-Q |
+| New window | Cmd-N | Ctrl-Shift-N |
+| Close window | Cmd-W | Ctrl-Shift-W |
+| Copy the selection | Cmd-C | Ctrl-Shift-C |
+| Paste | Cmd-V | Ctrl-Shift-V |
+| Command palette | Cmd-Shift-P | Ctrl-Shift-P |
+| Zoom the focused pane | Cmd-Shift-Enter | Ctrl-Shift-Enter |
+| Sessions sidebar | Cmd-Shift-S | Ctrl-Shift-S |
+| Full screen | Ctrl-Cmd-F | F11 |
+| Hide, hide others | Cmd-H, Alt-Cmd-H | (window manager) |
+| Minimize | Cmd-M | (window manager) |
+
+On macOS the menu bar has Dreamer (Services, Hide, Hide Others, Show All,
+Quit), Shell (New Window, Close Window), Edit (Copy, Paste), View
+(Command Palette, Sessions Sidebar, Zoom Pane, Enter Full Screen), and
+Window (Minimize, Zoom), each item showing its shortcut.
+
+Closing a window or quitting closes views only: tmux sessions, panes, and
+the daemon keep running. On Linux the app quits when its last window
+closes. On macOS it stays in the Dock, and clicking the icon opens a
+window again.
 
 ## Command palette
 
