@@ -43,8 +43,18 @@ A workspace window shows one tmux session:
   switches made by any tmux client appear without a restart. An action's
   result is seen only when the new topology arrives; it is never assumed.
 
-The panes are drawn at the size tmux gives them. Dragging splits and
-sizing the tmux window to the desktop window come with M3-02 (#35).
+- **Window size.** The workspace asks tmux to size the window it shows to
+  its pane area. That takes effect only while this window owns the tmux
+  window's size; see [topology.md](topology.md#window-size).
+- **Dragging splits.** The one-cell gaps between panes are drag handles.
+  Dragging shows a preview line at once and resizes the pane on the left
+  of (or above) the gap. It sends `resize-pane` at most every 60 ms with
+  the latest size, plus once on release, and never shrinks a pane below
+  2 cells. The panes themselves always show tmux's actual layout. A drag
+  ends at whatever tmux decided.
+- **Zoom.** Cmd-Shift-Enter on macOS, Ctrl-Shift-Enter on Linux, or the
+  `zoom` control on the focused pane, toggles zoom through the typed zoom
+  action. The shortcut is never sent to the pane.
 
 `dreamer --smoke-workspace` checks this against an isolated tmux whose
 session `main` has two windows, the first split into three panes, each
@@ -54,9 +64,13 @@ step, and `gate linux-desktop` runs it on each backend. It checks that:
   output;
 - a split made with the plain `tmux` command appears;
 - clicking a pane focuses it, and typed text reaches only that pane;
+- zoom shows the focused pane alone, and unzoom brings all four back;
+- tmux sizes the shown window to the workspace's area;
+- dragging the vertical divider 10 cells in 10 moves resizes the pane to
+  exactly that width, with at most 11 resize commands;
 - a tab click switches the tmux window and shows only its pane.
 
-Clicking and typing need a refreshing display. With a locked screen they
+Sizing, clicking, typing, and dragging need a refreshing display. With a locked screen they
 are reported as not run and the step as `not_run`.
 
 ## Frame scheduling

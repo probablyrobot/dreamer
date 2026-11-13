@@ -41,7 +41,29 @@ pub(crate) struct Workspace {
     area: Option<(u32, u32)>,
     requested: Option<(u32, u32, u32)>,
     size_pending: bool,
+    /// Where the pane area was painted and its cell size, for turning
+    /// pointer positions into cells; and a divider drag in progress.
+    origin: Option<gpui::Point<gpui::Pixels>>,
+    cell: Option<(gpui::Pixels, gpui::Pixels)>,
+    drag: Option<Drag>,
+    /// Resize actions sent for divider drags (smoke evidence).
+    pub(crate) resizes_sent: u32,
 }
+
+/// A divider being dragged: the size the pointer asks for, the last size
+/// sent to tmux, and whether a throttled send is pending.
+#[derive(Debug, Clone, Copy)]
+struct Drag {
+    divider: Divider,
+    size: u32,
+    sent: Option<u32>,
+    throttling: bool,
+}
+
+/// Smallest pane a drag may leave, in cells.
+const MIN_PANE: u32 = 2;
+/// At most one resize per this interval while dragging.
+const DRAG_THROTTLE: std::time::Duration = std::time::Duration::from_millis(60);
 
 impl Workspace {
     pub(crate) fn new(
@@ -61,6 +83,10 @@ impl Workspace {
             area: None,
             requested: None,
             size_pending: false,
+            origin: None,
+            cell: None,
+            drag: None,
+            resizes_sent: 0,
         }
     }
 
@@ -98,6 +124,112 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// The dividers of the window shown (none while zoomed).
+    pub(crate) fn dividers(&self) -> Vec<Divider> {
+        if self.active_window().is_some_and(|w| w.zoomed) {
+            return Vec::new();
+        }
+        dividers(&self.visible())
+    }
+
+    pub(crate) fn start_drag(&mut self, divider: Divider, cx: &mut Context<Self>) {
+        let size = self
+            .visible()
+            .iter()
+            .find(|p| p.id == divider.pane)
+            .map_or(MIN_PANE, |p| match divider.axis {
+                Axis::Cols => p.width,
+                Axis::Rows => p.height,
+            });
+        self.drag = Some(Drag {
+            divider,
+            size,
+            sent: None,
+            throttling: false,
+        });
+        cx.notify();
+    }
+
+    /// The pointer moved during a drag: preview now, resize tmux at most
+    /// once per `DRAG_THROTTLE` with the latest size.
+    pub(crate) fn drag_to(&mut self, at: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let (Some(origin), Some((cw, ch)), Some(drag)) =
+            (self.origin, self.cell, self.drag.as_mut())
+        else {
+            return;
+        };
+        let d = drag.divider;
+        let (pos, cell) = match d.axis {
+            Axis::Cols => (at.x - origin.x, cw),
+            Axis::Rows => (at.y - origin.y, ch),
+        };
+        let cells = (f32::from(pos) / f32::from(cell).max(1.0)).floor().max(0.0) as u32;
+        let size = cells.saturating_sub(d.base).max(MIN_PANE);
+        if size == drag.size {
+            return;
+        }
+        drag.size = size;
+        cx.notify();
+        if drag.throttling {
+            return;
+        }
+        drag.throttling = true;
+        self.send_resize();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(DRAG_THROTTLE).await;
+            let _ = this.update(cx, |ws, cx| {
+                if let Some(drag) = ws.drag.as_mut() {
+                    drag.throttling = false;
+                }
+                ws.send_resize();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn end_drag(&mut self, cx: &mut Context<Self>) {
+        self.send_resize();
+        self.drag = None;
+        cx.notify();
+    }
+
+    /// Send the drag's size if it is not the one last sent. The view keeps
+    /// showing tmux's actual layout; only the preview line moves at once.
+    fn send_resize(&mut self) {
+        let Some(drag) = self.drag.as_mut() else {
+            return;
+        };
+        if drag.sent == Some(drag.size) {
+            return;
+        }
+        drag.sent = Some(drag.size);
+        let (width, height) = match drag.divider.axis {
+            Axis::Cols => (Some(drag.size), None),
+            Axis::Rows => (None, Some(drag.size)),
+        };
+        self.resizes_sent += 1;
+        self.topology
+            .act(api::action::Kind::ResizePane(api::ResizePane {
+                pane: drag.divider.pane,
+                width,
+                height,
+            }));
+    }
+
+    /// Zoom the focused pane, or unzoom; the view follows the topology.
+    pub(crate) fn toggle_zoom(&mut self, cx: &mut Context<Self>) {
+        if let Some(pane) = self.focused {
+            self.topology
+                .act(api::action::Kind::ZoomPane(api::ZoomPane { pane }));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn zoomed(&self) -> bool {
+        self.active_window().is_some_and(|w| w.zoomed)
     }
 
     pub(crate) fn pane_ids(&self) -> Vec<u32> {
@@ -338,8 +470,62 @@ impl Render for Workspace {
                             }
                         });
                     })
-                    .child(shell),
+                    .child(shell)
+                    .when(Some(id) == focused, |d| {
+                        // Zoom control on the focused pane.
+                        d.child(
+                            div()
+                                .id(("zoom", id as usize))
+                                .absolute()
+                                .top_0()
+                                .right_0()
+                                .px_1()
+                                .text_size(px(11.0))
+                                .text_color(rgb(0x8a909a))
+                                .hover(|s| s.text_color(rgb(0xe6e6e6)))
+                                .child(if zoomed { "unzoom" } else { "zoom" })
+                                .on_click(cx.listener(|ws, _, _, cx| ws.toggle_zoom(cx))),
+                        )
+                    }),
             )
+        });
+        // Divider hit zones in tmux's one-cell gaps, and a preview line
+        // while one is dragged.
+        let handles = self.dividers().into_iter().enumerate().map(|(i, d)| {
+            let (left, top, w, h) = match d.axis {
+                Axis::Cols => (d.at, d.from, 1, d.to - d.from),
+                Axis::Rows => (d.from, d.at, d.to - d.from, 1),
+            };
+            div()
+                .id(("divider", i))
+                .absolute()
+                .left(m.width * left as f32)
+                .top(m.height * top as f32)
+                .w(m.width * w as f32)
+                .h(m.height * h as f32)
+                .when(d.axis == Axis::Cols, |x| x.cursor_col_resize())
+                .when(d.axis == Axis::Rows, |x| x.cursor_row_resize())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |ws, _: &MouseDownEvent, _, cx| ws.start_drag(d, cx)),
+                )
+        });
+        let preview = self.drag.map(|drag| {
+            let d = drag.divider;
+            let at = d.base + drag.size;
+            let line = div().absolute().bg(rgb(0x8ab4f8));
+            match d.axis {
+                Axis::Cols => line
+                    .left(m.width * at as f32)
+                    .top(m.height * d.from as f32)
+                    .w(px(2.0))
+                    .h(m.height * (d.to - d.from) as f32),
+                Axis::Rows => line
+                    .left(m.width * d.from as f32)
+                    .top(m.height * at as f32)
+                    .w(m.width * (d.to - d.from) as f32)
+                    .h(px(2.0)),
+            }
         });
         let notice = unsupported.then(|| {
             div()
@@ -353,6 +539,12 @@ impl Render for Workspace {
             .flex_col()
             .bg(rgb(0x14161a))
             .track_focus(&self.focus)
+            .on_key_down(cx.listener(|ws, ev: &gpui::KeyDownEvent, _, cx| {
+                if crate::input::is_zoom_shortcut(&ev.keystroke) {
+                    ws.toggle_zoom(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .child(strip)
             .child(
                 div()
@@ -362,13 +554,45 @@ impl Render for Workspace {
                     // tmux leaves one cell between panes: the divider.
                     .bg(rgb(0x1f232a))
                     .children(panes)
+                    .children(handles)
+                    .children(preview)
                     .children(notice)
                     // Measures the pane area for window sizing.
                     .child({
                         let entity = entity.clone();
                         gpui::canvas(
                             |_, _, _| (),
-                            move |bounds, _, _, cx| {
+                            move |bounds, _, window, cx| {
+                                entity.update(cx, |ws, _| {
+                                    ws.origin = Some(bounds.origin);
+                                    ws.cell = Some((m.width, m.height));
+                                });
+                                // A drag follows the pointer anywhere until
+                                // the button comes up.
+                                let e = entity.clone();
+                                window.on_mouse_event(
+                                    move |ev: &gpui::MouseMoveEvent, phase, _, cx| {
+                                        if phase == gpui::DispatchPhase::Bubble {
+                                            e.update(cx, |ws, cx| {
+                                                if ws.drag.is_some() {
+                                                    ws.drag_to(ev.position, cx);
+                                                }
+                                            });
+                                        }
+                                    },
+                                );
+                                let e = entity.clone();
+                                window.on_mouse_event(
+                                    move |_: &gpui::MouseUpEvent, phase, _, cx| {
+                                        if phase == gpui::DispatchPhase::Bubble {
+                                            e.update(cx, |ws, cx| {
+                                                if ws.drag.is_some() {
+                                                    ws.end_drag(cx);
+                                                }
+                                            });
+                                        }
+                                    },
+                                );
                                 let cols =
                                     (f32::from(bounds.size.width) / f32::from(m.width)).floor();
                                 let rows =
@@ -561,6 +785,27 @@ mod smoke {
         })
         .await;
         println!("smoke: a split made by another tmux client appeared");
+
+        // Zoom the focused pane and back, through the typed zoom action.
+        let toggle = |cx: &mut AsyncApp| {
+            let _ = cx.update_window(any, |_, _, cx| {
+                if let Some(ws) = ws.upgrade() {
+                    ws.update(cx, |w, cx| w.toggle_zoom(cx));
+                }
+            });
+        };
+        toggle(cx);
+        wait_for(any, &ws, cx, "the zoomed pane alone", |w, _| {
+            w.zoomed() && w.pane_ids().len() == 1
+        })
+        .await;
+        toggle(cx);
+        wait_for(any, &ws, cx, "all panes after unzooming", |w, _| {
+            !w.zoomed() && w.pane_ids().len() == 4
+        })
+        .await;
+        println!("smoke: zoom showed the focused pane alone, and unzoom brought all four back");
+
         let painted = click_and_type(any, &ws, cx).await;
 
         // Selecting a tab switches the tmux window, seen in the topology.
@@ -710,6 +955,193 @@ mod smoke {
             fail(&format!("typed text also reached {elsewhere:?}"));
         }
         println!("smoke: typed text reached only the focused pane %{target}");
+        drag_divider(any, ws, cx).await;
         true
+    }
+
+    /// Drag a vertical divider ten cells to the left in ten moves: tmux
+    /// must end at that width, with no more resizes than moves.
+    async fn drag_divider(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncApp) {
+        use gpui::{
+            Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
+            point,
+        };
+        let Some((d, origin, (cw, ch))) = read(any, ws, cx, |w, _| {
+            let d = w
+                .dividers()
+                .into_iter()
+                .find(|d| d.axis == super::Axis::Cols)?;
+            Some((d, w.origin?, w.cell?))
+        })
+        .flatten() else {
+            fail("no vertical divider to drag")
+        };
+        let y = origin.y + ch * (d.from as f32 + 1.5);
+        let x = |col: f32| origin.x + cw * col;
+        let start = d.at as f32 + 0.5;
+        let mut events = vec![PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position: point(x(start), y),
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        })];
+        for step in 1..=10 {
+            events.push(PlatformInput::MouseMove(MouseMoveEvent {
+                position: point(x(start - step as f32), y),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }));
+        }
+        events.push(PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position: point(x(start - 10.0), y),
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }));
+        for ev in events {
+            let _ = cx.update_window(any, move |_, window, cx| {
+                window.dispatch_event(ev, cx);
+            });
+            cx.background_executor()
+                .timer(Duration::from_millis(15))
+                .await;
+        }
+        let want = d.at - 10 - d.base;
+        wait_for(any, ws, cx, "the dragged pane at its new width", |w, _| {
+            w.topology()
+                .and_then(|t| t.panes.iter().find(|p| p.id == d.pane))
+                .is_some_and(|p| p.width == want)
+        })
+        .await;
+        let sent = read(any, ws, cx, |w, _| w.resizes_sent).unwrap_or(0);
+        if !(1..=11).contains(&sent) {
+            fail(&format!("{sent} resize commands for a 10-move drag"));
+        }
+        println!(
+            "smoke: dragging a divider resized pane %{} to {want} columns with {sent} resize commands",
+            d.pane
+        );
+    }
+}
+
+/// Which way a divider moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Axis {
+    /// A vertical divider: dragging changes the left pane's width.
+    Cols,
+    /// A horizontal divider: dragging changes the upper pane's height.
+    Rows,
+}
+
+/// A draggable gap between two panes: tmux leaves one cell between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Divider {
+    /// The pane on the left of (or above) the gap: the one resized.
+    pub pane: u32,
+    pub axis: Axis,
+    /// The gap's column (Cols) or row (Rows).
+    pub at: u32,
+    /// Its extent along the other axis, start inclusive, end exclusive.
+    pub from: u32,
+    pub to: u32,
+    /// The resized pane's left (Cols) or top (Rows).
+    pub base: u32,
+}
+
+/// The dividers between a window's panes, one per neighbouring pair.
+pub(crate) fn dividers(panes: &[api::Pane]) -> Vec<Divider> {
+    let mut out = Vec::new();
+    for p in panes {
+        let right = p.left + p.width;
+        let bottom = p.top + p.height;
+        for q in panes {
+            let rows = (p.top.max(q.top), bottom.min(q.top + q.height));
+            if q.left == right + 1 && rows.0 < rows.1 {
+                out.push(Divider {
+                    pane: p.id,
+                    axis: Axis::Cols,
+                    at: right,
+                    from: rows.0,
+                    to: rows.1,
+                    base: p.left,
+                });
+            }
+            let cols = (p.left.max(q.left), right.min(q.left + q.width));
+            if q.top == bottom + 1 && cols.0 < cols.1 {
+                out.push(Divider {
+                    pane: p.id,
+                    axis: Axis::Rows,
+                    at: bottom,
+                    from: cols.0,
+                    to: cols.1,
+                    base: p.top,
+                });
+            }
+        }
+    }
+    // One divider per pane and gap: segments along several neighbours merge.
+    out.sort_by_key(|d| (d.pane, d.axis as u8, d.at, d.from));
+    let mut merged: Vec<Divider> = Vec::new();
+    for d in out {
+        match merged.last_mut() {
+            Some(m) if m.pane == d.pane && m.axis == d.axis && m.at == d.at => {
+                m.from = m.from.min(d.from);
+                m.to = m.to.max(d.to);
+            }
+            _ => merged.push(d),
+        }
+    }
+    merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane(id: u32, left: u32, top: u32, width: u32, height: u32) -> api::Pane {
+        api::Pane {
+            id,
+            left,
+            top,
+            width,
+            height,
+            ..api::Pane::default()
+        }
+    }
+
+    #[test]
+    fn dividers_sit_in_the_gaps_tmux_leaves_between_panes() {
+        // 100x30: %0 on the left (49 wide); %1 top right, %2 below it.
+        let panes = [
+            pane(0, 0, 0, 49, 30),
+            pane(1, 50, 0, 50, 14),
+            pane(2, 50, 15, 50, 15),
+        ];
+        let d = dividers(&panes);
+        assert_eq!(
+            d,
+            vec![
+                Divider {
+                    pane: 0,
+                    axis: Axis::Cols,
+                    at: 49,
+                    from: 0,
+                    to: 30,
+                    base: 0
+                },
+                Divider {
+                    pane: 1,
+                    axis: Axis::Rows,
+                    at: 14,
+                    from: 50,
+                    to: 100,
+                    base: 0
+                },
+            ],
+            "{d:#?}"
+        );
+        // A single pane has none.
+        assert!(dividers(&panes[..1]).is_empty());
     }
 }
