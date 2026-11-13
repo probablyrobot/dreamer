@@ -16,7 +16,11 @@ fn rt() -> Result<tokio::runtime::Runtime, String> {
 pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
-        ["connect", name, destination, rest @ ..] => connect_host(d, name, destination, rest),
+        ["connect", name, destination, rest @ ..] if !destination.starts_with("--") => {
+            connect_host(d, name, destination, rest)
+        }
+        ["connect", name, rest @ ..] => connect_host(d, name, "", rest),
+        ["reconnect", name] => reconnect(d, name),
         ["list"] => list(false),
         ["list", "--json"] => list(true),
         ["disconnect", name] => disconnect(name),
@@ -27,8 +31,11 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
 }
 
 pub const USAGE: &str = "usage:
+  dream hosts connect PROFILE [--auto-reconnect | --manual]
   dream hosts connect NAME DESTINATION [--dream PATH] [--remote-tmux PATH]
                       [--remote-socket NAME | --remote-socket-path PATH]
+                      [--auto-reconnect | --manual]
+  dream hosts reconnect NAME
   dream hosts list [--json]
   dream hosts call NAME METHOD [JSON-PARAMS]
   dream hosts disconnect NAME";
@@ -46,6 +53,17 @@ fn connect_host(
     };
     let mut it = rest.iter();
     while let Some(flag) = it.next() {
+        match *flag {
+            "--auto-reconnect" => {
+                p.auto_reconnect = Some(true);
+                continue;
+            }
+            "--manual" => {
+                p.auto_reconnect = Some(false);
+                continue;
+            }
+            _ => {}
+        }
         let value = it
             .next()
             .ok_or_else(|| format!("{flag} needs a value"))?
@@ -70,6 +88,24 @@ fn connect_host(
     })
 }
 
+fn reconnect(d: &DaemonArgs, name: &str) -> Result<(), String> {
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        match call(
+            &mut c,
+            Request::HostsReconnect(api::HostRef { name: name.into() }),
+        )
+        .await?
+        {
+            Response::HostsReconnect(s) => {
+                print_status(&s);
+                Ok(())
+            }
+            other => Err(format!("unexpected reply {other:?}")),
+        }
+    })
+}
+
 fn list(json: bool) -> Result<(), String> {
     rt()?.block_on(async {
         let mut c = connect().await?;
@@ -81,10 +117,13 @@ fn list(json: bool) -> Result<(), String> {
                 "{}",
                 serde_json::to_string_pretty(&l).map_err(|e| e.to_string())?
             );
-        } else if l.hosts.is_empty() {
+        } else if l.hosts.is_empty() && l.profiles_error.is_none() {
             println!("no hosts");
         } else {
             l.hosts.iter().for_each(print_status);
+        }
+        if let Some(e) = &l.profiles_error {
+            eprintln!("dream: hosts.yaml: {e}");
         }
         Ok(())
     })
@@ -139,7 +178,7 @@ fn forward(name: &str, method: &str, params: &str) -> Result<(), String> {
 
 fn print_status(s: &api::HostStatus) {
     let state = match api::LinkState::try_from(s.state) {
-        Ok(api::LinkState::Unspecified) => "unknown",
+        Ok(api::LinkState::Unspecified) => "not connected",
         Ok(state) => state.name(),
         Err(_) => "unknown",
     };
@@ -154,7 +193,33 @@ fn print_status(s: &api::HostStatus) {
         );
     }
     println!();
+    if !s.tags.is_empty() {
+        println!("  tags {}", s.tags.join(", "));
+    }
     if let Some(detail) = &s.detail {
         println!("  {detail}");
+    }
+    let failure = api::HostFailure::try_from(s.failure).unwrap_or(api::HostFailure::Unspecified);
+    if failure != api::HostFailure::Unspecified && s.state == api::LinkState::Failed as i32 {
+        match s.next_retry_unix_ms {
+            Some(at) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                println!(
+                    "  attempt {} failed ({}); retrying in {} s",
+                    s.attempts,
+                    failure.name(),
+                    at.saturating_sub(now).div_ceil(1000)
+                );
+            }
+            None if s.auto_reconnect && failure != api::HostFailure::Transient => println!(
+                "  {} failure: not retried automatically; `dream hosts reconnect {}` after fixing it",
+                failure.name(),
+                s.name
+            ),
+            None => {}
+        }
     }
 }

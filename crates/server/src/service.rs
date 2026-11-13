@@ -752,6 +752,10 @@ impl api::Service for DaemonService {
         self.0.hosts.disconnect(&p.name).await
     }
 
+    async fn hosts_reconnect(&self, p: api::HostRef) -> Result<api::HostStatus, RpcError> {
+        self.0.hosts.reconnect(&p.name).await
+    }
+
     async fn hosts_call(&self, p: api::HostCall) -> Result<api::HostReply, RpcError> {
         self.0.hosts.call(p).await
     }

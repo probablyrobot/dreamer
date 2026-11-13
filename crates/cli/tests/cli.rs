@@ -50,7 +50,9 @@ impl Cli {
             .env("DREAMER_STATE_DIR", self.root.join("st"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", Self::daemon())
-            .env("DREAMER_SSH", self.root.join("ssh"));
+            .env("DREAMER_SSH", self.root.join("ssh"))
+            .env("DREAMER_CONFIG_DIR", self.root.join("config"))
+            .env("DREAMER_TEST_BACKOFF_MS", "100");
         c.output().expect("dream")
     }
 
@@ -305,6 +307,7 @@ impl Cli {
             .env("DREAMER_STATE_DIR", self.root.join("st"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", daemon)
+            .env("DREAMER_CONFIG_DIR", self.root.join("config"))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -519,4 +522,150 @@ exec /bin/sh -c "$3"
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+fn lines_in(path: &std::path::Path) -> usize {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
+}
+
+fn host_json(cli: &Cli) -> serde_json::Value {
+    let list: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["hosts", "list", "--json"])).expect("json");
+    list["hosts"][0].clone()
+}
+
+fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while !ok() {
+        assert!(Instant::now() < deadline, "timed out waiting until {what}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_profile_reconnects_with_backoff_but_never_retries_a_refused_login() {
+    let cli = Cli::new();
+    let far = TmuxServer::start(100, 30, "/bin/sh").expect("remote tmux");
+    let far_root = cli.root.join("far");
+    let far_daemon = DaemonGuard(far_root.join("rt"));
+    let r = |name: &str| cli.root.join(name);
+    // A stand-in ssh whose behaviour the test steers with marker files:
+    // `deny` refuses the login, `down` makes the host unreachable. Every
+    // attempt is counted, and the bridge's pid is recorded (the remote
+    // command is exec'd, so it keeps this pid) to cut the link later.
+    std::fs::write(
+        r("ssh"),
+        format!(
+            r#"#!/bin/sh
+echo attempt >> '{attempts}'
+[ "$1" = -T ] || exit 90
+while [ "$1" != -- ]; do shift; done
+if [ -e '{deny}' ]; then echo "$2: Permission denied (publickey)." >&2; exit 255; fi
+if [ -e '{down}' ]; then echo "ssh: connect to host $2 port 22: Connection refused" >&2; exit 255; fi
+echo $$ > '{pid}'
+export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
+export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
+exec /bin/sh -c "exec $3"
+"#,
+            attempts = r("attempts").display(),
+            deny = r("deny").display(),
+            down = r("down").display(),
+            pid = r("bridge-pid").display(),
+            rt = far_root.join("rt").display(),
+            st = far_root.join("st").display(),
+            daemon = Cli::daemon().display(),
+        ),
+    )
+    .expect("stand-in ssh");
+    std::fs::set_permissions(
+        r("ssh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+    std::fs::create_dir_all(r("config")).expect("config dir");
+    std::fs::write(
+        r("config/hosts.yaml"),
+        format!(
+            "hosts:\n  - name: devbox\n    destination: devbox\n    dream: '{}'\n    \
+             tmux: '{}'\n    tmux_socket: '{}'\n    tags: [lab]\n",
+            DREAM,
+            tmux_program().display(),
+            far.socket()
+        ),
+    )
+    .expect("hosts.yaml");
+    let touch = |name: &str| std::fs::write(r(name), "").expect("marker");
+    let kill_bridge = || {
+        let pid = std::fs::read_to_string(r("bridge-pid")).expect("bridge pid");
+        let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+    };
+
+    cli.ok(&["ensure-running"]);
+    let host = host_json(&cli);
+    assert_eq!(host["name"], "devbox");
+    assert_eq!(host["profile"], true);
+    assert_eq!(host["auto_reconnect"], true);
+
+    // A refused login is tried once and then left alone.
+    touch("deny");
+    let out = cli.on_tmux(&["hosts", "connect", "devbox"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Permission denied"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(lines_in(&r("attempts")), 1, "a refused login was retried");
+    let host = host_json(&cli);
+    assert_eq!(host["failure"], "auth", "{host}");
+    assert!(host["next_retry_unix_ms"].is_null(), "{host}");
+    let text = cli.ok(&["hosts", "list"]);
+    assert!(text.contains("not retried automatically"), "{text}");
+
+    // Fixed: an explicit reconnect brings it up.
+    std::fs::remove_file(r("deny")).expect("rm");
+    let out = cli.ok(&["hosts", "reconnect", "devbox"]);
+    assert!(out.contains("live"), "{out}");
+    let far_pid = far_daemon.pid().expect("remote daemon");
+
+    // The link drops while the host is unreachable: retries come with
+    // growing delays (100, 200, 400 ms here, less up to a fifth of jitter).
+    touch("down");
+    let before = lines_in(&r("attempts"));
+    let cut = Instant::now();
+    kill_bridge();
+    wait_until("three retries", 10, || {
+        lines_in(&r("attempts")) >= before + 3
+    });
+    assert!(
+        cut.elapsed() >= Duration::from_millis(560),
+        "three retries within {:?}",
+        cut.elapsed()
+    );
+    let host = host_json(&cli);
+    assert_eq!(host["failure"], "transient", "{host}");
+    assert!(host["attempts"].as_u64().unwrap_or(0) >= 3, "{host}");
+
+    // Reachable again: the next retry reconnects to the same remote daemon,
+    // which kept running.
+    std::fs::remove_file(r("down")).expect("rm");
+    wait_until("live again", 15, || host_json(&cli)["state"] == "live");
+    assert_eq!(far_daemon.pid(), Some(far_pid));
+    assert_eq!(host_json(&cli)["remote_pid"], far_pid);
+
+    // An explicit disconnect during backoff stops the retries.
+    touch("down");
+    kill_bridge();
+    wait_until("a retry is scheduled", 10, || {
+        !host_json(&cli)["next_retry_unix_ms"].is_null()
+    });
+    let out = cli.ok(&["hosts", "disconnect", "devbox"]);
+    assert!(out.contains("closed"), "{out}");
+    let count = lines_in(&r("attempts"));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(lines_in(&r("attempts")), count, "retried after disconnect");
+    assert_eq!(host_json(&cli)["state"], "closed");
 }

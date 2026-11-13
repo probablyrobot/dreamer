@@ -11,6 +11,7 @@
 
 pub mod desktop_state;
 mod dirs;
+pub mod hosts;
 mod plan;
 mod schema;
 pub mod settings;

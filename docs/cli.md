@@ -64,6 +64,8 @@ See [daemon.md](daemon.md) for files, directories, and lifecycle.
 | Command | Effect |
 | --- | --- |
 | `dream hosts connect NAME DESTINATION [--dream PATH] [--remote-tmux PATH] [--remote-socket NAME \| --remote-socket-path PATH]` | The local daemon connects to the daemon on `DESTINATION` over SSH and keeps the connection |
+| `dream hosts connect PROFILE` | Connect to a profile from `hosts.yaml`. `--auto-reconnect` or `--manual` overrides its policy (also for a destination given directly) |
+| `dream hosts reconnect NAME` | Connect again now, also after a failure that is not retried automatically |
 | `dream hosts list [--json]` | Every host, its state, the remote daemon, and why a host is not live |
 | `dream hosts call NAME METHOD [JSON]` | Forward one typed call, for example `dream hosts call devbox tmux.topology`, and print the remote result as JSON |
 | `dream hosts disconnect NAME` | Close the SSH connection. The remote daemon and its tmux keep running |

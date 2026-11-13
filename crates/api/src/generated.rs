@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 14;
+pub const PROTOCOL_MINOR: u32 = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -456,6 +456,64 @@ mod mouse_button_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| MouseButton::from_name(n).map(|e| e as i32))
+    }
+}
+
+/// Why the last attempt failed, and so whether retrying can help.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum HostFailure {
+    Unspecified = 0,
+    /// Network, SSH ending, the remote daemon going away: retried under an auto policy.
+    Transient = 1,
+    /// SSH authentication was refused: never retried automatically.
+    Auth = 2,
+    /// The host key is unknown or changed: never retried automatically.
+    HostKey = 3,
+    /// The remote daemon's protocol or build does not match: needs an upgrade.
+    Incompatible = 4,
+    /// The remote dream executable was not found.
+    NotInstalled = 5,
+}
+
+impl HostFailure {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Transient => "transient",
+            Self::Auth => "auth",
+            Self::HostKey => "host_key",
+            Self::Incompatible => "incompatible",
+            Self::NotInstalled => "not_installed",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "transient" => Some(Self::Transient),
+            "auth" => Some(Self::Auth),
+            "host_key" => Some(Self::HostKey),
+            "incompatible" => Some(Self::Incompatible),
+            "not_installed" => Some(Self::NotInstalled),
+            _ => None,
+        }
+    }
+}
+
+mod host_failure_json {
+    use super::HostFailure;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match HostFailure::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| HostFailure::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -1382,6 +1440,10 @@ pub struct HostConnect {
     #[prost(string, optional, tag = "6")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tmux_socket_path: Option<String>,
+    /// Retry a dropped connection by itself; default: the profile's policy, or off for a host given here.
+    #[prost(bool, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_reconnect: Option<bool>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -1416,13 +1478,38 @@ pub struct HostStatus {
     #[prost(string, optional, tag = "9")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[prost(enumeration = "HostFailure", tag = "10")]
+    #[serde(with = "host_failure_json")]
+    pub failure: i32,
+    /// Failed attempts since the last live connection.
+    #[prost(uint32, tag = "11")]
+    pub attempts: u32,
+    /// When the next automatic attempt starts, if one is scheduled.
+    #[prost(uint64, optional, tag = "12")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_retry_unix_ms: Option<u64>,
+    #[prost(bool, tag = "13")]
+    pub auto_reconnect: bool,
+    #[prost(string, repeated, tag = "14")]
+    pub tags: Vec<String>,
+    #[prost(string, optional, tag = "15")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// Defined in hosts.yaml.
+    #[prost(bool, tag = "16")]
+    pub profile: bool,
 }
 
+/// Every profile in hosts.yaml and every other host connected since the daemon started.
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HostList {
     #[prost(message, repeated, tag = "1")]
     pub hosts: Vec<HostStatus>,
+    /// hosts.yaml exists but is invalid: the error, with its location.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profiles_error: Option<String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -1474,6 +1561,7 @@ pub mod method {
     pub const HOSTS_CONNECT: &str = "hosts.connect";
     pub const HOSTS_LIST: &str = "hosts.list";
     pub const HOSTS_DISCONNECT: &str = "hosts.disconnect";
+    pub const HOSTS_RECONNECT: &str = "hosts.reconnect";
     pub const HOSTS_CALL: &str = "hosts.call";
 }
 
@@ -1597,7 +1685,7 @@ pub const METHODS: &[MethodInfo] = &[
         params: "HostConnect",
         result: "HostStatus",
         mutation: true,
-        doc: "Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller.",
+        doc: "Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller. With no destination, `name` is a profile from hosts.yaml.",
     },
     MethodInfo {
         name: "hosts.list",
@@ -1612,6 +1700,13 @@ pub const METHODS: &[MethodInfo] = &[
         result: "HostStatus",
         mutation: true,
         doc: "Close a host's ssh connection. The remote daemon and its tmux keep running.",
+    },
+    MethodInfo {
+        name: "hosts.reconnect",
+        params: "HostRef",
+        result: "HostStatus",
+        mutation: true,
+        doc: "Connect again now, also after a failure that is not retried automatically.",
     },
     MethodInfo {
         name: "hosts.call",
@@ -1643,6 +1738,7 @@ pub enum Request {
     HostsConnect(HostConnect),
     HostsList(Empty),
     HostsDisconnect(HostRef),
+    HostsReconnect(HostRef),
     HostsCall(HostCall),
 }
 
@@ -1667,6 +1763,7 @@ impl Request {
             Self::HostsConnect(_) => "hosts.connect",
             Self::HostsList(_) => "hosts.list",
             Self::HostsDisconnect(_) => "hosts.disconnect",
+            Self::HostsReconnect(_) => "hosts.reconnect",
             Self::HostsCall(_) => "hosts.call",
         }
     }
@@ -1692,6 +1789,7 @@ impl Request {
             Self::HostsConnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsDisconnect(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsReconnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -1718,6 +1816,7 @@ impl Request {
             "hosts.connect" => Ok(Self::HostsConnect(::prost::Message::decode(bytes)?)),
             "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
             "hosts.disconnect" => Ok(Self::HostsDisconnect(::prost::Message::decode(bytes)?)),
+            "hosts.reconnect" => Ok(Self::HostsReconnect(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -1743,6 +1842,7 @@ impl Request {
             Self::HostsConnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsDisconnect(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsReconnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -1767,6 +1867,7 @@ impl Request {
             "hosts.connect" => Ok(Self::HostsConnect(serde_json::from_value(value)?)),
             "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
             "hosts.disconnect" => Ok(Self::HostsDisconnect(serde_json::from_value(value)?)),
+            "hosts.reconnect" => Ok(Self::HostsReconnect(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -1794,6 +1895,7 @@ pub enum Response {
     HostsConnect(HostStatus),
     HostsList(HostList),
     HostsDisconnect(HostStatus),
+    HostsReconnect(HostStatus),
     HostsCall(HostReply),
 }
 
@@ -1818,6 +1920,7 @@ impl Response {
             Self::HostsConnect(_) => "hosts.connect",
             Self::HostsList(_) => "hosts.list",
             Self::HostsDisconnect(_) => "hosts.disconnect",
+            Self::HostsReconnect(_) => "hosts.reconnect",
             Self::HostsCall(_) => "hosts.call",
         }
     }
@@ -1843,6 +1946,7 @@ impl Response {
             Self::HostsConnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsDisconnect(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsReconnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -1869,6 +1973,7 @@ impl Response {
             "hosts.connect" => Ok(Self::HostsConnect(::prost::Message::decode(bytes)?)),
             "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
             "hosts.disconnect" => Ok(Self::HostsDisconnect(::prost::Message::decode(bytes)?)),
+            "hosts.reconnect" => Ok(Self::HostsReconnect(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -1894,6 +1999,7 @@ impl Response {
             Self::HostsConnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsDisconnect(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsReconnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -1918,6 +2024,7 @@ impl Response {
             "hosts.connect" => Ok(Self::HostsConnect(serde_json::from_value(value)?)),
             "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
             "hosts.disconnect" => Ok(Self::HostsDisconnect(serde_json::from_value(value)?)),
+            "hosts.reconnect" => Ok(Self::HostsReconnect(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -1999,7 +2106,7 @@ pub trait Service: Sync {
         &self,
         params: TerminalInput,
     ) -> impl ::core::future::Future<Output = Result<InputResult, RpcError>> + Send;
-    /// Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller.
+    /// Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller. With no destination, `name` is a profile from hosts.yaml.
     fn hosts_connect(
         &self,
         params: HostConnect,
@@ -2011,6 +2118,11 @@ pub trait Service: Sync {
     ) -> impl ::core::future::Future<Output = Result<HostList, RpcError>> + Send;
     /// Close a host's ssh connection. The remote daemon and its tmux keep running.
     fn hosts_disconnect(
+        &self,
+        params: HostRef,
+    ) -> impl ::core::future::Future<Output = Result<HostStatus, RpcError>> + Send;
+    /// Connect again now, also after a failure that is not retried automatically.
+    fn hosts_reconnect(
         &self,
         params: HostRef,
     ) -> impl ::core::future::Future<Output = Result<HostStatus, RpcError>> + Send;
@@ -2063,6 +2175,10 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .hosts_disconnect(p)
             .await
             .map(Response::HostsDisconnect),
+        Request::HostsReconnect(p) => service
+            .hosts_reconnect(p)
+            .await
+            .map(Response::HostsReconnect),
         Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
     }
 }
