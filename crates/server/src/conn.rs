@@ -52,6 +52,9 @@ enum Out {
 struct Conn {
     out: mpsc::Sender<Out>,
     subs: Arc<Mutex<HashMap<u64, JoinHandle<()>>>>,
+    /// Clients that asked to size windows through this connection: they
+    /// give up ownership when it closes.
+    sizers: Arc<Mutex<std::collections::HashSet<u64>>>,
     /// The `tmux.watch` task, once this connection asked for one.
     watch: Arc<Mutex<Option<JoinHandle<()>>>>,
     next_sub: Arc<AtomicU64>,
@@ -108,6 +111,7 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         out,
         subs: Arc::default(),
         watch: Arc::default(),
+        sizers: Arc::default(),
         next_sub: Arc::new(AtomicU64::new(1)),
         events: Arc::new(AtomicU64::new(1)),
     };
@@ -139,6 +143,11 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                         return;
                     }
                     let watch = req.method == api::method::TMUX_WATCH;
+                    if req.method == api::method::TMUX_SIZE_WINDOW
+                        && let Ok(p) = api::SizeWindow::decode(req.payload.as_slice())
+                    {
+                        conn.sizers.lock().await.insert(p.client);
+                    }
                     let response = if req.method == api::method::TERMINAL_UNSUBSCRIBE {
                         unsubscribe(&conn, req).await
                     } else {
@@ -174,6 +183,8 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
     if let Some(task) = conn.watch.lock().await.take() {
         task.abort();
     }
+    let sizers: Vec<u64> = conn.sizers.lock().await.drain().collect();
+    crate::service::release_sizing(&state, &sizers).await;
     drop(conn);
     drop(service);
     let _ = writer.await;

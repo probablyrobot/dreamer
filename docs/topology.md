@@ -34,6 +34,35 @@ daemon never waits on a watcher.
 There is one watch per connection; a second `tmux.watch` only returns the
 current topology. The watch ends with the connection.
 
+## Window size
+
+tmux is authoritative for cell geometry. Each tmux window takes its size
+from at most one Dreamer client, its **sizing owner** (spec 11.8):
+- **Asking.** `tmux.size_window {window, cols, rows, client}` asks for a
+  window's size. The first client to ask owns it. The daemon applies the
+  owner's requests with `refresh-client -C @WINDOW:COLSxROWS` on its control
+  client. A request from any other client is answered as a follower
+  (`owner: false`) and changes nothing.
+- **When clients ask.** Clients ask only when their own view changes size
+  or shows another window, never in reaction to a topology change. The
+  daemon never re-applies a size by itself. That is why two desktops of
+  different sizes cannot make a window oscillate.
+- **Handover.** When the owner's connection closes (or it asks with
+  `release`), the most recent other requester becomes the owner, and its
+  last request is applied once.
+- **Leaving.** When the last owner leaves, the window keeps the last
+  applied size for Dreamer's control client. The daemon does not reset it.
+- **Your tmux options are never changed.** `window-size` decides how
+  Dreamer's control-client size combines with other clients'. With the
+  default `latest`, a normal tmux client you are typing in wins, and
+  Dreamer does not fight it. With `largest` or `smallest`, Dreamer's size
+  is one of the sizes compared. With `manual`, nothing changes size
+  automatically.
+
+The workspace measures its pane area in cells when it paints. It asks for
+that size for the window it shows, once the area has been still for
+150 ms.
+
 ## Evidence
 
 `crates/server/tests/topology.rs`:
@@ -44,6 +73,17 @@ current topology. The watch ends with the connection.
 - `a_burst_of_changes_coalesces_to_the_final_state` makes 30 quick renames.
   Fewer than 30 events arrive, the last carries the final name, and
   nothing older follows.
+
+- `one_client_owns_a_window_s_size_and_ownership_passes_on_disconnect`
+  sets `window-size latest` on its isolated tmux. It checks that:
+  - the first client owns the window and gets its size;
+  - a second client with another size is a follower;
+  - the size holds over time;
+  - another tmux client attached at 70x20 makes the window settle (at
+    70x20) and stay put;
+  - when the owner disconnects, the follower's last size is applied.
+- The workspace smoke requires tmux to size the shown window to the
+  workspace's area when the display refreshes.
 
 Writing that test found that windows always reported `zoomed: false`. The
 inventory now reads tmux's `window_zoomed_flag`.

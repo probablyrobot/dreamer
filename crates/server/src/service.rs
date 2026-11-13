@@ -71,6 +71,9 @@ pub struct State {
     /// The latest topology and its revision, for `tmux.watch` connections.
     /// A watch channel: a slow watcher only ever sees the newest.
     pub topology: tokio::sync::watch::Sender<Option<Arc<api::TopologyUpdate>>>,
+    /// Who owns each tmux window's size, and every client's latest request
+    /// (most recent last), so ownership can pass on disconnect.
+    pub sizing: Mutex<std::collections::HashMap<u32, Sizing>>,
     /// Pastes arriving in parts, by (pane, paste id), until the last part.
     pub pastes: Mutex<std::collections::HashMap<(u32, u64), Vec<u8>>>,
     /// Connection epochs: each new control connection gets the next one.
@@ -225,6 +228,42 @@ async fn reconcile(
     }
 }
 
+/// A tmux window's sizing: its owner and the latest request per client.
+#[derive(Debug, Default)]
+pub struct Sizing {
+    pub owner: Option<u64>,
+    /// (client, cols, rows), most recent last.
+    pub requests: Vec<(u64, u16, u16)>,
+}
+
+/// Clients whose connection closed give up the windows they own; the most
+/// recent other requester takes over and its size is applied once.
+pub async fn release_sizing(state: &State, clients: &[u64]) {
+    if clients.is_empty() {
+        return;
+    }
+    let mut apply = Vec::new();
+    {
+        let mut sizing = state.sizing.lock().await;
+        for (window, s) in sizing.iter_mut() {
+            s.requests.retain(|(c, _, _)| !clients.contains(c));
+            if s.owner.is_some_and(|o| clients.contains(&o)) {
+                s.owner = s.requests.last().map(|(c, _, _)| *c);
+                if let Some((_, cols, rows)) = s.requests.last() {
+                    apply.push((*window, *cols, *rows));
+                }
+            }
+        }
+        sizing.retain(|_, s| s.owner.is_some());
+    }
+    let guard = state.endpoint.lock().await;
+    let Some(ep) = guard.as_ref() else { return };
+    for (window, cols, rows) in apply {
+        let _ = tmux_backend::ops::size_window(&ep.conn, domain::TmuxWindowId(window), cols, rows)
+            .await;
+    }
+}
+
 /// Publish the endpoint's topology to watchers if it changed.
 pub fn publish_topology(state: &State, ep: &Endpoint) {
     let topology = workspace_host::topology(&ep.name, &ep.tracker);
@@ -338,6 +377,73 @@ impl api::Service for DaemonService {
             .map_err(|e| unavailable(format!("cannot read tmux: {e}")))?;
         publish_topology(&self.0, ep);
         Ok(workspace_host::topology(&ep.name, &ep.tracker))
+    }
+
+    async fn tmux_size_window(&self, p: api::SizeWindow) -> Result<api::SizeResult, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        let mut sizing = self.0.sizing.lock().await;
+        if p.release {
+            let s = sizing.entry(p.window).or_default();
+            s.requests.retain(|(c, _, _)| *c != p.client);
+            let was_owner = s.owner == Some(p.client);
+            drop(sizing);
+            if was_owner {
+                // Hand over as if this client had disconnected.
+                let mut sizing = self.0.sizing.lock().await;
+                if let Some(s) = sizing.get_mut(&p.window) {
+                    s.owner = None;
+                }
+                drop(sizing);
+                release_sizing(&self.0, &[p.client]).await;
+            }
+            let owner = self
+                .0
+                .sizing
+                .lock()
+                .await
+                .get(&p.window)
+                .and_then(|s| s.owner);
+            return Ok(api::SizeResult {
+                owner: false,
+                applied: false,
+                owner_client: owner,
+            });
+        }
+        let (cols, rows) = match (u16::try_from(p.cols), u16::try_from(p.rows)) {
+            (Ok(c), Ok(r)) if (2..=10_000).contains(&c) && (2..=10_000).contains(&r) => (c, r),
+            _ => {
+                return Err(RpcError::new(
+                    code::INVALID_PARAMS,
+                    format!("{}x{} is not a usable window size", p.cols, p.rows),
+                ));
+            }
+        };
+        let s = sizing.entry(p.window).or_default();
+        s.requests.retain(|(c, _, _)| *c != p.client);
+        s.requests.push((p.client, cols, rows));
+        let owner = *s.owner.get_or_insert(p.client);
+        drop(sizing);
+        if owner != p.client {
+            return Ok(api::SizeResult {
+                owner: false,
+                applied: false,
+                owner_client: Some(owner),
+            });
+        }
+        let guard = self.0.endpoint().await?;
+        let ep = guard
+            .as_ref()
+            .ok_or_else(|| unavailable("endpoint not connected".into()))?;
+        tmux_backend::ops::size_window(&ep.conn, domain::TmuxWindowId(p.window), cols, rows)
+            .await
+            .map_err(|e| {
+                RpcError::new(code::INVALID_PARAMS, tmux_backend::ops::failure_message(&e))
+            })?;
+        Ok(api::SizeResult {
+            owner: true,
+            applied: true,
+            owner_client: Some(owner),
+        })
     }
 
     async fn tmux_watch(&self, p: api::TopologyParams) -> Result<api::TopologyUpdate, RpcError> {

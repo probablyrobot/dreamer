@@ -113,6 +113,9 @@ impl Service for Fixed {
     async fn tmux_topology(&self, _: api::TopologyParams) -> Result<api::Topology, RpcError> {
         Err(RpcError::new(api::code::UNAVAILABLE, "test"))
     }
+    async fn tmux_size_window(&self, _: api::SizeWindow) -> Result<api::SizeResult, RpcError> {
+        Err(RpcError::new(api::code::UNAVAILABLE, "test"))
+    }
     async fn tmux_watch(&self, _: api::TopologyParams) -> Result<api::TopologyUpdate, RpcError> {
         Err(RpcError::new(api::code::UNAVAILABLE, "test"))
     }

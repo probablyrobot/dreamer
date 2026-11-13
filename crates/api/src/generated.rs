@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 9;
+pub const PROTOCOL_MINOR: u32 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -646,6 +646,42 @@ pub struct Topology {
     pub windows: Vec<Window>,
     #[prost(message, repeated, tag = "4")]
     pub panes: Vec<Pane>,
+}
+
+/// Ask for a tmux window's size in cells. Applied only for the window's sizing owner: the first client to ask, until it disconnects or releases the window. Send it when your own window changes size, never in reaction to a topology change.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SizeWindow {
+    #[prost(uint32, tag = "1")]
+    pub window: u32,
+    #[prost(uint32, tag = "2")]
+    pub cols: u32,
+    #[prost(uint32, tag = "3")]
+    pub rows: u32,
+    /// The client's id (as in TerminalSubscribe).
+    #[prost(uint64, tag = "4")]
+    pub client: u64,
+    /// Give up ownership instead (cols and rows are ignored).
+    #[prost(bool, tag = "5")]
+    pub release: bool,
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SizeResult {
+    /// The asking client owns the window's size.
+    #[prost(bool, tag = "1")]
+    pub owner: bool,
+    /// The size was sent to tmux.
+    #[prost(bool, tag = "2")]
+    pub applied: bool,
+    /// The current owner, if any.
+    #[prost(uint64, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_client: Option<u64>,
 }
 
 /// A topology with its revision. After tmux.watch, the connection gets one as a `tmux.topology` event whenever the topology changes (including changes another tmux client made), coalesced to the latest.
@@ -1300,6 +1336,7 @@ pub mod method {
     pub const DAEMON_STATUS: &str = "daemon.status";
     pub const DAEMON_SHUTDOWN: &str = "daemon.shutdown";
     pub const TMUX_TOPOLOGY: &str = "tmux.topology";
+    pub const TMUX_SIZE_WINDOW: &str = "tmux.size_window";
     pub const TMUX_WATCH: &str = "tmux.watch";
     pub const ACTIONS_SUBMIT: &str = "actions.submit";
     pub const ACTIONS_GET: &str = "actions.get";
@@ -1349,6 +1386,13 @@ pub const METHODS: &[MethodInfo] = &[
         result: "Topology",
         mutation: false,
         doc: "Sessions, windows, and panes of one endpoint.",
+    },
+    MethodInfo {
+        name: "tmux.size_window",
+        params: "SizeWindow",
+        result: "SizeResult",
+        mutation: true,
+        doc: "Size a tmux window for the client that owns its size (see SizeWindow).",
     },
     MethodInfo {
         name: "tmux.watch",
@@ -1429,6 +1473,7 @@ pub enum Request {
     DaemonStatus(Empty),
     DaemonShutdown(Empty),
     TmuxTopology(TopologyParams),
+    TmuxSizeWindow(SizeWindow),
     TmuxWatch(TopologyParams),
     ActionsSubmit(SubmitAction),
     ActionsGet(ActionQuery),
@@ -1448,6 +1493,7 @@ impl Request {
             Self::DaemonStatus(_) => "daemon.status",
             Self::DaemonShutdown(_) => "daemon.shutdown",
             Self::TmuxTopology(_) => "tmux.topology",
+            Self::TmuxSizeWindow(_) => "tmux.size_window",
             Self::TmuxWatch(_) => "tmux.watch",
             Self::ActionsSubmit(_) => "actions.submit",
             Self::ActionsGet(_) => "actions.get",
@@ -1468,6 +1514,7 @@ impl Request {
             Self::DaemonStatus(v) => ::prost::Message::encode_to_vec(v),
             Self::DaemonShutdown(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
+            Self::TmuxSizeWindow(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsGet(v) => ::prost::Message::encode_to_vec(v),
@@ -1487,6 +1534,7 @@ impl Request {
             "daemon.status" => Ok(Self::DaemonStatus(::prost::Message::decode(bytes)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(::prost::Message::decode(bytes)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
+            "tmux.size_window" => Ok(Self::TmuxSizeWindow(::prost::Message::decode(bytes)?)),
             "tmux.watch" => Ok(Self::TmuxWatch(::prost::Message::decode(bytes)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
             "actions.get" => Ok(Self::ActionsGet(::prost::Message::decode(bytes)?)),
@@ -1509,6 +1557,7 @@ impl Request {
             Self::DaemonStatus(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DaemonShutdown(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TmuxSizeWindow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsGet(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -1528,6 +1577,7 @@ impl Request {
             "daemon.status" => Ok(Self::DaemonStatus(serde_json::from_value(value)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(serde_json::from_value(value)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
+            "tmux.size_window" => Ok(Self::TmuxSizeWindow(serde_json::from_value(value)?)),
             "tmux.watch" => Ok(Self::TmuxWatch(serde_json::from_value(value)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
             "actions.get" => Ok(Self::ActionsGet(serde_json::from_value(value)?)),
@@ -1550,6 +1600,7 @@ pub enum Response {
     DaemonStatus(DaemonStatus),
     DaemonShutdown(ShutdownResult),
     TmuxTopology(Topology),
+    TmuxSizeWindow(SizeResult),
     TmuxWatch(TopologyUpdate),
     ActionsSubmit(ActionRecord),
     ActionsGet(ActionRecord),
@@ -1569,6 +1620,7 @@ impl Response {
             Self::DaemonStatus(_) => "daemon.status",
             Self::DaemonShutdown(_) => "daemon.shutdown",
             Self::TmuxTopology(_) => "tmux.topology",
+            Self::TmuxSizeWindow(_) => "tmux.size_window",
             Self::TmuxWatch(_) => "tmux.watch",
             Self::ActionsSubmit(_) => "actions.submit",
             Self::ActionsGet(_) => "actions.get",
@@ -1589,6 +1641,7 @@ impl Response {
             Self::DaemonStatus(v) => ::prost::Message::encode_to_vec(v),
             Self::DaemonShutdown(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
+            Self::TmuxSizeWindow(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsGet(v) => ::prost::Message::encode_to_vec(v),
@@ -1608,6 +1661,7 @@ impl Response {
             "daemon.status" => Ok(Self::DaemonStatus(::prost::Message::decode(bytes)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(::prost::Message::decode(bytes)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
+            "tmux.size_window" => Ok(Self::TmuxSizeWindow(::prost::Message::decode(bytes)?)),
             "tmux.watch" => Ok(Self::TmuxWatch(::prost::Message::decode(bytes)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
             "actions.get" => Ok(Self::ActionsGet(::prost::Message::decode(bytes)?)),
@@ -1630,6 +1684,7 @@ impl Response {
             Self::DaemonStatus(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DaemonShutdown(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TmuxSizeWindow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsGet(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -1649,6 +1704,7 @@ impl Response {
             "daemon.status" => Ok(Self::DaemonStatus(serde_json::from_value(value)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(serde_json::from_value(value)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
+            "tmux.size_window" => Ok(Self::TmuxSizeWindow(serde_json::from_value(value)?)),
             "tmux.watch" => Ok(Self::TmuxWatch(serde_json::from_value(value)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
             "actions.get" => Ok(Self::ActionsGet(serde_json::from_value(value)?)),
@@ -1687,6 +1743,11 @@ pub trait Service: Sync {
         &self,
         params: TopologyParams,
     ) -> impl ::core::future::Future<Output = Result<Topology, RpcError>> + Send;
+    /// Size a tmux window for the client that owns its size (see SizeWindow).
+    fn tmux_size_window(
+        &self,
+        params: SizeWindow,
+    ) -> impl ::core::future::Future<Output = Result<SizeResult, RpcError>> + Send;
     /// The current topology; afterwards `tmux.topology` events follow every change.
     fn tmux_watch(
         &self,
@@ -1746,6 +1807,10 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .await
             .map(Response::DaemonShutdown),
         Request::TmuxTopology(p) => service.tmux_topology(p).await.map(Response::TmuxTopology),
+        Request::TmuxSizeWindow(p) => service
+            .tmux_size_window(p)
+            .await
+            .map(Response::TmuxSizeWindow),
         Request::TmuxWatch(p) => service.tmux_watch(p).await.map(Response::TmuxWatch),
         Request::ActionsSubmit(p) => service.actions_submit(p).await.map(Response::ActionsSubmit),
         Request::ActionsGet(p) => service.actions_get(p).await.map(Response::ActionsGet),

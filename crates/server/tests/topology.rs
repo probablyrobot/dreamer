@@ -241,3 +241,113 @@ async fn a_burst_of_changes_coalesces_to_the_final_state() {
     );
     assert!(events < N, "{events} events for {N} renames: not coalesced");
 }
+
+async fn size(c: &Client, window: u32, client: u64, cols: u32, rows: u32) -> api::SizeResult {
+    match c
+        .call(Request::TmuxSizeWindow(api::SizeWindow {
+            window,
+            cols,
+            rows,
+            client,
+            ..api::SizeWindow::default()
+        }))
+        .await
+        .expect("size")
+    {
+        Response::TmuxSizeWindow(r) => r,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The window's size as tmux reports it.
+fn window_size(s: &Setup) -> (u32, u32) {
+    let out = s
+        .tmux
+        .run_checked(&[
+            "display-message",
+            "-p",
+            "-t",
+            "main:0",
+            "#{window_width}x#{window_height}",
+        ])
+        .expect("size");
+    let (w, h) = out.trim().split_once('x').expect("WxH");
+    (w.parse().expect("w"), h.parse().expect("h"))
+}
+
+async fn settle_to(s: &Setup, want: (u32, u32)) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while window_size(s) != want {
+        assert!(
+            Instant::now() < deadline,
+            "window never became {want:?}: {:?}",
+            window_size(s)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn one_client_owns_a_window_s_size_and_ownership_passes_on_disconnect() {
+    let s = Setup::new();
+    // The default sizing rule of a normal tmux setup.
+    s.tmux(&["set-option", "-g", "window-size", "latest"]);
+    let mut a = s.client().await;
+    let b = s.client().await;
+    let Response::TmuxWatch(t) = a
+        .call(Request::TmuxWatch(api::TopologyParams::default()))
+        .await
+        .expect("watch")
+    else {
+        panic!("watch")
+    };
+    let window = t.topology.expect("topology").windows[0].id;
+    drop(a.pushed());
+
+    let r = size(&a, window, 1, 110, 33).await;
+    assert!(r.owner && r.applied, "{r:?}");
+    settle_to(&s, (110, 33)).await;
+
+    // Another GUI of a different size is a follower: nothing changes.
+    let r = size(&b, window, 2, 80, 24).await;
+    assert!(!r.owner && !r.applied && r.owner_client == Some(1), "{r:?}");
+
+    // No oscillation: the size holds while nothing asks for a change.
+    for _ in 0..20 {
+        assert_eq!(window_size(&s), (110, 33));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Another tmux client of its own size attaches and is active. tmux's
+    // `window-size latest` decides; Dreamer never answers by re-sizing, so
+    // the window settles and then stays put.
+    let mut other = std::process::Command::new(tmux_program())
+        .args(["-L", s.tmux.socket(), "-C", "attach", "-t", "main"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("another tmux client");
+    {
+        use std::io::Write;
+        let stdin = other.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "refresh-client -C 70x20").expect("size the other client");
+        writeln!(stdin, "select-window -t main:0").expect("be active");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let settled = window_size(&s);
+    for _ in 0..30 {
+        assert_eq!(window_size(&s), settled, "the window size oscillates");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    println!("sizing: with another tmux client at 70x20 the window settled at {settled:?}");
+    let _ = other.kill();
+    let _ = other.wait();
+
+    // The owner goes away: the follower takes over with its last request.
+    drop(a);
+    settle_to(&s, (80, 24)).await;
+    let r = size(&b, window, 2, 90, 28).await;
+    assert!(r.owner && r.applied, "{r:?}");
+    settle_to(&s, (90, 28)).await;
+}

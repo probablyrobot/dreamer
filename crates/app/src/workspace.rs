@@ -36,6 +36,11 @@ pub(crate) struct Workspace {
     focused: Option<u32>,
     pub(crate) focus: FocusHandle,
     title: String,
+    /// The pane area in cells as last painted, the size last requested for
+    /// a tmux window, and whether a (debounced) request is pending.
+    area: Option<(u32, u32)>,
+    requested: Option<(u32, u32, u32)>,
+    size_pending: bool,
 }
 
 impl Workspace {
@@ -53,7 +58,46 @@ impl Workspace {
             focused: None,
             focus: cx.focus_handle(),
             title: String::new(),
+            area: None,
+            requested: None,
+            size_pending: false,
         }
+    }
+
+    /// The pane area was painted at `cols` x `rows` cells. When that, or
+    /// the window shown, differs from the last request, ask tmux for it
+    /// after the size has been still for a moment. Never in reaction to a
+    /// topology change: only this view's own size decides (spec 11.8).
+    fn area_painted(&mut self, cols: u32, rows: u32, cx: &mut Context<Self>) {
+        self.area = Some((cols, rows));
+        if self.size_pending {
+            return;
+        }
+        let Some(window) = self.active_window().map(|w| w.id) else {
+            return;
+        };
+        if self.requested == Some((window, cols, rows)) {
+            return;
+        }
+        self.size_pending = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(150))
+                .await;
+            let _ = this.update(cx, |ws, _| {
+                ws.size_pending = false;
+                let (Some((cols, rows)), Some(window)) =
+                    (ws.area, ws.active_window().map(|w| w.id))
+                else {
+                    return;
+                };
+                if ws.requested != Some((window, cols, rows)) {
+                    ws.requested = Some((window, cols, rows));
+                    ws.topology.size_window(window, cols, rows);
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn pane_ids(&self) -> Vec<u32> {
@@ -318,7 +362,29 @@ impl Render for Workspace {
                     // tmux leaves one cell between panes: the divider.
                     .bg(rgb(0x1f232a))
                     .children(panes)
-                    .children(notice),
+                    .children(notice)
+                    // Measures the pane area for window sizing.
+                    .child({
+                        let entity = entity.clone();
+                        gpui::canvas(
+                            |_, _, _| (),
+                            move |bounds, _, _, cx| {
+                                let cols =
+                                    (f32::from(bounds.size.width) / f32::from(m.width)).floor();
+                                let rows =
+                                    (f32::from(bounds.size.height) / f32::from(m.height)).floor();
+                                if cols >= 2.0 && rows >= 2.0 {
+                                    entity.update(cx, |ws, cx| {
+                                        ws.area_painted(cols as u32, rows as u32, cx)
+                                    });
+                                }
+                            },
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                    }),
             )
     }
 }
@@ -547,6 +613,25 @@ mod smoke {
             );
             return false;
         }
+        // This window owns the tmux window's size: tmux follows its area.
+        wait_for(
+            any,
+            ws,
+            cx,
+            "the tmux window sized to the workspace",
+            |w, _| {
+                let shown = w.active_window().map(|x| (x.width, x.height));
+                w.area.is_some() && shown == w.area
+            },
+        )
+        .await;
+        let area = read(any, ws, cx, |w, _| w.area)
+            .flatten()
+            .unwrap_or_default();
+        println!(
+            "smoke: tmux sized the window to the workspace's {}x{} cells",
+            area.0, area.1
+        );
         let Some((target, grid)) = read(any, ws, cx, |w, cx| {
             let target = w.pane_ids().into_iter().find(|id| Some(*id) != w.focused)?;
             Some((target, w.pane_shell(target)?.read(cx).grid?))

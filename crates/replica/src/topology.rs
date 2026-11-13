@@ -21,11 +21,20 @@ pub enum TopologyStatus {
     Reconnecting(String),
 }
 
+/// What the view asks the daemon for.
+#[derive(Debug)]
+enum Command {
+    Act(api::action::Kind),
+    Size { window: u32, cols: u32, rows: u32 },
+}
+
 #[derive(Debug)]
 pub struct TopologyFeed {
     latest: Arc<Mutex<Option<api::TopologyUpdate>>>,
     status: Arc<Mutex<TopologyStatus>>,
-    actions: tokio::sync::mpsc::UnboundedSender<api::action::Kind>,
+    actions: tokio::sync::mpsc::UnboundedSender<Command>,
+    /// This view's client id, for window sizing ownership.
+    pub client: u64,
     /// One signal means "a newer topology is waiting".
     pub wake: async_channel::Receiver<()>,
 }
@@ -38,10 +47,17 @@ impl TopologyFeed {
         let status = Arc::new(Mutex::new(TopologyStatus::Connecting));
         let (wake_tx, wake) = async_channel::bounded(1);
         let (actions, actions_rx) = tokio::sync::mpsc::unbounded_channel();
+        let client = {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos() as u64);
+            (u64::from(std::process::id()) << 32) ^ nanos ^ 0x5157
+        };
         let owner = Owner {
             latest: latest.clone(),
             status: status.clone(),
             wake: wake_tx,
+            client,
         };
         std::thread::Builder::new()
             .name("dreamer-topology".into())
@@ -59,6 +75,7 @@ impl TopologyFeed {
             latest,
             status,
             actions,
+            client,
             wake,
         })
     }
@@ -78,7 +95,14 @@ impl TopologyFeed {
     /// Ask the daemon to run an action (for example select a window). Its
     /// result shows up as a newer topology.
     pub fn act(&self, action: api::action::Kind) {
-        let _ = self.actions.send(action);
+        let _ = self.actions.send(Command::Act(action));
+    }
+
+    /// Ask for a tmux window's size in cells. Applied only while this view
+    /// owns the window's size; call it when the view's own size changes,
+    /// never in reaction to a topology change.
+    pub fn size_window(&self, window: u32, cols: u32, rows: u32) {
+        let _ = self.actions.send(Command::Size { window, cols, rows });
     }
 }
 
@@ -86,6 +110,7 @@ struct Owner {
     latest: Arc<Mutex<Option<api::TopologyUpdate>>>,
     status: Arc<Mutex<TopologyStatus>>,
     wake: async_channel::Sender<()>,
+    client: u64,
 }
 
 impl Owner {
@@ -111,7 +136,7 @@ impl Owner {
         self,
         socket: PathBuf,
         launch: Option<client::Launch>,
-        mut actions: tokio::sync::mpsc::UnboundedReceiver<api::action::Kind>,
+        mut actions: tokio::sync::mpsc::UnboundedReceiver<Command>,
     ) {
         if let Some(l) = &launch
             && let Err(e) = client::ensure_running(l, "gui").await
@@ -138,7 +163,7 @@ impl Owner {
     async fn follow(
         &self,
         socket: &std::path::Path,
-        actions: &mut tokio::sync::mpsc::UnboundedReceiver<api::action::Kind>,
+        actions: &mut tokio::sync::mpsc::UnboundedReceiver<Command>,
         seen: &mut u64,
     ) -> Result<(), String> {
         let mut c = client::Client::connect(socket, "gui")
@@ -170,13 +195,24 @@ impl Owner {
                     Some(_) => {}
                 },
                 a = actions.recv() => match a {
-                    Some(kind) => {
+                    Some(Command::Act(kind)) => {
                         let submit = api::SubmitAction {
                             action: Some(api::Action { kind: Some(kind) }),
                             ..api::SubmitAction::default()
                         };
                         // The outcome arrives as a topology change.
                         let _ = c.call(Request::ActionsSubmit(submit)).await;
+                    }
+                    Some(Command::Size { window, cols, rows }) => {
+                        let _ = c
+                            .call(Request::TmuxSizeWindow(api::SizeWindow {
+                                window,
+                                cols,
+                                rows,
+                                client: self.client,
+                                ..api::SizeWindow::default()
+                            }))
+                            .await;
                     }
                     None => return Ok(()),
                 },
