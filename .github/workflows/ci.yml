@@ -92,6 +92,36 @@ jobs:
           if-no-files-found: ignore
       - run: cargo test --workspace --locked
 
+  remote-acceptance:
+    name: remote acceptance (real OpenSSH, linux x86-64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install OpenSSH server and tmux build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends openssh-server libevent-dev libncurses-dev bison
+          # sshd checks for its privilege separation directory even when
+          # it runs unprivileged.
+          sudo mkdir -p /run/sshd
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-remote-acceptance
+      - name: Cache pinned native dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dreamer/deps
+          key: deps-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/baseline.toml') }}
+      - run: cargo xtask deps prepare --locked
+      - name: Build the pinned tmux baseline
+        run: echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
+      # An unprivileged sshd on a loopback port with generated keys; the
+      # runner's own SSH setup is not used.
+      - run: cargo xtask remote-acceptance
+
   linux-aarch64:
     name: headless cross-build (linux arm64, emulated tests)
     runs-on: ubuntu-24.04

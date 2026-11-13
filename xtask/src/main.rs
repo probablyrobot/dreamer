@@ -1,5 +1,6 @@
 //! Repository tasks: `cargo xtask <command>`.
 
+mod acceptance;
 mod api;
 mod bindings;
 mod color_schemes;
@@ -33,6 +34,7 @@ commands:
                                build, ad hoc sign, and zip the macOS app bundle
   policy                       check repository rules (workflow runners, pinned actions)
   schemes [--check]            generate the terminal color scheme table from the vendored files
+  remote-acceptance            section 18.2 remote cases through a private, unprivileged sshd
   scenes [NAME]                open the design review's reference scenes in both skins, to capture
   gate linux-desktop [--allow-missing wayland|x11]
                                real-display smoke on a Linux desktop (second machine)
@@ -56,6 +58,7 @@ fn main() -> ExitCode {
         Some("policy") => policy::run(&args[1..]),
         Some("scenes") => scenes::run(&args[1..]),
         Some("schemes") => color_schemes::run(&args[1..]),
+        Some("remote-acceptance") => acceptance::run(&args[1..]),
         Some("package") => package::run(&args[1..]),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");

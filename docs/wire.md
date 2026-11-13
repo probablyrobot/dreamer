@@ -65,7 +65,7 @@ client can tell the user exactly which daemon to restart.
 
 | Limit | Default | Enforced |
 | --- | --- | --- |
-| `max_frame` | 1 MiB | A frame header that claims more is a protocol error, raised before any memory is reserved |
+| `max_frame` | 1 MiB | A frame header that claims more is a protocol error, raised before any memory is reserved. A reply that would not fit is sent as an error naming its size instead (ask for less, for example fewer history lines), and the connection stays up |
 | `max_message` | 64 MiB | Reassembled bulk data. Checked before each chunk is appended |
 | `bulk_chunk` | 64 KiB | Size of the pieces bulk messages are cut into |
 | `max_priority_queued` | 8 MiB | Outgoing priority bytes; beyond it a send fails with `Full` |

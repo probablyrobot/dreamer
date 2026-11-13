@@ -772,3 +772,53 @@ async fn the_configured_color_scheme_reaches_a_view_through_the_checkpoint() {
     );
     let _ = std::fs::remove_dir_all(&config);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_too_large_for_a_frame_is_an_error_and_the_connection_lives_on() {
+    let s = Setup::new(&[]);
+    let c = s.client().await;
+    // Full-width lines of two-byte characters: the retained history alone
+    // is more than one frame.
+    s.type_line(
+        "awk 'BEGIN{for(i=0;i<12000;i++){s=\"\";for(j=0;j<99;j++)s=s\"\\303\\251\";print s}; print \"DONE-BIG\"}'",
+    );
+    s.wait_tmux("DONE-BIG");
+    // Wait until the mirror holds it too.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let screen = c
+            .call(Request::TerminalRead(api::ReadParams {
+                pane: 0,
+                history: Some(0),
+                endpoint: None,
+            }))
+            .await;
+        if let Ok(Response::TerminalRead(t)) = screen
+            && t.lines.iter().any(|l| l.trim_end() == "DONE-BIG")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the mirror never caught up");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let big = tokio::time::timeout(
+        Duration::from_secs(20),
+        c.call(Request::TerminalRead(api::ReadParams {
+            pane: 0,
+            history: Some(150_000),
+            endpoint: None,
+        })),
+    )
+    .await
+    .expect("a reply, not a hang");
+    let e = big.expect_err("too large for one frame");
+    assert!(e.to_string().contains("frame limit"), "{e}");
+    // The same connection still answers.
+    let Response::DaemonVersion(_) = c
+        .call(Request::DaemonVersion(api::Empty {}))
+        .await
+        .expect("still connected")
+    else {
+        panic!("version");
+    };
+}

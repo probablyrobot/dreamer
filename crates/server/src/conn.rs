@@ -58,6 +58,9 @@ struct Conn {
     /// The `tmux.watch` task, once this connection asked for one.
     watch: Arc<Mutex<Option<JoinHandle<()>>>>,
     next_sub: Arc<AtomicU64>,
+    /// The negotiated frame limit: a reply larger than this is refused
+    /// with an error instead of being dropped.
+    max_frame: u32,
     events: Arc<AtomicU64>,
 }
 
@@ -113,6 +116,7 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         watch: Arc::default(),
         sizers: Arc::default(),
         next_sub: Arc::new(AtomicU64::new(1)),
+        max_frame: negotiated.limits.max_frame,
         events: Arc::new(AtomicU64::new(1)),
     };
     let service = DaemonService(state.clone());
@@ -161,6 +165,7 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                     } else {
                         answer(&service, req).await
                     };
+                    let response = fit(response, conn.max_frame);
                     if watch && response.error_code.is_none() {
                         follow_topology(&state, &conn, &response).await;
                     }
@@ -252,6 +257,26 @@ pub async fn answer(service: &DaemonService, req: wire::Request) -> wire::Respon
         },
         Err(e) => failure(req.id, e),
     }
+}
+
+/// A reply that would not fit in one frame becomes an error saying so.
+/// Sending it would fail in the writer and end the connection, leaving
+/// the caller waiting.
+fn fit(r: wire::Response, max_frame: u32) -> wire::Response {
+    let len = r.encoded_len();
+    if len + wire::HEADER_LEN <= max_frame as usize {
+        return r;
+    }
+    failure(
+        r.id,
+        RpcError::new(
+            code::PRECONDITION,
+            format!(
+                "the result is {len} bytes, more than the {max_frame}-byte frame limit; \
+                 ask for less (for example, fewer history lines)"
+            ),
+        ),
+    )
 }
 
 fn failure(id: u64, e: RpcError) -> wire::Response {
