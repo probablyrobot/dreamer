@@ -273,8 +273,9 @@ async fn remote_acceptance_through_real_openssh() {
 
     // Input sent while the link is down fails and is never replayed.
     cut_ssh(&home);
-    let ghost = c
-        .call(Request::HostsCall(api::HostCall {
+    let ghost = tokio::time::timeout(
+        Duration::from_secs(30),
+        c.call(Request::HostsCall(api::HostCall {
             name: "accept".into(),
             method: "terminal.input".into(),
             payload: Request::TerminalInput(api::TerminalInput {
@@ -285,8 +286,10 @@ async fn remote_acceptance_through_real_openssh() {
                 ..api::TerminalInput::default()
             })
             .encode(),
-        }))
-        .await;
+        })),
+    )
+    .await
+    .expect("a call while the link is down returns within 30 s");
     wait_live(&c, "after the second cut").await;
     type_far("echo three-$((3+3))");
     pump(&mut rx, &mut replica, &mut seen, "three-6", |r, _| {
