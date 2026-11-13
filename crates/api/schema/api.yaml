@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 16 }
+version: { major: 1, minor: 17 }
 package: dreamer.v1
 
 types:
@@ -615,6 +615,45 @@ types:
       - { n: 1, name: name, type: string }
       - { n: 2, name: subscribe, type: TerminalSubscribe }
 
+  - message: InstallPlanParams
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: artifacts, type: string, optional: true, doc: "Directory of server archives on this machine; default DREAMER_SERVER_ARTIFACTS, else share/dreamer/server beside this daemon." }
+
+  - message: InstallPlan
+    doc: >-
+      What hosts.install would do, for review: found by probing the host
+      through SSH. Installing requires this plan's id, so nothing different
+      from what was reviewed can be installed.
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: destination, type: string }
+      - { n: 3, name: remote_os, type: string }
+      - { n: 4, name: remote_arch, type: string }
+      - { n: 5, name: target, type: string, doc: "The matching Rust target, such as x86_64-unknown-linux-gnu." }
+      - { n: 6, name: home, type: string }
+      - { n: 7, name: installed, type: string, optional: true, doc: "The installed server's VERSION first line, if any." }
+      - { n: 8, name: version, type: string, doc: "The version that would be installed (this daemon's own)." }
+      - { n: 9, name: archive, type: string }
+      - { n: 10, name: sha256, type: string }
+      - { n: 11, name: size, type: u64 }
+      - { n: 12, name: remote_dir, type: string }
+      - { n: 13, name: steps, type: string, repeated: true, doc: "Each change, in order, in plain words." }
+      - { n: 14, name: plan_id, type: string }
+
+  - message: InstallParams
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: artifacts, type: string, optional: true }
+      - { n: 3, name: plan_id, type: string, doc: "The id of the reviewed plan; a different plan now is refused." }
+
+  - message: InstallResult
+    fields:
+      - { n: 1, name: version, type: string }
+      - { n: 2, name: remote_dream, type: string, doc: "The installed dream, as run on the host." }
+      - { n: 3, name: previous, type: string, optional: true }
+      - { n: 4, name: check, type: string, doc: "What the installed dream --version printed on the host." }
+
   - message: HostReply
     doc: The remote daemon's result for a HostCall, as Protobuf.
     fields:
@@ -642,4 +681,6 @@ methods:
   - { method: hosts.reconnect, params: HostRef, result: HostStatus, mutation: true, doc: "Connect again now, also after a failure that is not retried automatically." }
   - { method: hosts.subscribe, params: HostSubscribe, result: Subscription, doc: "Follow a pane on a connected host; resumes from the host's journal after SSH loss. End it with terminal.unsubscribe." }
   - { method: hosts.watch, params: HostRef, result: TopologyUpdate, doc: "A host's topology; afterwards `tmux.topology` events follow every change, across reconnects. One watch (local or a host) per connection." }
+  - { method: hosts.install_plan, params: InstallPlanParams, result: InstallPlan, doc: "Probe a host over SSH and say what installing this daemon's server version there would do." }
+  - { method: hosts.install, params: InstallParams, result: InstallResult, mutation: true, doc: "Install the reviewed plan: stream the archive, verify its SHA-256 on the host, unpack into a versioned directory, switch atomically." }
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }

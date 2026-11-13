@@ -145,10 +145,13 @@ with `hosts.watch`, `hosts.subscribe`, and `hosts.call`.
   and connected host with its state: live, connecting, retrying (with the
   attempt count), the failure kind (auth, host key, …), disconnected, or
   not connected. Clicking a host connects it unless it is live and opens a
-  window on it. The list is read once a second, and only while the sidebar
+  window on it. A host that failed on authentication or its host key says
+  "click to verify": the click opens a local tmux window running
+  `dream hosts verify NAME`, where SSH asks its questions
+  ([remote.md](remote.md#first-connection)). The list is read once a second, and only while the sidebar
   is open.
-- **Palette.** "Open host…", "Reconnect host…", and "Disconnect host…"
-  take the host's name. Disconnecting closes SSH; the host's daemon, tmux,
+- **Palette.** "Open host…", "Reconnect host…", "Verify host in a
+  terminal…", and "Disconnect host…" take the host's name. Disconnecting closes SSH; the host's daemon, tmux,
   and programs keep running.
 - **Launch.** `dreamer --host NAME` opens a window on that host,
   connecting it first.

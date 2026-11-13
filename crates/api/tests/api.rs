@@ -171,6 +171,15 @@ impl Service for Fixed {
     async fn hosts_watch(&self, _: api::HostRef) -> Result<api::TopologyUpdate, RpcError> {
         Ok(api::TopologyUpdate::default())
     }
+    async fn hosts_install_plan(
+        &self,
+        _: api::InstallPlanParams,
+    ) -> Result<api::InstallPlan, RpcError> {
+        Ok(api::InstallPlan::default())
+    }
+    async fn hosts_install(&self, _: api::InstallParams) -> Result<api::InstallResult, RpcError> {
+        Ok(api::InstallResult::default())
+    }
     async fn hosts_call(&self, _: api::HostCall) -> Result<api::HostReply, RpcError> {
         Ok(api::HostReply::default())
     }

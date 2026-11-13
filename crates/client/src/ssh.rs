@@ -79,10 +79,29 @@ pub fn command(ssh_program: &str, remote: &Remote, mode: Mode) -> Result<Vec<Str
     Ok(argv)
 }
 
+/// The argv for a visible first connection: the user's own `ssh` to the
+/// destination, in a terminal, running `true`. With a terminal, SSH asks
+/// its usual questions there (an unknown host key, a passphrase), and the
+/// answers go into the user's own `known_hosts` and agent. Nothing is
+/// answered or weakened for the user.
+pub fn verify_command(ssh_program: &str, destination: &str) -> Result<Vec<String>, SshError> {
+    check_destination(destination)?;
+    Ok(vec![
+        ssh_program.to_owned(),
+        "--".into(),
+        destination.to_owned(),
+        "true".into(),
+    ])
+}
+
 /// The one string sshd gives the remote shell.
 pub fn remote_command(remote: &Remote) -> Result<String, SshError> {
-    let dream = remote.dream.as_deref().unwrap_or("dream");
-    let mut words = vec![program(dream)?];
+    // With no `dream` named, prefer a server installed by `hosts.install`,
+    // else `dream` on the remote PATH (decided by the remote `sh`).
+    let mut words = match remote.dream.as_deref() {
+        Some(dream) => vec![program(dream)?],
+        None => vec!["sh".into(), "-c".into(), quote(FIND_DREAM)?, "sh".into()],
+    };
     let mut add = |w: &str| -> Result<(), SshError> {
         words.push(quote(w)?);
         Ok(())
@@ -102,6 +121,42 @@ pub fn remote_command(remote: &Remote) -> Result<String, SshError> {
         add(p)?;
     }
     Ok(words.join(" "))
+}
+
+/// Where `hosts.install` puts the current server, relative to `$HOME`.
+pub const INSTALLED_DREAM: &str = ".local/share/dreamer/current/bin/dream";
+
+/// Run the installed `dream` if there is one, else `dream` from `PATH`,
+/// with the script's arguments.
+const FIND_DREAM: &str =
+    r#"d="$HOME/.local/share/dreamer/current/bin/dream"; [ -x "$d" ] || d=dream; exec "$d" "$@""#;
+
+/// The argv for running a fixed POSIX `script` on the host with `args`.
+/// The remote login shell sees only `sh -c '<script>' sh '<arg>'...`, the
+/// same in any shell that accepts single quotes, so the script itself is
+/// always run by `sh`. Scripts are constants in this program; arguments
+/// are quoted words, never interpolated into the script.
+pub fn script_command(
+    ssh_program: &str,
+    destination: &str,
+    script: &str,
+    args: &[&str],
+    mode: Mode,
+) -> Result<Vec<String>, SshError> {
+    check_destination(destination)?;
+    let mut words = vec!["sh".to_owned(), "-c".into(), quote(script)?, "sh".into()];
+    for a in args {
+        words.push(quote(a)?);
+    }
+    let mut argv = vec![ssh_program.to_owned()];
+    argv.extend(["-T", "-a", "-x"].map(String::from));
+    if mode == Mode::Batch {
+        argv.extend(["-o".into(), "BatchMode=yes".into()]);
+    }
+    argv.push("--".into());
+    argv.push(destination.to_owned());
+    argv.push(words.join(" "));
+    Ok(argv)
 }
 
 /// The executable word: quoted, except that a leading `~/` stays bare so
@@ -163,7 +218,7 @@ mod tests {
                 "-x",
                 "--",
                 "devbox",
-                "dream bridge --stdio"
+                r#"sh -c 'd="$HOME/.local/share/dreamer/current/bin/dream"; [ -x "$d" ] || d=dream; exec "$d" "$@"' sh bridge --stdio"#
             ]
         );
         assert_eq!(
@@ -177,9 +232,35 @@ mod tests {
                 "BatchMode=yes",
                 "--",
                 "me@devbox",
-                "dream bridge --stdio"
+                r#"sh -c 'd="$HOME/.local/share/dreamer/current/bin/dream"; [ -x "$d" ] || d=dream; exec "$d" "$@"' sh bridge --stdio"#
             ]
         );
+    }
+
+    #[test]
+    fn scripts_run_under_sh_with_quoted_arguments() {
+        assert_eq!(
+            script_command(
+                "ssh",
+                "devbox",
+                "echo \"$1\"",
+                &["a b", "it's"],
+                Mode::Batch
+            )
+            .expect("argv"),
+            [
+                "ssh",
+                "-T",
+                "-a",
+                "-x",
+                "-o",
+                "BatchMode=yes",
+                "--",
+                "devbox",
+                r#"sh -c 'echo "$1"' sh 'a b' 'it'\''s'"#
+            ]
+        );
+        assert!(script_command("ssh", "-oX", "true", &[], Mode::Batch).is_err());
     }
 
     #[test]
