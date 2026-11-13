@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! dream config-dir                      print the configuration directory
+//! dream themes                        built-in terminal color schemes, the configured one marked
 //! dream workspace list                  list workspace files and whether they are valid
 //! dream workspace check <name|path>     validate a workspace and show its plan
 //! dream workspace up <name|path> [-L socket] [--tmux PATH]
@@ -49,6 +50,7 @@ fn version_line() -> String {
 
 const USAGE: &str = "usage:
   dream config-dir
+  dream themes
   dream workspace list
   dream workspace check <name|path>
   dream workspace up <name|path> [-L socket] [--tmux PATH]
@@ -86,6 +88,7 @@ fn main() -> ExitCode {
             .map(|d| println!("{}", d.display()))
             .ok_or_else(|| "cannot determine the configuration directory (HOME unset)".into()),
         ["workspace", "list"] => list(),
+        ["themes"] => themes(),
         ["workspace", "check", target] => check(target),
         ["workspace", "up", target, rest @ ..] => up(target, rest),
         ["version"] => daemon::version(),
@@ -158,6 +161,44 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Every built-in color scheme with a swatch of its colors, the configured
+/// one marked. Swatches use 24-bit color only on a terminal.
+fn themes() -> Result<(), String> {
+    use std::io::IsTerminal as _;
+    let configured = workspace_config::load_settings()
+        .map(|s| s.terminal.theme.name)
+        .unwrap_or(terminal_core::schemes::DEFAULT.name);
+    let color = std::io::stdout().is_terminal();
+    for s in terminal_core::schemes::all() {
+        let mark = if s.name == configured { "*" } else { " " };
+        let kind = match s.appearance {
+            terminal_core::schemes::Appearance::Dark => "dark ",
+            terminal_core::schemes::Appearance::Light => "light",
+        };
+        let swatch = if color {
+            let bg = s.background;
+            let mut out = format!("\x1b[48;2;{};{};{}m ", bg.r, bg.g, bg.b);
+            for c in &s.ansi[..8] {
+                out.push_str(&format!("\x1b[38;2;{};{};{}m●", c.r, c.g, c.b));
+            }
+            let fg = s.foreground;
+            out.push_str(&format!("\x1b[38;2;{};{};{}m Aa \x1b[0m", fg.r, fg.g, fg.b));
+            out
+        } else {
+            String::new()
+        };
+        println!("{mark} {:<22} {kind} {swatch} {}", s.name, s.title);
+    }
+    println!(
+        "\nSet one with `terminal: {{theme: NAME}}` in {}; it applies when dreamerd starts \
+         (`dream shutdown` restarts it on next use; tmux keeps running).",
+        workspace_config::settings_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "dreamer.yaml".into())
+    );
+    Ok(())
 }
 
 fn resolve(target: &str) -> Result<std::path::PathBuf, String> {

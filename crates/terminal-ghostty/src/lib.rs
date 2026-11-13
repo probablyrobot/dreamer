@@ -237,6 +237,104 @@ impl Engine {
         }
     }
 
+    /// Set the terminal's default colors from a color scheme: foreground,
+    /// background, cursor, and the 256-color palette. These are canonical
+    /// state (spec 14.2): only the daemon's mirror sets them, and replicas
+    /// get them from checkpoints. Programs can still override them (OSC 4,
+    /// 10, 11, 12) until reset.
+    pub fn set_scheme(
+        &mut self,
+        scheme: &terminal_core::schemes::Scheme,
+    ) -> Result<(), EngineError> {
+        let c = |rgb: terminal_core::Rgb| GhosttyColorRgb {
+            r: rgb.r,
+            g: rgb.g,
+            b: rgb.b,
+        };
+        let fg = c(scheme.foreground);
+        let bg = c(scheme.background);
+        let cursor = scheme.cursor.map(c);
+        let palette: Vec<GhosttyColorRgb> = scheme.palette().iter().map(|p| c(*p)).collect();
+        // SAFETY: each option reads the pointed-to value during the call;
+        // the palette is exactly 256 entries.
+        unsafe {
+            use GhosttyTerminalOption::*;
+            check(
+                "set default foreground",
+                ghostty_terminal_set(
+                    self.term,
+                    GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND,
+                    (&raw const fg).cast(),
+                ),
+            )?;
+            check(
+                "set default background",
+                ghostty_terminal_set(
+                    self.term,
+                    GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND,
+                    (&raw const bg).cast(),
+                ),
+            )?;
+            check(
+                "set default cursor color",
+                ghostty_terminal_set(
+                    self.term,
+                    GHOSTTY_TERMINAL_OPT_COLOR_CURSOR,
+                    cursor
+                        .as_ref()
+                        .map_or(ptr::null(), |c| (c as *const GhosttyColorRgb).cast()),
+                ),
+            )?;
+            check(
+                "set default palette",
+                ghostty_terminal_set(
+                    self.term,
+                    GHOSTTY_TERMINAL_OPT_COLOR_PALETTE,
+                    palette.as_ptr().cast(),
+                ),
+            )?;
+        }
+        self.last = None;
+        Ok(())
+    }
+
+    /// Set the cursor a program gets when it resets the style (CSI 0 q),
+    /// which is also the style before any program sets one.
+    pub fn set_default_cursor(
+        &mut self,
+        style: terminal_core::CursorShape,
+        blink: bool,
+    ) -> Result<(), EngineError> {
+        use GhosttyCursorStyle::*;
+        let style = match style {
+            terminal_core::CursorShape::Bar => GHOSTTY_CURSOR_STYLE_BAR,
+            terminal_core::CursorShape::Underline => GHOSTTY_CURSOR_STYLE_UNDERLINE,
+            _ => GHOSTTY_CURSOR_STYLE_BLOCK,
+        };
+        // SAFETY: each option reads the pointed-to local during the call.
+        unsafe {
+            use GhosttyTerminalOption::*;
+            check(
+                "set default cursor style",
+                ghostty_terminal_set(
+                    self.term,
+                    GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE,
+                    (&raw const style).cast(),
+                ),
+            )?;
+            check(
+                "set default cursor blink",
+                ghostty_terminal_set(
+                    self.term,
+                    GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK,
+                    (&raw const blink).cast(),
+                ),
+            )?;
+        }
+        self.last = None;
+        Ok(())
+    }
+
     /// Encode the complete terminal state, including unfinished input when
     /// continuation tracking is enabled.
     pub fn snapshot(&self) -> Result<Vec<u8>, EngineError> {

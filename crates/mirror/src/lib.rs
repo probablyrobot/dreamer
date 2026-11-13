@@ -33,6 +33,28 @@ pub struct MirrorConfig {
     /// Queued messages per worker before the router waits (backpressure).
     pub worker_queue: usize,
     pub retention: Retention,
+    /// Colors and cursor every mirror starts with (canonical state).
+    pub terminal: TerminalDefaults,
+}
+
+/// A terminal's configured defaults: the color scheme and the cursor a
+/// program gets until it sets its own. Applied by the canonical mirror
+/// only; replicas get them from checkpoints.
+#[derive(Debug, Clone, Copy)]
+pub struct TerminalDefaults {
+    pub scheme: &'static terminal_ghostty::core::schemes::Scheme,
+    pub cursor: terminal_ghostty::core::CursorShape,
+    pub blink: bool,
+}
+
+impl Default for TerminalDefaults {
+    fn default() -> Self {
+        TerminalDefaults {
+            scheme: terminal_ghostty::core::schemes::DEFAULT,
+            cursor: terminal_ghostty::core::CursorShape::Block,
+            blink: false,
+        }
+    }
 }
 
 impl Default for MirrorConfig {
@@ -42,6 +64,7 @@ impl Default for MirrorConfig {
             workers: cores.clamp(1, 4),
             worker_queue: 1024,
             retention: Retention::default(),
+            terminal: TerminalDefaults::default(),
         }
     }
 }
@@ -122,7 +145,15 @@ impl MirrorHost {
     ) -> std::io::Result<(MirrorHost, watch::Receiver<u64>)> {
         let host_bytes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let workers = (0..config.workers.max(1))
-            .map(|i| worker::spawn(i, config.worker_queue, config.retention, host_bytes.clone()))
+            .map(|i| {
+                worker::spawn(
+                    i,
+                    config.worker_queue,
+                    config.retention,
+                    config.terminal,
+                    host_bytes.clone(),
+                )
+            })
             .collect::<std::io::Result<Vec<_>>>()?;
         let (control, control_rx) = mpsc::channel(256);
         let (changes_tx, changes) = watch::channel(0u64);

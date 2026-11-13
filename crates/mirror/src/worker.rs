@@ -505,6 +505,7 @@ pub fn spawn(
     index: usize,
     capacity: usize,
     retention: Retention,
+    terminal: crate::TerminalDefaults,
     host_bytes: Arc<AtomicUsize>,
 ) -> std::io::Result<WorkerHandle> {
     let (tx, mut rx) = mpsc::channel::<WorkerMsg>(capacity);
@@ -564,7 +565,13 @@ pub fn spawn(
                             });
                         let (base, reattaches, title, cwd) = previous.unwrap_or((1, 0, None, None));
                         failed.remove(&id);
-                        let engine = match restore_engine(&state, &captures, &[]) {
+                        let engine = match restore_engine(&state, &captures, &[]).and_then(
+                            |mut e| {
+                                e.set_scheme(terminal.scheme)?;
+                                e.set_default_cursor(terminal.cursor, terminal.blink)?;
+                                Ok(e)
+                            },
+                        ) {
                             Ok(e) => e,
                             Err(e) => {
                                 failed.insert(

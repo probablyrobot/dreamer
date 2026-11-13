@@ -18,6 +18,11 @@ clipboard:
 fallback:
   launch: [kitty, -e, "{command}"]       # optional; no default
 appearance: system                       # system (default), dark, or light
+terminal:
+  theme: dreamer-dark                    # default; `dream themes` lists all
+  cursor:
+    style: block                         # block (default), bar, or underline
+    blink: false                         # default
 ```
 
 ## Font
@@ -79,3 +84,35 @@ Without it, the workspace only offers the copyable command.
 - `dark` and `light` fix it.
 
 Both skins are described in [design.md](design.md).
+
+## Terminal
+
+`terminal` sets every terminal's defaults: the color scheme, and the
+cursor a program gets until it sets its own (and after it resets it with
+`CSI 0 q`).
+
+- `theme` is one of the built-in schemes. `dream themes` lists them, with a
+  swatch and the configured one marked. Names are case-insensitive, and
+  `_` or a space counts as `-`.
+  - `dreamer-dark` (the default) and `dreamer-light` are designed with the
+    two chrome skins.
+  - The others come from Catppuccin (Mocha, Macchiato, Frappé, Latte),
+    Dracula, Nord, Gruvbox, Tokyo Night (night, storm, light), One Dark
+    and One Light, Rosé Pine (main, moon, dawn), Everforest, Kanagawa,
+    Solarized, GitHub, Ayu, Tomorrow, Selenized, and Flexoki (see
+    `THIRD_PARTY_NOTICES.md`).
+  - An unknown name is an error that lists the valid ones.
+- `cursor.style` is `block`, `bar`, or `underline`; `cursor.blink` is
+  `true` or `false`.
+
+A terminal's colors are its state, not a view's (spec 14.2). The daemon
+applies the theme to every pane's canonical mirror, and every window,
+including one on another machine, gets the same colors through its
+checkpoint. A program can still change colors for itself (OSC 4, 10, 11,
+12) until it resets them. The theme takes effect when the daemon starts.
+To switch, edit the file and run `dream shutdown`: tmux and every program
+keep running, and the next window or `dream` command starts the daemon
+again with the new theme.
+
+Scrollback length follows tmux's own `history-limit`, which the mirrors
+copy.

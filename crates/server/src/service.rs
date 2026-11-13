@@ -172,6 +172,20 @@ impl State {
 /// `DREAMER_JOURNAL_PANE_BYTES` and `DREAMER_JOURNAL_HOST_BYTES` if set.
 fn mirror_config() -> mirror::MirrorConfig {
     let mut c = mirror::MirrorConfig::default();
+    // The terminal's colors and cursor are the daemon's to set: it owns the
+    // canonical mirrors, and views get them through checkpoints.
+    match workspace_config::load_settings() {
+        Ok(settings) => {
+            let t = settings.terminal;
+            c.terminal = mirror::TerminalDefaults {
+                scheme: t.theme,
+                cursor: t.cursor_style.shape(),
+                blink: t.cursor_blink,
+            };
+            log::info(format!("terminal theme {}", t.theme.name));
+        }
+        Err(e) => log::warn(format!("{e}; terminal defaults used")),
+    }
     let env = |name: &str| {
         std::env::var(name)
             .ok()

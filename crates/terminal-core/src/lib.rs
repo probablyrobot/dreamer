@@ -6,6 +6,8 @@
 //! unchanged row costs nothing in the next frame.
 
 pub mod family;
+pub mod schemes;
+mod schemes_data;
 
 use std::fmt::Write as _;
 use std::sync::Arc;

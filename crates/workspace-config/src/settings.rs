@@ -23,6 +23,47 @@ pub struct Settings {
     pub clipboard: ClipboardSettings,
     pub fallback: FallbackSettings,
     pub appearance: Appearance,
+    pub terminal: TerminalSettings,
+}
+
+/// The terminal's defaults, applied by the daemon to every pane's
+/// canonical mirror (spec 14.2): views get them through checkpoints.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TerminalSettings {
+    /// A built-in color scheme (`dream themes` lists them).
+    pub theme: &'static terminal_core::schemes::Scheme,
+    /// The cursor until a program sets its own.
+    pub cursor_style: CursorStyle,
+    pub cursor_blink: bool,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        TerminalSettings {
+            theme: terminal_core::schemes::DEFAULT,
+            cursor_style: CursorStyle::Block,
+            cursor_blink: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CursorStyle {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+}
+
+impl CursorStyle {
+    pub fn shape(self) -> terminal_core::CursorShape {
+        match self {
+            CursorStyle::Block => terminal_core::CursorShape::Block,
+            CursorStyle::Bar => terminal_core::CursorShape::Bar,
+            CursorStyle::Underline => terminal_core::CursorShape::Underline,
+        }
+    }
 }
 
 /// The desktop's skin: the dark or light default, or whichever the system
@@ -109,6 +150,7 @@ impl Default for Settings {
             clipboard: ClipboardSettings::default(),
             fallback: FallbackSettings::default(),
             appearance: Appearance::default(),
+            terminal: TerminalSettings::default(),
         }
     }
 }
@@ -125,6 +167,23 @@ struct File {
     #[serde(default)]
     fallback: FallbackFile,
     appearance: Option<Appearance>,
+    #[serde(default)]
+    terminal: TerminalFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalFile {
+    theme: Option<String>,
+    #[serde(default)]
+    cursor: CursorFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CursorFile {
+    style: Option<CursorStyle>,
+    blink: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -231,6 +290,25 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(a) = file.appearance {
         s.appearance = a;
     }
+    if let Some(name) = file.terminal.theme {
+        s.terminal.theme = terminal_core::schemes::find(&name).ok_or_else(|| {
+            let names: Vec<&str> = terminal_core::schemes::all().map(|s| s.name).collect();
+            error(
+                origin,
+                "terminal.theme",
+                format!(
+                    "no built-in theme `{name}`; choose one of: {}",
+                    names.join(", ")
+                ),
+            )
+        })?;
+    }
+    if let Some(style) = file.terminal.cursor.style {
+        s.terminal.cursor_style = style;
+    }
+    if let Some(blink) = file.terminal.cursor.blink {
+        s.terminal.cursor_blink = blink;
+    }
     if let Some(launch) = file.fallback.launch {
         let slots = launch.iter().filter(|a| *a == "{command}").count();
         if !launch.is_empty() && slots != 1 {
@@ -268,6 +346,24 @@ mod tests {
         assert_eq!(s, Settings::default());
         assert_eq!(s.font.family, "JetBrainsMono Nerd Font Mono");
         assert_eq!(s.font.size, 13.0);
+    }
+
+    #[test]
+    fn terminal_theme_and_cursor_are_validated() {
+        let s = parse_settings(
+            "terminal:\n  theme: Catppuccin_Mocha\n  cursor:\n    style: bar\n    blink: true\n",
+            None,
+        )
+        .expect("terminal");
+        assert_eq!(s.terminal.theme.name, "catppuccin-mocha");
+        assert_eq!(s.terminal.cursor_style, CursorStyle::Bar);
+        assert!(s.terminal.cursor_blink);
+        assert_eq!(Settings::default().terminal.theme.name, "dreamer-dark");
+        let e = parse_settings("terminal:\n  theme: nope\n", None).expect_err("unknown");
+        assert_eq!(e.at, "terminal.theme");
+        assert!(e.message.contains("dreamer-light"), "{e}");
+        let e = parse_settings("terminal:\n  cursor:\n    style: beam\n", None).expect_err("style");
+        assert_eq!(e.line, Some(3), "{e}");
     }
 
     #[test]
