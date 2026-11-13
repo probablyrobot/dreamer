@@ -3,24 +3,61 @@
 `dreamer` is the GPUI desktop client.
 
 ```text
-dreamer
+dreamer [--workspace] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
 dreamer --attach %PANE [-L socket | --tmux-socket-path PATH] [--tmux PATH]
 dreamer --fixture FILE
 ```
 
-With no arguments (as when launched from Finder or a desktop launcher)
-the app follows the active pane of the default tmux server. If there is no
-tmux server, the window says so and starts following as soon as one
-appears. See [packaging.md](packaging.md) for the macOS app and the Arch
-package.
+With no arguments (as when launched from Finder or a desktop launcher),
+or with `--workspace`, the app opens a **workspace** for the first session
+of the default tmux server. See below. The app starts `dreamerd` if it is
+not running, passing it the tmux options. See
+[packaging.md](packaging.md) for the macOS app and the Arch package.
 
-`--attach` shows a given tmux pane. The app starts `dreamerd` if it is not
-running, passing it the tmux options. It then follows the pane as a client
-replica (see [mirrors.md](mirrors.md)). `--fixture` paints a VT fixture,
-and `--smoke` alone paints the built-in renderer demo.
+`--attach` shows a single tmux pane as a client replica (see
+[mirrors.md](mirrors.md)). `--fixture` paints a VT fixture, and `--smoke`
+alone paints the built-in renderer demo.
 
-Input, selection, and window sizing come with later work. The pane is shown
-at the size tmux gives it.
+## Workspace
+
+A workspace window shows one tmux session:
+- **Tab strip.** A narrow strip lists the session's windows by index. The
+  active one is highlighted. Clicking a tab runs `select-window`.
+- **Panes.** The active window's panes are drawn at their tmux cell
+  rectangles. tmux is authoritative for geometry (spec 15.1). The one-cell
+  gaps tmux leaves between panes show as dividers. A zoomed window shows
+  its active pane over the whole area. A window with a layout Dreamer
+  cannot draw yet (floating panes) shows a notice instead of a partial
+  layout.
+- **One feed per pane.** Each visible pane has its own feed (replica and
+  subscription), with its own scroll, selection, and links. Panes in other
+  windows are not subscribed. A pane's feed stops when the pane leaves
+  the view.
+- **Focus.** Keyboard input goes to one pane. Clicking a pane focuses it
+  here and runs `select-pane`, and the click does not type anything. The
+  focused pane gets focus-in and the previous one focus-out, so focus
+  reports and clipboard addressing follow it. The window title follows the
+  focused pane.
+- **Following tmux.** The view follows `tmux.watch` (see
+  [topology.md](topology.md)). Splits, kills, renames, zoom, and window
+  switches made by any tmux client appear without a restart. An action's
+  result is seen only when the new topology arrives; it is never assumed.
+
+The panes are drawn at the size tmux gives them. Dragging splits and
+sizing the tmux window to the desktop window come with M3-02 (#35).
+
+`dreamer --smoke-workspace` checks this against an isolated tmux whose
+session `main` has two windows, the first split into three panes, each
+pane printing `READY-%<id>`. The macOS gate runs it as the `workspace`
+step, and `gate linux-desktop` runs it on each backend. It checks that:
+- the workspace has two tabs and three panes, each showing its own
+  output;
+- a split made with the plain `tmux` command appears;
+- clicking a pane focuses it, and typed text reaches only that pane;
+- a tab click switches the tmux window and shows only its pane.
+
+Clicking and typing need a refreshing display. With a locked screen they
+are reported as not run and the step as `not_run`.
 
 ## Frame scheduling
 

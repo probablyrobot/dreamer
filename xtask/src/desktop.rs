@@ -200,6 +200,39 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .collect::<Vec<_>>()
                 .join("\n"),
         });
+        // Tabs and panes from tmux, an external split, click-to-focus,
+        // typing, and a tab switch.
+        let started = Instant::now();
+        let out = crate::gate::workspace_smoke_output(&root, remove)?;
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let expected = if backend == "wayland" {
+            "Wayland"
+        } else {
+            "X11"
+        };
+        let passed = out.status.success()
+            && stdout.contains(&format!("smoke: backend {expected}"))
+            && stdout.contains("smoke: typed text reached only the focused pane");
+        println!(
+            "linux-desktop: {backend:<7} {:<18} {}",
+            "workspace",
+            if passed { "passed" } else { "FAILED" }
+        );
+        if !passed {
+            problems.push(format!("{backend} workspace: {}", out.status));
+        }
+        runs.push(Run {
+            backend,
+            input: "workspace".into(),
+            passed,
+            millis: started.elapsed().as_millis(),
+            detail: [stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
     }
 
     let report = write_report(&commit, dirty, &runs)?;
