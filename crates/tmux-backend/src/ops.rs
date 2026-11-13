@@ -137,6 +137,22 @@ pub async fn select_window(conn: &Connection, target: TmuxWindowId) -> Result<()
         .map(drop)
 }
 
+/// Size a window for this control client (`refresh-client -C @W:CxR`).
+/// tmux's `window-size` option still decides how this client's size
+/// combines with other clients'.
+pub async fn size_window(
+    conn: &Connection,
+    target: TmuxWindowId,
+    cols: u16,
+    rows: u16,
+) -> Result<(), CommandError> {
+    conn.execute(
+        TmuxCommand::new("refresh-client").opt("-C", format!("{}:{cols}x{rows}", window(target))),
+    )
+    .await
+    .map(drop)
+}
+
 /// Toggle zoom of the pane's window onto this pane.
 pub async fn toggle_zoom(conn: &Connection, target: TmuxPaneId) -> Result<(), CommandError> {
     conn.execute(
