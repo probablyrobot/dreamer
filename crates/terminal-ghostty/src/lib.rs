@@ -145,6 +145,8 @@ pub struct Engine {
     scratch: frame::Scratch,
     /// Selection gesture state, created on first use.
     gesture: GhosttySelectionGesture,
+    /// Unique per engine in this process (keys for image caches).
+    instance: u64,
     /// Bumped whenever the selection may have changed; the value the last
     /// frame was built at.
     selection_rev: u64,
@@ -280,6 +282,10 @@ impl Engine {
             last: None,
             scratch: frame::Scratch::default(),
             gesture: ptr::null_mut(),
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             selection_rev: 0,
             framed_selection_rev: 0,
             _not_send: PhantomData,

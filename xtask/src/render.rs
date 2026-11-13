@@ -16,6 +16,9 @@ pub struct Expected {
     pub background_quads: usize,
     /// `none` when the cursor is hidden.
     pub cursor: String,
+    /// Image placements drawn, and how many of them the grid edge cut.
+    pub images: usize,
+    pub images_clipped: usize,
 }
 
 pub fn expectations(root: &Path) -> Result<Vec<(PathBuf, Expected)>, String> {
@@ -38,6 +41,8 @@ pub fn expectations(root: &Path) -> Result<Vec<(PathBuf, Expected)>, String> {
                 decorated_runs: n(3)?,
                 background_quads: n(4)?,
                 cursor: f.get(5).copied().unwrap_or("none").to_owned(),
+                images: if f.len() > 6 { n(6)? } else { 0 },
+                images_clipped: if f.len() > 7 { n(7)? } else { 0 },
             };
             Ok((dir.join(&e.name), e))
         })
@@ -75,6 +80,8 @@ pub fn check(stdout: &str, e: &Expected) -> Result<(), String> {
         decorated_runs: field(stats, "decorated_runs").unwrap_or(usize::MAX),
         background_quads: field(stats, "background_quads").unwrap_or(usize::MAX),
         cursor,
+        images: field(stats, "images").unwrap_or(usize::MAX),
+        images_clipped: field(stats, "images_clipped").unwrap_or(usize::MAX),
     };
     if &got == e {
         Ok(())
@@ -96,8 +103,10 @@ mod tests {
             decorated_runs: 6,
             background_quads: 1,
             cursor: "block".into(),
+            images: 0,
+            images_clipped: 0,
         };
-        let line = "smoke: painted PaintStats { background_quads: 1, text_runs: 8, wide_cells: 0, images: 0, shaped_lines: 8, reused_lines: 0, decorated_runs: 6, cursor: Some(\"block\") }";
+        let line = "smoke: painted PaintStats { background_quads: 1, text_runs: 8, wide_cells: 0, images: 0, image_uploads: 0, images_clipped: 0, shaped_lines: 8, reused_lines: 0, decorated_runs: 6, cursor: Some(\"block\") }";
         assert!(check(line, &e).is_ok());
         assert!(check(&line.replace("text_runs: 8", "text_runs: 7"), &e).is_err());
         let hidden = Expected {
