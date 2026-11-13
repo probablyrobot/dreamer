@@ -537,7 +537,9 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
         println!("gate: no container runtime running; ARM64 Linux suite recorded as not run");
         return Ok(Done::NotRun);
     }
-    let script = "set -e; export DEBIAN_FRONTEND=noninteractive; \
+    // `ulimit -c 0`: one test makes dreamerd abort on purpose, and the
+    // container would otherwise write its core into the mounted tree.
+    let script = "set -e; ulimit -c 0; export DEBIAN_FRONTEND=noninteractive; \
         apt-get update -qq && apt-get install -y -qq --no-install-recommends \
           build-essential pkg-config curl ca-certificates xz-utils git libclang-dev \
           libevent-dev libncurses-dev bison python3 >/dev/null; \
