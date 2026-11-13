@@ -86,6 +86,9 @@ struct TermFont {
 }
 
 static TERM_FONT: std::sync::OnceLock<TermFont> = std::sync::OnceLock::new();
+static LINKS: std::sync::OnceLock<workspace_config::LinkSettings> = std::sync::OnceLock::new();
+/// Links the input smoke "opened": recorded instead of launching anything.
+static SMOKE_OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 fn term_font() -> TermFont {
     TERM_FONT.get().cloned().unwrap_or_else(|| {
@@ -117,6 +120,12 @@ struct Shell {
     pointer: input::Pointer,
     /// A left-button selection gesture is in progress.
     selecting: bool,
+    /// Last pointer position over the window, and the hyperlink under it
+    /// while the open modifier is held.
+    pointer_at: Option<gpui::Point<Pixels>>,
+    link: Option<replica::feed::Link>,
+    /// A short message shown over the grid (a refused link).
+    notice: Option<String>,
     grid: Option<input::Grid>,
     /// Progress of the input smoke after typing.
     input_phase: u8,
@@ -164,6 +173,84 @@ impl Shell {
             }
             input::KeyIntent::Pass => {}
         }
+    }
+
+    /// Look up the link under `at` (when the open modifier is held) and
+    /// show it; clear it otherwise.
+    fn hover(
+        &mut self,
+        grid: &input::Grid,
+        at: gpui::Point<Pixels>,
+        mods: &gpui::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        self.pointer_at = Some(at);
+        let Some(feed) = self.feed.clone().filter(|_| input::open_modifier(mods)) else {
+            if self.link.take().is_some() {
+                cx.notify();
+            }
+            return;
+        };
+        let (col, row) = grid.cell_at(at);
+        let (col, row) = (col as u16, row as u16);
+        let covered = self.link.as_ref().is_some_and(|l| {
+            l.cells
+                .iter()
+                .any(|c| c.row == row && (c.start..=c.end).contains(&col))
+        });
+        if covered {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let link = feed.link_at(col, row).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.link != link {
+                    s.link = link;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Open the link under a modifier-click, if there is one and its scheme
+    /// is allowed. Never triggered by terminal output.
+    fn open_link_at(&mut self, cell: (u32, u32), cx: &mut Context<Self>) {
+        let Some(feed) = self.feed.clone() else {
+            return;
+        };
+        let smoke = self.smoke != Smoke::Off;
+        cx.spawn(async move |this, cx| {
+            let Some(link) = feed.link_at(cell.0 as u16, cell.1 as u16).await else {
+                return;
+            };
+            let allowed = LINKS
+                .get()
+                .cloned()
+                .unwrap_or_else(|| workspace_config::Settings::default().links)
+                .allows(&link.uri);
+            if !allowed {
+                let why = format!("not opened: {} (scheme not in links.schemes)", link.uri);
+                let _ = this.update(cx, |s, cx| {
+                    s.notice = Some(why);
+                    cx.notify();
+                });
+                cx.background_executor().timer(Duration::from_secs(4)).await;
+                let _ = this.update(cx, |s, cx| {
+                    s.notice = None;
+                    cx.notify();
+                });
+                return;
+            }
+            if smoke {
+                if let Ok(mut o) = SMOKE_OPENED.lock() {
+                    o.push(link.uri);
+                }
+            } else {
+                cx.update(|cx| cx.open_url(&link.uri));
+            }
+        })
+        .detach();
     }
 
     fn select(&self, event: SelectEvent) {
@@ -217,7 +304,13 @@ impl Shell {
         let e = entity.clone();
         window.on_mouse_event(move |ev: &MouseDownEvent, phase, _, cx| {
             if phase == DispatchPhase::Bubble && bounds.contains(&ev.position) {
-                e.update(cx, |s, _| {
+                e.update(cx, |s, cx| {
+                    // The open modifier with the left button is only ever a
+                    // link click: never a selection or an application click.
+                    if ev.button == gpui::MouseButton::Left && input::open_modifier(&ev.modifiers) {
+                        s.open_link_at(grid.cell_at(ev.position), cx);
+                        return;
+                    }
                     // Selection unless the application tracks the mouse;
                     // Shift selects even then.
                     let select = ev.button == gpui::MouseButton::Left
@@ -256,7 +349,8 @@ impl Shell {
             if phase == DispatchPhase::Bubble
                 && (ev.pressed_button.is_some() || bounds.contains(&ev.position))
             {
-                e.update(cx, |s, _| {
+                e.update(cx, |s, cx| {
+                    s.hover(&grid, ev.position, &ev.modifiers, cx);
                     if s.selecting {
                         s.select(SelectEvent::Drag {
                             at: grid.cell_pos(ev.position),
@@ -465,6 +559,39 @@ impl Render for Shell {
                 .underline()
                 .child(text)
         });
+        // The hovered link: underlined, with a pointing hand.
+        let underline: Vec<_> = self
+            .link
+            .iter()
+            .flat_map(|l| l.cells.iter())
+            .map(|c| {
+                let tf = term_font();
+                let m = cell_metrics(
+                    window,
+                    &font(tf.family.clone()),
+                    px(tf.size),
+                    tf.line_height,
+                );
+                div()
+                    .absolute()
+                    .left(m.width * f32::from(c.start))
+                    .top(m.height * f32::from(c.row + 1) - px(2.0))
+                    .w(m.width * f32::from(c.end - c.start + 1))
+                    .h(px(1.0))
+                    .bg(rgb(0x8ab4f8))
+            })
+            .collect();
+        let notice = self.notice.clone().map(|text| {
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .px_2()
+                .bg(rgb(0x5a2a2a))
+                .text_color(rgb(0xf0d0d0))
+                .text_size(px(term.size * 0.85))
+                .child(text)
+        });
         // Shown only while scrolled back into history.
         let back = self.frame.view.rows_back();
         let scrolled = (back > 0).then(|| {
@@ -485,6 +612,11 @@ impl Render for Shell {
             .p_2()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
+            .on_modifiers_changed(cx.listener(|s, ev: &gpui::ModifiersChangedEvent, _, cx| {
+                if let (Some(grid), Some(at)) = (s.grid, s.pointer_at) {
+                    s.hover(&grid, at, &ev.modifiers, cx);
+                }
+            }))
             .child(
                 div()
                     .relative()
@@ -498,6 +630,9 @@ impl Render for Shell {
                     })
                     .children(preedit)
                     .children(scrolled)
+                    .children(underline)
+                    .children(notice)
+                    .when(self.link.is_some(), |d| d.cursor_pointer())
                     // Registers the platform text input (IME) each frame.
                     .child(
                         canvas(
@@ -716,6 +851,7 @@ fn main() -> ExitCode {
 
     gpui_platform::application().run(move |cx: &mut App| {
         let chosen = fonts::choose(cx, &settings);
+        let _ = LINKS.set(settings.links.clone());
         let _ = TERM_FONT.set(TermFont {
             family: chosen.family,
             size: settings.font.size,
@@ -743,6 +879,9 @@ fn main() -> ExitCode {
                     _activation: None,
                     pointer: input::Pointer::default(),
                     selecting: false,
+                    pointer_at: None,
+                    link: None,
+                    notice: None,
                     grid: None,
                     input_phase: 0,
                 });
@@ -862,16 +1001,37 @@ fn main() -> ExitCode {
                                         shell.input_phase = 7;
                                         let selection = shell.frame.selection.clone();
                                         if let Some(feed) = shell.feed.clone() {
-                                            cx.spawn(async move |_, _| {
+                                            cx.spawn(async move |this, cx| {
                                                 let text = feed.selection_text().await;
                                                 if text.as_deref() == Some(SELECT_TEXT) {
                                                     println!(
                                                         "smoke: a drag selected {SELECT_TEXT:?} locally ({selection:?})"
                                                     );
-                                                    std::process::exit(0);
+                                                    let _ = this.update(cx, |s, _| {
+                                                        s.input_phase = 8;
+                                                        s.send_all([api::terminal_input::Event::Text(
+                                                            api::TextInput { text: LINK_PROBE.into() },
+                                                        )]);
+                                                    });
+                                                    return;
                                                 }
                                                 eprintln!("smoke: the drag selected {text:?}, not {SELECT_TEXT:?}");
                                                 std::process::exit(3);
+                                            })
+                                            .detach();
+                                        }
+                                    }
+                                    8 => {
+                                        let row = shell
+                                            .frame
+                                            .rows
+                                            .iter()
+                                            .position(|r| r.text().trim_end() == LINK_LINE);
+                                        if let (Some(row), Some(grid)) = (row, shell.grid) {
+                                            shell.input_phase = 9;
+                                            let any = window.window_handle();
+                                            cx.spawn(async move |_, cx| {
+                                                link_check(any, grid, row as f32, cx).await
                                             })
                                             .detach();
                                         }
@@ -994,6 +1154,127 @@ async fn click_and_scroll(any: gpui::AnyWindowHandle, grid: input::Grid, cx: &mu
         "the click and wheel never reached the pane as expected",
     )
     .await;
+}
+
+/// Clears the screen and prints an OSC 8 link followed by plain text.
+const LINK_PROBE: &str = "clear; printf '\\033]8;;https://example.com/dreamer-smoke\\033\\\\LINK-HERE\\033]8;;\\033\\\\ plain\\n'\r";
+const LINK_LINE: &str = "LINK-HERE plain";
+const LINK_URI: &str = "https://example.com/dreamer-smoke";
+
+/// A plain click on the link must not open it; hovering with the open
+/// modifier must underline exactly its cells; a modifier-click opens it
+/// (recorded, never launched, in smoke mode).
+async fn link_check(
+    any: gpui::AnyWindowHandle,
+    grid: input::Grid,
+    row: f32,
+    cx: &mut gpui::AsyncApp,
+) {
+    use gpui::{Modifiers, MouseButton, PlatformInput};
+    let at = point(
+        grid.origin.x + grid.cell.width * 2.5,
+        grid.origin.y + grid.cell.height * (row + 0.5),
+    );
+    let open = if cfg!(target_os = "macos") {
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        }
+    } else {
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        }
+    };
+    let click = |modifiers: Modifiers| {
+        [
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers,
+                click_count: 1,
+            }),
+        ]
+    };
+    let dispatch = |cx: &mut gpui::AsyncApp, ev: PlatformInput| {
+        let _ = cx.update_window(any, move |_, window, cx| {
+            window.dispatch_event(ev, cx);
+        });
+    };
+    let fail = |why: String| -> ! {
+        eprintln!("smoke: {why}");
+        std::process::exit(3)
+    };
+    for ev in click(Modifiers::default()) {
+        dispatch(cx, ev);
+    }
+    dispatch(
+        cx,
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position: at,
+            pressed_button: None,
+            modifiers: open,
+        }),
+    );
+    // The hover lookup runs on the feed thread; wait for its result.
+    let mut link = None;
+    for _ in 0..100 {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        link = cx
+            .update_window(any, |view, _, cx| {
+                view.downcast::<Shell>()
+                    .ok()
+                    .and_then(|s| s.read(cx).link.clone())
+            })
+            .ok()
+            .flatten();
+        if link.is_some() {
+            break;
+        }
+    }
+    let Some(link) = link else {
+        fail("hovering the link with the open modifier found nothing".into())
+    };
+    let want = [terminal_ghostty::core::SelectedCells {
+        row: row as u16,
+        start: 0,
+        end: 8,
+    }];
+    if link.uri != LINK_URI || link.cells != want {
+        fail(format!("the hovered link was {link:?}"));
+    }
+    if SMOKE_OPENED.lock().map(|o| o.len()).unwrap_or(1) != 0 {
+        fail("a plain click opened the link".into());
+    }
+    for ev in click(open) {
+        dispatch(cx, ev);
+    }
+    for _ in 0..100 {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let opened = SMOKE_OPENED.lock().map(|o| o.clone()).unwrap_or_default();
+        if !opened.is_empty() {
+            if opened != [LINK_URI] {
+                fail(format!("opened {opened:?}"));
+            }
+            println!(
+                "smoke: the link opened only on modifier-click ({LINK_URI}, cells {:?})",
+                link.cells
+            );
+            std::process::exit(0);
+        }
+    }
+    fail("the modifier-click never opened the link".into())
 }
 
 /// The line the smoke selects by dragging across it.

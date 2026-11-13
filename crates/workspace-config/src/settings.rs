@@ -19,6 +19,27 @@ pub const DEFAULT_LINE_HEIGHT: f32 = 1.2;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub font: FontSettings,
+    pub links: LinkSettings,
+}
+
+/// Which hyperlink schemes a modifier-click may open.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkSettings {
+    /// Lowercase scheme names.
+    pub schemes: Vec<String>,
+}
+
+pub const DEFAULT_LINK_SCHEMES: [&str; 3] = ["http", "https", "mailto"];
+
+impl LinkSettings {
+    /// Whether `uri` has an allowed scheme. A URI with no scheme is refused.
+    pub fn allows(&self, uri: &str) -> bool {
+        let Some((scheme, _)) = uri.split_once(':') else {
+            return false;
+        };
+        let scheme = scheme.to_ascii_lowercase();
+        self.schemes.contains(&scheme)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +59,9 @@ impl Default for Settings {
                 size: DEFAULT_FONT_SIZE,
                 line_height: DEFAULT_LINE_HEIGHT,
             },
+            links: LinkSettings {
+                schemes: DEFAULT_LINK_SCHEMES.map(String::from).to_vec(),
+            },
         }
     }
 }
@@ -47,6 +71,14 @@ impl Default for Settings {
 struct File {
     #[serde(default)]
     font: FontFile,
+    #[serde(default)]
+    links: LinksFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinksFile {
+    schemes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -114,6 +146,21 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
         }
         s.font.line_height = lh;
     }
+    if let Some(schemes) = file.links.schemes {
+        let valid = |x: &str| {
+            x.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && x.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+        };
+        if let Some(bad) = schemes.iter().find(|x| !valid(x)) {
+            return Err(error(
+                origin,
+                "links.schemes",
+                format!("{bad:?} is not a URI scheme name"),
+            ));
+        }
+        s.links.schemes = schemes.iter().map(|x| x.to_ascii_lowercase()).collect();
+    }
     Ok(s)
 }
 
@@ -160,5 +207,20 @@ mod tests {
         assert_eq!(e.at, "font.size");
         assert!(parse_settings("font: { family: '  ' }", None).is_err());
         assert!(parse_settings("colors: {}", None).is_err());
+        let e = parse_settings("links: { schemes: ['https:'] }", None).expect_err("scheme");
+        assert_eq!(e.at, "links.schemes");
+    }
+
+    #[test]
+    fn only_listed_link_schemes_open() {
+        let d = Settings::default().links;
+        assert!(d.allows("https://example.com"));
+        assert!(d.allows("HTTP://example.com"));
+        assert!(d.allows("mailto:someone@example.com"));
+        assert!(!d.allows("file:///etc/passwd"));
+        assert!(!d.allows("javascript:alert(1)"));
+        assert!(!d.allows("no-scheme-here"));
+        let s = parse_settings("links: { schemes: [https, SSH] }", None).expect("schemes");
+        assert!(s.links.allows("ssh://host") && !s.links.allows("http://x"));
     }
 }

@@ -126,6 +126,16 @@ pub fn wheel_arrows(steps: i32) -> Vec<Event> {
         .collect()
 }
 
+/// The modifier that turns a click into "open this link": Cmd on macOS,
+/// Ctrl elsewhere.
+pub fn open_modifier(m: &Modifiers) -> bool {
+    if cfg!(target_os = "macos") {
+        m.platform
+    } else {
+        m.control
+    }
+}
+
 /// What a key press means for the terminal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyIntent {

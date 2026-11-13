@@ -364,3 +364,63 @@ mod selection {
         assert_eq!(e.frame().expect("frame").text_dump(), before);
     }
 }
+
+#[test]
+fn osc8_links_are_hit_tested_over_their_cells_and_wraps() {
+    use terminal_ghostty::core::SelectedCells;
+    let mut e = engine();
+    let link = |uri: &str, text: &str| format!("\x1b]8;;{uri}\x1b\\{text}\x1b]8;;\x1b\\");
+    // Row 0: "see " + link "docs" + " here"; row 1: a wide-character link;
+    // rows 2-3: a link that soft-wraps (20 columns).
+    let input = format!(
+        "see {} here\r\n{} x\r\n0123456789abcd{}\r\n",
+        link("https://example.com/docs", "docs"),
+        link("https://example.com/日本", "日本"),
+        link("https://example.com/wrap", "WRAPPED-LINK"),
+    );
+    e.feed(input.as_bytes()).expect("feed");
+
+    assert_eq!(e.link_at(0, 0).expect("hit"), None, "plain text");
+    let docs = e.link_at(5, 0).expect("hit").expect("a link");
+    assert_eq!(docs.uri, "https://example.com/docs");
+    assert_eq!(
+        docs.cells,
+        vec![SelectedCells {
+            row: 0,
+            start: 4,
+            end: 7
+        }]
+    );
+    assert_eq!(e.link_at(8, 0).expect("hit"), None, "the space after it");
+
+    // Both halves of a wide character hit the link.
+    let wide = e.link_at(3, 1).expect("hit").expect("wide link");
+    assert_eq!(wide.uri, "https://example.com/日本");
+    assert_eq!(
+        wide.cells,
+        vec![SelectedCells {
+            row: 1,
+            start: 0,
+            end: 3
+        }]
+    );
+
+    // Hitting the wrapped part finds the whole run on both rows.
+    let wrapped = e.link_at(2, 3).expect("hit").expect("wrapped link");
+    assert_eq!(wrapped.uri, "https://example.com/wrap");
+    assert_eq!(
+        wrapped.cells,
+        vec![
+            SelectedCells {
+                row: 2,
+                start: 14,
+                end: 19
+            },
+            SelectedCells {
+                row: 3,
+                start: 0,
+                end: 5
+            },
+        ]
+    );
+}

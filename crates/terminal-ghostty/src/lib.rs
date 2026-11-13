@@ -20,6 +20,7 @@ mod effects;
 mod features;
 mod frame;
 pub mod input;
+pub mod links;
 pub mod selection;
 pub mod snapshot_fixtures;
 
