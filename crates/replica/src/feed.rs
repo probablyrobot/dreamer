@@ -488,6 +488,11 @@ impl Owner {
             Autoscroll(CellPos),
         }
         loop {
+            // The view dropped its feed (a pane no longer shown): stop, and
+            // with this thread its subscription and connections.
+            if view_rx.is_closed() {
+                return;
+            }
             let step = if matches!(f.state, FollowState::Following) {
                 let hold = async {
                     match held_since {
@@ -507,7 +512,11 @@ impl Owner {
                 // `recv` is cancel-safe: losing the race drops nothing.
                 let wake = tokio::select! {
                     r = f.recv() => Wake::Pushed(r),
-                    Some(c) = view_rx.recv() => Wake::View(c),
+                    c = view_rx.recv() => match c {
+                        Some(c) => Wake::View(c),
+                        // The view dropped its feed: stop following.
+                        None => return,
+                    },
                     () = hold => Wake::HoldExpired,
                     at = tick => Wake::Autoscroll(at),
                 };

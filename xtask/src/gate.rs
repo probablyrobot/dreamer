@@ -212,6 +212,11 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         });
         stages.push(Stage {
+            name: "workspace",
+            action: Builtin(workspace_smoke),
+            when: When::Code,
+        });
+        stages.push(Stage {
             name: "package",
             action: Builtin(package_away_from_tree),
             when: When::Full,
@@ -379,7 +384,7 @@ fn isolated_app_run(
     type_first: Option<&str>,
     args: &[&str],
 ) -> Result<Done, String> {
-    let out = isolated_app_output(dir, name, command, type_first, args, &[])?;
+    let out = isolated_app_output(dir, name, command, type_first, &[], args, &[])?;
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         println!("gate:   {line}");
     }
@@ -406,9 +411,65 @@ pub fn input_smoke_output(dir: &Path, env_remove: &[&str]) -> Result<std::proces
         "input",
         "env PS1='$ ' /bin/sh",
         Some("echo READY-FOR-INPUT"),
+        &[],
         &["--smoke-input", "--expect", "READY-FOR-INPUT"],
         env_remove,
     )
+}
+
+/// The workspace smoke: session `main` with two windows, the first split
+/// into three panes, every pane having printed `READY-%<id>`. Needs a
+/// refreshing display for its click and keyboard part (exit 5 otherwise).
+pub fn workspace_smoke_output(
+    dir: &Path,
+    env_remove: &[&str],
+) -> Result<std::process::Output, String> {
+    const SH: &str = "env PS1='$ ' /bin/sh";
+    const READY: &str = "echo READY-$TMUX_PANE";
+    isolated_app_output(
+        dir,
+        "workspace",
+        SH,
+        None,
+        &[
+            &["split-window", "-t", "main:0", SH],
+            &["split-window", "-h", "-t", "main:0", SH],
+            &["new-window", "-t", "main", SH],
+            &["send-keys", "-t", "%0", READY, "Enter"],
+            &["send-keys", "-t", "%1", READY, "Enter"],
+            &["send-keys", "-t", "%2", READY, "Enter"],
+            &["send-keys", "-t", "%3", READY, "Enter"],
+            &["select-window", "-t", "main:0"],
+        ],
+        &["--smoke-workspace"],
+        env_remove,
+    )
+}
+
+/// Tabs and panes laid out from tmux, an external split, a tab switch,
+/// and (with a refreshing display) click-to-focus and typing.
+fn workspace_smoke(dir: &Path) -> Result<Done, String> {
+    if !require_gui()? {
+        return Ok(Done::NotRun);
+    }
+    let out = workspace_smoke_output(dir, &[])?;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        println!("gate:   {line}");
+    }
+    match out.status.code() {
+        Some(0) => Ok(Done::Passed),
+        Some(5) => {
+            println!(
+                "gate: the display did not refresh; workspace click and keyboard checks recorded as not run"
+            );
+            Ok(Done::NotRun)
+        }
+        _ => Err(format!(
+            "workspace smoke failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
 }
 
 /// Like [`isolated_app_run`], returning the app's output; `env_remove`
@@ -418,6 +479,7 @@ fn isolated_app_output(
     name: &str,
     command: &str,
     type_first: Option<&str>,
+    setup: &[&[&str]],
     args: &[&str],
     env_remove: &[&str],
 ) -> Result<std::process::Output, String> {
@@ -460,6 +522,12 @@ fn isolated_app_output(
         .map_err(|e| format!("{tmux}: {e}"))?;
     if !started.success() {
         return Err("could not start an isolated tmux server".into());
+    }
+    for cmd in setup {
+        let _ = Command::new(&tmux)
+            .args(["-L", &socket])
+            .args(*cmd)
+            .status();
     }
     if let Some(line) = type_first {
         let _ = Command::new(&tmux)

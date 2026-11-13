@@ -21,6 +21,7 @@
 
 mod fonts;
 mod input;
+mod workspace;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -42,7 +43,7 @@ use terminal_render::{TerminalElement, cell_metrics, last_paint_stats, paint_cou
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Exit status when the display does not refresh at all (for example a
 /// locked screen), so paint-based checks prove nothing either way.
-const INCONCLUSIVE: i32 = 5;
+pub(crate) const INCONCLUSIVE: i32 = 5;
 /// Idle time a live smoke run watches for unwanted wakeups.
 const IDLE_CHECK: Duration = Duration::from_millis(1500);
 const GRID: GridSize = GridSize { cols: 80, rows: 16 };
@@ -61,7 +62,7 @@ grid check: |0123456789|ABCDEFGHIJ|世界世界世|\r\n\
     .as_bytes();
 
 #[derive(Debug, Clone, PartialEq)]
-enum Smoke {
+pub(crate) enum Smoke {
     Off,
     /// Exit after the first presented frame.
     First,
@@ -105,13 +106,18 @@ fn term_font() -> TermFont {
     })
 }
 
-struct Shell {
+pub(crate) struct Shell {
+    /// One pane among others in a workspace: no outer padding, and the
+    /// workspace owns the window title and focus reports.
+    embedded: bool,
+    /// The pane's title and working directory, as the daemon reports them.
+    meta: replica::PaneMeta,
     smoke: Smoke,
     frame_seen: bool,
-    frame: Arc<FrameSnapshot>,
+    pub(crate) frame: Arc<FrameSnapshot>,
     /// Live frames applied to the view.
     live_frames: u64,
-    focus: FocusHandle,
+    pub(crate) focus: FocusHandle,
     /// Where key presses and text go (live panes only).
     feed: Option<Arc<Feed>>,
     /// IME composition in progress: drawn at the cursor, never sent.
@@ -131,12 +137,75 @@ struct Shell {
     /// The window title last set, and when the last bell flashed.
     title: String,
     flash: Option<std::time::Instant>,
-    grid: Option<input::Grid>,
+    pub(crate) grid: Option<input::Grid>,
     /// Progress of the input smoke after typing.
     input_phase: u8,
 }
 
 impl Shell {
+    pub(crate) fn new(
+        cx: &mut Context<Self>,
+        smoke: Smoke,
+        frame: Arc<FrameSnapshot>,
+        feed: Option<Arc<Feed>>,
+        embedded: bool,
+    ) -> Shell {
+        Shell {
+            embedded,
+            meta: replica::PaneMeta::default(),
+            smoke,
+            frame_seen: false,
+            frame,
+            live_frames: 0,
+            focus: cx.focus_handle(),
+            feed,
+            preedit: None,
+            _activation: None,
+            pointer: input::Pointer::default(),
+            selecting: false,
+            pointer_at: None,
+            link: None,
+            notice: None,
+            title: String::new(),
+            flash: None,
+            grid: None,
+            input_phase: 0,
+        }
+    }
+
+    /// Apply what a pane's feed delivered (workspace panes; the single-pane
+    /// window has its own loop with the smoke checks).
+    pub(crate) fn take_feed(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(feed) = self.feed.clone() else {
+            return false;
+        };
+        let Some(frame) = feed.take() else {
+            return false;
+        };
+        self.frame = frame;
+        self.live_frames += 1;
+        self.meta = feed.meta();
+        if feed.take_bells() > 0 {
+            self.bell(cx);
+        }
+        if let Some(text) = feed.take_clipboard() {
+            self.clipboard_write(text, window, cx);
+        }
+        cx.notify();
+        true
+    }
+
+    /// The window title this pane asks for: its title, else its working
+    /// directory, else the app name.
+    pub(crate) fn wanted_title(&self) -> String {
+        self.meta
+            .title
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| self.meta.cwd.clone())
+            .unwrap_or_else(|| "Dreamer".into())
+    }
+
     fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let Some(feed) = self.feed.clone() else {
             return;
@@ -284,12 +353,11 @@ impl Shell {
     /// The window title follows the pane: its title, else its working
     /// directory, else the app name.
     fn show_meta(&mut self, meta: &replica::PaneMeta, window: &mut Window) {
-        let title = meta
-            .title
-            .clone()
-            .filter(|t| !t.trim().is_empty())
-            .or_else(|| meta.cwd.clone())
-            .unwrap_or_else(|| "Dreamer".into());
+        self.meta = meta.clone();
+        if self.embedded {
+            return;
+        }
+        let title = self.wanted_title();
         if title != self.title {
             window.set_window_title(&title);
             self.title = title;
@@ -679,7 +747,7 @@ impl Render for Shell {
         div()
             .size_full()
             .bg(rgb(0x14161a))
-            .p_2()
+            .when(!self.embedded, |d| d.p_2())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::key_down))
             .on_modifiers_changed(cx.listener(|s, ev: &gpui::ModifiersChangedEvent, _, cx| {
@@ -828,6 +896,9 @@ struct Args {
     expect: Option<String>,
     fixture: Option<String>,
     attach: Option<u32>,
+    /// A workspace window (tabs and every pane of the active tmux window)
+    /// instead of a single pane.
+    workspace: bool,
     /// `dreamerd` options for a daemon started on demand.
     daemon: Vec<String>,
 }
@@ -846,6 +917,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--smoke-repaint" => {
                 a.smoke = true;
                 a.repaint = true;
+            }
+            "--workspace" => a.workspace = true,
+            "--smoke-workspace" => {
+                a.smoke = true;
+                a.workspace = true;
             }
             "--expect" => a.expect = Some(value("--expect")?),
             "--fixture" => a.fixture = Some(value("--fixture")?),
@@ -913,11 +989,12 @@ fn main() -> ExitCode {
         (true, None, _) if args.repaint => Smoke::Repaint,
         (true, None, _) => Smoke::First,
     };
-    // Launched with nothing to show (Finder, a desktop launcher): follow the
-    // active pane of the default tmux server.
-    let follow = match (args.attach, args.smoke, &args.fixture) {
-        (Some(p), _, _) => Some(Some(p)),
-        (None, false, None) => Some(None),
+    // Launched with nothing to show (Finder, a desktop launcher): the
+    // workspace of the default tmux server's first session.
+    let workspace_mode =
+        args.workspace || (args.attach.is_none() && !args.smoke && args.fixture.is_none());
+    let follow = match (args.attach, workspace_mode) {
+        (Some(p), false) => Some(Some(p)),
         _ => None,
     };
     let feed = match follow {
@@ -952,6 +1029,15 @@ fn main() -> ExitCode {
             line_height: settings.font.line_height,
             source: chosen.source,
         });
+        if workspace_mode {
+            let launch = client::Launch::new(args.daemon.clone());
+            if let Err(e) = workspace::open(cx, launch, args.smoke.then(|| args.daemon.clone())) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+            cx.activate(true);
+            return;
+        }
         let bounds = Bounds::centered(None, size(px(900.), px(420.)), cx);
         let smoke_mode = smoke.clone();
         let view_feed = feed.clone();
@@ -961,25 +1047,7 @@ fn main() -> ExitCode {
                 ..Default::default()
             },
             |window, cx| {
-                let shell = cx.new(|cx| Shell {
-                    smoke: smoke_mode,
-                    frame_seen: false,
-                    frame,
-                    live_frames: 0,
-                    focus: cx.focus_handle(),
-                    feed: view_feed,
-                    preedit: None,
-                    _activation: None,
-                    pointer: input::Pointer::default(),
-                    selecting: false,
-                    pointer_at: None,
-                    link: None,
-                    notice: None,
-                    title: String::new(),
-                    flash: None,
-                    grid: None,
-                    input_phase: 0,
-                });
+                let shell = cx.new(|cx| Shell::new(cx, smoke_mode, frame, view_feed, false));
                 let focus = shell.read(cx).focus.clone();
                 window.focus(&focus, cx);
                 shell.update(cx, |s, cx| {

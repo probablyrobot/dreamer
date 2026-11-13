@@ -18,6 +18,7 @@
 
 pub mod feed;
 mod follow;
+pub mod topology;
 
 use terminal_ghostty::core::GridSize;
 use terminal_ghostty::core::family::{CANONICAL_CELL_PX, CONTINUATION_MAX_BYTES};
