@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 13 }
+version: { major: 1, minor: 14 }
 package: dreamer.v1
 
 types:
@@ -537,6 +537,56 @@ types:
       - { n: 1, name: bytes, type: u64, doc: Encoded bytes delivered to the pane. }
       - { n: 2, name: batches, type: u32, doc: tmux command batches used. }
 
+  # ---- remote hosts ---------------------------------------------------------
+
+  - message: HostConnect
+    doc: >-
+      Connect the local daemon (the coordinator) to the daemon on another
+      host through system ssh, running `dream bridge --stdio` there. SSH
+      configuration, keys, and host verification stay the user's.
+    fields:
+      - { n: 1, name: name, type: string, doc: "A local label for this host; unique among hosts." }
+      - { n: 2, name: destination, type: string, doc: "SSH destination: host alias, user@host, or ssh:// URI." }
+      - { n: 3, name: dream, type: string, optional: true, doc: "Remote dream executable; default `dream` on the remote PATH. A leading ~/ is the remote home." }
+      - { n: 4, name: tmux, type: string, optional: true, doc: "Remote tmux executable, for a remote daemon that has to be started." }
+      - { n: 5, name: tmux_socket, type: string, optional: true, doc: "Remote tmux -L name." }
+      - { n: 6, name: tmux_socket_path, type: string, optional: true, doc: "Remote tmux -S path." }
+
+  - message: HostStatus
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: destination, type: string }
+      - { n: 3, name: state, type: LinkState }
+      - { n: 4, name: remote, type: VersionInfo, doc: "The remote daemon's protocol and build, once live." }
+      - { n: 5, name: remote_host, type: string, optional: true }
+      - { n: 6, name: remote_pid, type: u32, optional: true }
+      - { n: 7, name: remote_instance, type: string, optional: true, doc: "Changes when the remote daemon restarts." }
+      - { n: 8, name: last_contact_unix_ms, type: u64, optional: true, doc: "Last successful exchange with the remote daemon." }
+      - { n: 9, name: detail, type: string, optional: true, doc: "Why the host is not live: the reason and SSH's last diagnostic lines." }
+
+  - message: HostList
+    fields:
+      - { n: 1, name: hosts, type: HostStatus, repeated: true }
+
+  - message: HostRef
+    fields:
+      - { n: 1, name: name, type: string }
+
+  - message: HostCall
+    doc: >-
+      One typed call forwarded to a connected host's daemon: `payload` is
+      the method's parameters as Protobuf, exactly as in a local call.
+      Methods that stream (subscriptions and watches) are refused.
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: method, type: string }
+      - { n: 3, name: payload, type: bytes }
+
+  - message: HostReply
+    doc: The remote daemon's result for a HostCall, as Protobuf.
+    fields:
+      - { n: 1, name: payload, type: bytes }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -553,3 +603,7 @@ methods:
   - { method: terminal.subscribe, params: TerminalSubscribe, result: Subscription, doc: "Follow a pane's canonical mirror: checkpoint or replay, then ordered records." }
   - { method: terminal.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: terminal.input, params: TerminalInput, result: InputResult, mutation: true, doc: "Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state." }
+  - { method: hosts.connect, params: HostConnect, result: HostStatus, mutation: true, doc: "Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller." }
+  - { method: hosts.list, params: Empty, result: HostList, doc: "Every remote host this daemon knows and its state." }
+  - { method: hosts.disconnect, params: HostRef, result: HostStatus, mutation: true, doc: "Close a host's ssh connection. The remote daemon and its tmux keep running." }
+  - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }

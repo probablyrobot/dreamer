@@ -24,11 +24,14 @@
 //! dream tier %PANE hot|warm             set a pane's observation tier
 //! dream bridge --stdio [-L socket | --tmux-socket-path P] [--tmux PATH]
 //!                                       the daemon's protocol over stdin/stdout (for SSH)
+//! dream hosts connect|list|call|disconnect ...
+//!                                       the local daemon's connections to other hosts
 //! dream --version
 //! ```
 
 mod bridge;
 mod daemon;
+mod hosts;
 mod remote;
 
 use std::process::ExitCode;
@@ -58,6 +61,7 @@ const USAGE: &str = "usage:
   dream mirrors [--json]
   dream tier %PANE hot|warm
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
+  dream hosts connect|list|call|disconnect ... (see `dream hosts`)
   dream --version";
 
 fn main() -> ExitCode {
@@ -111,6 +115,9 @@ fn main() -> ExitCode {
                 [j] if j == "--json" => remote::mirrors(&d, true),
                 _ => Err(format!("unexpected arguments {extra:?}\n{USAGE}")),
             })
+        }
+        ["hosts", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| hosts::run(&d, &extra))
         }
         ["bridge", rest @ ..] => daemon::split_daemon_args(rest).and_then(|(d, extra)| {
             if extra == ["--stdio"] {

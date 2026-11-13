@@ -49,7 +49,8 @@ impl Cli {
             .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
             .env("DREAMER_STATE_DIR", self.root.join("st"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
-            .env("DREAMER_DAEMON", Self::daemon());
+            .env("DREAMER_DAEMON", Self::daemon())
+            .env("DREAMER_SSH", self.root.join("ssh"));
         c.output().expect("dream")
     }
 
@@ -380,6 +381,141 @@ fn the_stdio_bridge_carries_a_whole_session_and_leaves_the_daemon_running() {
     assert!(out.stdout.is_empty(), "stdout: {:?}", out.stdout);
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("could not start dreamerd"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Kills a daemon by its lock file when dropped, so a failed test leaves
+/// nothing running.
+struct DaemonGuard(PathBuf);
+
+impl DaemonGuard {
+    fn pid(&self) -> Option<u32> {
+        std::fs::read_to_string(self.0.join("dreamerd.lock"))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    }
+}
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid().filter(|p| platform::process_alive(*p)) {
+            let _ = Command::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+}
+
+#[test]
+fn the_local_daemon_reaches_a_remote_daemon_through_ssh_and_the_bridge() {
+    let cli = Cli::new();
+    // The "remote host": its own tmux server and private daemon
+    // directories, reached only through a stand-in ssh that does what sshd
+    // does with the command (hand it to a shell), in that host's
+    // environment. No listener and no PTY anywhere.
+    let far = TmuxServer::start(100, 30, "/bin/sh").expect("remote tmux");
+    far.run_checked(&["rename-session", "-t", "main", "faraway"])
+        .expect("rename");
+    let far_root = cli.root.join("far");
+    let far_daemon = DaemonGuard(far_root.join("rt"));
+    let ssh_argv = cli.root.join("ssh-argv");
+    let ssh = cli.root.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$@" > '{argv}'
+[ "$1" = -T ] || exit 90
+while [ "$1" != -- ]; do shift; done
+echo "stand-in ssh: connected to $2" >&2
+export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
+export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
+exec /bin/sh -c "$3"
+"#,
+            argv = ssh_argv.display(),
+            rt = far_root.join("rt").display(),
+            st = far_root.join("st").display(),
+            daemon = Cli::daemon().display(),
+        ),
+    )
+    .expect("stand-in ssh");
+    std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("chmod");
+    let program = tmux_program().display().to_string();
+    let connect = [
+        "hosts",
+        "connect",
+        "devbox",
+        "devbox",
+        "--dream",
+        DREAM,
+        "--remote-socket",
+        far.socket(),
+        "--remote-tmux",
+        program.as_str(),
+    ];
+
+    let out = cli.ok(&connect);
+    assert!(out.contains("devbox (devbox) live: dreamerd pid"), "{out}");
+    let argv = std::fs::read_to_string(&ssh_argv).expect("argv");
+    assert!(
+        argv.starts_with("-T\n-a\n-x\n-o\nBatchMode=yes\n--\ndevbox\n"),
+        "{argv}"
+    );
+    let far_pid = far_daemon
+        .pid()
+        .expect("the bridge started the remote daemon");
+
+    // A typed call travels to the remote daemon and back.
+    let topo = cli.ok(&["hosts", "call", "devbox", "tmux.topology"]);
+    assert!(topo.contains("faraway"), "{topo}");
+    let list: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["hosts", "list", "--json"])).expect("json");
+    let host = &list["hosts"][0];
+    assert_eq!(host["state"], "live", "{list}");
+    assert_eq!(host["remote_pid"], far_pid, "{list}");
+
+    // Streams are refused, not half-forwarded.
+    let out = cli.on_tmux(&["hosts", "call", "devbox", "tmux.watch"]);
+    assert!(!out.status.success());
+
+    // Disconnecting closes SSH; the remote daemon and tmux keep running.
+    let out = cli.ok(&["hosts", "disconnect", "devbox"]);
+    assert!(out.contains("closed"), "{out}");
+    assert!(platform::process_alive(far_pid));
+    far.run_checked(&["has-session", "-t", "faraway"])
+        .expect("remote tmux keeps running");
+
+    // Reconnect, then lose the remote daemon: the host is marked failed,
+    // with SSH's own diagnostic kept apart from the protocol.
+    let out = cli.ok(&connect);
+    assert!(out.contains("live"), "{out}");
+    let _ = Command::new("kill")
+        .args(["-9", &far_pid.to_string()])
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let host = loop {
+        let list: serde_json::Value =
+            serde_json::from_str(&cli.ok(&["hosts", "list", "--json"])).expect("json");
+        if list["hosts"][0]["state"] == "failed" {
+            break list["hosts"][0].clone();
+        }
+        assert!(Instant::now() < deadline, "never marked failed: {list}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let detail = host["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("ssh: stand-in ssh: connected to devbox"),
+        "{detail}"
+    );
+    let out = cli.on_tmux(&["hosts", "call", "devbox", "tmux.topology"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not connected"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );

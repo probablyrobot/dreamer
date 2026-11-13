@@ -153,6 +153,18 @@ impl Service for Fixed {
     async fn terminal_input(&self, _: api::TerminalInput) -> Result<api::InputResult, RpcError> {
         Ok(api::InputResult::default())
     }
+    async fn hosts_connect(&self, _: api::HostConnect) -> Result<api::HostStatus, RpcError> {
+        Ok(api::HostStatus::default())
+    }
+    async fn hosts_list(&self, _: Empty) -> Result<api::HostList, RpcError> {
+        Ok(api::HostList::default())
+    }
+    async fn hosts_disconnect(&self, _: api::HostRef) -> Result<api::HostStatus, RpcError> {
+        Ok(api::HostStatus::default())
+    }
+    async fn hosts_call(&self, _: api::HostCall) -> Result<api::HostReply, RpcError> {
+        Ok(api::HostReply::default())
+    }
 }
 
 #[test]

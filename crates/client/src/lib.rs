@@ -125,16 +125,30 @@ impl Client {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
+        Client::over_within(r, w, role, pushed_capacity, HANDSHAKE_TIMEOUT).await
+    }
+
+    /// Like [`Client::over`], allowing `handshake` for the peer's answer: a
+    /// stream through SSH spends part of it connecting and authenticating.
+    pub async fn over_within<R, W>(
+        r: R,
+        w: W,
+        role: &str,
+        pushed_capacity: usize,
+        handshake: Duration,
+    ) -> Result<Client, ClientError>
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
         let mut writer: Writer = Box::new(w);
         let me = Identity::current(role);
         let mut reader = Reader::new(r, me.limits);
-        let (welcome, limits) = tokio::time::timeout(
-            HANDSHAKE_TIMEOUT,
-            client_handshake(&mut reader, &mut writer, &me),
-        )
-        .await
-        .map_err(|_| ClientError::Timeout("waiting for the daemon's handshake"))?
-        .map_err(ClientError::Handshake)?;
+        let (welcome, limits) =
+            tokio::time::timeout(handshake, client_handshake(&mut reader, &mut writer, &me))
+                .await
+                .map_err(|_| ClientError::Timeout("waiting for the daemon's handshake"))?
+                .map_err(ClientError::Handshake)?;
         let pending: Pending = Arc::default();
         let (push_tx, push_rx) = mpsc::channel(pushed_capacity.max(1));
         tokio::spawn(read_loop(reader, pending.clone(), push_tx));
@@ -155,12 +169,19 @@ impl Client {
 
     /// One typed call.
     pub async fn call(&self, request: api::Request) -> Result<api::Response, ClientError> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let method = request.method();
+        let payload = self.call_raw(method, request.encode()).await?;
+        api::Response::decode(method, &payload).map_err(|e| ClientError::Rpc(e.into()))
+    }
+
+    /// One call with the parameters already encoded, returning the encoded
+    /// result: for forwarding a call without decoding it.
+    pub async fn call_raw(&self, method: &str, payload: Vec<u8>) -> Result<Vec<u8>, ClientError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let frame = wire::Request {
             id,
             method: method.to_owned(),
-            payload: request.encode(),
+            payload,
             deadline_ms: 0,
         };
         let (tx, rx) = oneshot::channel();
@@ -182,7 +203,7 @@ impl Client {
         if let Some(code) = r.error_code {
             return Err(ClientError::Rpc(api::RpcError::new(code, r.error_message)));
         }
-        api::Response::decode(method, &r.payload).map_err(|e| ClientError::Rpc(e.into()))
+        Ok(r.payload)
     }
 }
 

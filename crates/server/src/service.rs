@@ -78,6 +78,8 @@ pub struct State {
     pub pastes: Mutex<std::collections::HashMap<(u32, u64), Vec<u8>>>,
     /// Connection epochs: each new control connection gets the next one.
     pub epochs: std::sync::atomic::AtomicU64,
+    /// Outbound connections to other hosts' daemons (the coordinator role).
+    pub hosts: crate::hosts::Hosts,
 }
 
 #[derive(Debug, Clone)]
@@ -736,6 +738,22 @@ impl api::Service for DaemonService {
             bytes: bytes.len() as u64,
             batches,
         })
+    }
+
+    async fn hosts_connect(&self, p: api::HostConnect) -> Result<api::HostStatus, RpcError> {
+        self.0.hosts.connect(p).await
+    }
+
+    async fn hosts_list(&self, _: api::Empty) -> Result<api::HostList, RpcError> {
+        Ok(self.0.hosts.list().await)
+    }
+
+    async fn hosts_disconnect(&self, p: api::HostRef) -> Result<api::HostStatus, RpcError> {
+        self.0.hosts.disconnect(&p.name).await
+    }
+
+    async fn hosts_call(&self, p: api::HostCall) -> Result<api::HostReply, RpcError> {
+        self.0.hosts.call(p).await
     }
 
     async fn actions_get(&self, p: api::ActionQuery) -> Result<api::ActionRecord, RpcError> {
