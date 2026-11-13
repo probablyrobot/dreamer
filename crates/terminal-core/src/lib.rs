@@ -333,6 +333,12 @@ pub struct Effects {
     pub render_hold: Vec<bool>,
     /// Engine-generated replies. Empty unless reply capture was enabled.
     pub replies: Vec<(ReplySource, Vec<u8>)>,
+    /// Text the program wrote to the system clipboard (OSC 52), in order.
+    /// Empty unless clipboard capture was enabled.
+    pub clipboard: Vec<Vec<u8>>,
+    /// Clipboard writes refused: too large, another destination, or a
+    /// request to clear.
+    pub clipboard_refused: u32,
 }
 
 impl Effects {

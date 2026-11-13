@@ -12,6 +12,8 @@ font:
   line_height: 1.2                       # multiple of the size; 0.8 to 3.0
 links:
   schemes: [http, https, mailto]         # default
+clipboard:
+  write: focused                         # focused (default), allow, or deny
 ```
 
 ## Font
@@ -41,3 +43,14 @@ changes behavior.
 (Linux) on a terminal hyperlink may open. Names are case-insensitive and
 written without the colon. Any other scheme, such as `file`, is refused
 with a notice. An empty list opens nothing.
+
+## Clipboard
+
+`clipboard.write` decides when a program's clipboard write (OSC 52)
+reaches the system clipboard:
+- `focused` (the default): only while the window is active;
+- `allow`: whenever the daemon addresses the write to this window;
+- `deny`: never.
+
+The daemon addresses each write to one window only: the one focused on
+the pane. Programs can never read the clipboard. See `docs/effects.md`.

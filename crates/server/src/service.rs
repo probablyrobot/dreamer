@@ -551,7 +551,12 @@ impl api::Service for DaemonService {
         }
         let _serial = self.0.input.lock().await;
         let bytes = host
-            .encode(pane, p.generation.map(domain::PaneGeneration), event)
+            .encode(
+                pane,
+                p.generation.map(domain::PaneGeneration),
+                event,
+                p.client,
+            )
             .await
             .map_err(|e| {
                 let c = if e.contains("was replaced") {

@@ -185,12 +185,15 @@ impl MirrorHost {
             .map_err(|_| "the mirror workers have stopped".to_owned())?
     }
 
-    /// Encode input on the pane's owner against its canonical state.
+    /// Encode input on the pane's owner against its canonical state. A
+    /// focus event from `client` makes it (or stops it being) the pane's
+    /// focused client, the only one clipboard writes are addressed to.
     pub async fn encode(
         &self,
         pane: TmuxPaneId,
         generation: Option<PaneGeneration>,
         event: worker::InputEvent,
+        client: Option<u64>,
     ) -> Result<Vec<u8>, String> {
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
@@ -198,6 +201,7 @@ impl MirrorHost {
             pane,
             generation,
             event,
+            client,
             reply,
         })
         .await

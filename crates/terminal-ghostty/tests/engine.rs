@@ -424,3 +424,45 @@ fn osc8_links_are_hit_tested_over_their_cells_and_wraps() {
         ]
     );
 }
+
+#[test]
+fn clipboard_writes_are_captured_only_when_asked_and_never_cut() {
+    fn b64(data: &[u8]) -> String {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for c in data.chunks(3) {
+            let n = (u32::from(c[0]) << 16)
+                | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*c.get(2).unwrap_or(&0));
+            for i in 0..4 {
+                out.push(if i <= c.len() {
+                    T[(n >> (18 - 6 * i)) as usize & 63] as char
+                } else {
+                    '='
+                });
+            }
+        }
+        out
+    }
+    let osc52 = |text: &[u8]| format!("\x1b]52;c;{}\x07", b64(text)).into_bytes();
+
+    // Off by default: a replica never acts on clipboard writes.
+    let mut off = engine();
+    assert!(
+        off.feed(&osc52(b"secret"))
+            .expect("feed")
+            .clipboard
+            .is_empty()
+    );
+
+    let mut config = EngineConfig::new(SIZE);
+    config.capture_clipboard = true;
+    let mut e = Engine::new(config).expect("engine");
+    let fx = e.feed(&osc52("copied ✓".as_bytes())).expect("feed");
+    assert_eq!(fx.clipboard, vec!["copied ✓".as_bytes().to_vec()]);
+    // Too large: refused whole.
+    let big = vec![b'x'; terminal_ghostty::effects_limits::MAX_CLIPBOARD_BYTES + 1];
+    let fx = e.feed(&osc52(&big)).expect("feed");
+    assert!(fx.clipboard.is_empty());
+    assert_eq!(fx.clipboard_refused, 1);
+}

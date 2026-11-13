@@ -20,6 +20,10 @@ mod effects;
 mod features;
 mod frame;
 pub mod input;
+/// Limits applied to effects the engine reports.
+pub mod effects_limits {
+    pub use crate::effects::MAX_CLIPBOARD_BYTES;
+}
 pub mod links;
 pub mod png_decode;
 pub mod selection;
@@ -95,6 +99,9 @@ pub struct EngineConfig {
     /// Deliver engine-generated replies in [`Effects::replies`]. Off by
     /// default: in tmux mirror mode tmux owns query responses.
     pub capture_replies: bool,
+    /// Observe clipboard writes (OSC 52) in [`Effects::clipboard`]. Only the
+    /// daemon's canonical engine does; replicas never act on effects.
+    pub capture_clipboard: bool,
     /// Kitty image storage in bytes; applied on creation and on snapshot
     /// restore (snapshots do not carry it).
     pub image_storage_bytes: u64,
@@ -108,6 +115,7 @@ impl EngineConfig {
             scrollback_bytes: None,
             continuation_max_bytes: None,
             capture_replies: false,
+            capture_clipboard: false,
             image_storage_bytes: terminal_core::family::IMAGE_STORAGE_BYTES,
         }
     }
@@ -263,7 +271,10 @@ impl Engine {
             row_cells: ptr::null_mut(),
             image_iter: ptr::null_mut(),
             images: frame::Images::default(),
-            callbacks: Box::new(CallbackState::new(config.capture_replies)),
+            callbacks: Box::new(CallbackState::new(
+                config.capture_replies,
+                config.capture_clipboard,
+            )),
             size: config.size,
             revision: 0,
             last: None,
@@ -369,6 +380,9 @@ impl Engine {
             )?;
         }
         effects::register(engine.term, &mut engine.callbacks)?;
+        if config.capture_clipboard {
+            effects::set_clipboard(engine.term, &mut engine.callbacks, true)?;
+        }
         let (mut cols, mut rows) = (0u16, 0u16);
         // SAFETY: `term` is live; each key writes one u16.
         unsafe {
@@ -573,6 +587,13 @@ impl Engine {
             mouse_tracking: tracking,
             alt_screen: screen != GhosttyTerminalScreen::GHOSTTY_TERMINAL_SCREEN_PRIMARY,
         })
+    }
+
+    /// Start or stop observing clipboard writes (OSC 52) in
+    /// [`Effects::clipboard`]. The daemon turns it on for a mirror only
+    /// after bootstrap, so restoring a pane never produces a write.
+    pub fn set_capture_clipboard(&mut self, on: bool) -> Result<(), EngineError> {
+        effects::set_clipboard(self.term, &mut self.callbacks, on)
     }
 
     /// Image placements skipped so far because their image data was

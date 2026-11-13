@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 6 }
+version: { major: 1, minor: 7 }
 package: dreamer.v1
 
 types:
@@ -334,6 +334,7 @@ types:
       - { n: 3, name: resume_epoch, type: u64, optional: true, doc: "With generation and sequence: continue after this record instead of a new checkpoint, if it is still retained." }
       - { n: 4, name: resume_generation, type: u64, optional: true }
       - { n: 5, name: resume_sequence, type: u64, optional: true }
+      - { n: 6, name: client, type: u64, optional: true, doc: "An id the client picks once per window; it names the client in TerminalInput too, so the daemon can address effects such as clipboard writes to exactly one." }
 
   - enum: SubscribeMode
     values:
@@ -383,6 +384,7 @@ types:
       - { n: 3, name: bells, type: u32 }
       - { n: 4, name: title, type: string, optional: true, doc: "New title." }
       - { n: 5, name: cwd, type: string, optional: true, doc: "New working directory." }
+      - { n: 6, name: clipboard, type: bytes, optional: true, doc: "Text the program wrote to the clipboard (OSC 52). Sent only to the subscription of the pane's focused client." }
 
   - message: CheckpointData
     fields:
@@ -478,6 +480,7 @@ types:
       - { n: 1, name: pane, type: u32 }
       - { n: 2, name: generation, type: u64, optional: true, doc: "Refuse the input if the pane's process was replaced." }
       - { n: 3, name: endpoint, type: string, optional: true }
+      - { n: 4, name: client, type: u64, optional: true, doc: "The sending client's id (as in TerminalSubscribe); focus events make it the pane's focused client." }
     oneof:
       name: event
       variants:

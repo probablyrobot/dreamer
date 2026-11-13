@@ -20,6 +20,27 @@ pub const DEFAULT_LINE_HEIGHT: f32 = 1.2;
 pub struct Settings {
     pub font: FontSettings,
     pub links: LinkSettings,
+    pub clipboard: ClipboardSettings,
+}
+
+/// When a program's clipboard write (OSC 52) may reach the system
+/// clipboard. The daemon addresses each write to one window: the one
+/// focused on the pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClipboardWrite {
+    /// Only while the window is focused (default).
+    #[default]
+    Focused,
+    /// Whenever the write is addressed to this window.
+    Allow,
+    /// Never.
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ClipboardSettings {
+    pub write: ClipboardWrite,
 }
 
 /// Which hyperlink schemes a modifier-click may open.
@@ -62,6 +83,7 @@ impl Default for Settings {
             links: LinkSettings {
                 schemes: DEFAULT_LINK_SCHEMES.map(String::from).to_vec(),
             },
+            clipboard: ClipboardSettings::default(),
         }
     }
 }
@@ -73,6 +95,14 @@ struct File {
     font: FontFile,
     #[serde(default)]
     links: LinksFile,
+    #[serde(default)]
+    clipboard: ClipboardFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClipboardFile {
+    write: Option<ClipboardWrite>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -161,6 +191,9 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
         }
         s.links.schemes = schemes.iter().map(|x| x.to_ascii_lowercase()).collect();
     }
+    if let Some(w) = file.clipboard.write {
+        s.clipboard.write = w;
+    }
     Ok(s)
 }
 
@@ -209,6 +242,14 @@ mod tests {
         assert!(parse_settings("colors: {}", None).is_err());
         let e = parse_settings("links: { schemes: ['https:'] }", None).expect_err("scheme");
         assert_eq!(e.at, "links.schemes");
+    }
+
+    #[test]
+    fn clipboard_writes_default_to_the_focused_window() {
+        assert_eq!(Settings::default().clipboard.write, ClipboardWrite::Focused);
+        let s = parse_settings("clipboard: { write: deny }", None).expect("deny");
+        assert_eq!(s.clipboard.write, ClipboardWrite::Deny);
+        assert!(parse_settings("clipboard: { write: sometimes }", None).is_err());
     }
 
     #[test]

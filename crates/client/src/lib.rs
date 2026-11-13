@@ -237,6 +237,7 @@ pub async fn paste(
             pane,
             generation,
             endpoint: None,
+            client: None,
             event: Some(api::terminal_input::Event::Paste(api::PasteInput {
                 data: part.to_vec(),
                 more,

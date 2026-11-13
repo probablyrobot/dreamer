@@ -48,6 +48,9 @@ pub struct Effect {
     pub bells: u32,
     pub title: Option<String>,
     pub cwd: Option<String>,
+    /// Text the program wrote to the clipboard; kept only in the copy sent
+    /// to the pane's focused client.
+    pub clipboard: Option<Vec<u8>>,
 }
 
 /// A record on its way to a subscriber, with the live effects it produced
@@ -58,6 +61,8 @@ pub type Live = (u64, Record, Option<Effect>);
 #[derive(Debug)]
 pub struct Sink {
     pub records: mpsc::Sender<Live>,
+    /// The subscribing client's id, if it gave one.
+    pub client: Option<u64>,
     pub ended: Arc<AtomicU8>,
 }
 
@@ -191,6 +196,7 @@ pub enum WorkerMsg {
         pane: TmuxPaneId,
         generation: Option<PaneGeneration>,
         event: InputEvent,
+        client: Option<u64>,
         reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
     Read {
@@ -218,6 +224,8 @@ struct Mirror {
     title: Option<String>,
     cwd: Option<String>,
     effects: u64,
+    /// The client whose window last gained focus on this pane.
+    focused: Option<u64>,
 }
 
 impl Drop for Mirror {
@@ -279,8 +287,16 @@ impl Mirror {
     /// Hand a committed record to every subscriber. One that is full has
     /// fallen behind: it is ended as lagged, never skipped silently.
     fn publish(&mut self, seq: u64, record: &Record, effect: Option<Effect>) {
+        let focused = self.focused;
         self.subscribers.retain(|s| {
-            match s.records.try_send((seq, record.clone(), effect.clone())) {
+            // A clipboard write goes to exactly one client: the focused one.
+            let effect = effect.clone().map(|mut e| {
+                if focused.is_none() || s.client != focused {
+                    e.clipboard = None;
+                }
+                e
+            });
+            match s.records.try_send((seq, record.clone(), effect)) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     s.ended.store(end::LAGGED, Ordering::SeqCst);
@@ -330,13 +346,17 @@ impl Mirror {
                     if fx.pwd.is_some() {
                         self.cwd.clone_from(&fx.pwd);
                     }
-                    if fx.bells > 0 || fx.title.is_some() || fx.pwd.is_some() {
+                    // The last write wins when one ingestion holds several.
+                    let clipboard = fx.clipboard.into_iter().last();
+                    if fx.bells > 0 || fx.title.is_some() || fx.pwd.is_some() || clipboard.is_some()
+                    {
                         self.effects += 1;
                         effect = Some(Effect {
                             id: self.effects,
                             bells: fx.bells,
                             title: fx.title,
                             cwd: fx.pwd,
+                            clipboard,
                         });
                     }
                 })
@@ -489,7 +509,13 @@ pub fn spawn(
                             title: None,
                             cwd: None,
                             effects: 0,
+                            focused: None,
                         };
+                        // Clipboard writes count only from live output, never
+                        // from what bootstrap restored.
+                        if let Err(e) = m.engine.set_capture_clipboard(true) {
+                            m.error = Some(format!("clipboard capture: {e}"));
+                        }
                         for r in continuation {
                             m.apply(r);
                         }
@@ -528,8 +554,19 @@ pub fn spawn(
                         pane,
                         generation,
                         event,
+                        client,
                         reply,
                     } => {
+                        // Focus decides which client clipboard writes go to.
+                        if let (InputEvent::Focus(gained), Some(c), Some(m)) =
+                            (&event, client, mirrors.get_mut(&pane))
+                        {
+                            if *gained {
+                                m.focused = Some(c);
+                            } else if m.focused == Some(c) {
+                                m.focused = None;
+                            }
+                        }
                         let r = match mirrors.get(&pane) {
                             None => Err(format!("pane %{} has no live mirror", pane.0)),
                             Some(m) if generation.is_some_and(|g| g != m.generation) => Err(format!(

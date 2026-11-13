@@ -90,6 +90,7 @@ pub struct Feed {
     /// output that the view has not shown yet.
     meta: Arc<Mutex<crate::PaneMeta>>,
     bells: Arc<AtomicU64>,
+    clipboard: Arc<Mutex<Option<Vec<u8>>>>,
     /// One signal means "a newer frame is waiting"; never more than one.
     pub wake: async_channel::Receiver<()>,
 }
@@ -106,6 +107,7 @@ impl Feed {
         let latest = Arc::new(Mutex::new(None));
         let meta = Arc::new(Mutex::new(crate::PaneMeta::default()));
         let bells = Arc::new(AtomicU64::new(0));
+        let clipboard = Arc::new(Mutex::new(None));
         let status = Arc::new(Mutex::new(FeedStatus::Connecting));
         let stats = Arc::new(FeedStats::default());
         let (wake_tx, wake) = async_channel::bounded(1);
@@ -113,7 +115,10 @@ impl Feed {
         let (view, view_rx) = tokio::sync::mpsc::unbounded_channel();
         let inputs_sent = Arc::new(AtomicU64::new(0));
         let inputs_dropped = Arc::new(AtomicU64::new(0));
-        let target = Arc::new(Target::default());
+        let target = Arc::new(Target {
+            client: client_id(),
+            ..Target::default()
+        });
         let sender = InputSender {
             socket: socket.clone(),
             target: target.clone(),
@@ -124,6 +129,7 @@ impl Feed {
             target,
             meta: meta.clone(),
             bells: bells.clone(),
+            clipboard: clipboard.clone(),
             latest: latest.clone(),
             status: status.clone(),
             stats: stats.clone(),
@@ -155,6 +161,7 @@ impl Feed {
             stats,
             meta,
             bells,
+            clipboard,
             wake,
         })
     }
@@ -176,8 +183,6 @@ impl Feed {
         let _ = self.view.send(command);
     }
 
-    /// The selected text (wrapped lines joined, trailing blanks trimmed),
-    /// asked of the owner thread; never of the daemon.
     /// The OSC 8 link at a viewport cell and the cells it covers, asked of
     /// the owner thread. Hit testing only: opening is the caller's choice.
     pub async fn link_at(&self, col: u16, row: u16) -> Option<Link> {
@@ -186,6 +191,8 @@ impl Feed {
         rx.await.ok().flatten()
     }
 
+    /// The selected text (wrapped lines joined, trailing blanks trimmed),
+    /// asked of the owner thread; never of the daemon.
     pub async fn selection_text(&self) -> Option<String> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.view(ViewCommand::Copy(tx));
@@ -195,6 +202,12 @@ impl Feed {
     /// The pane's current title and working directory.
     pub fn meta(&self) -> crate::PaneMeta {
         self.meta.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// Text the program wrote to the clipboard since the last call, if the
+    /// daemon addressed it to this window (its focused client).
+    pub fn take_clipboard(&self) -> Option<Vec<u8>> {
+        self.clipboard.lock().ok().and_then(|mut c| c.take())
     }
 
     /// Bells rung since the last call (live output only).
@@ -218,6 +231,8 @@ impl Feed {
 /// The pane being followed and its process generation (0 until known).
 #[derive(Debug, Default)]
 struct Target {
+    /// This window's client id, sent with its subscription and its input.
+    client: u64,
     pane: AtomicU64,
     generation: AtomicU64,
     known: std::sync::atomic::AtomicBool,
@@ -262,6 +277,7 @@ impl InputSender {
                         pane,
                         generation,
                         endpoint: None,
+                        client: Some(self.target.client),
                         event: Some(other),
                     }))
                     .await
@@ -291,6 +307,7 @@ struct Owner {
     target: Arc<Target>,
     meta: Arc<Mutex<crate::PaneMeta>>,
     bells: Arc<AtomicU64>,
+    clipboard: Arc<Mutex<Option<Vec<u8>>>>,
     latest: Arc<Mutex<Option<Arc<FrameSnapshot>>>>,
     status: Arc<Mutex<FeedStatus>>,
     stats: Arc<FeedStats>,
@@ -317,7 +334,14 @@ impl Owner {
     async fn connect(&self, socket: &std::path::Path, pane: u32) -> Follower {
         let mut backoff = Duration::from_millis(100);
         loop {
-            match Follower::start(socket.to_path_buf(), pane, RetryPolicy::default()).await {
+            match Follower::start_as(
+                socket.to_path_buf(),
+                pane,
+                RetryPolicy::default(),
+                Some(self.target.client),
+            )
+            .await
+            {
                 Ok(f) => return f,
                 Err(e) => {
                     self.set(FeedStatus::Reconnecting(e.to_string()));
@@ -527,6 +551,12 @@ impl Owner {
                     self.bells.fetch_add(u64::from(s.bells), Ordering::Relaxed);
                     wake_view = true;
                 }
+                if let Some(text) = f.take_clipboard() {
+                    if let Ok(mut c) = self.clipboard.lock() {
+                        *c = Some(text);
+                    }
+                    wake_view = true;
+                }
             }
             if wake_view
                 && let Ok(s) = &step
@@ -587,4 +617,14 @@ impl Owner {
             backoff = (backoff * 2).min(Duration::from_secs(2));
         }
     }
+}
+
+/// An id for this window as a client of the daemon: unique enough across
+/// the windows and processes attached to one daemon.
+fn client_id() -> u64 {
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    (u64::from(std::process::id()) << 32) ^ nanos ^ (N.fetch_add(1, Ordering::Relaxed) << 48)
 }

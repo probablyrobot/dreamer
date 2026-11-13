@@ -16,6 +16,7 @@ use crate::{EngineError, check};
 #[derive(Debug)]
 pub(crate) struct CallbackState {
     capture_replies: bool,
+    capture_clipboard: bool,
     pending: Effects,
     pub(crate) title_changed: bool,
     pub(crate) pwd_changed: bool,
@@ -25,9 +26,10 @@ pub(crate) struct CallbackState {
 }
 
 impl CallbackState {
-    pub(crate) fn new(capture_replies: bool) -> Self {
+    pub(crate) fn new(capture_replies: bool, capture_clipboard: bool) -> Self {
         Self {
             capture_replies,
+            capture_clipboard,
             pending: Effects::default(),
             title_changed: false,
             pwd_changed: false,
@@ -151,5 +153,82 @@ unsafe extern "C" fn on_write_pty(
                 None => s.pending.replies.push((ReplySource::Protocol, bytes)),
             }
         })
+    }
+}
+
+/// Start or stop observing clipboard writes on a live terminal.
+pub(crate) fn set_clipboard(
+    term: GhosttyTerminal,
+    state: &mut CallbackState,
+    on: bool,
+) -> Result<(), EngineError> {
+    state.capture_clipboard = on;
+    let f: GhosttyTerminalClipboardWriteFn = if on { Some(on_clipboard_write) } else { None };
+    // SAFETY: `term` is live; the callback only touches the boxed state
+    // registered as userdata, which outlives the terminal.
+    check("set clipboard_write", unsafe {
+        ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, fn_ptr(f))
+    })
+}
+
+/// Largest clipboard write accepted. A larger one is refused, never cut.
+pub const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
+
+/// A program's clipboard write: the text is copied out now and answered
+/// within the callback, as the API requires. Only the standard clipboard
+/// and a text representation are taken.
+unsafe extern "C" fn on_clipboard_write(
+    _term: GhosttyTerminal,
+    userdata: *mut c_void,
+    write: *const GhosttyClipboardWrite,
+) {
+    if write.is_null() {
+        return;
+    }
+    let mut result = GhosttyClipboardWriteResult::GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
+    unsafe {
+        with_state(userdata, |s| {
+            // SAFETY: the request and everything it points to are borrowed
+            // for the duration of the callback; the text is copied now.
+            let w = &*write;
+            let text = (w.location
+                == GhosttyClipboardLocation::GHOSTTY_CLIPBOARD_LOCATION_STANDARD
+                && w.contents_len > 0
+                && !w.contents.is_null())
+            .then(|| std::slice::from_raw_parts(w.contents, w.contents_len))
+            .and_then(|contents| {
+                let mime =
+                    |c: &GhosttyClipboardContent| crate::borrowed_str(c.mime.ptr, c.mime.len);
+                contents
+                    .iter()
+                    .find(|c| mime(c).starts_with("text/plain"))
+                    .or_else(|| contents.first())
+                    .map(|c| (c.data.ptr, c.data.len))
+            });
+            match text {
+                Some((_, len)) if len > MAX_CLIPBOARD_BYTES => {
+                    s.pending.clipboard_refused += 1;
+                    result = GhosttyClipboardWriteResult::GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED;
+                }
+                Some((ptr, len)) => {
+                    let data = if ptr.is_null() || len == 0 {
+                        Vec::new()
+                    } else {
+                        std::slice::from_raw_parts(ptr, len).to_vec()
+                    };
+                    s.pending.clipboard.push(data);
+                    result = GhosttyClipboardWriteResult::GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+                }
+                None => s.pending.clipboard_refused += 1,
+            }
+        });
+        let reply = GhosttyClipboardWriteReply {
+            size: size_of::<GhosttyClipboardWriteReply>(),
+            result,
+            remember: false,
+        };
+        if let Some(answer) = (*write).reply {
+            answer(write, &reply);
+        }
     }
 }
