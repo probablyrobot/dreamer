@@ -150,8 +150,23 @@ pub enum KeyIntent {
     Pass,
 }
 
+/// The workspace's zoom toggle: Cmd-Shift-Enter on macOS, Ctrl-Shift-Enter
+/// elsewhere. Never sent to the pane.
+pub fn is_zoom_shortcut(k: &Keystroke) -> bool {
+    let m = &k.modifiers;
+    let primary = if cfg!(target_os = "macos") {
+        m.platform && !m.control
+    } else {
+        m.control && !m.platform
+    };
+    k.key == "enter" && primary && m.shift && !m.alt
+}
+
 pub fn intent(k: &Keystroke, held: bool) -> KeyIntent {
     let m = &k.modifiers;
+    if is_zoom_shortcut(k) {
+        return KeyIntent::Pass;
+    }
     let paste = if cfg!(target_os = "macos") {
         m.platform && !m.control && !m.alt && k.key == "v"
     } else {

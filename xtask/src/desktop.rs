@@ -212,7 +212,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         };
         let passed = out.status.success()
             && stdout.contains(&format!("smoke: backend {expected}"))
-            && stdout.contains("smoke: typed text reached only the focused pane");
+            && stdout.contains("smoke: dragging a divider resized pane");
         println!(
             "linux-desktop: {backend:<7} {:<18} {}",
             "workspace",
