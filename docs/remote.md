@@ -46,6 +46,13 @@ exposes them to local clients through its API (`hosts.connect`,
 
 Remote daemons receive none of the local user's keys or grants.
 
+**Survival.** A host's link, its relayed subscriptions, and its automatic
+reconnects belong to the local daemon, so they continue when every local
+client (the desktop included) has gone. When SSH drops, the remote daemon,
+its tmux, and its programs keep running, and the reconnect reaches the
+same daemon instance with the same journal. `crates/server/tests/hosts.rs`
+checks both.
+
 ## First connection
 
 The coordinator's SSH never prompts (`BatchMode=yes`). A host whose key is
