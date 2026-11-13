@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 11;
+pub const PROTOCOL_MINOR: u32 = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -646,6 +646,9 @@ pub struct Topology {
     pub windows: Vec<Window>,
     #[prost(message, repeated, tag = "4")]
     pub panes: Vec<Pane>,
+    /// Identifies this run of the tmux server. Session, window, and pane ids are only meaningful within one incarnation: never reuse a saved id from another.
+    #[prost(uint64, tag = "5")]
+    pub incarnation: u64,
 }
 
 /// Ask for a tmux window's size in cells. Applied only for the window's sizing owner: the first client to ask, until it disconnects or releases the window. Send it when your own window changes size, never in reaction to a topology change.

@@ -203,16 +203,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // Tabs and panes from tmux, an external split, click-to-focus,
         // typing, and a tab switch.
         let started = Instant::now();
-        let out = crate::gate::workspace_smoke_output(&root, remove)?;
-        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let state = crate::gate::desktop_state_dir(backend);
+        let out = crate::gate::workspace_smoke_output(&root, remove, &state)?;
+        // A second launch on a new tmux server must restore the arrangement.
+        let again = crate::gate::workspace_restore_output(&root, remove, &state);
+        let _ = std::fs::remove_dir_all(&state);
+        let again = again?;
+        let mut stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        stdout.push_str(&String::from_utf8_lossy(&again.stdout));
         let expected = if backend == "wayland" {
             "Wayland"
         } else {
             "X11"
         };
         let passed = out.status.success()
+            && again.status.success()
             && stdout.contains(&format!("smoke: backend {expected}"))
-            && stdout.contains("smoke: dragging a divider resized pane");
+            && stdout.contains("smoke: dragging a divider resized pane")
+            && stdout.contains("smoke: the saved arrangement came back");
         println!(
             "linux-desktop: {backend:<7} {:<18} {}",
             "workspace",

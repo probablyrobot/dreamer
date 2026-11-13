@@ -51,6 +51,18 @@ pub(crate) struct Workspace {
     /// The command palette while open, and where its keys go.
     pub(crate) palette: Option<crate::palette::Palette>,
     palette_focus: FocusHandle,
+    /// The sidebar (sessions) is open.
+    pub(crate) sidebar: bool,
+    /// Where the arrangement is saved, what was saved at startup, and
+    /// whether the first topology has been matched against it yet.
+    state_path: Option<PathBuf>,
+    saved: Option<workspace_config::desktop_state::DesktopState>,
+    restored: bool,
+    bounds: Option<[f32; 4]>,
+    _bounds: Option<gpui::Subscription>,
+    /// A save is running, and the arrangement changed since it began.
+    saving: bool,
+    save_dirty: bool,
 }
 
 /// A divider being dragged: the size the pointer asks for, the last size
@@ -92,6 +104,14 @@ impl Workspace {
             resizes_sent: 0,
             palette: None,
             palette_focus: cx.focus_handle(),
+            sidebar: false,
+            state_path: None,
+            saved: None,
+            restored: false,
+            bounds: None,
+            _bounds: None,
+            saving: false,
+            save_dirty: false,
         }
     }
 
@@ -356,6 +376,10 @@ impl Workspace {
             }
             C::KillPane => pane.map(|pane| Kind::KillPane(api::KillPane { pane })),
             C::KillWindow => win.map(|window| Kind::KillWindow(api::KillWindow { window })),
+            C::ToggleSidebar => {
+                self.toggle_sidebar(cx);
+                None
+            }
         };
         if let Some(kind) = action {
             self.topology.act(kind);
@@ -390,6 +414,122 @@ impl Workspace {
         self.current.as_ref()
     }
 
+    /// Remember where the arrangement lives and what was saved there.
+    pub(crate) fn with_state(&mut self, path: Option<PathBuf>) {
+        self.saved = path
+            .as_deref()
+            .and_then(workspace_config::desktop_state::load_desktop_state);
+        self.sidebar = self.saved.as_ref().is_some_and(|s| s.sidebar);
+        self.state_path = path;
+    }
+
+    /// The arrangement as it is now, and where it goes.
+    fn snapshot(&self) -> Option<(PathBuf, workspace_config::desktop_state::DesktopState)> {
+        let (path, t) = (self.state_path.clone()?, self.current.as_ref()?);
+        let session = t.sessions.iter().find(|s| Some(s.id) == self.session);
+        Some((
+            path,
+            workspace_config::desktop_state::DesktopState {
+                version: 0,
+                endpoint: t.endpoint.clone(),
+                incarnation: t.incarnation,
+                session_id: session.map(|s| s.id),
+                session_name: session.map(|s| s.name.clone()),
+                sidebar: self.sidebar,
+                bounds: self.bounds,
+            },
+        ))
+    }
+
+    /// Save the arrangement off the UI thread, one write at a time: the
+    /// writer takes the latest state when it writes, and writes again if
+    /// it changed meanwhile, so an older state never lands last.
+    fn save_state(&mut self, cx: &mut Context<Self>) {
+        self.save_dirty = true;
+        if self.saving || self.state_path.is_none() {
+            return;
+        }
+        self.saving = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(50))
+                    .await;
+                let Ok(next) = this.update(cx, |ws, _| {
+                    ws.save_dirty = false;
+                    ws.snapshot()
+                }) else {
+                    return;
+                };
+                if let Some((path, state)) = next {
+                    cx.background_spawn(async move {
+                        let _ = workspace_config::desktop_state::save_desktop_state(&path, &state);
+                    })
+                    .await;
+                }
+                let again = this.update(cx, |ws, _| {
+                    if ws.save_dirty {
+                        true
+                    } else {
+                        ws.saving = false;
+                        false
+                    }
+                });
+                if !matches!(again, Ok(true)) {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn window_moved(&mut self, bounds: [f32; 4], cx: &mut Context<Self>) {
+        if self.bounds != Some(bounds) {
+            self.bounds = Some(bounds);
+            self.save_state(cx);
+        }
+    }
+
+    /// Show another session in this window.
+    pub(crate) fn switch_session(
+        &mut self,
+        session: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session == Some(session) {
+            return;
+        }
+        self.session = Some(session);
+        self.focused = None;
+        if let Some(t) = self.current.clone() {
+            self.update_topology(t, window, cx);
+        }
+        self.save_state(cx);
+    }
+
+    pub(crate) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar = !self.sidebar;
+        self.save_state(cx);
+        cx.notify();
+    }
+
+    /// Windows in the session shown: the tabs.
+    pub(crate) fn tab_count(&self) -> usize {
+        match (&self.current, self.session) {
+            (Some(t), Some(s)) => t.windows.iter().filter(|w| w.sessions.contains(&s)).count(),
+            _ => 0,
+        }
+    }
+
+    pub(crate) fn session_name(&self) -> Option<String> {
+        let t = self.current.as_ref()?;
+        t.sessions
+            .iter()
+            .find(|s| Some(s.id) == self.session)
+            .map(|s| s.name.clone())
+    }
+
     /// The window the session shows now, if the topology has one.
     fn active_window(&self) -> Option<&api::Window> {
         let t = self.current.as_ref()?;
@@ -421,12 +561,26 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self
+        if !self.restored {
+            // The first topology: the saved session, by id only for the same
+            // server incarnation, else by name (spec 15.2: never reopen a
+            // stale id from another server epoch).
+            let sessions: Vec<(u32, &str)> =
+                t.sessions.iter().map(|s| (s.id, s.name.as_str())).collect();
+            self.session = workspace_config::desktop_state::choose_session(
+                self.saved.as_ref(),
+                &t.endpoint,
+                t.incarnation,
+                &sessions,
+            );
+            self.restored = true;
+        } else if self
             .session
             .is_none_or(|s| !t.sessions.iter().any(|x| x.id == s))
         {
             self.session = t.sessions.first().map(|s| s.id);
         }
+        let first_save = self.current.is_none();
         self.current = Some(t);
         let visible = self.visible();
         self.panes
@@ -437,6 +591,10 @@ impl Workspace {
             {
                 self.panes.insert(p.id, view);
             }
+        }
+        if first_save {
+            // Record the server incarnation the session id now belongs to.
+            self.save_state(cx);
         }
         // Keep focus on a visible pane: tmux's active one if ours is gone.
         if self.focused.is_none_or(|f| !self.panes.contains_key(&f)) {
@@ -557,6 +715,32 @@ impl Render for Workspace {
         };
         tabs.sort_by_key(|w| w.index);
         let active = self.active_window().map(|w| w.id);
+        // Compact status: only when something is not normal.
+        let status = {
+            use replica::feed::FeedStatus;
+            use replica::topology::TopologyStatus;
+            match self.topology.status() {
+                TopologyStatus::Reconnecting(why) => Some(format!("reconnecting: {why}")),
+                TopologyStatus::Connecting => Some("connecting…".to_owned()),
+                TopologyStatus::Following => {
+                    let behind = self
+                        .panes
+                        .values()
+                        .filter(|p| {
+                            p.shell
+                                .read(cx)
+                                .feed
+                                .as_ref()
+                                .is_some_and(|f| f.status() != FeedStatus::Following)
+                        })
+                        .count();
+                    (behind > 0).then(|| match behind {
+                        1 => "1 pane catching up".to_owned(),
+                        n => format!("{n} panes catching up"),
+                    })
+                }
+            }
+        };
         let strip = div()
             .h(px(TAB_STRIP))
             .flex()
@@ -581,7 +765,43 @@ impl Render for Workspace {
                     .when(is_active, |d| d.bg(rgb(0x2a2f38)))
                     .child(format!("{} {}", w.index, w.name))
                     .on_click(cx.listener(move |ws, _, _, cx| ws.click_tab(id, cx)))
-            }));
+            }))
+            .child(div().flex_1())
+            .children(status.map(|s| div().px_2().text_color(rgb(0xd7b46a)).child(s)));
+
+        // The sidebar, on demand: sessions, the shown one highlighted.
+        let sidebar = self.sidebar.then(|| {
+            let sessions: Vec<api::Session> = self
+                .current
+                .as_ref()
+                .map(|t| t.sessions.clone())
+                .unwrap_or_default();
+            let shown = self.session;
+            div()
+                .w(px(180.0))
+                .h_full()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .bg(rgb(0x101216))
+                .text_size(px(12.0))
+                .child(div().text_color(rgb(0x8a909a)).child("Sessions"))
+                .children(sessions.into_iter().map(|s| {
+                    let id = s.id;
+                    let here = Some(id) == shown;
+                    div()
+                        .id(("session", id as usize))
+                        .px_2()
+                        .rounded_sm()
+                        .text_color(if here { rgb(0xe6e6e6) } else { rgb(0xb8bec8) })
+                        .when(here, |d| d.bg(rgb(0x2a2f38)))
+                        .child(s.name)
+                        .on_click(
+                            cx.listener(move |ws, _, window, cx| ws.switch_session(id, window, cx)),
+                        )
+                }))
+        });
 
         // Panes at their tmux cell rectangles, in canonical cells scaled to
         // this view; a zoomed pane fills the window's area.
@@ -727,6 +947,14 @@ impl Render for Workspace {
                 .text_color(rgb(0xb8bec8))
                 .child("This window uses a layout Dreamer cannot draw yet (floating panes). Attach a normal tmux client to use it.")
         });
+        let area = self.pane_area(
+            entity.clone(),
+            m,
+            panes.map(IntoElement::into_any_element).collect(),
+            handles.map(IntoElement::into_any_element).collect(),
+            preview.map(IntoElement::into_any_element),
+            notice.map(IntoElement::into_any_element),
+        );
         div()
             .size_full()
             .flex()
@@ -746,68 +974,84 @@ impl Render for Workspace {
             .child(strip)
             .child(
                 div()
-                    .relative()
+                    .flex()
+                    .flex_row()
                     .flex_1()
-                    .overflow_hidden()
-                    // tmux leaves one cell between panes: the divider.
-                    .bg(rgb(0x1f232a))
-                    .children(panes)
-                    .children(handles)
-                    .children(preview)
-                    .children(notice)
-                    // Measures the pane area for window sizing.
-                    .child({
-                        let entity = entity.clone();
-                        gpui::canvas(
-                            |_, _, _| (),
-                            move |bounds, _, window, cx| {
-                                entity.update(cx, |ws, _| {
-                                    ws.origin = Some(bounds.origin);
-                                    ws.cell = Some((m.width, m.height));
-                                });
-                                // A drag follows the pointer anywhere until
-                                // the button comes up.
-                                let e = entity.clone();
-                                window.on_mouse_event(
-                                    move |ev: &gpui::MouseMoveEvent, phase, _, cx| {
-                                        if phase == gpui::DispatchPhase::Bubble {
-                                            e.update(cx, |ws, cx| {
-                                                if ws.drag.is_some() {
-                                                    ws.drag_to(ev.position, cx);
-                                                }
-                                            });
-                                        }
-                                    },
-                                );
-                                let e = entity.clone();
-                                window.on_mouse_event(
-                                    move |_: &gpui::MouseUpEvent, phase, _, cx| {
-                                        if phase == gpui::DispatchPhase::Bubble {
-                                            e.update(cx, |ws, cx| {
-                                                if ws.drag.is_some() {
-                                                    ws.end_drag(cx);
-                                                }
-                                            });
-                                        }
-                                    },
-                                );
-                                let cols =
-                                    (f32::from(bounds.size.width) / f32::from(m.width)).floor();
-                                let rows =
-                                    (f32::from(bounds.size.height) / f32::from(m.height)).floor();
-                                if cols >= 2.0 && rows >= 2.0 {
-                                    entity.update(cx, |ws, cx| {
-                                        ws.area_painted(cols as u32, rows as u32, cx)
-                                    });
-                                }
-                            },
-                        )
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                    }),
+                    .min_h_0()
+                    .children(sidebar)
+                    .child(area),
             )
+    }
+}
+
+impl Workspace {
+    /// The pane area: panes, divider handles, the drag preview, and the
+    /// canvas that measures it.
+    #[allow(clippy::too_many_arguments)]
+    fn pane_area(
+        &self,
+        entity: Entity<Workspace>,
+        m: terminal_render::CellMetrics,
+        panes: Vec<gpui::AnyElement>,
+        handles: Vec<gpui::AnyElement>,
+        preview: Option<gpui::AnyElement>,
+        notice: Option<gpui::AnyElement>,
+    ) -> gpui::Div {
+        div()
+            .relative()
+            .flex_1()
+            .overflow_hidden()
+            // tmux leaves one cell between panes: the divider.
+            .bg(rgb(0x1f232a))
+            .children(panes)
+            .children(handles)
+            .children(preview)
+            .children(notice)
+            // Measures the pane area for window sizing.
+            .child({
+                let entity = entity.clone();
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        entity.update(cx, |ws, _| {
+                            ws.origin = Some(bounds.origin);
+                            ws.cell = Some((m.width, m.height));
+                        });
+                        // A drag follows the pointer anywhere until
+                        // the button comes up.
+                        let e = entity.clone();
+                        window.on_mouse_event(move |ev: &gpui::MouseMoveEvent, phase, _, cx| {
+                            if phase == gpui::DispatchPhase::Bubble {
+                                e.update(cx, |ws, cx| {
+                                    if ws.drag.is_some() {
+                                        ws.drag_to(ev.position, cx);
+                                    }
+                                });
+                            }
+                        });
+                        let e = entity.clone();
+                        window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, _, cx| {
+                            if phase == gpui::DispatchPhase::Bubble {
+                                e.update(cx, |ws, cx| {
+                                    if ws.drag.is_some() {
+                                        ws.end_drag(cx);
+                                    }
+                                });
+                            }
+                        });
+                        let cols = (f32::from(bounds.size.width) / f32::from(m.width)).floor();
+                        let rows = (f32::from(bounds.size.height) / f32::from(m.height)).floor();
+                        if cols >= 2.0 && rows >= 2.0 {
+                            entity
+                                .update(cx, |ws, cx| ws.area_painted(cols as u32, rows as u32, cx));
+                        }
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+            })
     }
 }
 
@@ -821,13 +1065,14 @@ pub(crate) fn follow_topology(
     let weak = workspace.downgrade();
     cx.spawn(async move |cx| {
         while topology.wake.recv().await.is_ok() {
-            let Some(update) = topology.take() else {
-                continue;
-            };
-            let Some(t) = update.topology else { continue };
+            let t = topology.take().and_then(|u| u.topology);
             let alive = cx.update_window(any, |_, window, cx| {
-                weak.update(cx, |ws, cx| ws.update_topology(t, window, cx))
-                    .is_ok()
+                weak.update(cx, |ws, cx| match t {
+                    Some(t) => ws.update_topology(t, window, cx),
+                    // A status change: redraw the status.
+                    None => cx.notify(),
+                })
+                .is_ok()
             });
             if !matches!(alive, Ok(true)) {
                 return;
@@ -843,7 +1088,7 @@ pub(crate) fn follow_topology(
 pub(crate) fn open(
     cx: &mut gpui::App,
     launch: client::Launch,
-    smoke: Option<Vec<String>>,
+    smoke: Option<(Vec<String>, bool)>,
 ) -> Result<(), String> {
     use gpui::{Bounds, WindowBounds, WindowOptions, size};
     let socket = launch.socket.clone();
@@ -851,7 +1096,23 @@ pub(crate) fn open(
         TopologyFeed::start(socket.clone(), Some(launch))
             .map_err(|e| format!("cannot follow the tmux topology: {e}"))?,
     );
-    let bounds = Bounds::centered(None, size(px(1000.), px(560.)), cx);
+    // The saved arrangement. A smoke run uses one only in a private
+    // directory it was given, never the user's.
+    let state_path = if smoke.is_some() && std::env::var_os("DREAMER_DESKTOP_STATE_DIR").is_none() {
+        None
+    } else {
+        workspace_config::desktop_state::desktop_state_path()
+    };
+    let saved_bounds = state_path
+        .as_deref()
+        .and_then(workspace_config::desktop_state::load_desktop_state)
+        .and_then(|s| s.bounds);
+    let bounds = match saved_bounds {
+        Some([x, y, w, h]) if w >= 200.0 && h >= 120.0 => {
+            Bounds::new(gpui::point(px(x), px(y)), size(px(w), px(h)))
+        }
+        _ => Bounds::centered(None, size(px(1000.), px(560.)), cx),
+    };
     let t = topology.clone();
     let window = cx
         .open_window(
@@ -860,9 +1121,28 @@ pub(crate) fn open(
                 ..Default::default()
             },
             |window, cx| {
-                let ws = cx.new(|cx| Workspace::new(cx, t, socket));
+                let ws = cx.new(|cx| {
+                    let mut ws = Workspace::new(cx, t, socket);
+                    ws.with_state(state_path);
+                    ws
+                });
                 let focus = ws.read(cx).focus.clone();
                 window.focus(&focus, cx);
+                // Remember where the window is.
+                ws.update(cx, |ws, cx| {
+                    ws._bounds = Some(cx.observe_window_bounds(window, |ws, window, cx| {
+                        let b = window.bounds();
+                        ws.window_moved(
+                            [
+                                f32::from(b.origin.x),
+                                f32::from(b.origin.y),
+                                f32::from(b.size.width),
+                                f32::from(b.size.height),
+                            ],
+                            cx,
+                        );
+                    }));
+                });
                 ws
             },
         )
@@ -872,10 +1152,15 @@ pub(crate) fn open(
         .update(cx, |_, _, cx| cx.entity())
         .map_err(|e| format!("{e:#}"))?;
     follow_topology(any, ws.clone(), topology, cx);
-    if let Some(daemon) = smoke {
+    if let Some((daemon, restore)) = smoke {
         let weak = ws.downgrade();
-        cx.spawn(async move |cx| smoke::run(any, weak, daemon, cx).await)
-            .detach();
+        if restore {
+            cx.spawn(async move |cx| smoke::restore(any, weak, cx).await)
+                .detach();
+        } else {
+            cx.spawn(async move |cx| smoke::run(any, weak, daemon, cx).await)
+                .detach();
+        }
     }
     Ok(())
 }
@@ -970,7 +1255,7 @@ mod smoke {
         cx: &mut AsyncApp,
     ) {
         wait_for(any, &ws, cx, "two tabs and three ready panes", |w, cx| {
-            w.topology().is_some_and(|t| t.windows.len() == 2) && panes_ready(w, cx, 3)
+            w.tab_count() == 2 && panes_ready(w, cx, 3)
         })
         .await;
         let ids = read(any, &ws, cx, |w, _| w.pane_ids()).unwrap_or_default();
@@ -1028,7 +1313,71 @@ mod smoke {
         )
         .await;
         println!("smoke: a tab click switched the tmux window, and only its pane is shown");
+
+        // The sidebar from the palette, and another session in this window;
+        // the arrangement is saved.
+        palette(any, &ws, cx, "toggle sidebar");
+        wait_for(any, &ws, cx, "the sidebar", |w, _| w.sidebar).await;
+        let other = read(any, &ws, cx, |w, _| {
+            w.topology()
+                .and_then(|t| t.sessions.iter().find(|s| s.name == "other").map(|s| s.id))
+        })
+        .flatten()
+        .unwrap_or_else(|| fail("no session `other`"));
+        let _ = cx.update_window(any, |_, window, cx| {
+            if let Some(ws) = ws.upgrade() {
+                ws.update(cx, |w, cx| w.switch_session(other, window, cx));
+            }
+        });
+        wait_for(any, &ws, cx, "session `other` in the window", |w, _| {
+            w.session_name().as_deref() == Some("other") && w.pane_ids().len() == 1
+        })
+        .await;
+        let path = workspace_config::desktop_state::desktop_state_path();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let saved = path
+                .as_deref()
+                .and_then(workspace_config::desktop_state::load_desktop_state);
+            if saved
+                .as_ref()
+                .is_some_and(|s| s.session_name.as_deref() == Some("other") && s.sidebar)
+            {
+                break;
+            }
+            if Instant::now() > deadline {
+                fail(&format!("the arrangement was not saved: {saved:?}"));
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+        }
+        println!(
+            "smoke: the sidebar switched the window to session `other`, and the arrangement was saved"
+        );
         std::process::exit(if painted { 0 } else { crate::INCONCLUSIVE });
+    }
+
+    /// The second run, against a new tmux server: the saved session comes
+    /// back by name (its old id belongs to the previous server), with the
+    /// sidebar open.
+    pub(super) async fn restore(
+        any: AnyWindowHandle,
+        ws: WeakEntity<Workspace>,
+        cx: &mut AsyncApp,
+    ) {
+        wait_for(
+            any,
+            &ws,
+            cx,
+            "the restored session `other` with the sidebar",
+            |w, _| w.session_name().as_deref() == Some("other") && w.sidebar,
+        )
+        .await;
+        println!(
+            "smoke: the saved arrangement came back on a new tmux server: session `other` by name, sidebar open"
+        );
+        std::process::exit(0);
     }
 
     /// Type `filter` into a freshly opened palette and press Enter; then
@@ -1103,7 +1452,7 @@ mod smoke {
 
         palette(any, ws, cx, "new window");
         wait_for(any, ws, cx, "a third window from the palette", |w, _| {
-            w.topology().is_some_and(|t| t.windows.len() == 3) && w.pane_ids().len() == 1
+            w.tab_count() == 3 && w.pane_ids().len() == 1
         })
         .await;
         palette(any, ws, cx, "rename window");

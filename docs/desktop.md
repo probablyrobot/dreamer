@@ -56,6 +56,27 @@ A workspace window shows one tmux session:
   `zoom` control on the focused pane, toggles zoom through the typed zoom
   action. The shortcut is never sent to the pane.
 
+## Sidebar, status, and the saved arrangement
+
+- **Sidebar.** "Toggle sidebar (sessions)" in the palette opens or closes
+  a narrow sidebar listing the endpoint's sessions. Clicking one shows it
+  in this window. This is local: it does not switch any tmux client.
+- **Status.** The tab strip says something only when something is not
+  normal: "connecting…", "reconnecting: why", or "N panes catching up"
+  while panes resynchronize.
+- **Saved arrangement.** The window remembers the session it shows,
+  whether the sidebar is open, and where it was on screen. It is kept in
+  `desktop.yaml` in the desktop state directory: `$DREAMER_DESKTOP_STATE_DIR`,
+  else `$XDG_STATE_HOME/dreamer`, else `~/.local/state/dreamer`. That is
+  apart from preferences (`dreamer.yaml`) and from everything on the host.
+  The app writes the file off the UI thread, one write at a time, and you
+  are not meant to edit it.
+- **No stale ids.** tmux ids belong to one run of a tmux server (its
+  incarnation, reported in the topology). A saved session id is reused
+  only for the same incarnation. After the server restarts, the session is
+  found again by name, and otherwise the first session is shown. An id
+  from another server is never reopened (spec 15.2).
+
 ## Command palette
 
 Cmd-Shift-P on macOS, or Ctrl-Shift-P on Linux, opens the command palette;
@@ -77,7 +98,7 @@ Escape closes.
 No destructive action is hidden behind "close". Every command goes
 through the typed actions, and its result shows only in a newer topology.
 
-`dreamer --smoke-workspace` checks this against an isolated tmux whose
+`dreamer --smoke-workspace` (and `--smoke-workspace-restore`) checks this against an isolated tmux whose
 session `main` has two windows, the first split into three panes, each
 pane printing `READY-%<id>`. The macOS gate runs it as the `workspace`
 step, and `gate linux-desktop` runs it on each backend. It checks that:
@@ -94,6 +115,13 @@ step, and `gate linux-desktop` runs it on each backend. It checks that:
 - with a refreshing display, the palette opens from its shortcut and
   Escape closes it;
 - a tab click switches the tmux window and shows only its pane.
+- the palette opens the sidebar, the sidebar switches the window to a
+  second session, and the arrangement is saved.
+
+The gate then launches the app a second time, against a new tmux server.
+A session `decoy` there now has the old id of `other`. The app must come
+back on `other`, matched by name rather than by the stale id, with the
+sidebar open.
 
 Sizing, clicking, typing, and dragging need a refreshing display. With a locked screen they
 are reported as not run and the step as `not_run`.
