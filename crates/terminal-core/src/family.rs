@@ -25,11 +25,19 @@ pub const REQUIRED_FEATURES: &[&str] = &[
 ];
 /// Bump when Dreamer changes how it configures or interprets the engine
 /// (parser limits, width or Unicode settings, reply policy, restore rules).
-pub const TERMINAL_POLICY_REVISION: u32 = 1;
+///
+/// 2: Kitty image storage limit set explicitly on every engine and on
+/// snapshot restore ([`IMAGE_STORAGE_BYTES`]).
+pub const TERMINAL_POLICY_REVISION: u32 = 2;
 
 /// Unfinished input a canonical engine keeps so a snapshot can be taken
 /// mid-sequence; replicas restore with the same limit (spec 11.5).
 pub const CONTINUATION_MAX_BYTES: usize = 64 << 10;
+
+/// Kitty graphics image storage per engine (spec 16.4: 64 MiB per pane).
+/// Eviction follows it, so mirrors and replicas must agree; it is not
+/// serialized in snapshots and is applied again on restore.
+pub const IMAGE_STORAGE_BYTES: u64 = 64 << 20;
 
 /// Cell size in pixels that daemon mirrors and replicas apply on resize
 /// until clients negotiate canonical geometry (spec 11.8).
@@ -59,7 +67,7 @@ mod tests {
         // update it only together with a deliberate engine or policy change.
         assert_eq!(
             super::build_family(),
-            "ghostty-1.0.1-108cacb17ed8-9288da2a-p1"
+            "ghostty-1.0.1-108cacb17ed8-9288da2a-p2"
         );
     }
 }
