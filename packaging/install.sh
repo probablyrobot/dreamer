@@ -20,6 +20,7 @@
 #   PREFIX/bin/{dreamer,dreamerd,dream}        -> current/bin/...
 #   XDG_DATA_HOME/fonts/dreamer/               JetBrains Mono Nerd Font
 #   XDG_DATA_HOME/applications/dev.dreamer.Dreamer.desktop
+#   XDG_DATA_HOME/icons/hicolor/*/apps/dev.dreamer.Dreamer.{png,svg}
 #   XDG_CONFIG_HOME/systemd/user/dreamerd.service
 set -eu
 
@@ -49,6 +50,7 @@ DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}"
 HOME_DIR="$PREFIX/share/dreamer"
 DESKTOP="$DATA/applications/dev.dreamer.Dreamer.desktop"
+ICONS="$DATA/icons/hicolor"
 FONTS="$DATA/fonts/dreamer"
 UNIT="$CONFIG/systemd/user/dreamerd.service"
 
@@ -61,6 +63,7 @@ if [ "$UNINSTALL" = 1 ]; then
   done
   rm -rf "$HOME_DIR" "$FONTS"
   rm -f "$DESKTOP" "$UNIT"
+  find "$ICONS" -name 'dev.dreamer.Dreamer.*' -type f -exec rm -f {} + 2>/dev/null || true
   command -v fc-cache >/dev/null 2>&1 && fc-cache -f "$DATA/fonts" >/dev/null 2>&1 || true
   say "removed. Your settings in $CONFIG/dreamer and any tmux sessions are untouched."
   exit 0
@@ -127,6 +130,13 @@ command -v fc-cache >/dev/null 2>&1 && fc-cache -f "$DATA/fonts" >/dev/null 2>&1
 
 mkdir -p "$(dirname "$DESKTOP")"
 sed "s|^Exec=.*|Exec=$PREFIX/bin/dreamer|" "$HOME_DIR/current/share/applications/dev.dreamer.Dreamer.desktop" > "$DESKTOP"
+
+# The icon, in each size, where the desktop file's Icon= finds it.
+if [ -d "$HOME_DIR/current/share/icons/hicolor" ]; then
+  mkdir -p "$ICONS"
+  cp -R "$HOME_DIR/current/share/icons/hicolor/." "$ICONS/"
+  touch "$ICONS"
+fi
 
 mkdir -p "$(dirname "$UNIT")"
 sed "s|^ExecStart=.*|ExecStart=$PREFIX/bin/dreamerd|" "$HOME_DIR/current/share/systemd/user/dreamerd.service" > "$UNIT"

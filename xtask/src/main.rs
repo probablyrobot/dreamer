@@ -10,6 +10,7 @@ mod doctor;
 mod gate;
 mod headless;
 mod hooks;
+mod icons;
 mod manifest;
 mod package;
 mod policy;
@@ -32,6 +33,7 @@ commands:
   hooks install|status         use the versioned git hooks in .githooks/
   package --platform macos|arch|linux|current [--debug] [--source-only] [--nodeps]
                                build, ad hoc sign, and zip the macOS app bundle
+  icons [--check]              draw (or check) the application icon files
   policy                       check repository rules (workflow runners, pinned actions)
   schemes [--check]            generate the terminal color scheme table from the vendored files
   remote-acceptance            section 18.2 remote cases through a private, unprivileged sshd
@@ -55,6 +57,7 @@ fn main() -> ExitCode {
             desktop::run(&args[2..])
         }
         Some("gate") => gate::run(&args[1..]),
+        Some("icons") => icons::run(&args[1..]),
         Some("policy") => policy::run(&args[1..]),
         Some("scenes") => scenes::run(&args[1..]),
         Some("schemes") => color_schemes::run(&args[1..]),

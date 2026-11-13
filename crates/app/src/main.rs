@@ -45,6 +45,10 @@ use terminal_ghostty::core::{FrameSnapshot, GridSize};
 use terminal_ghostty::{Engine, EngineConfig};
 use terminal_render::{TerminalElement, cell_metrics, last_paint_stats, paint_count};
 
+/// The desktop identity: the Wayland app id and X11 window class, which
+/// is also the name of the desktop file and the icon on Linux.
+pub(crate) const APP_ID: &str = "dev.dreamer.Dreamer";
+
 /// Give up if no frame is presented within this time in smoke mode.
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Exit status when the display does not refresh at all (for example a
@@ -1136,6 +1140,7 @@ fn main() -> ExitCode {
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                app_id: Some(crate::APP_ID.into()),
                 ..Default::default()
             },
             |window, cx| {

@@ -7,4 +7,5 @@ Exec=dreamer
 Terminal=false
 Categories=System;TerminalEmulator;
 Keywords=terminal;tmux;shell;
-StartupWMClass=dreamer
+Icon=dev.dreamer.Dreamer
+StartupWMClass=dev.dreamer.Dreamer

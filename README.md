@@ -1,5 +1,7 @@
 # dreamer
 
+<img src="packaging/icons/linux/128.png" width="96" height="96" alt="Dreamer icon: a halftone moon">
+
 A native terminal for macOS (Apple Silicon) and Linux. Each tmux pane is drawn
 as its own surface, a headless server keeps working when the window closes, and
 panes can host small apps and agents that watch, query, and filter other
