@@ -85,8 +85,9 @@ fn descends_from(pid: u32, ancestor: u32) -> bool {
         if p == ancestor {
             return true;
         }
+        // Up to and including pid 1; the top of the tree has no parent.
         match parent_of(p) {
-            Some(parent) if parent > 1 && parent != p => p = parent,
+            Some(parent) if parent != 0 && parent != p => p = parent,
             _ => return false,
         }
     }
