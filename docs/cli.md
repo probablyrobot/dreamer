@@ -59,6 +59,24 @@ refused (the output says why), and 3 when the outcome is unknown. See
 
 See [daemon.md](daemon.md) for files, directories, and lifecycle.
 
+## Bridge
+
+`dream bridge --stdio [tmux options]` carries the daemon's protocol over
+standard input and output. It is the fixed command a coordinator runs on a
+remote host through `ssh -T`; you do not normally run it yourself.
+
+- It connects to the user's daemon socket, starting `dreamerd` with the
+  given tmux options if nothing answers.
+- It copies bytes both ways and never parses or rewrites them, so the
+  handshake (protocol version, build family) happens between the two real
+  peers ([wire.md](wire.md)).
+- Standard output carries protocol bytes only. Every diagnostic goes to
+  standard error, including "could not start dreamerd".
+- It ends when its standard input ends (after giving the daemon two seconds
+  to finish) or when the daemon closes the connection. A daemon it started
+  is detached from it: closing the bridge or the SSH connection leaves the
+  daemon, tmux, and every pane running.
+
 ## Workspaces
 
 `dream config-dir`, `dream workspace list | check | up` work on workspace

@@ -20,7 +20,9 @@ struct Cli {
 
 impl Cli {
     fn new() -> Cli {
-        let root = PathBuf::from(format!("/tmp/drm-cli-{}", std::process::id()));
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = PathBuf::from(format!("/tmp/drm-cli-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("root");
         let tmux = TmuxServer::start(120, 40, "/bin/sh").expect("tmux");
@@ -288,4 +290,95 @@ fn an_isolated_session_is_discovered_and_controlled_from_the_cli() {
     cli.tmux
         .run_checked(&["has-session", "-t", "main"])
         .expect("tmux keeps running");
+}
+
+impl Cli {
+    /// `dream bridge --stdio` for the isolated tmux server, with the same
+    /// private environment as every other call here.
+    fn bridge(&self, daemon: PathBuf) -> tokio::process::Child {
+        let program = tmux_program().display().to_string();
+        tokio::process::Command::new(DREAM)
+            .args(["bridge", "--stdio", "-L", self.tmux.socket()])
+            .args(["--tmux", program.as_str()])
+            .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
+            .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .env("DREAMER_DAEMON", daemon)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("bridge")
+    }
+
+    fn daemon_pid(&self) -> Option<u32> {
+        std::fs::read_to_string(self.root.join("rt/dreamerd.lock"))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    }
+}
+
+#[test]
+fn the_stdio_bridge_carries_a_whole_session_and_leaves_the_daemon_running() {
+    let cli = Cli::new();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        // The bridge starts the daemon; a client speaks to it through the
+        // bridge's pipes exactly as it would through the socket.
+        let mut bridge = cli.bridge(Cli::daemon());
+        let stdout = bridge.stdout.take().expect("stdout");
+        let stdin = bridge.stdin.take().expect("stdin");
+        let client = client::Client::over(stdout, stdin, "bridge-test", 64)
+            .await
+            .expect("handshake through the bridge");
+        let pid = cli.daemon_pid().expect("the bridge started a daemon");
+        assert_eq!(client.welcome.pid, pid);
+        let api::Response::DaemonStatus(s) = client
+            .call(api::Request::DaemonStatus(api::Empty {}))
+            .await
+            .expect("status through the bridge")
+        else {
+            panic!("unexpected reply");
+        };
+        assert_eq!(
+            s.endpoints.first().map(|e| e.socket.as_str()),
+            Some(format!("-L {}", cli.tmux.socket()).as_str())
+        );
+
+        // Closing the client's side ends the bridge, not the daemon.
+        drop(client);
+        let status = tokio::time::timeout(Duration::from_secs(10), bridge.wait())
+            .await
+            .expect("the bridge ends when its input ends")
+            .expect("wait");
+        assert!(status.success(), "bridge exit {status:?}");
+        assert!(platform::process_alive(pid), "the daemon keeps running");
+    });
+    let out = cli.run(&["status"]);
+    assert!(out.status.success(), "dream status after the bridge");
+
+    // With no daemon to reach, the bridge says why on standard error and
+    // writes nothing at all where protocol bytes would go.
+    let _ = cli.run(&["shutdown"]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while cli.daemon_pid().is_some_and(platform::process_alive) {
+        assert!(Instant::now() < deadline, "daemon did not stop");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let out = rt.block_on(async {
+        let mut child = cli.bridge(cli.root.join("no-such-dreamerd"));
+        drop(child.stdin.take());
+        child.wait_with_output().await.expect("bridge output")
+    });
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty(), "stdout: {:?}", out.stdout);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("could not start dreamerd"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
