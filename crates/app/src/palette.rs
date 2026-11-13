@@ -16,9 +16,10 @@ pub(crate) enum Command {
     CloseView,
     KillPane,
     KillWindow,
+    ToggleSidebar,
 }
 
-pub(crate) const ALL: [Command; 11] = [
+pub(crate) const ALL: [Command; 12] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -30,6 +31,7 @@ pub(crate) const ALL: [Command; 11] = [
     Command::CloseView,
     Command::KillPane,
     Command::KillWindow,
+    Command::ToggleSidebar,
 ];
 
 impl Command {
@@ -46,6 +48,7 @@ impl Command {
             Command::CloseView => "Close view (programs keep running)",
             Command::KillPane => "Kill pane (ends its program)…",
             Command::KillWindow => "Kill window (ends its programs)…",
+            Command::ToggleSidebar => "Toggle sidebar (sessions)",
         }
     }
 

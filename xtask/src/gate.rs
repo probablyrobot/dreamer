@@ -384,7 +384,7 @@ fn isolated_app_run(
     type_first: Option<&str>,
     args: &[&str],
 ) -> Result<Done, String> {
-    let out = isolated_app_output(dir, name, command, type_first, &[], args, &[])?;
+    let out = isolated_app_output(dir, name, command, type_first, &[], args, &[], &[])?;
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         println!("gate:   {line}");
     }
@@ -414,6 +414,7 @@ pub fn input_smoke_output(dir: &Path, env_remove: &[&str]) -> Result<std::proces
         &[],
         &["--smoke-input", "--expect", "READY-FOR-INPUT"],
         env_remove,
+        &[],
     )
 }
 
@@ -423,6 +424,7 @@ pub fn input_smoke_output(dir: &Path, env_remove: &[&str]) -> Result<std::proces
 pub fn workspace_smoke_output(
     dir: &Path,
     env_remove: &[&str],
+    state: &Path,
 ) -> Result<std::process::Output, String> {
     const SH: &str = "env PS1='$ ' /bin/sh";
     const READY: &str = "echo READY-$TMUX_PANE";
@@ -440,10 +442,44 @@ pub fn workspace_smoke_output(
             &["send-keys", "-t", "%2", READY, "Enter"],
             &["send-keys", "-t", "%3", READY, "Enter"],
             &["select-window", "-t", "main:0"],
+            &["new-session", "-d", "-s", "other", SH],
         ],
         &["--smoke-workspace"],
         env_remove,
+        &[("DREAMER_DESKTOP_STATE_DIR", &state.to_string_lossy())],
     )
+}
+
+/// The workspace smoke's second launch, against a new tmux server (a new
+/// incarnation): the arrangement saved in `state` must come back.
+pub fn workspace_restore_output(
+    dir: &Path,
+    env_remove: &[&str],
+    state: &Path,
+) -> Result<std::process::Output, String> {
+    const SH: &str = "env PS1='$ ' /bin/sh";
+    isolated_app_output(
+        dir,
+        "workspace-restore",
+        SH,
+        None,
+        // `decoy` takes the id `other` had on the first server: only a
+        // restore by name, not by the stale id, lands on `other`.
+        &[
+            &["new-session", "-d", "-s", "decoy", SH],
+            &["new-session", "-d", "-s", "other", SH],
+        ],
+        &["--smoke-workspace-restore"],
+        env_remove,
+        &[("DREAMER_DESKTOP_STATE_DIR", &state.to_string_lossy())],
+    )
+}
+
+/// A private directory for the desktop state of one gate run.
+pub fn desktop_state_dir(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("dreamer-gate-state-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    d
 }
 
 /// Tabs and panes laid out from tmux, an external split, a tab switch,
@@ -452,28 +488,48 @@ fn workspace_smoke(dir: &Path) -> Result<Done, String> {
     if !require_gui()? {
         return Ok(Done::NotRun);
     }
-    let out = workspace_smoke_output(dir, &[])?;
+    let state = desktop_state_dir("mac");
+    let out = workspace_smoke_output(dir, &[], &state)?;
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         println!("gate:   {line}");
     }
-    match out.status.code() {
-        Some(0) => Ok(Done::Passed),
+    let first = match out.status.code() {
+        Some(0) => Done::Passed,
         Some(5) => {
             println!(
-                "gate: the display did not refresh; workspace click and keyboard checks recorded as not run"
+                "gate: the display did not refresh; workspace sizing, click, keyboard, and drag checks recorded as not run"
             );
-            Ok(Done::NotRun)
+            Done::NotRun
         }
-        _ => Err(format!(
-            "workspace smoke failed ({}): {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        )),
+        _ => {
+            let _ = std::fs::remove_dir_all(&state);
+            return Err(format!(
+                "workspace smoke failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+    };
+    // A second launch on a new tmux server restores the arrangement.
+    let again = workspace_restore_output(dir, &[], &state);
+    let _ = std::fs::remove_dir_all(&state);
+    let again = again?;
+    for line in String::from_utf8_lossy(&again.stdout).lines() {
+        println!("gate:   {line}");
     }
+    if !again.status.success() {
+        return Err(format!(
+            "workspace restore smoke failed ({}): {}",
+            again.status,
+            String::from_utf8_lossy(&again.stderr).trim()
+        ));
+    }
+    Ok(first)
 }
 
 /// Like [`isolated_app_run`], returning the app's output; `env_remove`
 /// names variables the app must not see (to pick a display backend).
+#[allow(clippy::too_many_arguments)]
 fn isolated_app_output(
     dir: &Path,
     name: &str,
@@ -482,6 +538,7 @@ fn isolated_app_output(
     setup: &[&[&str]],
     args: &[&str],
     env_remove: &[&str],
+    env: &[(&str, &str)],
 ) -> Result<std::process::Output, String> {
     let build = clean_git_env(Command::new("cargo"))
         .args([
@@ -537,6 +594,9 @@ fn isolated_app_output(
     let mut app = Command::new(dir.join("target/debug/dreamer"));
     for var in env_remove {
         app.env_remove(var);
+    }
+    for (k, v) in env {
+        app.env(k, v);
     }
     let out = app
         .args(args)

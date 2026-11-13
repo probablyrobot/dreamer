@@ -115,8 +115,14 @@ struct Owner {
 
 impl Owner {
     fn set(&self, s: TopologyStatus) {
-        if let Ok(mut st) = self.status.lock() {
+        let changed = self.status.lock().map(|mut st| {
+            let changed = *st != s;
             *st = s;
+            changed
+        });
+        // The view shows the status; let it know.
+        if changed.unwrap_or(false) {
+            let _ = self.wake.try_send(());
         }
     }
 

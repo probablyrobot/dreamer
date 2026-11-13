@@ -9,6 +9,7 @@
 //!
 //! See `docs/workspaces.md` for the file format.
 
+pub mod desktop_state;
 mod dirs;
 mod plan;
 mod schema;

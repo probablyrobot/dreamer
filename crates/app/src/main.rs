@@ -900,6 +900,8 @@ struct Args {
     /// A workspace window (tabs and every pane of the active tmux window)
     /// instead of a single pane.
     workspace: bool,
+    /// The workspace smoke's second run: check the restored arrangement.
+    restore: bool,
     /// `dreamerd` options for a daemon started on demand.
     daemon: Vec<String>,
 }
@@ -923,6 +925,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--smoke-workspace" => {
                 a.smoke = true;
                 a.workspace = true;
+            }
+            "--smoke-workspace-restore" => {
+                a.smoke = true;
+                a.workspace = true;
+                a.restore = true;
             }
             "--expect" => a.expect = Some(value("--expect")?),
             "--fixture" => a.fixture = Some(value("--fixture")?),
@@ -1032,7 +1039,8 @@ fn main() -> ExitCode {
         });
         if workspace_mode {
             let launch = client::Launch::new(args.daemon.clone());
-            if let Err(e) = workspace::open(cx, launch, args.smoke.then(|| args.daemon.clone())) {
+            let smoke = args.smoke.then(|| (args.daemon.clone(), args.restore));
+            if let Err(e) = workspace::open(cx, launch, smoke) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }

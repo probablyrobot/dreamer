@@ -90,6 +90,7 @@ pub fn topology(endpoint: &str, tracker: &InventoryTracker) -> api::Topology {
         .collect();
     api::Topology {
         endpoint: endpoint.to_owned(),
+        incarnation: inv.server.incarnation.0,
         sessions,
         windows,
         panes,
