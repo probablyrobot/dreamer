@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 20 }
+version: { major: 1, minor: 21 }
 package: dreamer.v1
 
 types:
@@ -728,6 +728,57 @@ types:
       - { n: 3, name: pane, type: u32 }
       - { n: 4, name: grant, type: Grant }
 
+  # ---- events -------------------------------------------------------------
+
+  - message: DaemonEvent
+    doc: "One entry of the daemon's event log: metadata only, never terminal content."
+    fields:
+      - { n: 1, name: sequence, type: u64, doc: "Increases by one per event within a daemon instance, from 1." }
+      - { n: 2, name: kind, type: string, doc: "tmux.topology, actions.outcome, hosts.state, or apps.registered (see docs/events.md)." }
+      - { n: 3, name: time_unix_ms, type: u64 }
+      - { n: 4, name: pane, type: u32, optional: true, doc: "The pane the event is about, if any." }
+      - { n: 5, name: host, type: string, optional: true, doc: "The remote host the event is about, if any." }
+      - { n: 6, name: subject, type: string, optional: true, doc: "An action id or launch id." }
+      - { n: 7, name: state, type: string, optional: true, doc: "An action outcome or a host's link state." }
+      - { n: 8, name: revision, type: u64, optional: true, doc: "The topology revision." }
+
+  - message: EventSubscribe
+    fields:
+      - { n: 1, name: kinds, type: string, repeated: true, doc: "Kinds or kind prefixes (`actions` matches `actions.outcome`); empty means every kind." }
+      - { n: 2, name: panes, type: u32, repeated: true, doc: "Only events about these panes; empty means every event." }
+      - { n: 3, name: after, type: u64, optional: true, doc: "Resume after this sequence; without it, only new events follow." }
+      - { n: 4, name: instance, type: string, optional: true, doc: "The daemon instance the cursor came from (EventSubscription.instance)." }
+      - { n: 5, name: quota, type: u32, optional: true, doc: "How many events this subscriber may fall behind before it skips ahead with a gap; default 1024." }
+
+  - message: EventSubscription
+    fields:
+      - { n: 1, name: id, type: u64, doc: "Ends with events.unsubscribe." }
+      - { n: 2, name: instance, type: string, doc: "This daemon instance; cursors are valid only within it." }
+      - { n: 3, name: cursor, type: u64, doc: "Events after this sequence follow." }
+      - { n: 4, name: oldest, type: u64, doc: "The oldest sequence the log still keeps." }
+
+  - enum: EventGapReason
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: lagging, doc: "The subscriber fell further behind than its quota or the log." }
+      - { n: 2, name: expired, doc: "The resume cursor is older than the log." }
+      - { n: 3, name: restarted, doc: "The resume cursor is from another daemon instance; first and last are 0." }
+
+  - message: EventGap
+    doc: "Events in first..=last were not delivered; re-read state that depends on them."
+    fields:
+      - { n: 1, name: first, type: u64 }
+      - { n: 2, name: last, type: u64 }
+      - { n: 3, name: reason, type: EventGapReason }
+
+  - message: EventBatch
+    doc: "Pushed as `events.batch`: a gap, if any, comes before the events."
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: gap, type: EventGap }
+      - { n: 3, name: events, type: DaemonEvent, repeated: true }
+      - { n: 4, name: cursor, type: u64, doc: "Resume after this sequence to continue where this batch ends." }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -756,4 +807,6 @@ methods:
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }
   - { method: grants.current, params: Empty, result: Grant, doc: "The calling connection's own grant." }
   - { method: apps.launch, params: LaunchApp, result: LaunchedApp, mutation: true, doc: "Start a program in a new tmux window with a single-use registration ticket (owner only)." }
+  - { method: events.subscribe, params: EventSubscribe, result: EventSubscription, doc: "Follow the daemon's event log: `events.batch` events follow, with a gap whenever events were skipped." }
+  - { method: events.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }

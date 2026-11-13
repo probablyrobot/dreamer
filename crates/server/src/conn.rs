@@ -42,6 +42,7 @@ pub const TOPIC_RECORDS: &str = "terminal.records";
 pub const TOPIC_END: &str = "terminal.end";
 pub const TOPIC_CHECKPOINT: &str = "terminal.checkpoint";
 pub const TOPIC_TOPOLOGY: &str = "tmux.topology";
+pub const TOPIC_EVENTS: &str = "events.batch";
 
 enum Out {
     Frame(Kind, Vec<u8>),
@@ -190,6 +191,10 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                         host_subscribe(&state, &conn, req).await;
                         return;
                     }
+                    if req.method == api::method::EVENTS_SUBSCRIBE {
+                        events_subscribe(&state, &conn, req).await;
+                        return;
+                    }
                     if req.method == api::method::HOSTS_WATCH {
                         host_watch(&state, &conn, req).await;
                         return;
@@ -200,7 +205,9 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                     {
                         conn.sizers.lock().await.insert(p.client);
                     }
-                    let response = if req.method == api::method::TERMINAL_UNSUBSCRIBE {
+                    let response = if req.method == api::method::TERMINAL_UNSUBSCRIBE
+                        || req.method == api::method::EVENTS_UNSUBSCRIBE
+                    {
                         unsubscribe(&conn, req).await
                     } else {
                         answer(&service, req).await
@@ -351,6 +358,7 @@ async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire:
             if let (Ok(mut g), Some(narrow)) = (conn.grant.lock(), r.grant.clone()) {
                 *g = crate::grants::Grant(narrow);
             }
+            state.events.app(&p.launch_id, r.pane);
             ok(req.id, r.encode_to_vec())
         }
         Err(e) => failure(req.id, e),
@@ -511,6 +519,98 @@ async fn host_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
     });
     conn.subs.lock().await.insert(local, task);
     send(ok(id, reply.encode_to_vec())).await;
+    let _ = go.send(());
+}
+
+/// `events.subscribe`: reply with where the subscription starts, then
+/// push `events.batch` until it ends. The task reads the log at the pace
+/// the connection takes batches; the log never waits for it.
+async fn events_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
+    use crate::events::{DEFAULT_QUOTA, Filter, start, step};
+    let reply = |r: wire::Response| {
+        let conn = conn.clone();
+        async move {
+            let _ = conn
+                .out
+                .send(Out::Frame(Kind::Response, r.encode_to_vec()))
+                .await;
+        }
+    };
+    let p = match api::EventSubscribe::decode(req.payload.as_slice()) {
+        Ok(p) => p,
+        Err(e) => {
+            return reply(failure(
+                req.id,
+                RpcError::new(code::INVALID_PARAMS, e.to_string()),
+            ))
+            .await;
+        }
+    };
+    let events = state.events.clone();
+    // Subscribe to wake-ups before reading the start, so nothing recorded
+    // in between is missed.
+    let mut wake = events.watch();
+    let (cursor, opening_gap) = start(&events, &state.instance, p.after, p.instance.as_deref());
+    let id = conn.next_sub.fetch_add(1, Ordering::Relaxed);
+    let (oldest, _) = events.bounds();
+    let filter = Filter {
+        kinds: p.kinds,
+        panes: p.panes,
+    };
+    let quota = p.quota.unwrap_or(DEFAULT_QUOTA).max(1);
+    let task_conn = conn.clone();
+    // The reply goes out first, so no batch precedes it.
+    let (go, ready) = tokio::sync::oneshot::channel::<()>();
+    let mut subs = conn.subs.lock().await;
+    let task = tokio::spawn(async move {
+        let conn = task_conn;
+        if ready.await.is_err() {
+            return;
+        }
+        let mut cursor = cursor;
+        let mut pending_gap = opening_gap;
+        loop {
+            let grant = conn.grant.lock().map(|g| g.0.clone()).unwrap_or_default();
+            let (next, gap, batch) = step(&events, cursor, quota, &filter, &grant);
+            let gap = match (pending_gap.take(), gap) {
+                (Some(a), Some(b)) => Some(api::EventGap {
+                    first: a.first.min(b.first),
+                    last: a.last.max(b.last),
+                    reason: a.reason,
+                }),
+                (a, b) => a.or(b),
+            };
+            let advanced = next != cursor;
+            cursor = next;
+            if gap.is_some() || !batch.is_empty() {
+                let b = api::EventBatch {
+                    subscription: id,
+                    gap,
+                    events: batch,
+                    cursor,
+                };
+                if !conn.event(TOPIC_EVENTS, b.encode_to_vec()).await {
+                    return;
+                }
+            }
+            if advanced {
+                // More may already be waiting.
+                continue;
+            }
+            if wake.changed().await.is_err() {
+                return;
+            }
+        }
+    });
+    subs.insert(id, task);
+    drop(subs);
+    let r = api::EventSubscription {
+        id,
+        instance: state.instance.clone(),
+        cursor,
+        oldest,
+    };
+    reply(ok(req.id, r.encode_to_vec())).await;
     let _ = go.send(());
 }
 

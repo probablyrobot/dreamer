@@ -177,6 +177,8 @@ struct Host {
     remote_revision: Mutex<(u64, u64)>,
     /// A local client asked for the topology: watch it on every link.
     watching: std::sync::atomic::AtomicBool,
+    /// Where link state changes are recorded.
+    events: Arc<crate::events::Events>,
 }
 
 /// Something a relayed subscription receives from the host.
@@ -263,7 +265,7 @@ impl Routes {
 }
 
 impl Host {
-    fn new(name: &str, config: Config) -> Arc<Host> {
+    fn new(name: &str, config: Config, events: Arc<crate::events::Events>) -> Arc<Host> {
         Arc::new(Host {
             name: name.to_owned(),
             config: Mutex::new(config),
@@ -274,6 +276,7 @@ impl Host {
             topology_revision: 0.into(),
             remote_revision: Mutex::default(),
             watching: false.into(),
+            events,
         })
     }
 
@@ -357,6 +360,7 @@ impl Host {
         // Link ids start at 1: no link's pushed data matches 0.
         lock(&self.routes).reset(0);
         l.state = state as i32;
+        self.events.host(&self.name, state);
         l.next_retry_unix_ms = None;
         if state == LinkState::Connecting {
             l.attempts = 0;
@@ -406,9 +410,9 @@ async fn close(client: Option<Arc<Client>>, child: Option<Child>) {
 }
 
 /// Every host this daemon has been asked to connect to.
-#[derive(Default)]
 pub struct Hosts {
     hosts: tokio::sync::Mutex<HashMap<String, Arc<Host>>>,
+    events: Arc<crate::events::Events>,
 }
 
 impl std::fmt::Debug for Hosts {
@@ -431,6 +435,13 @@ fn profile(name: &str) -> Result<HostProfile, RpcError> {
 }
 
 impl Hosts {
+    pub fn new(events: Arc<crate::events::Events>) -> Hosts {
+        Hosts {
+            hosts: tokio::sync::Mutex::default(),
+            events,
+        }
+    }
+
     /// Profiles first, in file order, then hosts given directly, by name.
     pub async fn list(&self) -> api::HostList {
         let hosts = self.hosts.lock().await;
@@ -485,7 +496,7 @@ impl Hosts {
             let mut hosts = self.hosts.lock().await;
             let host = hosts
                 .entry(p.name.clone())
-                .or_insert_with(|| Host::new(&p.name, config.clone()))
+                .or_insert_with(|| Host::new(&p.name, config.clone(), self.events.clone()))
                 .clone();
             let state = lock(&host.link).state;
             if state == LinkState::Live as i32 || state == LinkState::Connecting as i32 {
@@ -508,7 +519,7 @@ impl Hosts {
             match hosts.get(name) {
                 Some(h) => h.clone(),
                 None => {
-                    let h = Host::new(name, Config::from(&profile(name)?));
+                    let h = Host::new(name, Config::from(&profile(name)?), self.events.clone());
                     hosts.insert(name.to_owned(), h.clone());
                     h
                 }
@@ -778,6 +789,7 @@ fn attempt(
             }
             l.link += 1;
             l.state = LinkState::Live as i32;
+            host.events.host(&host.name, LinkState::Live);
             l.remote = version;
             l.remote_host = Some(client.welcome.host.clone());
             l.remote_pid = Some(client.welcome.pid);
@@ -815,6 +827,7 @@ fn failed(host: &Arc<Host>, generation: u64, kind: HostFailure, why: String) {
             return;
         }
         l.state = LinkState::Failed as i32;
+        host.events.host(&host.name, LinkState::Failed);
         l.failure = kind as i32;
         l.detail = Some(why.clone());
         l.client = None;
@@ -850,6 +863,7 @@ async fn retry(host: Arc<Host>, generation: u64, delay: Duration) {
             return;
         }
         l.state = LinkState::Connecting as i32;
+        host.events.host(&host.name, LinkState::Connecting);
         l.next_retry_unix_ms = None;
     }
     let _ = attempt(host, generation).await;

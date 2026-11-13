@@ -82,6 +82,8 @@ pub struct State {
     pub hosts: crate::hosts::Hosts,
     /// Pane app launches waiting for registration.
     pub apps: crate::apps::Apps,
+    /// The event log `events.subscribe` follows.
+    pub events: Arc<crate::events::Events>,
 }
 
 #[derive(Debug, Clone)]
@@ -313,6 +315,7 @@ pub fn publish_topology(state: &State, ep: &Endpoint) {
             revision,
             topology: Some(topology),
         }));
+        state.events.topology(revision);
         true
     });
 }
@@ -500,7 +503,9 @@ impl api::Service for DaemonService {
             .as_mut()
             .ok_or_else(|| unavailable("endpoint not connected".into()))?;
         let mut actions = self.0.actions.lock().await;
+        let pane = crate::grants::single_pane(&api::Request::ActionsSubmit(p.clone()));
         let r = actions.submit(ep, p).await?;
+        self.0.events.action(&r, pane);
         log::info(format!(
             "action {} {}{}",
             r.id,
@@ -873,6 +878,23 @@ impl api::Service for DaemonService {
                 Err(e)
             }
         }
+    }
+
+    async fn events_subscribe(
+        &self,
+        _: api::EventSubscribe,
+    ) -> Result<api::EventSubscription, RpcError> {
+        Err(RpcError::new(
+            code::INVALID_REQUEST,
+            "events.subscribe needs a streaming connection to the daemon",
+        ))
+    }
+
+    async fn events_unsubscribe(&self, _: api::Unsubscribe) -> Result<api::Empty, RpcError> {
+        Err(RpcError::new(
+            code::INVALID_REQUEST,
+            "events.unsubscribe needs a streaming connection to the daemon",
+        ))
     }
 
     async fn apps_register(&self, _: api::RegisterApp) -> Result<api::Registration, RpcError> {

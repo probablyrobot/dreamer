@@ -30,6 +30,7 @@ response, can widen a grant. Only the daemon assigns one.
 | `actions.submit` on a window or session (select, rename, kill, new window) | `all_panes` |
 | `terminal.mirrors`, `daemon.shutdown`, every `hosts.*` method | `all_panes` |
 | Metadata and the caller's own state (`tmux.topology`, `tmux.watch`, `daemon.version`, `actions.get`, `terminal.unsubscribe`, …) | Only the method |
+| `events.subscribe` | Only the method; it then delivers only events about panes in scope, and events about no pane only with `all_panes` (see [events.md](events.md)) |
 
 A refusal is the error `-32005` (`FORBIDDEN`), naming the method or the
 pane. The grant is checked when a request arrives. A subscription that was
