@@ -9,6 +9,11 @@
 //!   `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256`: a
 //!   self-contained release that `packaging/install.sh` installs into the
 //!   user's home directory.
+//! - `cargo xtask package --platform server [--target TRIPLE]` writes
+//!   `target/package/server/dreamer-server-<version>-<target>.tar.gz` and
+//!   its `.sha256`: the headless server and CLI (`dreamerd`, `dream`,
+//!   `dreamer-termapp`) with nothing graphical, for installing on a host
+//!   over SSH. It is unpacked away from the tree and checked after packing.
 //! - `cargo xtask package --platform arch [--source-only] [--nodeps]` writes
 //!   `target/package/arch/` with a `git archive` source tarball and a
 //!   PKGBUILD, then runs `makepkg` when it is available.
@@ -34,6 +39,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut platform = "current".to_owned();
     let mut source_only = false;
     let mut nodeps = false;
+    let mut target: Option<String> = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -41,16 +47,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "--debug" => profile = Profile::Debug,
             "--source-only" => source_only = true,
             "--nodeps" => nodeps = true,
+            "--target" => target = Some(iter.next().ok_or("--target needs a value")?.clone()),
             other => return Err(format!("unknown package argument `{other}`")),
         }
     }
     match platform.as_str() {
         "arch" => return arch_package(&repo_root(), source_only, nodeps),
         "linux" => return linux_tarball(&repo_root()),
+        "server" => return server_archive(&repo_root(), target).map(drop),
         "macos" => {}
         "current" if cfg!(target_os = "macos") => {}
         "current" => return Err("on Linux, choose a package: --platform arch".into()),
-        other => return Err(format!("unknown platform `{other}` (macos, arch, linux)")),
+        other => {
+            return Err(format!(
+                "unknown platform `{other}` (macos, arch, linux, server)"
+            ));
+        }
     }
     if !cfg!(target_os = "macos") {
         return Err("the macOS bundle is built on a Mac".into());
@@ -193,6 +205,211 @@ fn linux_tarball(root: &Path) -> Result<(), String> {
         tarball.display()
     );
     Ok(())
+}
+
+/// Executables of the headless server archive.
+pub const SERVER_EXECUTABLES: [&str; 3] = ["dreamerd", "dream", "dreamer-termapp"];
+
+/// The headless server archive for `target` (default: this host), checked
+/// after packing. Returns the archive's path.
+pub fn server_archive(root: &Path, target: Option<String>) -> Result<PathBuf, String> {
+    let version = version(root)?;
+    let host = crate::deps::host_triple()?;
+    let triple = target.unwrap_or_else(|| host.to_owned());
+    let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+    cargo
+        .args(["build", "--release", "--locked", "--target", &triple])
+        .args([
+            "-p",
+            "dreamer-server",
+            "-p",
+            "dreamer-cli",
+            "-p",
+            "dreamer-termapp",
+        ])
+        .env(
+            "RUSTFLAGS",
+            format!(
+                "{} --remap-path-prefix={}=/usr/src/dreamer",
+                std::env::var("RUSTFLAGS").unwrap_or_default(),
+                root.display()
+            ),
+        )
+        .current_dir(root);
+    if !cargo
+        .status()
+        .map_err(|e| format!("cargo build: {e}"))?
+        .success()
+    {
+        return Err(format!("release build for {triple} failed"));
+    }
+    let built = root.join("target").join(&triple).join("release");
+    let out = root.join("target/package/server");
+    let name = format!("dreamer-server-{version}-{triple}");
+    let stage = out.join(&name);
+    if stage.exists() {
+        std::fs::remove_dir_all(&stage).map_err(|e| e.to_string())?;
+    }
+    let copy = |from: &Path, to: &Path| -> Result<(), String> {
+        if let Some(dir) = to.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::copy(from, to)
+            .map(drop)
+            .map_err(|e| format!("{}: {e}", from.display()))
+    };
+    for exe in SERVER_EXECUTABLES {
+        copy(&built.join(exe), &stage.join("bin").join(exe))?;
+    }
+    if triple.contains("linux") {
+        copy(
+            &root.join("packaging/linux/dreamerd.service"),
+            &stage.join("share/systemd/user/dreamerd.service"),
+        )?;
+    }
+    for doc in ["remote.md", "daemon.md", "cli.md"] {
+        copy(
+            &root.join("docs").join(doc),
+            &stage.join("share/doc/dreamer").join(doc),
+        )?;
+    }
+    for f in ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"] {
+        copy(&root.join(f), &stage.join(f))?;
+    }
+    let commit = run_checked(
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "HEAD"]),
+        "git",
+    )
+    .unwrap_or_default();
+    std::fs::write(
+        stage.join("VERSION"),
+        format!(
+            "version {version}\ncommit {}\ntarget {triple}\n",
+            commit.trim()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    let tarball = out.join(format!("{name}.tar.gz"));
+    run_checked(
+        Command::new("tar")
+            .arg("-C")
+            .arg(&out)
+            .arg("-czf")
+            .arg(&tarball)
+            .arg(&name),
+        "tar",
+    )?;
+    let sum = crate::util::sha256_file(&tarball)?;
+    let file = format!("{name}.tar.gz");
+    std::fs::write(
+        out.join(format!("{file}.sha256")),
+        format!("{sum}  {file}\n"),
+    )
+    .map_err(|e| e.to_string())?;
+    check_server_archive(&tarball, &name, &triple, host)?;
+    println!("package: {}", tarball.display());
+    println!("package: sha256 {sum}");
+    Ok(tarball)
+}
+
+/// Unpack the archive away from the tree; run each executable when this
+/// host (or the target's configured runner) can; and check that nothing
+/// graphical is linked.
+fn check_server_archive(
+    tarball: &Path,
+    name: &str,
+    triple: &str,
+    host: &str,
+) -> Result<(), String> {
+    let away = std::env::temp_dir().join(format!("dreamer-server-check-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&away);
+    std::fs::create_dir_all(&away).map_err(|e| e.to_string())?;
+    let result = (|| {
+        run_checked(
+            Command::new("tar")
+                .arg("-C")
+                .arg(&away)
+                .arg("-xzf")
+                .arg(tarball),
+            "tar",
+        )?;
+        let bin = away.join(name).join("bin");
+        let runner_var = format!(
+            "CARGO_TARGET_{}_RUNNER",
+            triple.to_uppercase().replace('-', "_")
+        );
+        let runner = std::env::var(&runner_var).ok();
+        for exe in SERVER_EXECUTABLES {
+            let path = bin.join(exe);
+            let mut cmd = if triple == host {
+                Command::new(&path)
+            } else if let Some(r) = &runner {
+                let mut words = r.split_whitespace();
+                let mut c = Command::new(words.next().unwrap_or_default());
+                c.args(words).arg(&path);
+                c
+            } else {
+                println!("package: {exe}: not run (a {triple} binary on {host}, no {runner_var})");
+                continue;
+            };
+            let v = run_checked(cmd.arg("--version"), exe)?;
+            println!("package: {}", v.trim());
+            let linked = linked_libraries(&path, triple)?;
+            if let Some(bad) = linked.iter().find(|l| graphical(l)) {
+                return Err(format!(
+                    "{exe} links {bad}, which a headless server must not"
+                ));
+            }
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&away);
+    result
+}
+
+/// Shared libraries an executable needs, from its headers.
+fn linked_libraries(path: &Path, triple: &str) -> Result<Vec<String>, String> {
+    if triple.contains("apple") {
+        let out = run_checked(Command::new("otool").arg("-L").arg(path), "otool")?;
+        Ok(out
+            .lines()
+            .skip(1)
+            .filter_map(|l| l.split_whitespace().next().map(str::to_owned))
+            .collect())
+    } else {
+        let out = run_checked(Command::new("readelf").arg("-d").arg(path), "readelf")?;
+        Ok(out
+            .lines()
+            .filter(|l| l.contains("(NEEDED)"))
+            .filter_map(|l| l.split('[').nth(1)?.split(']').next().map(str::to_owned))
+            .collect())
+    }
+}
+
+/// A library only a graphical program would need.
+fn graphical(lib: &str) -> bool {
+    const MARKS: [&str; 16] = [
+        "X11",
+        "libX",
+        "xcb",
+        "wayland",
+        "vulkan",
+        "GL",
+        "EGL",
+        "fontconfig",
+        "freetype",
+        "harfbuzz",
+        "AppKit",
+        "Metal",
+        "CoreText",
+        "CoreGraphics",
+        "QuartzCore",
+        "libxkb",
+    ];
+    MARKS.iter().any(|m| lib.contains(m))
 }
 
 /// Source tarball plus PKGBUILD in `target/package/arch`, then `makepkg`.
@@ -570,4 +787,33 @@ pub fn smoke_from_zip(zip: &Path) -> Result<String, String> {
     let result = launch_smoke(&app);
     let _ = std::fs::remove_dir_all(&dir);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::graphical;
+
+    #[test]
+    fn graphical_libraries_are_recognized_and_system_ones_are_not() {
+        for lib in [
+            "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+            "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+            "libxkbcommon.so.0",
+            "libwayland-client.so.0",
+            "libfontconfig.so.1",
+            "libX11-xcb.so.1",
+        ] {
+            assert!(graphical(lib), "{lib}");
+        }
+        for lib in [
+            "/usr/lib/libSystem.B.dylib",
+            "/usr/lib/libiconv.2.dylib",
+            "libc.so.6",
+            "libm.so.6",
+            "libgcc_s.so.1",
+            "ld-linux-aarch64.so.1",
+        ] {
+            assert!(!graphical(lib), "{lib}");
+        }
+    }
 }

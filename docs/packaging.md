@@ -88,6 +88,32 @@ The repository is private for now. Until it is public, the `curl` line and
 release downloads need GitHub access; use `--from` with a tarball from a CI
 run or from `gh release download`.
 
+## Headless server archive
+
+For hosts reached over SSH, which need no desktop stack:
+
+```sh
+cargo xtask package --platform server [--target TRIPLE]
+```
+
+This writes `target/package/server/dreamer-server-<version>-<target>.tar.gz`
+and its `.sha256`. The archive holds `bin/dreamerd`, `bin/dream`, and
+`bin/dreamer-termapp`, the systemd user unit on Linux, `remote.md`,
+`daemon.md`, and `cli.md`, the license files, and a `VERSION` file
+(version, commit, target). There are no GUI, font, or graphics files.
+
+After packing, the archive is unpacked in a temporary directory away from
+the tree. Each executable runs with `--version`, on this host or through
+the target's `CARGO_TARGET_<TRIPLE>_RUNNER` (CI uses `qemu-aarch64`). The
+libraries it links are read from its headers (`readelf -d`, `otool -L`),
+and the build fails if any is graphical (X11, xcb, Wayland, xkbcommon,
+Vulkan, GL, fontconfig, FreeType, HarfBuzz, AppKit, Metal, CoreText,
+CoreGraphics, QuartzCore).
+
+CI builds and uploads `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu` as workflow artifacts on every run; the Mac
+builds `aarch64-apple-darwin`.
+
 ## Releases
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`. It builds the
