@@ -403,6 +403,12 @@ impl Workspace {
                 }
                 None
             }
+            C::InstallOnHost => {
+                if let Some(name) = name {
+                    self.install_on_host(&name, cx);
+                }
+                None
+            }
             C::VerifyHost => {
                 if let Some(name) = name {
                     self.verify_host(&name, cx);
@@ -597,6 +603,17 @@ impl Workspace {
     /// user. Dreamer never answers them. Only from a local window: a host's
     /// window would open it on the host.
     pub(crate) fn verify_host(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.host_terminal(name, &["verify"], cx);
+    }
+
+    /// Install this version's server on a host, in a local tmux window
+    /// that shows the plan and asks before installing.
+    pub(crate) fn install_on_host(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.host_terminal(name, &["install"], cx);
+    }
+
+    /// A local tmux window running `dream hosts <what> NAME --wait`.
+    fn host_terminal(&mut self, name: &str, what: &[&str], cx: &mut Context<Self>) {
         if self.via != replica::Via::Local {
             return;
         }
@@ -609,14 +626,12 @@ impl Workspace {
         self.topology
             .act(api::action::Kind::NewWindow(api::NewWindow {
                 session,
-                name: Some(format!("ssh {name}")),
-                argv: vec![
-                    dream,
-                    "hosts".into(),
-                    "verify".into(),
-                    name.to_owned(),
-                    "--wait".into(),
-                ],
+                name: Some(format!("{} {name}", what.first().copied().unwrap_or("ssh"))),
+                argv: [dream, "hosts".into()]
+                    .into_iter()
+                    .chain(what.iter().map(|w| (*w).to_owned()))
+                    .chain([name.to_owned(), "--wait".into()])
+                    .collect(),
                 cwd: None,
             }));
         cx.notify();
@@ -683,14 +698,24 @@ impl Workspace {
             let name = h.name.clone();
             // A host that failed on authentication or its host key needs
             // the user's answer: a click opens the visible connection.
-            let needs_user = h.state == api::LinkState::Failed as i32
-                && matches!(
-                    api::HostFailure::try_from(h.failure),
-                    Ok(api::HostFailure::Auth | api::HostFailure::HostKey)
-                )
-                && self.via == replica::Via::Local;
+            // A host whose server is missing or does not match: a click
+            // installs this version's server there, after review.
+            let failure = (h.state == api::LinkState::Failed as i32
+                && self.via == replica::Via::Local)
+                .then(|| api::HostFailure::try_from(h.failure).ok())
+                .flatten();
+            let needs_user = matches!(
+                failure,
+                Some(api::HostFailure::Auth | api::HostFailure::HostKey)
+            );
+            let needs_install = matches!(
+                failure,
+                Some(api::HostFailure::NotInstalled | api::HostFailure::Incompatible)
+            );
             let word = if needs_user {
                 format!("{word}: click to verify")
+            } else if needs_install {
+                format!("{word}: click to install")
             } else {
                 word
             };
@@ -709,6 +734,8 @@ impl Workspace {
                     .on_click(cx.listener(move |ws, _, _, cx| {
                         if needs_user {
                             ws.verify_host(&name, cx);
+                        } else if needs_install {
+                            ws.install_on_host(&name, cx);
                         } else {
                             ws.open_host(&name, cx);
                         }

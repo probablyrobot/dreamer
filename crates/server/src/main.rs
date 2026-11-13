@@ -13,6 +13,7 @@
 
 mod conn;
 mod hosts;
+mod install;
 mod log;
 mod service;
 

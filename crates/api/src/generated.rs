@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 16;
+pub const PROTOCOL_MINOR: u32 = 17;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1551,6 +1551,85 @@ pub struct HostSubscribe {
     pub subscribe: Option<TerminalSubscribe>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InstallPlanParams {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// Directory of server archives on this machine; default DREAMER_SERVER_ARTIFACTS, else share/dreamer/server beside this daemon.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<String>,
+}
+
+/// What hosts.install would do, for review: found by probing the host through SSH. Installing requires this plan's id, so nothing different from what was reviewed can be installed.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InstallPlan {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub destination: String,
+    #[prost(string, tag = "3")]
+    pub remote_os: String,
+    #[prost(string, tag = "4")]
+    pub remote_arch: String,
+    /// The matching Rust target, such as x86_64-unknown-linux-gnu.
+    #[prost(string, tag = "5")]
+    pub target: String,
+    #[prost(string, tag = "6")]
+    pub home: String,
+    /// The installed server's VERSION first line, if any.
+    #[prost(string, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed: Option<String>,
+    /// The version that would be installed (this daemon's own).
+    #[prost(string, tag = "8")]
+    pub version: String,
+    #[prost(string, tag = "9")]
+    pub archive: String,
+    #[prost(string, tag = "10")]
+    pub sha256: String,
+    #[prost(uint64, tag = "11")]
+    pub size: u64,
+    #[prost(string, tag = "12")]
+    pub remote_dir: String,
+    /// Each change, in order, in plain words.
+    #[prost(string, repeated, tag = "13")]
+    pub steps: Vec<String>,
+    #[prost(string, tag = "14")]
+    pub plan_id: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InstallParams {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<String>,
+    /// The id of the reviewed plan; a different plan now is refused.
+    #[prost(string, tag = "3")]
+    pub plan_id: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InstallResult {
+    #[prost(string, tag = "1")]
+    pub version: String,
+    /// The installed dream, as run on the host.
+    #[prost(string, tag = "2")]
+    pub remote_dream: String,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    /// What the installed dream --version printed on the host.
+    #[prost(string, tag = "4")]
+    pub check: String,
+}
+
 /// The remote daemon's result for a HostCall, as Protobuf.
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
@@ -1583,6 +1662,8 @@ pub mod method {
     pub const HOSTS_RECONNECT: &str = "hosts.reconnect";
     pub const HOSTS_SUBSCRIBE: &str = "hosts.subscribe";
     pub const HOSTS_WATCH: &str = "hosts.watch";
+    pub const HOSTS_INSTALL_PLAN: &str = "hosts.install_plan";
+    pub const HOSTS_INSTALL: &str = "hosts.install";
     pub const HOSTS_CALL: &str = "hosts.call";
 }
 
@@ -1744,6 +1825,20 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "A host's topology; afterwards `tmux.topology` events follow every change, across reconnects. One watch (local or a host) per connection.",
     },
     MethodInfo {
+        name: "hosts.install_plan",
+        params: "InstallPlanParams",
+        result: "InstallPlan",
+        mutation: false,
+        doc: "Probe a host over SSH and say what installing this daemon's server version there would do.",
+    },
+    MethodInfo {
+        name: "hosts.install",
+        params: "InstallParams",
+        result: "InstallResult",
+        mutation: true,
+        doc: "Install the reviewed plan: stream the archive, verify its SHA-256 on the host, unpack into a versioned directory, switch atomically.",
+    },
+    MethodInfo {
         name: "hosts.call",
         params: "HostCall",
         result: "HostReply",
@@ -1776,6 +1871,8 @@ pub enum Request {
     HostsReconnect(HostRef),
     HostsSubscribe(HostSubscribe),
     HostsWatch(HostRef),
+    HostsInstallPlan(InstallPlanParams),
+    HostsInstall(InstallParams),
     HostsCall(HostCall),
 }
 
@@ -1803,6 +1900,8 @@ impl Request {
             Self::HostsReconnect(_) => "hosts.reconnect",
             Self::HostsSubscribe(_) => "hosts.subscribe",
             Self::HostsWatch(_) => "hosts.watch",
+            Self::HostsInstallPlan(_) => "hosts.install_plan",
+            Self::HostsInstall(_) => "hosts.install",
             Self::HostsCall(_) => "hosts.call",
         }
     }
@@ -1831,6 +1930,8 @@ impl Request {
             Self::HostsReconnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsWatch(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsInstallPlan(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -1860,6 +1961,8 @@ impl Request {
             "hosts.reconnect" => Ok(Self::HostsReconnect(::prost::Message::decode(bytes)?)),
             "hosts.subscribe" => Ok(Self::HostsSubscribe(::prost::Message::decode(bytes)?)),
             "hosts.watch" => Ok(Self::HostsWatch(::prost::Message::decode(bytes)?)),
+            "hosts.install_plan" => Ok(Self::HostsInstallPlan(::prost::Message::decode(bytes)?)),
+            "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -1888,6 +1991,8 @@ impl Request {
             Self::HostsReconnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsWatch(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsInstallPlan(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -1915,6 +2020,8 @@ impl Request {
             "hosts.reconnect" => Ok(Self::HostsReconnect(serde_json::from_value(value)?)),
             "hosts.subscribe" => Ok(Self::HostsSubscribe(serde_json::from_value(value)?)),
             "hosts.watch" => Ok(Self::HostsWatch(serde_json::from_value(value)?)),
+            "hosts.install_plan" => Ok(Self::HostsInstallPlan(serde_json::from_value(value)?)),
+            "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -1945,6 +2052,8 @@ pub enum Response {
     HostsReconnect(HostStatus),
     HostsSubscribe(Subscription),
     HostsWatch(TopologyUpdate),
+    HostsInstallPlan(InstallPlan),
+    HostsInstall(InstallResult),
     HostsCall(HostReply),
 }
 
@@ -1972,6 +2081,8 @@ impl Response {
             Self::HostsReconnect(_) => "hosts.reconnect",
             Self::HostsSubscribe(_) => "hosts.subscribe",
             Self::HostsWatch(_) => "hosts.watch",
+            Self::HostsInstallPlan(_) => "hosts.install_plan",
+            Self::HostsInstall(_) => "hosts.install",
             Self::HostsCall(_) => "hosts.call",
         }
     }
@@ -2000,6 +2111,8 @@ impl Response {
             Self::HostsReconnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsWatch(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsInstallPlan(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2029,6 +2142,8 @@ impl Response {
             "hosts.reconnect" => Ok(Self::HostsReconnect(::prost::Message::decode(bytes)?)),
             "hosts.subscribe" => Ok(Self::HostsSubscribe(::prost::Message::decode(bytes)?)),
             "hosts.watch" => Ok(Self::HostsWatch(::prost::Message::decode(bytes)?)),
+            "hosts.install_plan" => Ok(Self::HostsInstallPlan(::prost::Message::decode(bytes)?)),
+            "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2057,6 +2172,8 @@ impl Response {
             Self::HostsReconnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsWatch(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsInstallPlan(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2084,6 +2201,8 @@ impl Response {
             "hosts.reconnect" => Ok(Self::HostsReconnect(serde_json::from_value(value)?)),
             "hosts.subscribe" => Ok(Self::HostsSubscribe(serde_json::from_value(value)?)),
             "hosts.watch" => Ok(Self::HostsWatch(serde_json::from_value(value)?)),
+            "hosts.install_plan" => Ok(Self::HostsInstallPlan(serde_json::from_value(value)?)),
+            "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2195,6 +2314,16 @@ pub trait Service: Sync {
         &self,
         params: HostRef,
     ) -> impl ::core::future::Future<Output = Result<TopologyUpdate, RpcError>> + Send;
+    /// Probe a host over SSH and say what installing this daemon's server version there would do.
+    fn hosts_install_plan(
+        &self,
+        params: InstallPlanParams,
+    ) -> impl ::core::future::Future<Output = Result<InstallPlan, RpcError>> + Send;
+    /// Install the reviewed plan: stream the archive, verify its SHA-256 on the host, unpack into a versioned directory, switch atomically.
+    fn hosts_install(
+        &self,
+        params: InstallParams,
+    ) -> impl ::core::future::Future<Output = Result<InstallResult, RpcError>> + Send;
     /// Forward one typed call to a connected host's daemon.
     fn hosts_call(
         &self,
@@ -2253,6 +2382,11 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .await
             .map(Response::HostsSubscribe),
         Request::HostsWatch(p) => service.hosts_watch(p).await.map(Response::HostsWatch),
+        Request::HostsInstallPlan(p) => service
+            .hosts_install_plan(p)
+            .await
+            .map(Response::HostsInstallPlan),
+        Request::HostsInstall(p) => service.hosts_install(p).await.map(Response::HostsInstall),
         Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
     }
 }

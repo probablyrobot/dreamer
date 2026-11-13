@@ -70,6 +70,48 @@ connecting after a passphrase prompt, the key must stay available
 non-interactively, for example in an agent; that is the user's SSH
 configuration.
 
+## Installing a server
+
+The coordinator can install this daemon's own server version on a host,
+from the headless archives ([packaging.md](packaging.md#headless-server-archive)).
+It is one reviewable operation:
+
+1. **Probe.** `hosts.install_plan` runs a fixed script on the host over
+   SSH: `uname -s`, `uname -m`, `$HOME`, and the installed `VERSION`, if
+   any. Linux x86-64, Linux ARM64, and macOS ARM64 have archives. The
+   archive for that target and this version is taken from the artifacts
+   directory: the one given, else `DREAMER_SERVER_ARTIFACTS`, else
+   `share/dreamer/server` beside the daemon. Its SHA-256 is checked against
+   its `.sha256` here.
+2. **Review.** The plan lists every change in plain words, with the
+   archive, its size and SHA-256, and the remote paths. It has an id.
+3. **Install.** `hosts.install` probes again and refuses if the plan is no
+   longer the one reviewed. It streams the archive over SSH's standard
+   input to a script that:
+   - checks the SHA-256 on the host before unpacking anything;
+   - unpacks into `~/.local/share/dreamer/versions/<version>/`, and runs
+     the unpacked `dream --version` there;
+   - points `~/.local/share/dreamer/current` at it with one atomic rename
+     (`mv -T`, or `mv -fh` on BSD).
+
+   A failure at any step leaves the previous version in place and removes
+   the partial upload.
+
+Nothing outside `~/.local/share/dreamer` changes: no root, no package
+manager, no shell profiles. Scripts run under `sh` whatever the login
+shell is (`sh -c '<script>' sh <arguments>`), and their variable parts are
+quoted arguments, never text pasted into the script.
+
+When a host's profile names no `dream`, the bridge command prefers
+`~/.local/share/dreamer/current/bin/dream` and falls back to `dream` on the
+remote `PATH`.
+
+`dream hosts install NAME [--artifacts DIR] [--yes]` prints the plan, asks
+before installing (unless `--yes`), installs, and connects. In the desktop,
+a host that failed as `not_installed` or `incompatible` says "click to
+install"; the click, or "Install or update the server on a host…" in the
+palette, opens a local tmux window running that command.
+
 ## Remote streams
 
 - **`hosts.subscribe`** follows a pane on a connected host. The reply and

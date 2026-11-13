@@ -93,3 +93,51 @@ exec /bin/sh -c "$1"
     assert!(!pwned.exists(), "nothing in a word was executed");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn with_no_dream_named_the_installed_server_is_preferred_then_path() {
+    let root = PathBuf::from(format!("/tmp/drm-ssh-default-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    let installed = home.join(".local/share/dreamer/current/bin");
+    let on_path = root.join("path");
+    std::fs::create_dir_all(&installed).expect("dirs");
+    std::fs::create_dir_all(&on_path).expect("dirs");
+    let record = root.join("which");
+    let ssh = root.join("ssh");
+    script(
+        &ssh,
+        &format!(
+            "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nexport HOME='{}' PATH='{}':/usr/bin:/bin\nexec /bin/sh -c \"$3\"\n",
+            home.display(),
+            on_path.display()
+        ),
+    );
+    for (dir, label) in [(&installed, "installed"), (&on_path, "path")] {
+        script(
+            &dir.join("dream"),
+            &format!(
+                "#!/bin/sh\nprintf '{label} %s\\n' \"$*\" > '{}'\n",
+                record.display()
+            ),
+        );
+    }
+    let remote = Remote {
+        destination: "devbox".into(),
+        tmux_socket: Some("work space".into()),
+        ..Remote::default()
+    };
+    let run = || {
+        let argv = command(&ssh.display().to_string(), &remote, Mode::Batch).expect("argv");
+        let status = Command::new(&argv[0])
+            .args(&argv[1..])
+            .status()
+            .expect("run");
+        assert!(status.success());
+        std::fs::read_to_string(&record).expect("recorded")
+    };
+    assert_eq!(run(), "installed bridge --stdio --tmux-socket work space\n");
+    std::fs::remove_file(installed.join("dream")).expect("rm");
+    assert_eq!(run(), "path bridge --stdio --tmux-socket work space\n");
+    let _ = std::fs::remove_dir_all(&root);
+}

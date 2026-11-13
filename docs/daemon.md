@@ -85,6 +85,7 @@ never loosens or takes over such a directory.
 | `DREAMER_TEST_SLOW_PANE` | `PANE:MICROS`: sleep that long before applying each output chunk of that pane, so it outruns its mirror |
 | `DREAMER_MIRROR_WORKERS` | Number of mirror owner threads (default: cores, 1 to 4). The pressure test sets 1 so two panes share an owner |
 | `DREAMER_SSH` | The `ssh` program the coordinator runs (default `ssh` from `PATH`). Tests point it at a stand-in so no real SSH configuration is used |
+| `DREAMER_SERVER_ARTIFACTS` | Where `hosts.install` looks for server archives (default `share/dreamer/server` beside the daemon) |
 | `DREAMER_TEST_BACKOFF_MS` | The first reconnect delay in milliseconds (default 1000), so reconnect tests run quickly |
 | `DREAMER_TEST_SMALL_QUEUES` | Shrink the subscriber and connection queues, so back-pressure tests behave the same on every platform regardless of socket buffer sizes |
 

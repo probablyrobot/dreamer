@@ -767,6 +767,20 @@ impl api::Service for DaemonService {
         Ok(self.0.hosts.watch(&p.name).await?.0)
     }
 
+    async fn hosts_install_plan(
+        &self,
+        p: api::InstallPlanParams,
+    ) -> Result<api::InstallPlan, RpcError> {
+        let remote = self.0.hosts.remote_of(&p.name).await?;
+        crate::install::plan(&p.name, &remote, p.artifacts.as_deref()).await
+    }
+
+    async fn hosts_install(&self, p: api::InstallParams) -> Result<api::InstallResult, RpcError> {
+        let remote = self.0.hosts.remote_of(&p.name).await?;
+        crate::log::info(format!("hosts: installing a server on `{}`", p.name));
+        crate::install::install(&p.name, &remote, p.artifacts.as_deref(), &p.plan_id).await
+    }
+
     async fn hosts_call(&self, p: api::HostCall) -> Result<api::HostReply, RpcError> {
         self.0.hosts.call(p).await
     }
