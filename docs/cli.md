@@ -109,6 +109,13 @@ remote host through `ssh -T`; you do not normally run it yourself.
 `extensions.yaml` and their state; `dream extensions restart NAME` starts
 one again now. See [extensions.md](extensions.md).
 
+## Scripts
+
+`dream scripts` lists loaded scripts; `dream scripts load NAME FILE
+[--method M]... [--pane %N]... [--all-panes] [--event KIND]... [--call-ms N]`,
+`reload NAME FILE`, `stop NAME`, and `check FILE` manage them. See
+[scripts.md](scripts.md).
+
 ## JSON-RPC
 
 `dream rpc [tmux options]` speaks JSON-RPC 2.0 on standard input and

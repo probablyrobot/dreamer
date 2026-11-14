@@ -88,6 +88,8 @@ pub struct State {
     pub broker: Arc<crate::messages::Broker>,
     /// Supervised extensions.
     pub extensions: crate::extensions::Extensions,
+    /// Loaded scripts.
+    pub scripts: crate::scripts::Scripts,
 }
 
 #[derive(Debug, Clone)]
@@ -933,6 +935,35 @@ impl api::Service for DaemonService {
 
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<api::Empty, RpcError> {
         Err(for_a_connection("messages.unsubscribe"))
+    }
+
+    async fn scripts_validate(&self, p: api::ScriptSource) -> Result<api::ScriptCheck, RpcError> {
+        Ok(match script_runtime::check(&p.name, &p.source) {
+            Ok(()) => api::ScriptCheck {
+                ok: true,
+                error: None,
+            },
+            Err(e) => api::ScriptCheck {
+                ok: false,
+                error: Some(e),
+            },
+        })
+    }
+
+    async fn scripts_load(&self, p: api::ScriptLoad) -> Result<api::ScriptStatus, RpcError> {
+        crate::scripts::load(&self.0, p).await
+    }
+
+    async fn scripts_reload(&self, p: api::ScriptSource) -> Result<api::ScriptStatus, RpcError> {
+        self.0.scripts.reload(p).await
+    }
+
+    async fn scripts_stop(&self, p: api::ScriptRef) -> Result<api::ScriptStatus, RpcError> {
+        self.0.scripts.stop(&p.name).await
+    }
+
+    async fn scripts_list(&self, _: api::Empty) -> Result<api::ScriptList, RpcError> {
+        Ok(self.0.scripts.list())
     }
 
     async fn extensions_list(&self, _: api::Empty) -> Result<api::ExtensionList, RpcError> {

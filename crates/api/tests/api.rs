@@ -219,6 +219,21 @@ impl Service for Fixed {
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn scripts_validate(&self, _: api::ScriptSource) -> Result<api::ScriptCheck, RpcError> {
+        Ok(api::ScriptCheck::default())
+    }
+    async fn scripts_load(&self, _: api::ScriptLoad) -> Result<api::ScriptStatus, RpcError> {
+        Ok(api::ScriptStatus::default())
+    }
+    async fn scripts_reload(&self, _: api::ScriptSource) -> Result<api::ScriptStatus, RpcError> {
+        Ok(api::ScriptStatus::default())
+    }
+    async fn scripts_stop(&self, _: api::ScriptRef) -> Result<api::ScriptStatus, RpcError> {
+        Ok(api::ScriptStatus::default())
+    }
+    async fn scripts_list(&self, _: Empty) -> Result<api::ScriptList, RpcError> {
+        Ok(api::ScriptList::default())
+    }
     async fn extensions_list(&self, _: Empty) -> Result<api::ExtensionList, RpcError> {
         Ok(api::ExtensionList::default())
     }

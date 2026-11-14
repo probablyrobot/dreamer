@@ -38,6 +38,9 @@ pub mod kind {
     pub const HOST: &str = "hosts.state";
     /// A pane app registered; `subject` is its launch id.
     pub const APP: &str = "apps.registered";
+    /// A script instance was terminated; `subject` is the script, `state`
+    /// why (a budget overrun, or its connection ending).
+    pub const SCRIPT_FAILED: &str = "scripts.failed";
 }
 
 struct Ring {
@@ -159,6 +162,15 @@ impl Events {
             kind: kind::HOST.into(),
             host: Some(name.to_owned()),
             state: Some(state.name().to_owned()),
+            ..DaemonEvent::default()
+        });
+    }
+
+    pub fn script_failed(&self, name: &str, why: &str) {
+        self.push(DaemonEvent {
+            kind: kind::SCRIPT_FAILED.into(),
+            subject: Some(name.to_owned()),
+            state: Some(why.to_owned()),
             ..DaemonEvent::default()
         });
     }

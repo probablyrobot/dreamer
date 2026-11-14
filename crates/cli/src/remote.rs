@@ -634,6 +634,109 @@ pub fn extensions(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     })
 }
 
+/// `dream scripts ...`: list, check, load, reload, and stop scripts.
+pub fn scripts(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage:
+  dream scripts [--json]
+  dream scripts check FILE
+  dream scripts load NAME FILE [--method M]... [--pane %N]... [--all-panes]
+                    [--event KIND]... [--call-ms N]
+  dream scripts reload NAME FILE
+  dream scripts stop NAME";
+    let read = |path: &str| std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"));
+    let request = match args {
+        [] => Request::ScriptsList(api::Empty {}),
+        [j] if j == "--json" => Request::ScriptsList(api::Empty {}),
+        [v, file] if v == "check" => Request::ScriptsValidate(api::ScriptSource {
+            name: file.clone(),
+            source: read(file)?,
+        }),
+        [v, name, file] if v == "reload" => Request::ScriptsReload(api::ScriptSource {
+            name: name.clone(),
+            source: read(file)?,
+        }),
+        [v, name] if v == "stop" => Request::ScriptsStop(api::ScriptRef { name: name.clone() }),
+        [v, name, file, rest @ ..] if v == "load" => {
+            let mut grant = api::ScriptGrant::default();
+            let mut events = Vec::new();
+            let mut limits = api::ScriptLimits::default();
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                let mut value = || {
+                    it.next()
+                        .cloned()
+                        .ok_or_else(|| format!("{a} needs a value\n{USAGE}"))
+                };
+                match a.as_str() {
+                    "--method" => grant.methods.push(value()?),
+                    "--pane" => grant.panes.push(
+                        value()?
+                            .trim_start_matches('%')
+                            .parse()
+                            .map_err(|_| "--pane takes %N".to_owned())?,
+                    ),
+                    "--all-panes" => grant.all_panes = true,
+                    "--event" => events.push(value()?),
+                    "--call-ms" => {
+                        limits.call_ms = Some(
+                            value()?
+                                .parse()
+                                .map_err(|_| "--call-ms takes a number".to_owned())?,
+                        );
+                    }
+                    other => return Err(format!("unknown option {other}\n{USAGE}")),
+                }
+            }
+            Request::ScriptsLoad(api::ScriptLoad {
+                name: name.clone(),
+                source: read(file)?,
+                grant: Some(grant),
+                events,
+                limits: Some(limits),
+            })
+        }
+        _ => return Err(USAGE.into()),
+    };
+    let json = args.first().is_some_and(|a| a == "--json");
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        match call(&mut c, request).await? {
+            Response::ScriptsList(l) if json => println!(
+                "{}",
+                serde_json::to_string_pretty(&l).map_err(|e| e.to_string())?
+            ),
+            Response::ScriptsList(l) => {
+                if l.scripts.is_empty() {
+                    println!("no scripts loaded");
+                }
+                for s in &l.scripts {
+                    print_script(s);
+                }
+            }
+            Response::ScriptsValidate(c) => match c.error {
+                None => println!("ok"),
+                Some(e) => return Err(e),
+            },
+            Response::ScriptsLoad(s) | Response::ScriptsReload(s) | Response::ScriptsStop(s) => {
+                print_script(&s);
+            }
+            _ => return Err("unexpected reply".into()),
+        }
+        Ok(())
+    })
+}
+
+fn print_script(s: &api::ScriptStatus) {
+    let state = api::ScriptState::try_from(s.state).map_or("unknown", api::ScriptState::name);
+    println!(
+        "{} {state} revision {}, handled {}, errors {}, restarts {}, failures {}",
+        s.name, s.revision, s.handled, s.errors, s.restarts, s.failures
+    );
+    if let Some(e) = &s.last_error {
+        println!("  last error: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

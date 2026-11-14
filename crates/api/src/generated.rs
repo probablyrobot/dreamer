@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 24;
+pub const PROTOCOL_MINOR: u32 = 25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -631,6 +631,57 @@ mod extension_state_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| ExtensionState::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ScriptState {
+    Unspecified = 0,
+    Running = 1,
+    /// Over a budget; starting again from its last-good source after a delay.
+    Restarting = 2,
+    /// Kept failing; parked until scripts.reload.
+    Failed = 3,
+    Stopped = 4,
+}
+
+impl ScriptState {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Running => "running",
+            Self::Restarting => "restarting",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "running" => Some(Self::Running),
+            "restarting" => Some(Self::Restarting),
+            "failed" => Some(Self::Failed),
+            "stopped" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+}
+
+mod script_state_json {
+    use super::ScriptState;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match ScriptState::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| ScriptState::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -2213,6 +2264,120 @@ pub struct ExtensionRef {
     pub name: String,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptGrant {
+    /// Exact names or service.*.
+    #[prost(string, repeated, tag = "1")]
+    pub methods: Vec<String>,
+    #[prost(uint32, repeated, tag = "2")]
+    pub panes: Vec<u32>,
+    #[prost(bool, tag = "3")]
+    pub all_panes: bool,
+}
+
+/// Absent fields take the defaults (16 MiB, 50 ms, 5 s).
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptLimits {
+    #[prost(uint64, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_bytes: Option<u64>,
+    /// Running time per call into the script.
+    #[prost(uint32, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_ms: Option<u32>,
+    /// Deadline of each dreamer.* call.
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_call_ms: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptLoad {
+    /// Unique among loaded scripts; its sender identity is script:<name>.
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// Luau source; it runs once on load, then its handlers are called.
+    #[prost(string, tag = "2")]
+    pub source: String,
+    #[prost(message, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<ScriptGrant>,
+    /// Event kinds (prefixes) passed to the script's on_event; needs events.subscribe in the grant.
+    #[prost(string, repeated, tag = "4")]
+    pub events: Vec<String>,
+    #[prost(message, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits: Option<ScriptLimits>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptSource {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub source: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptCheck {
+    #[prost(bool, tag = "1")]
+    pub ok: bool,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptRef {
+    #[prost(string, tag = "1")]
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptStatus {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(enumeration = "ScriptState", tag = "2")]
+    #[serde(with = "script_state_json")]
+    pub state: i32,
+    /// The source revision running: 1 on load, +1 per successful reload.
+    #[prost(uint32, tag = "3")]
+    pub revision: u32,
+    #[prost(uint32, tag = "4")]
+    pub restarts: u32,
+    /// Budget overruns in a row.
+    #[prost(uint32, tag = "5")]
+    pub failures: u32,
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Events passed to on_event.
+    #[prost(uint64, tag = "7")]
+    pub handled: u64,
+    /// Handler errors (not budget overruns); the instance keeps running.
+    #[prost(uint64, tag = "8")]
+    pub errors: u64,
+    #[prost(message, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<Grant>,
+    #[prost(string, repeated, tag = "10")]
+    pub events: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScriptList {
+    #[prost(message, repeated, tag = "1")]
+    pub scripts: Vec<ScriptStatus>,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -2251,6 +2416,11 @@ pub mod method {
     pub const MESSAGES_UNSUBSCRIBE: &str = "messages.unsubscribe";
     pub const EXTENSIONS_LIST: &str = "extensions.list";
     pub const EXTENSIONS_RESTART: &str = "extensions.restart";
+    pub const SCRIPTS_VALIDATE: &str = "scripts.validate";
+    pub const SCRIPTS_LOAD: &str = "scripts.load";
+    pub const SCRIPTS_RELOAD: &str = "scripts.reload";
+    pub const SCRIPTS_STOP: &str = "scripts.stop";
+    pub const SCRIPTS_LIST: &str = "scripts.list";
     pub const APPS_REGISTER: &str = "apps.register";
 }
 
@@ -2517,6 +2687,41 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "Stop an extension if it runs and start it now, also one parked as failed (owner only).",
     },
     MethodInfo {
+        name: "scripts.validate",
+        params: "ScriptSource",
+        result: "ScriptCheck",
+        mutation: false,
+        doc: "Compile a script without running it.",
+    },
+    MethodInfo {
+        name: "scripts.load",
+        params: "ScriptLoad",
+        result: "ScriptStatus",
+        mutation: true,
+        doc: "Run a script in its own sandboxed VM with the given grant until it is stopped or the daemon stops (owner only).",
+    },
+    MethodInfo {
+        name: "scripts.reload",
+        params: "ScriptSource",
+        result: "ScriptStatus",
+        mutation: true,
+        doc: "Replace a script's source atomically; an update that does not load leaves the last-good version running (owner only).",
+    },
+    MethodInfo {
+        name: "scripts.stop",
+        params: "ScriptRef",
+        result: "ScriptStatus",
+        mutation: true,
+        doc: "Stop and unload a script (owner only).",
+    },
+    MethodInfo {
+        name: "scripts.list",
+        params: "Empty",
+        result: "ScriptList",
+        mutation: false,
+        doc: "",
+    },
+    MethodInfo {
         name: "apps.register",
         params: "RegisterApp",
         result: "Registration",
@@ -2564,6 +2769,11 @@ pub enum Request {
     MessagesUnsubscribe(Unsubscribe),
     ExtensionsList(Empty),
     ExtensionsRestart(ExtensionRef),
+    ScriptsValidate(ScriptSource),
+    ScriptsLoad(ScriptLoad),
+    ScriptsReload(ScriptSource),
+    ScriptsStop(ScriptRef),
+    ScriptsList(Empty),
     AppsRegister(RegisterApp),
 }
 
@@ -2606,6 +2816,11 @@ impl Request {
             Self::MessagesUnsubscribe(_) => "messages.unsubscribe",
             Self::ExtensionsList(_) => "extensions.list",
             Self::ExtensionsRestart(_) => "extensions.restart",
+            Self::ScriptsValidate(_) => "scripts.validate",
+            Self::ScriptsLoad(_) => "scripts.load",
+            Self::ScriptsReload(_) => "scripts.reload",
+            Self::ScriptsStop(_) => "scripts.stop",
+            Self::ScriptsList(_) => "scripts.list",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -2649,6 +2864,11 @@ impl Request {
             Self::MessagesUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::ExtensionsList(v) => ::prost::Message::encode_to_vec(v),
             Self::ExtensionsRestart(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsValidate(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsLoad(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsReload(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2695,6 +2915,11 @@ impl Request {
             }
             "extensions.list" => Ok(Self::ExtensionsList(::prost::Message::decode(bytes)?)),
             "extensions.restart" => Ok(Self::ExtensionsRestart(::prost::Message::decode(bytes)?)),
+            "scripts.validate" => Ok(Self::ScriptsValidate(::prost::Message::decode(bytes)?)),
+            "scripts.load" => Ok(Self::ScriptsLoad(::prost::Message::decode(bytes)?)),
+            "scripts.reload" => Ok(Self::ScriptsReload(::prost::Message::decode(bytes)?)),
+            "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
+            "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2738,6 +2963,11 @@ impl Request {
             Self::MessagesUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ExtensionsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ExtensionsRestart(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsValidate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsLoad(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsReload(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2780,6 +3010,11 @@ impl Request {
             "messages.unsubscribe" => Ok(Self::MessagesUnsubscribe(serde_json::from_value(value)?)),
             "extensions.list" => Ok(Self::ExtensionsList(serde_json::from_value(value)?)),
             "extensions.restart" => Ok(Self::ExtensionsRestart(serde_json::from_value(value)?)),
+            "scripts.validate" => Ok(Self::ScriptsValidate(serde_json::from_value(value)?)),
+            "scripts.load" => Ok(Self::ScriptsLoad(serde_json::from_value(value)?)),
+            "scripts.reload" => Ok(Self::ScriptsReload(serde_json::from_value(value)?)),
+            "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
+            "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2825,6 +3060,11 @@ pub enum Response {
     MessagesUnsubscribe(Empty),
     ExtensionsList(ExtensionList),
     ExtensionsRestart(ExtensionStatus),
+    ScriptsValidate(ScriptCheck),
+    ScriptsLoad(ScriptStatus),
+    ScriptsReload(ScriptStatus),
+    ScriptsStop(ScriptStatus),
+    ScriptsList(ScriptList),
     AppsRegister(Registration),
 }
 
@@ -2867,6 +3107,11 @@ impl Response {
             Self::MessagesUnsubscribe(_) => "messages.unsubscribe",
             Self::ExtensionsList(_) => "extensions.list",
             Self::ExtensionsRestart(_) => "extensions.restart",
+            Self::ScriptsValidate(_) => "scripts.validate",
+            Self::ScriptsLoad(_) => "scripts.load",
+            Self::ScriptsReload(_) => "scripts.reload",
+            Self::ScriptsStop(_) => "scripts.stop",
+            Self::ScriptsList(_) => "scripts.list",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -2910,6 +3155,11 @@ impl Response {
             Self::MessagesUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::ExtensionsList(v) => ::prost::Message::encode_to_vec(v),
             Self::ExtensionsRestart(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsValidate(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsLoad(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsReload(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
+            Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2956,6 +3206,11 @@ impl Response {
             }
             "extensions.list" => Ok(Self::ExtensionsList(::prost::Message::decode(bytes)?)),
             "extensions.restart" => Ok(Self::ExtensionsRestart(::prost::Message::decode(bytes)?)),
+            "scripts.validate" => Ok(Self::ScriptsValidate(::prost::Message::decode(bytes)?)),
+            "scripts.load" => Ok(Self::ScriptsLoad(::prost::Message::decode(bytes)?)),
+            "scripts.reload" => Ok(Self::ScriptsReload(::prost::Message::decode(bytes)?)),
+            "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
+            "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2999,6 +3254,11 @@ impl Response {
             Self::MessagesUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ExtensionsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ExtensionsRestart(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsValidate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsLoad(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsReload(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -3041,6 +3301,11 @@ impl Response {
             "messages.unsubscribe" => Ok(Self::MessagesUnsubscribe(serde_json::from_value(value)?)),
             "extensions.list" => Ok(Self::ExtensionsList(serde_json::from_value(value)?)),
             "extensions.restart" => Ok(Self::ExtensionsRestart(serde_json::from_value(value)?)),
+            "scripts.validate" => Ok(Self::ScriptsValidate(serde_json::from_value(value)?)),
+            "scripts.load" => Ok(Self::ScriptsLoad(serde_json::from_value(value)?)),
+            "scripts.reload" => Ok(Self::ScriptsReload(serde_json::from_value(value)?)),
+            "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
+            "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -3225,6 +3490,30 @@ pub trait Service: Sync {
         &self,
         params: ExtensionRef,
     ) -> impl ::core::future::Future<Output = Result<ExtensionStatus, RpcError>> + Send;
+    /// Compile a script without running it.
+    fn scripts_validate(
+        &self,
+        params: ScriptSource,
+    ) -> impl ::core::future::Future<Output = Result<ScriptCheck, RpcError>> + Send;
+    /// Run a script in its own sandboxed VM with the given grant until it is stopped or the daemon stops (owner only).
+    fn scripts_load(
+        &self,
+        params: ScriptLoad,
+    ) -> impl ::core::future::Future<Output = Result<ScriptStatus, RpcError>> + Send;
+    /// Replace a script's source atomically; an update that does not load leaves the last-good version running (owner only).
+    fn scripts_reload(
+        &self,
+        params: ScriptSource,
+    ) -> impl ::core::future::Future<Output = Result<ScriptStatus, RpcError>> + Send;
+    /// Stop and unload a script (owner only).
+    fn scripts_stop(
+        &self,
+        params: ScriptRef,
+    ) -> impl ::core::future::Future<Output = Result<ScriptStatus, RpcError>> + Send;
+    fn scripts_list(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<ScriptList, RpcError>> + Send;
     /// Trade a launch ticket for the app's narrow grant on this connection.
     fn apps_register(
         &self,
@@ -3325,6 +3614,14 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .extensions_restart(p)
             .await
             .map(Response::ExtensionsRestart),
+        Request::ScriptsValidate(p) => service
+            .scripts_validate(p)
+            .await
+            .map(Response::ScriptsValidate),
+        Request::ScriptsLoad(p) => service.scripts_load(p).await.map(Response::ScriptsLoad),
+        Request::ScriptsReload(p) => service.scripts_reload(p).await.map(Response::ScriptsReload),
+        Request::ScriptsStop(p) => service.scripts_stop(p).await.map(Response::ScriptsStop),
+        Request::ScriptsList(p) => service.scripts_list(p).await.map(Response::ScriptsList),
         Request::AppsRegister(p) => service.apps_register(p).await.map(Response::AppsRegister),
     }
 }

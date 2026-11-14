@@ -211,6 +211,27 @@ impl Script {
             .map_err(setup)?;
         let module: mlua::Table = make.call(call).map_err(setup)?;
         lua.globals().set("dreamer", module).map_err(setup)?;
+        // Bytes travel as base64 strings; scripts get the two conversions.
+        let b64 = lua.create_table().map_err(setup)?;
+        b64.set(
+            "encode",
+            lua.create_function(|_, s: mlua::LuaString| {
+                Ok(api::json::encode_base64(&s.as_bytes()))
+            })
+            .map_err(setup)?,
+        )
+        .map_err(setup)?;
+        b64.set(
+            "decode",
+            lua.create_function(|lua, s: String| {
+                let bytes = api::json::decode_base64(&s).map_err(mlua::Error::runtime)?;
+                lua.create_string(bytes)
+            })
+            .map_err(setup)?,
+        )
+        .map_err(setup)?;
+        b64.set_readonly(true);
+        lua.globals().set("base64", b64).map_err(setup)?;
         seal(&lua, limits)?;
         Ok(Self { lua, limits, clock })
     }
@@ -266,6 +287,16 @@ impl Script {
     pub fn lua(&self) -> &Lua {
         &self.lua
     }
+}
+
+/// Compile `source` without running it: the syntax error, if any.
+pub fn check(name: &str, source: &str) -> Result<(), String> {
+    let lua = Lua::new_with(StdLib::NONE, LuaOptions::new()).map_err(|e| e.to_string())?;
+    lua.load(source)
+        .set_name(name)
+        .into_function()
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 /// A sandbox VM with the budgets' hooks, before its globals are frozen.
@@ -501,6 +532,20 @@ mod tests {
             assert!(s.run(name, src).await.is_err(), "{name}");
         }
         assert!(fake.calls.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn base64_round_trips_and_syntax_is_checked_without_running() {
+        let (s, _) = hosted(Duration::ZERO, Limits::default());
+        s.run("b", "enc = base64.encode('hi') dec = base64.decode(enc)")
+            .await
+            .expect("base64");
+        assert_eq!(
+            s.exec("t", "return enc .. ':' .. dec").expect("v"),
+            Value::String(s.lua().create_string("aGk=:hi").expect("s"))
+        );
+        assert!(check("ok", "while true do end").is_ok(), "never runs");
+        assert!(check("bad", "local = ").is_err());
     }
 
     #[tokio::test]

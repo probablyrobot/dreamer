@@ -21,6 +21,7 @@ mod install;
 mod jsonrpc;
 mod log;
 mod messages;
+mod scripts;
 mod service;
 
 use std::fs::{File, OpenOptions};
@@ -248,6 +249,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             events,
             broker: Arc::default(),
             extensions: extensions::Extensions::default(),
+            scripts: scripts::Scripts::default(),
             apps: apps::Apps::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.
@@ -262,6 +264,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
         ));
         extensions::start_all(&state).await;
         let r = serve(listener, rpc, state.clone()).await;
+        state.scripts.stop_all().await;
         state.extensions.stop_all().await;
         r
     });

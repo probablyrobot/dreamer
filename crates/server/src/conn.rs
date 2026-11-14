@@ -127,6 +127,19 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
     connection_as(stream, state, peer_pid, crate::grants::Grant::owner(), None).await;
 }
 
+/// Run [`connection_as`] as its own task. A plain function, so a method
+/// that starts a connection (a script loading) does not make the
+/// connection's future part of its own type.
+pub fn spawn_connection(
+    stream: UnixStream,
+    state: Arc<State>,
+    peer_pid: Option<u32>,
+    grant: crate::grants::Grant,
+    identity: Option<crate::messages::Identity>,
+) {
+    tokio::spawn(connection_as(stream, state, peer_pid, grant, identity));
+}
+
 /// A connection whose peer process and starting grant the daemon already
 /// knows: the JSON-RPC endpoint and supervised extensions reach the
 /// service this way, over an in-process socket.
@@ -386,7 +399,20 @@ fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
             RpcError::new(code::FORBIDDEN, "only the user's own clients launch apps"),
         ));
     }
-    // Likewise for starting and stopping extensions.
+    // Likewise for starting and stopping extensions and scripts, which
+    // hands out their grants.
+    if [
+        api::method::SCRIPTS_LOAD,
+        api::method::SCRIPTS_RELOAD,
+        api::method::SCRIPTS_STOP,
+    ]
+    .contains(&req.method.as_str())
+    {
+        return Some(failure(
+            req.id,
+            RpcError::new(code::FORBIDDEN, "only the user's own clients load scripts"),
+        ));
+    }
     if req.method == api::method::EXTENSIONS_RESTART {
         return Some(failure(
             req.id,
