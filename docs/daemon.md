@@ -36,6 +36,7 @@ after the link drops.
 | Startup lock `dreamerd.lock` | runtime directory | Holds the daemon's pid; locked for its lifetime |
 | Log `dreamerd.log` | state directory | Written in background mode; mode 0600 |
 | Action ledger `actions.jsonl` | state directory | See [actions.md](actions.md) |
+| Extension logs `extensions/<name>.log` | state directory | Each extension's standard error, appended; mode 0600. See [extensions.md](extensions.md) |
 
 The **runtime directory** is the first of these that is set:
 

@@ -219,6 +219,15 @@ impl Service for Fixed {
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn extensions_list(&self, _: Empty) -> Result<api::ExtensionList, RpcError> {
+        Ok(api::ExtensionList::default())
+    }
+    async fn extensions_restart(
+        &self,
+        _: api::ExtensionRef,
+    ) -> Result<api::ExtensionStatus, RpcError> {
+        Ok(api::ExtensionStatus::default())
+    }
     async fn grants_current(&self, _: Empty) -> Result<api::Grant, RpcError> {
         Ok(api::Grant::default())
     }

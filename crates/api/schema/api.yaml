@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 23 }
+version: { major: 1, minor: 24 }
 package: dreamer.v1
 
 types:
@@ -856,6 +856,41 @@ types:
       - { n: 2, name: envelope, type: MessageEnvelope }
       - { n: 3, name: missed, type: u64, doc: "Messages dropped for this subscription since the previous delivery, because it was full." }
 
+  # ---- extensions ---------------------------------------------------------
+
+  - enum: ExtensionState
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: starting, doc: "Started; waiting for its answer to extension.hello." }
+      - { n: 2, name: running }
+      - { n: 3, name: restarting, doc: "Crashed or stalled; starting again after a delay." }
+      - { n: 4, name: failed, doc: "Kept failing; parked until extensions.restart." }
+      - { n: 5, name: disabled, doc: "enabled: false in extensions.yaml." }
+      - { n: 6, name: stopped, doc: "The daemon is stopping." }
+
+  - message: ExtensionStatus
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: state, type: ExtensionState }
+      - { n: 3, name: pid, type: u32, optional: true }
+      - { n: 4, name: restarts, type: u32, doc: "Times it was started again since the daemon started." }
+      - { n: 5, name: failures, type: u32, doc: "Consecutive failures; reset after a minute of running." }
+      - { n: 6, name: last_error, type: string, optional: true }
+      - { n: 7, name: started_unix_ms, type: u64, optional: true }
+      - { n: 8, name: next_start_unix_ms, type: u64, optional: true }
+      - { n: 9, name: version, type: string, optional: true, doc: "What it said in its extension.hello answer." }
+      - { n: 10, name: log, type: string, doc: "Its standard error, appended." }
+      - { n: 11, name: grant, type: Grant }
+
+  - message: ExtensionList
+    fields:
+      - { n: 1, name: extensions, type: ExtensionStatus, repeated: true }
+      - { n: 2, name: config_error, type: string, optional: true, doc: "Why extensions.yaml could not be read; nothing was started from it." }
+
+  - message: ExtensionRef
+    fields:
+      - { n: 1, name: name, type: string }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -891,6 +926,8 @@ methods:
   - { method: messages.reply, params: MessageReply, result: MessageSent, mutation: true, doc: "Answer a request sent to this connection." }
   - { method: messages.subscribe, params: MessageSubscribe, result: MessageSubscription, doc: "Receive messages: `messages.deliver` events follow." }
   - { method: messages.unsubscribe, params: Unsubscribe, result: Empty }
+  - { method: extensions.list, params: Empty, result: ExtensionList, doc: "Supervised extensions and their state." }
+  - { method: extensions.restart, params: ExtensionRef, result: ExtensionStatus, mutation: true, doc: "Stop an extension if it runs and start it now, also one parked as failed (owner only)." }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive

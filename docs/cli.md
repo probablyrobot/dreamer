@@ -103,6 +103,12 @@ remote host through `ssh -T`; you do not normally run it yourself.
   is detached from it: closing the bridge or the SSH connection leaves the
   daemon, tmux, and every pane running.
 
+## Extensions
+
+`dream extensions [--json]` lists the supervised extensions from
+`extensions.yaml` and their state; `dream extensions restart NAME` starts
+one again now. See [extensions.md](extensions.md).
+
 ## JSON-RPC
 
 `dream rpc [tmux options]` speaks JSON-RPC 2.0 on standard input and

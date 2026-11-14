@@ -41,6 +41,15 @@ fn rate() -> (f64, f64) {
     }
 }
 
+/// A connection's identity as a sender, when it is not the user: set by
+/// `apps.register`, or by the daemon for a supervised extension.
+#[derive(Debug, Clone)]
+pub struct Identity {
+    pub instance: String,
+    pub app_id: Option<String>,
+    pub pane: Option<u32>,
+}
+
 /// Who is sending: decided by the daemon from the connection.
 #[derive(Debug, Clone)]
 pub struct Who {

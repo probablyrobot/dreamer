@@ -9,12 +9,13 @@
 //! a request's params to the method's record, its result or error back, and
 //! every pushed record to a notification named by its topic.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::log;
 use crate::service::State;
@@ -28,6 +29,16 @@ pub fn socket_path() -> std::path::PathBuf {
     platform::rpc_socket_path()
 }
 
+/// A request from the daemon to the peer (a supervised extension): the
+/// reply is the peer's `result`, or its `error` object.
+pub struct PeerCall {
+    pub method: &'static str,
+    pub params: Value,
+    pub reply: oneshot::Sender<Result<Value, Value>>,
+}
+
+type Waiting = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, Value>>>>>;
+
 /// Serve a client of the JSON-RPC socket, as the user (the socket is
 /// owner-only, like the native one).
 pub async fn connection(stream: UnixStream, state: Arc<State>) {
@@ -37,7 +48,16 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         .and_then(|c| c.pid())
         .and_then(|p| u32::try_from(p).ok());
     let (r, w) = stream.into_split();
-    serve(r, w, state, peer_pid, crate::grants::Grant::owner()).await;
+    serve_as(
+        r,
+        w,
+        state,
+        peer_pid,
+        crate::grants::Grant::owner(),
+        None,
+        None,
+    )
+    .await;
 }
 
 fn error(id: Value, code: i32, message: impl Into<String>, data: Option<String>) -> Value {
@@ -48,13 +68,18 @@ fn error(id: Value, code: i32, message: impl Into<String>, data: Option<String>)
     json!({ "jsonrpc": "2.0", "id": id, "error": e })
 }
 
-/// Speak JSON-RPC on `r`/`w` for a peer holding `grant`.
-pub async fn serve<R, W>(
+/// Speak JSON-RPC on `r`/`w` for a peer holding `grant`, known as
+/// `identity` when it is not the user. `calls` carries
+/// the daemon's own requests to the peer, whose replies arrive on `r`
+/// among the peer's requests.
+pub async fn serve_as<R, W>(
     r: R,
     mut w: W,
     state: Arc<State>,
     peer_pid: Option<u32>,
     grant: crate::grants::Grant,
+    identity: Option<crate::messages::Identity>,
+    calls: Option<mpsc::Receiver<PeerCall>>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -66,7 +91,9 @@ pub async fn serve<R, W>(
             return;
         }
     };
-    tokio::spawn(crate::conn::connection_as(inner, state, peer_pid, grant));
+    tokio::spawn(crate::conn::connection_as(
+        inner, state, peer_pid, grant, identity,
+    ));
     let (or, ow) = outer.into_split();
     let mut client = match client::Client::over(or, ow, "jsonrpc", 1024).await {
         Ok(c) => c,
@@ -110,6 +137,26 @@ pub async fn serve<R, W>(
             }
         })
     });
+    let waiting: Waiting = Arc::default();
+    let caller = calls.map(|mut calls| {
+        let (out, waiting) = (out.clone(), waiting.clone());
+        tokio::spawn(async move {
+            let mut n = 0u64;
+            while let Some(c) = calls.recv().await {
+                n += 1;
+                let id = format!("dreamer-{n}");
+                if let Ok(mut w) = waiting.lock() {
+                    w.retain(|_, tx| !tx.is_closed());
+                    w.insert(id.clone(), c.reply);
+                }
+                let req =
+                    json!({ "jsonrpc": "2.0", "id": id, "method": c.method, "params": c.params });
+                if out.send(req.to_string()).await.is_err() {
+                    return;
+                }
+            }
+        })
+    });
     let mut requests = tokio::task::JoinSet::new();
     let mut reader = BufReader::new(r);
     let mut buf = Vec::new();
@@ -132,12 +179,12 @@ pub async fn serve<R, W>(
                 if buf.iter().all(u8::is_ascii_whitespace) {
                     continue;
                 }
-                let (client, out) = (client.clone(), out.clone());
+                let (client, out, waiting) = (client.clone(), out.clone(), waiting.clone());
                 let text = std::mem::take(&mut buf);
                 // Finished requests are reaped as new ones arrive.
                 while requests.try_join_next().is_some() {}
                 requests.spawn(async move {
-                    if let Some(reply) = message(&client, &text).await {
+                    if let Some(reply) = message(&client, &waiting, &text).await {
                         let _ = out.send(reply.to_string()).await;
                     }
                 });
@@ -156,6 +203,9 @@ pub async fn serve<R, W>(
     }
     if let Some(f) = forwarder {
         f.abort();
+    }
+    if let Some(c) = caller {
+        c.abort();
     }
     drop(out);
     let _ = writer.await;
@@ -207,7 +257,7 @@ async fn read_line<R: AsyncRead + Unpin>(
 }
 
 /// Answer one line: a request, a notification (no answer), or a batch.
-async fn message(client: &client::Client, text: &[u8]) -> Option<Value> {
+async fn message(client: &client::Client, waiting: &Waiting, text: &[u8]) -> Option<Value> {
     let value: Value = match serde_json::from_slice(text) {
         Ok(v) => v,
         Err(e) => {
@@ -231,17 +281,17 @@ async fn message(client: &client::Client, text: &[u8]) -> Option<Value> {
             // entry in the reply.
             let mut replies = Vec::new();
             for v in items {
-                if let Some(r) = one(client, v).await {
+                if let Some(r) = one(client, waiting, v).await {
                     replies.push(r);
                 }
             }
             (!replies.is_empty()).then_some(Value::Array(replies))
         }
-        v => one(client, v).await,
+        v => one(client, waiting, v).await,
     }
 }
 
-async fn one(client: &client::Client, v: Value) -> Option<Value> {
+async fn one(client: &client::Client, waiting: &Waiting, v: Value) -> Option<Value> {
     let Value::Object(mut obj) = v else {
         return Some(error(
             Value::Null,
@@ -251,6 +301,19 @@ async fn one(client: &client::Client, v: Value) -> Option<Value> {
         ));
     };
     let id = obj.remove("id");
+    // A reply to one of the daemon's own requests.
+    if !obj.contains_key("method") && (obj.contains_key("result") || obj.contains_key("error")) {
+        let key = id.as_ref().and_then(Value::as_str).unwrap_or_default();
+        let tx = waiting.lock().ok().and_then(|mut w| w.remove(key));
+        if let Some(tx) = tx {
+            let r = match obj.remove("error") {
+                Some(e) => Err(e),
+                None => Ok(obj.remove("result").unwrap_or(Value::Null)),
+            };
+            let _ = tx.send(r);
+        }
+        return None;
+    }
     let reply_id = id.clone().unwrap_or(Value::Null);
     if obj.get("jsonrpc") != Some(&json!("2.0")) {
         return Some(error(

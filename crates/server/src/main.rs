@@ -14,6 +14,7 @@
 mod apps;
 mod conn;
 mod events;
+mod extensions;
 mod grants;
 mod hosts;
 mod install;
@@ -246,6 +247,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             hosts: hosts::Hosts::new(events.clone()),
             events,
             broker: Arc::default(),
+            extensions: extensions::Extensions::default(),
             apps: apps::Apps::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.
@@ -258,7 +260,10 @@ fn run(args: Args) -> Result<ExitCode, String> {
             socket.display(),
             args.background
         ));
-        serve(listener, rpc, state).await
+        extensions::start_all(&state).await;
+        let r = serve(listener, rpc, state.clone()).await;
+        state.extensions.stop_all().await;
+        r
     });
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(&rpc_socket);

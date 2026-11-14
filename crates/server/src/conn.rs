@@ -73,8 +73,9 @@ struct Conn {
     /// The connecting process, from the socket's peer credentials.
     peer_pid: Option<u32>,
     id: u64,
-    /// The registered app on this connection, if one registered.
-    registration: Arc<std::sync::Mutex<Option<api::Registration>>>,
+    /// Who this connection is when it is not the user: a registered app
+    /// or a supervised extension.
+    identity: Arc<std::sync::Mutex<Option<crate::messages::Identity>>>,
     /// The message rate limit.
     bucket: Arc<std::sync::Mutex<crate::messages::Bucket>>,
 }
@@ -82,21 +83,21 @@ struct Conn {
 impl Conn {
     /// This connection as a message sender and recipient.
     fn who(&self) -> crate::messages::Who {
-        let r = self.registration.lock().ok().and_then(|r| r.clone());
-        match r {
-            Some(r) => crate::messages::Who {
+        let owner = self.grant.lock().is_ok_and(|g| g.0.owner);
+        match self.identity.lock().ok().and_then(|r| r.clone()) {
+            Some(i) => crate::messages::Who {
                 conn: self.id,
-                instance: r.instance,
-                app_id: Some(r.app_id),
-                pane: Some(r.pane),
-                owner: false,
+                instance: i.instance,
+                app_id: i.app_id,
+                pane: i.pane,
+                owner,
             },
             None => crate::messages::Who {
                 conn: self.id,
                 instance: format!("owner:{}", self.id),
                 app_id: None,
                 pane: None,
-                owner: true,
+                owner,
             },
         }
     }
@@ -123,7 +124,7 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         .and_then(|c| c.pid())
         .and_then(|p| u32::try_from(p).ok());
     // The socket is owner-only: whoever connects is the user.
-    connection_as(stream, state, peer_pid, crate::grants::Grant::owner()).await;
+    connection_as(stream, state, peer_pid, crate::grants::Grant::owner(), None).await;
 }
 
 /// A connection whose peer process and starting grant the daemon already
@@ -134,6 +135,7 @@ pub async fn connection_as(
     state: Arc<State>,
     peer_pid: Option<u32>,
     grant: crate::grants::Grant,
+    identity: Option<crate::messages::Identity>,
 ) {
     let (r, mut w) = stream.into_split();
     let me = &state.identity;
@@ -177,7 +179,7 @@ pub async fn connection_as(
         peer_pid,
         events: Arc::new(AtomicU64::new(1)),
         id: CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1,
-        registration: Arc::default(),
+        identity: Arc::new(std::sync::Mutex::new(identity)),
         bucket: Arc::default(),
     };
     let service = DaemonService(state.clone());
@@ -384,6 +386,16 @@ fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
             RpcError::new(code::FORBIDDEN, "only the user's own clients launch apps"),
         ));
     }
+    // Likewise for starting and stopping extensions.
+    if req.method == api::method::EXTENSIONS_RESTART {
+        return Some(failure(
+            req.id,
+            RpcError::new(
+                code::FORBIDDEN,
+                "only the user's own clients restart extensions",
+            ),
+        ));
+    }
     if !grant.method_allowed(&req.method) {
         return Some(failure(
             req.id,
@@ -421,8 +433,12 @@ async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire:
                 *g = crate::grants::Grant(narrow);
             }
             state.events.app(&p.launch_id, r.pane);
-            if let Ok(mut me) = conn.registration.lock() {
-                *me = Some(r.clone());
+            if let Ok(mut me) = conn.identity.lock() {
+                *me = Some(crate::messages::Identity {
+                    instance: r.instance.clone(),
+                    app_id: Some(r.app_id.clone()),
+                    pane: Some(r.pane),
+                });
             }
             ok(req.id, r.encode_to_vec())
         }

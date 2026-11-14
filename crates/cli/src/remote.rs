@@ -567,6 +567,73 @@ pub fn doctor() -> Result<(), String> {
     })
 }
 
+/// `dream extensions [--json]` and `dream extensions restart NAME`.
+pub fn extensions(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        if let [verb, name] = args
+            && verb == "restart"
+        {
+            let Response::ExtensionsRestart(s) = call(
+                &mut c,
+                Request::ExtensionsRestart(api::ExtensionRef { name: name.clone() }),
+            )
+            .await?
+            else {
+                return Err("unexpected reply".into());
+            };
+            println!("restarting {}", s.name);
+            return Ok(());
+        }
+        let json = match args {
+            [] => false,
+            [j] if j == "--json" => true,
+            _ => {
+                return Err(
+                    "usage: dream extensions [--json] | dream extensions restart NAME".into(),
+                );
+            }
+        };
+        let Response::ExtensionsList(l) =
+            call(&mut c, Request::ExtensionsList(api::Empty {})).await?
+        else {
+            return Err("unexpected reply".into());
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&l).map_err(|e| e.to_string())?
+            );
+            return Ok(());
+        }
+        if let Some(e) = &l.config_error {
+            println!("extensions.yaml: {e}");
+        }
+        if l.extensions.is_empty() {
+            println!("no extensions (see docs/extensions.md)");
+        }
+        for x in &l.extensions {
+            let state =
+                api::ExtensionState::try_from(x.state).map_or("unknown", api::ExtensionState::name);
+            let pid = x.pid.map(|p| format!(" pid {p}")).unwrap_or_default();
+            let version = x
+                .version
+                .as_deref()
+                .map(|v| format!(" ({v})"))
+                .unwrap_or_default();
+            println!(
+                "{} {state}{pid}{version}, restarts {}, failures {}",
+                x.name, x.restarts, x.failures
+            );
+            if let Some(e) = &x.last_error {
+                println!("  last error: {e}");
+            }
+            println!("  log: {}", x.log);
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
