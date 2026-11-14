@@ -17,7 +17,8 @@
 //! row came from the shaping cache. Exit status 5 means the display did not
 //! refresh at all (a locked screen), so paint checks proved nothing.
 //! In attach mode it waits for a frame containing `--expect` and then
-//! checks that 1.5 s of idle pane cause no view wakeups and no paints.
+//! checks that a settled idle pane causes no view wakeups and at most one
+//! stray paint in 4.5 s (see `idle_check`).
 
 mod fallback;
 mod fonts;
@@ -55,7 +56,13 @@ const SMOKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// locked screen), so paint-based checks prove nothing either way.
 pub(crate) const INCONCLUSIVE: i32 = 5;
 /// Idle time a live smoke run watches for unwanted wakeups.
-const IDLE_CHECK: Duration = Duration::from_millis(1500);
+const IDLE_CHECK: Duration = Duration::from_millis(4500);
+/// Quiet time with no new frame that ends the settle wait.
+const IDLE_SETTLE: Duration = Duration::from_millis(500);
+/// Longest settle wait; past it the idle windows start anyway.
+const IDLE_SETTLE_MAX: Duration = Duration::from_millis(3000);
+/// Paints during the idle check not caused by the pane (see `idle_check`).
+const IDLE_STRAY_PAINTS: u64 = 1;
 const GRID: GridSize = GridSize { cols: 80, rows: 16 };
 
 /// A stream exercising styles, colors, wide and combining text, emoji, box
@@ -1695,11 +1702,20 @@ async fn fail_unless_past(
 
 /// After the expected frame: an idle pane must cause no view wakeups and
 /// no paints.
+///
+/// First the pane settles: the check waits until no frame has arrived for
+/// `IDLE_SETTLE` (at most `IDLE_SETTLE_MAX`), so a late resize after attach
+/// is not counted. Then over `IDLE_CHECK` any view wakeup fails: the pane
+/// wrote nothing, so the mirror must not change. GPUI repaints a background
+/// window once now and then for activity elsewhere on the desktop (seen
+/// with the window inactive and the pointer outside it), so
+/// `IDLE_STRAY_PAINTS` paint is allowed; a repaint loop of any rate faster
+/// than one per 2 s paints more and fails.
 async fn idle_check(feed: Arc<Feed>, cx: &mut gpui::AsyncApp) {
+    let wakeups = || feed.stats.view_wakeups.load(Ordering::Relaxed);
+    let timer = |d| cx.background_executor().timer(d);
     // Let the presentation of the expected frame finish first.
-    cx.background_executor()
-        .timer(Duration::from_millis(300))
-        .await;
+    timer(Duration::from_millis(300)).await;
     cx.update(|cx| {
         if let Some(w) = cx.windows().first() {
             let _ = w.update(cx, |_, window, _| Shell::report_frame(window));
@@ -1709,18 +1725,74 @@ async fn idle_check(feed: Arc<Feed>, cx: &mut gpui::AsyncApp) {
         "smoke: live frames painted: {} paints so far",
         paint_count()
     );
-    let wakes = feed.stats.view_wakeups.load(Ordering::Relaxed);
-    let paints = paint_count();
-    cx.background_executor().timer(IDLE_CHECK).await;
-    let wakes = feed.stats.view_wakeups.load(Ordering::Relaxed) - wakes;
-    let paints = paint_count() - paints;
+    let settle_from = std::time::Instant::now();
+    let mut seen = wakeups();
+    loop {
+        timer(IDLE_SETTLE).await;
+        let now = wakeups();
+        if now == seen || settle_from.elapsed() >= IDLE_SETTLE_MAX {
+            break;
+        }
+        seen = now;
+    }
     println!(
-        "smoke: live pane idle {:.1}s: {wakes} view wakeups, {paints} paints ({} frames built, {} owner wakeups)",
+        "smoke: live settled in {} ms",
+        settle_from.elapsed().as_millis()
+    );
+    let (wakes, paints) = (wakeups(), paint_count());
+    timer(IDLE_CHECK).await;
+    let (wakes, paints) = (wakeups() - wakes, paint_count() - paints);
+    let window = cx
+        .update(|cx| {
+            cx.windows().first().and_then(|w| {
+                w.update(cx, |_, window, _| {
+                    let (m, b) = (window.mouse_position(), window.bounds().size);
+                    let inside = m.x >= gpui::px(0.)
+                        && m.y >= gpui::px(0.)
+                        && m.x < b.width
+                        && m.y < b.height;
+                    format!(
+                        "window {}, pointer {}",
+                        if window.is_window_active() {
+                            "active"
+                        } else {
+                            "inactive"
+                        },
+                        if inside { "inside" } else { "outside" }
+                    )
+                })
+                .ok()
+            })
+        })
+        .unwrap_or_default();
+    println!(
+        "smoke: live pane idle {:.1}s: {wakes} view wakeups, {paints} paints, at most {IDLE_STRAY_PAINTS} allowed ({window}; {} frames built, {} owner wakeups)",
         IDLE_CHECK.as_secs_f32(),
         feed.stats.frames.load(Ordering::Relaxed),
         feed.stats.owner_wakeups.load(Ordering::Relaxed)
     );
-    let code = if wakes == 0 && paints == 0 { 0 } else { 3 };
+    let mut code = if wakes == 0 && paints <= IDLE_STRAY_PAINTS {
+        0
+    } else {
+        3
+    };
+    if code == 0 {
+        // Control: few paints prove nothing if the window was not being
+        // drawn at all (occluded, or the display asleep).
+        let before = paint_count();
+        cx.update(|cx| {
+            if let Some(w) = cx.windows().first() {
+                let _ = w.update(cx, |_, window, _| window.refresh());
+            }
+        });
+        timer(Duration::from_millis(500)).await;
+        if paint_count() == before {
+            println!(
+                "smoke: the window did not repaint when asked (occluded, or the display asleep?); idle check not run"
+            );
+            code = INCONCLUSIVE;
+        }
+    }
     cx.update(|cx| cx.quit());
     std::process::exit(code);
 }

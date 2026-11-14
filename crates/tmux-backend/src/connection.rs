@@ -332,8 +332,8 @@ async fn scheduler(
                     }
                 }
                 Ok(None) => {
-                    let _ = req.reply.send(Err(CommandError::Closed));
                     let _ = state.send(LinkState::Failed);
+                    let _ = req.reply.send(Err(CommandError::Closed));
                     return;
                 }
                 Err(_) => break false,
@@ -352,11 +352,13 @@ async fn scheduler(
             continue;
         }
 
-        // Timed out: unknown outcome. Never resend; drain the rest.
+        // Timed out: unknown outcome. Never resend; drain the rest. The
+        // state changes before the caller hears of the timeout, so a caller
+        // never sees `Ready` after its own timeout.
+        let _ = state.send(LinkState::Recovering);
         let _ = req
             .reply
             .send(Err(CommandError::Timeout { batch_id: req.id }));
-        let _ = state.send(LinkState::Recovering);
         let drain_deadline = tokio::time::Instant::now() + drain_limit;
         let complete = loop {
             if got.last().is_some_and(|r| !r.ok) || got.len() == req.expected {
