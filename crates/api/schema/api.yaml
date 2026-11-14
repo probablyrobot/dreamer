@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 27 }
+version: { major: 1, minor: 28 }
 package: dreamer.v1
 
 types:
@@ -1039,6 +1039,57 @@ types:
       - { n: 3, name: truncated, type: bool, doc: "A bound cut the answer short; see notes." }
       - { n: 4, name: notes, type: string, repeated: true, doc: "What was cut and why, and hosts that could not be searched." }
 
+  # ---- filters ------------------------------------------------------------
+
+  - enum: FilterState
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: running }
+      - { n: 2, name: paused, doc: "Paused with filters.pause." }
+      - { n: 3, name: tripped, doc: "Its triggers came too fast (a loop?); paused until filters.resume." }
+
+  - message: FilterInput
+    doc: "A typed trigger: fixed text typed into a pane. Matched text is never typed."
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: text, type: string }
+
+  - message: FilterSpec
+    fields:
+      - { n: 1, name: name, type: string, doc: "Unique; its sender identity is filter:<name>." }
+      - { n: 2, name: panes, type: u32, repeated: true }
+      - { n: 3, name: every_pane, type: bool }
+      - { n: 4, name: pattern, type: string, doc: "As in terminal.query: a regular expression, or plain text with `literal`." }
+      - { n: 5, name: literal, type: bool }
+      - { n: 6, name: literals, type: string, repeated: true }
+      - { n: 7, name: ignore_case, type: bool }
+      - { n: 8, name: topic, type: string, optional: true, doc: "Publish each matched line here (the derived stream)." }
+      - { n: 9, name: recipient, type: string, optional: true, doc: "Send each matched line to this instance." }
+      - { n: 10, name: event, type: bool, doc: "Record each match as a filters.matched event (scripts receive them with on_event)." }
+      - { n: 11, name: input, type: FilterInput, doc: "Type this into a pane on each match." }
+      - { n: 12, name: grant, type: ScriptGrant, doc: "What the filter may do: taps.subscribe for its panes, plus what its outputs need." }
+      - { n: 13, name: per_second, type: u32, optional: true, doc: "Matches acted on per second; more are counted as dropped. Default 20." }
+      - { n: 14, name: breaker, type: u32, optional: true, doc: "Triggers (topic, recipient, input) allowed in any 10 s; one more trips the filter. Default 50." }
+
+  - message: FilterRef
+    fields:
+      - { n: 1, name: name, type: string }
+
+  - message: FilterStatus
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: state, type: FilterState }
+      - { n: 3, name: matched, type: u64 }
+      - { n: 4, name: dropped, type: u64, doc: "Matches over per_second." }
+      - { n: 5, name: triggered, type: u64 }
+      - { n: 6, name: skipped_own, type: u64, doc: "Lines skipped because they echo this filter's own input." }
+      - { n: 7, name: last_error, type: string, optional: true }
+      - { n: 8, name: reason, type: string, optional: true, doc: "Why it is paused or tripped." }
+
+  - message: FilterList
+    fields:
+      - { n: 1, name: filters, type: FilterStatus, repeated: true }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -1082,6 +1133,11 @@ methods:
   - { method: scripts.stop, params: ScriptRef, result: ScriptStatus, mutation: true, doc: "Stop and unload a script (owner only)." }
   - { method: scripts.list, params: Empty, result: ScriptList }
   - { method: terminal.query, params: TerminalQuery, result: QueryResult, doc: "Search the newest lines of many panes, here and on connected hosts, within fixed bounds." }
+  - { method: filters.install, params: FilterSpec, result: FilterStatus, mutation: true, doc: "Start a filter: a text tap, the Rust match stage, and its outputs, under its own grant (owner only)." }
+  - { method: filters.list, params: Empty, result: FilterList }
+  - { method: filters.pause, params: FilterRef, result: FilterStatus, mutation: true, doc: "(owner only)" }
+  - { method: filters.resume, params: FilterRef, result: FilterStatus, mutation: true, doc: "Resume a paused or tripped filter (owner only)." }
+  - { method: filters.remove, params: FilterRef, result: FilterStatus, mutation: true, doc: "(owner only)" }
   - { method: taps.subscribe, params: TapSubscribe, result: TapSubscription, doc: "Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap." }
   - { method: taps.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }

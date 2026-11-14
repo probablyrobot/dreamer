@@ -411,12 +411,19 @@ fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
         api::method::SCRIPTS_LOAD,
         api::method::SCRIPTS_RELOAD,
         api::method::SCRIPTS_STOP,
+        api::method::FILTERS_INSTALL,
+        api::method::FILTERS_PAUSE,
+        api::method::FILTERS_RESUME,
+        api::method::FILTERS_REMOVE,
     ]
     .contains(&req.method.as_str())
     {
         return Some(failure(
             req.id,
-            RpcError::new(code::FORBIDDEN, "only the user's own clients load scripts"),
+            RpcError::new(
+                code::FORBIDDEN,
+                format!("only the user's own clients may call {}", req.method),
+            ),
         ));
     }
     if req.method == api::method::EXTENSIONS_RESTART {

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 27;
+pub const PROTOCOL_MINOR: u32 = 28;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -731,6 +731,54 @@ mod tap_level_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| TapLevel::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum FilterState {
+    Unspecified = 0,
+    Running = 1,
+    /// Paused with filters.pause.
+    Paused = 2,
+    /// Its triggers came too fast (a loop?); paused until filters.resume.
+    Tripped = 3,
+}
+
+impl FilterState {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Tripped => "tripped",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "running" => Some(Self::Running),
+            "paused" => Some(Self::Paused),
+            "tripped" => Some(Self::Tripped),
+            _ => None,
+        }
+    }
+}
+
+mod filter_state_json {
+    use super::FilterState;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match FilterState::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| FilterState::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -2605,6 +2653,105 @@ pub struct QueryResult {
     pub notes: Vec<String>,
 }
 
+/// A typed trigger: fixed text typed into a pane. Matched text is never typed.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilterInput {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(string, tag = "2")]
+    pub text: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilterSpec {
+    /// Unique; its sender identity is filter:<name>.
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(uint32, repeated, tag = "2")]
+    pub panes: Vec<u32>,
+    #[prost(bool, tag = "3")]
+    pub every_pane: bool,
+    /// As in terminal.query: a regular expression, or plain text with `literal`.
+    #[prost(string, tag = "4")]
+    pub pattern: String,
+    #[prost(bool, tag = "5")]
+    pub literal: bool,
+    #[prost(string, repeated, tag = "6")]
+    pub literals: Vec<String>,
+    #[prost(bool, tag = "7")]
+    pub ignore_case: bool,
+    /// Publish each matched line here (the derived stream).
+    #[prost(string, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Send each matched line to this instance.
+    #[prost(string, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    /// Record each match as a filters.matched event (scripts receive them with on_event).
+    #[prost(bool, tag = "10")]
+    pub event: bool,
+    /// Type this into a pane on each match.
+    #[prost(message, optional, tag = "11")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<FilterInput>,
+    /// What the filter may do: taps.subscribe for its panes, plus what its outputs need.
+    #[prost(message, optional, tag = "12")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<ScriptGrant>,
+    /// Matches acted on per second; more are counted as dropped. Default 20.
+    #[prost(uint32, optional, tag = "13")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_second: Option<u32>,
+    /// Triggers (topic, recipient, input) allowed in any 10 s; one more trips the filter. Default 50.
+    #[prost(uint32, optional, tag = "14")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub breaker: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilterRef {
+    #[prost(string, tag = "1")]
+    pub name: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilterStatus {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(enumeration = "FilterState", tag = "2")]
+    #[serde(with = "filter_state_json")]
+    pub state: i32,
+    #[prost(uint64, tag = "3")]
+    pub matched: u64,
+    /// Matches over per_second.
+    #[prost(uint64, tag = "4")]
+    pub dropped: u64,
+    #[prost(uint64, tag = "5")]
+    pub triggered: u64,
+    /// Lines skipped because they echo this filter's own input.
+    #[prost(uint64, tag = "6")]
+    pub skipped_own: u64,
+    #[prost(string, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Why it is paused or tripped.
+    #[prost(string, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilterList {
+    #[prost(message, repeated, tag = "1")]
+    pub filters: Vec<FilterStatus>,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -2649,6 +2796,11 @@ pub mod method {
     pub const SCRIPTS_STOP: &str = "scripts.stop";
     pub const SCRIPTS_LIST: &str = "scripts.list";
     pub const TERMINAL_QUERY: &str = "terminal.query";
+    pub const FILTERS_INSTALL: &str = "filters.install";
+    pub const FILTERS_LIST: &str = "filters.list";
+    pub const FILTERS_PAUSE: &str = "filters.pause";
+    pub const FILTERS_RESUME: &str = "filters.resume";
+    pub const FILTERS_REMOVE: &str = "filters.remove";
     pub const TAPS_SUBSCRIBE: &str = "taps.subscribe";
     pub const TAPS_UNSUBSCRIBE: &str = "taps.unsubscribe";
     pub const APPS_REGISTER: &str = "apps.register";
@@ -2959,6 +3111,41 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "Search the newest lines of many panes, here and on connected hosts, within fixed bounds.",
     },
     MethodInfo {
+        name: "filters.install",
+        params: "FilterSpec",
+        result: "FilterStatus",
+        mutation: true,
+        doc: "Start a filter: a text tap, the Rust match stage, and its outputs, under its own grant (owner only).",
+    },
+    MethodInfo {
+        name: "filters.list",
+        params: "Empty",
+        result: "FilterList",
+        mutation: false,
+        doc: "",
+    },
+    MethodInfo {
+        name: "filters.pause",
+        params: "FilterRef",
+        result: "FilterStatus",
+        mutation: true,
+        doc: "(owner only)",
+    },
+    MethodInfo {
+        name: "filters.resume",
+        params: "FilterRef",
+        result: "FilterStatus",
+        mutation: true,
+        doc: "Resume a paused or tripped filter (owner only).",
+    },
+    MethodInfo {
+        name: "filters.remove",
+        params: "FilterRef",
+        result: "FilterStatus",
+        mutation: true,
+        doc: "(owner only)",
+    },
+    MethodInfo {
         name: "taps.subscribe",
         params: "TapSubscribe",
         result: "TapSubscription",
@@ -3026,6 +3213,11 @@ pub enum Request {
     ScriptsStop(ScriptRef),
     ScriptsList(Empty),
     TerminalQuery(TerminalQuery),
+    FiltersInstall(FilterSpec),
+    FiltersList(Empty),
+    FiltersPause(FilterRef),
+    FiltersResume(FilterRef),
+    FiltersRemove(FilterRef),
     TapsSubscribe(TapSubscribe),
     TapsUnsubscribe(Unsubscribe),
     AppsRegister(RegisterApp),
@@ -3076,6 +3268,11 @@ impl Request {
             Self::ScriptsStop(_) => "scripts.stop",
             Self::ScriptsList(_) => "scripts.list",
             Self::TerminalQuery(_) => "terminal.query",
+            Self::FiltersInstall(_) => "filters.install",
+            Self::FiltersList(_) => "filters.list",
+            Self::FiltersPause(_) => "filters.pause",
+            Self::FiltersResume(_) => "filters.resume",
+            Self::FiltersRemove(_) => "filters.remove",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -3127,6 +3324,11 @@ impl Request {
             Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalQuery(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersInstall(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersList(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersPause(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersResume(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersRemove(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -3181,6 +3383,11 @@ impl Request {
             "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
             "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
             "terminal.query" => Ok(Self::TerminalQuery(::prost::Message::decode(bytes)?)),
+            "filters.install" => Ok(Self::FiltersInstall(::prost::Message::decode(bytes)?)),
+            "filters.list" => Ok(Self::FiltersList(::prost::Message::decode(bytes)?)),
+            "filters.pause" => Ok(Self::FiltersPause(::prost::Message::decode(bytes)?)),
+            "filters.resume" => Ok(Self::FiltersResume(::prost::Message::decode(bytes)?)),
+            "filters.remove" => Ok(Self::FiltersRemove(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -3232,6 +3439,11 @@ impl Request {
             Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalQuery(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersInstall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersPause(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersResume(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersRemove(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3282,6 +3494,11 @@ impl Request {
             "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
             "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
             "terminal.query" => Ok(Self::TerminalQuery(serde_json::from_value(value)?)),
+            "filters.install" => Ok(Self::FiltersInstall(serde_json::from_value(value)?)),
+            "filters.list" => Ok(Self::FiltersList(serde_json::from_value(value)?)),
+            "filters.pause" => Ok(Self::FiltersPause(serde_json::from_value(value)?)),
+            "filters.resume" => Ok(Self::FiltersResume(serde_json::from_value(value)?)),
+            "filters.remove" => Ok(Self::FiltersRemove(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -3335,6 +3552,11 @@ pub enum Response {
     ScriptsStop(ScriptStatus),
     ScriptsList(ScriptList),
     TerminalQuery(QueryResult),
+    FiltersInstall(FilterStatus),
+    FiltersList(FilterList),
+    FiltersPause(FilterStatus),
+    FiltersResume(FilterStatus),
+    FiltersRemove(FilterStatus),
     TapsSubscribe(TapSubscription),
     TapsUnsubscribe(Empty),
     AppsRegister(Registration),
@@ -3385,6 +3607,11 @@ impl Response {
             Self::ScriptsStop(_) => "scripts.stop",
             Self::ScriptsList(_) => "scripts.list",
             Self::TerminalQuery(_) => "terminal.query",
+            Self::FiltersInstall(_) => "filters.install",
+            Self::FiltersList(_) => "filters.list",
+            Self::FiltersPause(_) => "filters.pause",
+            Self::FiltersResume(_) => "filters.resume",
+            Self::FiltersRemove(_) => "filters.remove",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -3436,6 +3663,11 @@ impl Response {
             Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalQuery(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersInstall(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersList(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersPause(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersResume(v) => ::prost::Message::encode_to_vec(v),
+            Self::FiltersRemove(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -3490,6 +3722,11 @@ impl Response {
             "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
             "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
             "terminal.query" => Ok(Self::TerminalQuery(::prost::Message::decode(bytes)?)),
+            "filters.install" => Ok(Self::FiltersInstall(::prost::Message::decode(bytes)?)),
+            "filters.list" => Ok(Self::FiltersList(::prost::Message::decode(bytes)?)),
+            "filters.pause" => Ok(Self::FiltersPause(::prost::Message::decode(bytes)?)),
+            "filters.resume" => Ok(Self::FiltersResume(::prost::Message::decode(bytes)?)),
+            "filters.remove" => Ok(Self::FiltersRemove(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -3541,6 +3778,11 @@ impl Response {
             Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalQuery(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersInstall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersPause(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersResume(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::FiltersRemove(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3591,6 +3833,11 @@ impl Response {
             "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
             "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
             "terminal.query" => Ok(Self::TerminalQuery(serde_json::from_value(value)?)),
+            "filters.install" => Ok(Self::FiltersInstall(serde_json::from_value(value)?)),
+            "filters.list" => Ok(Self::FiltersList(serde_json::from_value(value)?)),
+            "filters.pause" => Ok(Self::FiltersPause(serde_json::from_value(value)?)),
+            "filters.resume" => Ok(Self::FiltersResume(serde_json::from_value(value)?)),
+            "filters.remove" => Ok(Self::FiltersRemove(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -3806,6 +4053,30 @@ pub trait Service: Sync {
         &self,
         params: TerminalQuery,
     ) -> impl ::core::future::Future<Output = Result<QueryResult, RpcError>> + Send;
+    /// Start a filter: a text tap, the Rust match stage, and its outputs, under its own grant (owner only).
+    fn filters_install(
+        &self,
+        params: FilterSpec,
+    ) -> impl ::core::future::Future<Output = Result<FilterStatus, RpcError>> + Send;
+    fn filters_list(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<FilterList, RpcError>> + Send;
+    /// (owner only)
+    fn filters_pause(
+        &self,
+        params: FilterRef,
+    ) -> impl ::core::future::Future<Output = Result<FilterStatus, RpcError>> + Send;
+    /// Resume a paused or tripped filter (owner only).
+    fn filters_resume(
+        &self,
+        params: FilterRef,
+    ) -> impl ::core::future::Future<Output = Result<FilterStatus, RpcError>> + Send;
+    /// (owner only)
+    fn filters_remove(
+        &self,
+        params: FilterRef,
+    ) -> impl ::core::future::Future<Output = Result<FilterStatus, RpcError>> + Send;
     /// Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap.
     fn taps_subscribe(
         &self,
@@ -3924,6 +4195,14 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::ScriptsStop(p) => service.scripts_stop(p).await.map(Response::ScriptsStop),
         Request::ScriptsList(p) => service.scripts_list(p).await.map(Response::ScriptsList),
         Request::TerminalQuery(p) => service.terminal_query(p).await.map(Response::TerminalQuery),
+        Request::FiltersInstall(p) => service
+            .filters_install(p)
+            .await
+            .map(Response::FiltersInstall),
+        Request::FiltersList(p) => service.filters_list(p).await.map(Response::FiltersList),
+        Request::FiltersPause(p) => service.filters_pause(p).await.map(Response::FiltersPause),
+        Request::FiltersResume(p) => service.filters_resume(p).await.map(Response::FiltersResume),
+        Request::FiltersRemove(p) => service.filters_remove(p).await.map(Response::FiltersRemove),
         Request::TapsSubscribe(p) => service.taps_subscribe(p).await.map(Response::TapsSubscribe),
         Request::TapsUnsubscribe(p) => service
             .taps_unsubscribe(p)
