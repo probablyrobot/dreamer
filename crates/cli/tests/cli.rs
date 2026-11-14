@@ -1758,3 +1758,119 @@ fn a_cancelled_job_ends_by_signal_and_says_so() {
     });
     assert_eq!(states, ["running", "killed"]);
 }
+
+#[test]
+fn agent_runs_are_listed_here_and_on_a_host_without_their_helpers() {
+    let cli = Cli::new();
+    let far = TmuxServer::start(100, 30, "/bin/sh").expect("remote tmux");
+    let far_root = cli.root.join("far");
+    let _far_daemon = DaemonGuard(far_root.join("rt"));
+    let r = |name: &str| cli.root.join(name);
+    std::fs::write(
+        r("ssh"),
+        format!(
+            r#"#!/bin/sh
+[ "$1" = -T ] || exit 90
+while [ "$1" != -- ]; do shift; done
+export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
+export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
+exec /bin/sh -c "exec $3"
+"#,
+            rt = far_root.join("rt").display(),
+            st = far_root.join("st").display(),
+            daemon = Cli::daemon().display(),
+        ),
+    )
+    .expect("stand-in ssh");
+    std::fs::set_permissions(
+        r("ssh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+    std::fs::create_dir_all(r("config")).expect("config dir");
+    std::fs::write(
+        r("config/hosts.yaml"),
+        format!(
+            "hosts:\n  - name: devbox\n    destination: devbox\n    dream: '{}'\n    tmux: '{}'\n    tmux_socket: '{}'\n",
+            DREAM,
+            tmux_program().display(),
+            far.socket()
+        ),
+    )
+    .expect("hosts.yaml");
+    // Programs named like the CLIs: codex here (a shell that starts a
+    // helper), claude on the host.
+    let bin = r("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    std::os::unix::fs::symlink("/bin/bash", bin.join("codex")).expect("codex");
+    std::os::unix::fs::symlink("/bin/sleep", bin.join("claude")).expect("claude");
+    cli.tmux
+        .run_checked(&[
+            "send-keys",
+            "-t",
+            "main",
+            &format!("{} -c 'sleep 300 & wait'", bin.join("codex").display()),
+            "Enter",
+        ])
+        .expect("codex");
+    far.run_checked(&[
+        "send-keys",
+        "-t",
+        "main",
+        &format!("{} 300", bin.join("claude").display()),
+        "Enter",
+    ])
+    .expect("claude");
+    cli.ok(&["ensure-running"]);
+    cli.ok(&["hosts", "connect", "devbox"]);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let c = client::Client::connect(&cli.root.join("rt/dreamerd.sock"), "test")
+            .await
+            .expect("connect");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let runs = loop {
+            let Ok(api::Response::AgentsRuns(l)) = c
+                .call(api::Request::AgentsRuns(api::AgentRunQuery {
+                    hosts: vec!["devbox".into()],
+                    provider: None,
+                }))
+                .await
+            else {
+                panic!("runs")
+            };
+            let ours: Vec<api::AgentRun> =
+                l.runs.into_iter().filter(|r| r.pane.is_some()).collect();
+            if ours.len() >= 2 && ours.iter().any(|r| r.helpers >= 1) {
+                break ours;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "runs never showed: {ours:?} ({:?})",
+                l.notes
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+        // Exactly one run each: helpers are not runs.
+        let codex: Vec<_> = runs.iter().filter(|r| r.provider == "codex").collect();
+        let claude: Vec<_> = runs.iter().filter(|r| r.provider == "claude").collect();
+        assert_eq!((codex.len(), claude.len()), (1, 1), "{runs:?}");
+        assert_eq!(codex[0].host, None);
+        assert_eq!(codex[0].helpers, 1, "the sleep it started");
+        assert_eq!(claude[0].host.as_deref(), Some("devbox"));
+        for r in &runs {
+            assert_eq!(
+                (
+                    r.state.as_str(),
+                    r.instrumentation.as_str(),
+                    r.confidence.as_str()
+                ),
+                ("running", "passive", "high")
+            );
+            assert!(r.rss_kib > 0 && r.age_ms < 60_000, "{r:?}");
+        }
+    });
+}

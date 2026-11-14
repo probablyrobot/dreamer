@@ -27,6 +27,7 @@ response, can widen a grant. Only the daemon assigns one.
 | --- | --- |
 | `terminal.read`, `terminal.subscribe`, `terminal.input`, `terminal.set_tier` | The named pane in scope |
 | `taps.subscribe` | The listed panes in scope; `every_pane` needs `all_panes` (see [taps.md](taps.md)) |
+| `agents.runs` | `all_panes` |
 | `processes.list` | The listed panes in scope; no panes (every process) needs `all_panes` |
 | `jobs.start`, `jobs.cancel` | `all_panes` (a job gets its own window; cancelling signals a process) |
 | `terminal.query` | The listed panes in scope; no panes (every pane) or any `hosts` needs `all_panes` |
