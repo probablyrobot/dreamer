@@ -35,8 +35,12 @@ prepare() {
 build() {
   cd "dreamer-$pkgver"
   export CARGO_HOME="$srcdir/cargo-home"
-  # Keep build paths out of the binaries (makepkg warns about $srcdir).
+  # Keep build paths out of the binaries (makepkg warns about $srcdir):
+  # Rust code through rustc, vendored C and C++ (Luau) through the C
+  # compilers, which the cc crate runs with these flags.
   export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
+  export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$srcdir=/usr/src/debug/$pkgname"
+  export CXXFLAGS="${CXXFLAGS:-} -ffile-prefix-map=$srcdir=/usr/src/debug/$pkgname"
   cargo build --release --locked -p dreamer-app -p dreamer-server -p dreamer-cli
 }
 
