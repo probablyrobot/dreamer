@@ -352,7 +352,8 @@ fn shaping_cache(dir: &Path) -> Result<Done, String> {
 
 /// The desktop app showing a live tmux pane through dreamerd: an isolated
 /// tmux server and private daemon directories; the pane's text must be
-/// drawn and an idle pane must cause no view wakeups or paints.
+/// drawn and an idle pane must cause no view wakeups and at most one stray
+/// paint (see `idle_check` in the app).
 fn live_smoke(dir: &Path) -> Result<Done, String> {
     if !require_refreshing_display()? {
         return Ok(Done::NotRun);
