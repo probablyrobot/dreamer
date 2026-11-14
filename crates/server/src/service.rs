@@ -90,6 +90,8 @@ pub struct State {
     pub extensions: crate::extensions::Extensions,
     /// Loaded scripts.
     pub scripts: crate::scripts::Scripts,
+    /// Installed filters.
+    pub filters: crate::filters::Filters,
 }
 
 #[derive(Debug, Clone)]
@@ -935,6 +937,26 @@ impl api::Service for DaemonService {
 
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<api::Empty, RpcError> {
         Err(for_a_connection("messages.unsubscribe"))
+    }
+
+    async fn filters_install(&self, p: api::FilterSpec) -> Result<api::FilterStatus, RpcError> {
+        crate::filters::install(&self.0, p).await
+    }
+
+    async fn filters_list(&self, _: api::Empty) -> Result<api::FilterList, RpcError> {
+        Ok(self.0.filters.list())
+    }
+
+    async fn filters_pause(&self, p: api::FilterRef) -> Result<api::FilterStatus, RpcError> {
+        self.0.filters.pause(&p.name)
+    }
+
+    async fn filters_resume(&self, p: api::FilterRef) -> Result<api::FilterStatus, RpcError> {
+        self.0.filters.resume(&p.name)
+    }
+
+    async fn filters_remove(&self, p: api::FilterRef) -> Result<api::FilterStatus, RpcError> {
+        self.0.filters.remove(&p.name)
     }
 
     async fn terminal_query(&self, p: api::TerminalQuery) -> Result<api::QueryResult, RpcError> {

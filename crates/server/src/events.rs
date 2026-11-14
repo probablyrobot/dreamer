@@ -41,6 +41,12 @@ pub mod kind {
     /// A script instance was terminated; `subject` is the script, `state`
     /// why (a budget overrun, or its connection ending).
     pub const SCRIPT_FAILED: &str = "scripts.failed";
+    /// A filter with `event` matched; `subject` is the filter, `pane`, and
+    /// `state` the line (at most 512 bytes).
+    pub const FILTER_MATCHED: &str = "filters.matched";
+    /// A filter's circuit breaker tripped; `subject` is the filter, `state`
+    /// why.
+    pub const FILTER_TRIPPED: &str = "filters.tripped";
 }
 
 struct Ring {
@@ -169,6 +175,29 @@ impl Events {
     pub fn script_failed(&self, name: &str, why: &str) {
         self.push(DaemonEvent {
             kind: kind::SCRIPT_FAILED.into(),
+            subject: Some(name.to_owned()),
+            state: Some(why.to_owned()),
+            ..DaemonEvent::default()
+        });
+    }
+
+    pub fn filter_matched(&self, name: &str, pane: u32, line: &str) {
+        let mut cut = line.len().min(512);
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        self.push(DaemonEvent {
+            kind: kind::FILTER_MATCHED.into(),
+            subject: Some(name.to_owned()),
+            pane: Some(pane),
+            state: Some(line[..cut].to_owned()),
+            ..DaemonEvent::default()
+        });
+    }
+
+    pub fn filter_tripped(&self, name: &str, why: &str) {
+        self.push(DaemonEvent {
+            kind: kind::FILTER_TRIPPED.into(),
             subject: Some(name.to_owned()),
             state: Some(why.to_owned()),
             ..DaemonEvent::default()

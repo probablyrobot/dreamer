@@ -14,6 +14,8 @@ output; read that with `terminal.read` or `terminal.subscribe`.
 | `hosts.state` | A remote host's connection changed state | `host`; `state`: `connecting`, `live`, `closed`, or `failed` |
 | `apps.registered` | A launched pane app registered | `subject`: the launch id; `pane` |
 | `scripts.failed` | A script instance was terminated (a budget overrun, or its connection ended) | `subject`: the script; `state`: why |
+| `filters.matched` | A filter with `event` matched | `subject`: the filter; `pane`; `state`: the line (at most 512 bytes) |
+| `filters.tripped` | A filter's circuit breaker stopped it | `subject`: the filter; `state`: why |
 
 Every event also has a `sequence` and `time_unix_ms`. Sequences start at 1
 when the daemon starts and increase by one per event.

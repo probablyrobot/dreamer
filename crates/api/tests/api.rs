@@ -219,6 +219,21 @@ impl Service for Fixed {
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn filters_install(&self, _: api::FilterSpec) -> Result<api::FilterStatus, RpcError> {
+        Ok(api::FilterStatus::default())
+    }
+    async fn filters_list(&self, _: Empty) -> Result<api::FilterList, RpcError> {
+        Ok(api::FilterList::default())
+    }
+    async fn filters_pause(&self, _: api::FilterRef) -> Result<api::FilterStatus, RpcError> {
+        Ok(api::FilterStatus::default())
+    }
+    async fn filters_resume(&self, _: api::FilterRef) -> Result<api::FilterStatus, RpcError> {
+        Ok(api::FilterStatus::default())
+    }
+    async fn filters_remove(&self, _: api::FilterRef) -> Result<api::FilterStatus, RpcError> {
+        Ok(api::FilterStatus::default())
+    }
     async fn terminal_query(&self, _: api::TerminalQuery) -> Result<api::QueryResult, RpcError> {
         Ok(api::QueryResult::default())
     }
