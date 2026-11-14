@@ -110,7 +110,12 @@ demand.
   logout. A daemon started over SSH lives until it is stopped or the machine
   restarts.
 - **Daemon stop:** stopping the daemon, by any means, never stops tmux.
-  Sessions and panes keep running, and the next start reattaches.
+  Sessions and panes keep running, and the next start reattaches. That
+  includes [jobs](jobs.md), which still record how they end. Supervised
+  [extensions](extensions.md) and loaded [scripts](scripts.md) and
+  [filters](filters.md) belong to the daemon: a graceful stop asks
+  extensions to stop and ends scripts and filters; a crash ends them with
+  it.
 
 ## Settings
 

@@ -1640,3 +1640,121 @@ exec /bin/sh -c "exec $3"
         );
     });
 }
+
+fn job_json(cli: &Cli, id: &str) -> serde_json::Value {
+    let out = cli.ok(&["jobs", "--json"]);
+    let all: serde_json::Value = serde_json::from_str(&out).expect("json");
+    all["jobs"]
+        .as_array()
+        .and_then(|a| a.iter().find(|j| j["id"] == id).cloned())
+        .unwrap_or_else(|| panic!("no job {id}: {out}"))
+}
+
+#[test]
+fn a_job_outlives_the_daemon_and_records_its_exit_and_artifacts() {
+    let cli = Cli::new();
+    cli.ok(&["ensure-running"]);
+    let script = "echo started; echo data > \"$DREAMER_JOB_ARTIFACTS/out.txt\"; \
+                  mkdir -p \"$DREAMER_JOB_ARTIFACTS/sub\"; echo y > \"$DREAMER_JOB_ARTIFACTS/sub/y\"; \
+                  sleep 2; exit 3";
+    let out = cli.ok(&[
+        "jobs", "start", "--name", "build", "--", "/bin/sh", "-c", script,
+    ]);
+    assert!(out.contains("running"), "{out}");
+    let id = out.split_whitespace().next().expect("id").to_owned();
+    let pane = job_json(&cli, &id)["pane"].as_u64().expect("pane");
+    // The daemon stops; the job, in its tmux window, does not.
+    assert!(cli.run(&["shutdown"]).status.success());
+    let panes = cli
+        .tmux
+        .run_checked(&["list-panes", "-a", "-F", "#{pane_id} #{window_name}"])
+        .expect("panes");
+    assert!(panes.contains(&format!("%{pane} build")), "{panes}");
+    std::thread::sleep(Duration::from_secs(3));
+    // A new daemon knows it, finished, with its status and its files.
+    cli.ok(&["ensure-running"]);
+    let j = job_json(&cli, &id);
+    assert_eq!(
+        (j["state"].as_str(), j["exit_code"].as_i64()),
+        (Some("failed"), Some(3)),
+        "{j}"
+    );
+    let out = cli.ok(&["jobs", "artifacts", &id]);
+    assert!(
+        out.contains("out.txt (5 bytes)") && out.contains("sub/y (2 bytes)"),
+        "{out}"
+    );
+    // Its output is still in its pane (tmux keeps it in the pane's history
+    // once the program is gone).
+    let shown = cli
+        .tmux
+        .run_checked(&["capture-pane", "-p", "-S", "-", "-t", &format!("%{pane}")])
+        .expect("capture");
+    assert!(
+        shown.contains("started") && shown.contains("[job exited with 3]"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_cancelled_job_ends_by_signal_and_says_so() {
+    let cli = Cli::new();
+    cli.ok(&["ensure-running"]);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let mut c = rt
+        .block_on(client::Client::connect(
+            &cli.root.join("rt/dreamerd.sock"),
+            "test",
+        ))
+        .expect("connect");
+    let mut rx = c.pushed().expect("pushed");
+    rt.block_on(c.call(api::Request::EventsSubscribe(api::EventSubscribe {
+        kinds: vec!["jobs".into()],
+        ..api::EventSubscribe::default()
+    })))
+    .expect("events");
+    let out = cli.ok(&["jobs", "start", "--", "sleep", "100"]);
+    let id = out.split_whitespace().next().expect("id").to_owned();
+    wait_until("the job's program runs", 10, || {
+        job_json(&cli, &id)["pid"].is_u64()
+    });
+    let out = cli.ok(&["jobs", "cancel", &id]);
+    assert!(out.contains(&id), "{out}");
+    wait_until("the job ends", 10, || {
+        job_json(&cli, &id)["state"] == "killed"
+    });
+    let j = job_json(&cli, &id);
+    assert_eq!(
+        (j["signal"].as_i64(), j["cancelled"].as_bool()),
+        (Some(15), Some(true)),
+        "{j}"
+    );
+    // Its start and end were events.
+    let states = rt.block_on(async {
+        let mut states = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !states.iter().any(|s: &String| s == "killed") {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(client::Pushed::Event { topic, payload, .. }))
+                    if topic == "events.batch" =>
+                {
+                    let b = <api::EventBatch as prost::Message>::decode(payload.as_slice())
+                        .expect("batch");
+                    states.extend(
+                        b.events
+                            .into_iter()
+                            .filter(|e| e.subject.as_deref() == Some(id.as_str()))
+                            .filter_map(|e| e.state),
+                    );
+                }
+                Ok(Some(_)) => {}
+                other => panic!("no job events: {other:?} after {states:?}"),
+            }
+        }
+        states
+    });
+    assert_eq!(states, ["running", "killed"]);
+}

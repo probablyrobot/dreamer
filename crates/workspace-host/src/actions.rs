@@ -328,6 +328,7 @@ async fn dispatch(conn: &Connection, kind: &Kind) -> Result<Option<u32>, Command
                 argv: a.argv.clone(),
                 cwd: a.cwd.clone(),
                 env: Vec::new(),
+                background: false,
             };
             ops::split_pane(conn, TmuxPaneId(a.pane), split, size, &launch)
                 .await
@@ -368,6 +369,7 @@ async fn dispatch(conn: &Connection, kind: &Kind) -> Result<Option<u32>, Command
                 argv: a.argv.clone(),
                 cwd: a.cwd.clone(),
                 env: Vec::new(),
+                background: false,
             };
             ops::new_window(conn, TmuxSessionId(a.session), a.name.as_deref(), &launch)
                 .await

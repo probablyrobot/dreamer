@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 29 }
+version: { major: 1, minor: 30 }
 package: dreamer.v1
 
 types:
@@ -1124,6 +1124,64 @@ types:
     fields:
       - { n: 1, name: filters, type: FilterStatus, repeated: true }
 
+  # ---- jobs ---------------------------------------------------------------
+
+  - enum: JobState
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: running }
+      - { n: 2, name: succeeded, doc: "Exited with status 0." }
+      - { n: 3, name: failed, doc: "Exited with another status." }
+      - { n: 4, name: killed, doc: "Ended by a signal (including a cancel)." }
+      - { n: 5, name: lost, doc: "Its pane is gone and it left no exit status." }
+
+  - message: EnvVar
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: value, type: string }
+
+  - message: JobStart
+    fields:
+      - { n: 1, name: argv, type: string, repeated: true, doc: "The exact program and arguments; no shell." }
+      - { n: 2, name: cwd, type: string, optional: true }
+      - { n: 3, name: env, type: EnvVar, repeated: true, doc: "Added to the job's environment; names are [A-Z_][A-Z0-9_]*." }
+      - { n: 4, name: name, type: string, optional: true, doc: "The tmux window name; default the program's name." }
+      - { n: 5, name: session, type: u32, optional: true, doc: "The session for its window; default the first session." }
+
+  - message: JobRecord
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: argv, type: string, repeated: true }
+      - { n: 3, name: cwd, type: string, optional: true }
+      - { n: 4, name: pane, type: u32, doc: "Its tmux pane: read its output with terminal.read while the pane remains." }
+      - { n: 5, name: state, type: JobState }
+      - { n: 6, name: exit_code, type: i32, optional: true }
+      - { n: 7, name: signal, type: i32, optional: true }
+      - { n: 8, name: started_unix_ms, type: u64 }
+      - { n: 9, name: ended_unix_ms, type: u64, optional: true }
+      - { n: 10, name: artifacts, type: string, doc: "The directory the job was given as DREAMER_JOB_ARTIFACTS." }
+      - { n: 11, name: cancelled, type: bool, doc: "jobs.cancel was asked." }
+      - { n: 12, name: pid, type: u32, optional: true }
+
+  - message: JobRef
+    fields:
+      - { n: 1, name: id, type: string }
+
+  - message: JobList
+    fields:
+      - { n: 1, name: jobs, type: JobRecord, repeated: true }
+
+  - message: JobFile
+    fields:
+      - { n: 1, name: path, type: string, doc: "Relative to the artifacts directory." }
+      - { n: 2, name: bytes, type: u64 }
+
+  - message: JobArtifacts
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: directory, type: string }
+      - { n: 3, name: files, type: JobFile, repeated: true, doc: "At most 1000, sorted by path." }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -1173,6 +1231,11 @@ methods:
   - { method: filters.pause, params: FilterRef, result: FilterStatus, mutation: true, doc: "(owner only)" }
   - { method: filters.resume, params: FilterRef, result: FilterStatus, mutation: true, doc: "Resume a paused or tripped filter (owner only)." }
   - { method: filters.remove, params: FilterRef, result: FilterStatus, mutation: true, doc: "(owner only)" }
+  - { method: jobs.start, params: JobStart, result: JobRecord, mutation: true, doc: "Run an exact program in its own tmux window through the job wrapper; it keeps running if the daemon stops." }
+  - { method: jobs.get, params: JobRef, result: JobRecord }
+  - { method: jobs.list, params: Empty, result: JobList }
+  - { method: jobs.cancel, params: JobRef, result: JobRecord, mutation: true, doc: "Send SIGTERM to the job's program; its record says killed once it ends." }
+  - { method: jobs.artifacts, params: JobRef, result: JobArtifacts, doc: "The files the job left in its artifacts directory." }
   - { method: taps.subscribe, params: TapSubscribe, result: TapSubscription, doc: "Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap." }
   - { method: taps.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }
