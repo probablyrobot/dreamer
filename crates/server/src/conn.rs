@@ -43,6 +43,10 @@ pub const TOPIC_END: &str = "terminal.end";
 pub const TOPIC_CHECKPOINT: &str = "terminal.checkpoint";
 pub const TOPIC_TOPOLOGY: &str = "tmux.topology";
 pub const TOPIC_EVENTS: &str = "events.batch";
+pub const TOPIC_MESSAGES: &str = "messages.deliver";
+
+/// Connection ids, for the broker; unique within a daemon.
+static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
 enum Out {
     Frame(Kind, Vec<u8>),
@@ -68,6 +72,34 @@ struct Conn {
     grant: Arc<std::sync::Mutex<crate::grants::Grant>>,
     /// The connecting process, from the socket's peer credentials.
     peer_pid: Option<u32>,
+    id: u64,
+    /// The registered app on this connection, if one registered.
+    registration: Arc<std::sync::Mutex<Option<api::Registration>>>,
+    /// The message rate limit.
+    bucket: Arc<std::sync::Mutex<crate::messages::Bucket>>,
+}
+
+impl Conn {
+    /// This connection as a message sender and recipient.
+    fn who(&self) -> crate::messages::Who {
+        let r = self.registration.lock().ok().and_then(|r| r.clone());
+        match r {
+            Some(r) => crate::messages::Who {
+                conn: self.id,
+                instance: r.instance,
+                app_id: Some(r.app_id),
+                pane: Some(r.pane),
+                owner: false,
+            },
+            None => crate::messages::Who {
+                conn: self.id,
+                instance: format!("owner:{}", self.id),
+                app_id: None,
+                pane: None,
+                owner: true,
+            },
+        }
+    }
 }
 
 impl Conn {
@@ -132,6 +164,9 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         grant: Arc::new(std::sync::Mutex::new(crate::grants::Grant::owner())),
         peer_pid,
         events: Arc::new(AtomicU64::new(1)),
+        id: CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1,
+        registration: Arc::default(),
+        bucket: Arc::default(),
     };
     let service = DaemonService(state.clone());
     loop {
@@ -191,6 +226,20 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                         host_subscribe(&state, &conn, req).await;
                         return;
                     }
+                    if req.method == api::method::MESSAGES_SUBSCRIBE {
+                        messages_subscribe(&state, &conn, req).await;
+                        return;
+                    }
+                    if let Some(response) = messages(&state, &conn, &req).await {
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(
+                                Kind::Response,
+                                fit(response, conn.max_frame).encode_to_vec(),
+                            ))
+                            .await;
+                        return;
+                    }
                     if req.method == api::method::EVENTS_SUBSCRIBE {
                         events_subscribe(&state, &conn, req).await;
                         return;
@@ -207,6 +256,7 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
                     }
                     let response = if req.method == api::method::TERMINAL_UNSUBSCRIBE
                         || req.method == api::method::EVENTS_UNSUBSCRIBE
+                        || req.method == api::method::MESSAGES_UNSUBSCRIBE
                     {
                         unsubscribe(&conn, req).await
                     } else {
@@ -359,6 +409,9 @@ async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire:
                 *g = crate::grants::Grant(narrow);
             }
             state.events.app(&p.launch_id, r.pane);
+            if let Ok(mut me) = conn.registration.lock() {
+                *me = Some(r.clone());
+            }
             ok(req.id, r.encode_to_vec())
         }
         Err(e) => failure(req.id, e),
@@ -519,6 +572,94 @@ async fn host_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
     });
     conn.subs.lock().await.insert(local, task);
     send(ok(id, reply.encode_to_vec())).await;
+    let _ = go.send(());
+}
+
+/// `messages.publish`, `messages.request`, and `messages.reply`, sent as
+/// this connection; `None` for any other method.
+async fn messages(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
+    let broker = &state.broker;
+    let bad =
+        |e: prost::DecodeError| failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string()));
+    let result = match req.method.as_str() {
+        api::method::MESSAGES_PUBLISH => {
+            match api::MessagePublish::decode(req.payload.as_slice()) {
+                Ok(p) => broker
+                    .publish(&conn.who(), &conn.bucket, p)
+                    .map(|r| r.encode_to_vec()),
+                Err(e) => return Some(bad(e)),
+            }
+        }
+        api::method::MESSAGES_REQUEST => {
+            match api::MessageRequest::decode(req.payload.as_slice()) {
+                Ok(p) => broker
+                    .request(&conn.who(), &conn.bucket, p)
+                    .await
+                    .map(|r| r.encode_to_vec()),
+                Err(e) => return Some(bad(e)),
+            }
+        }
+        api::method::MESSAGES_REPLY => match api::MessageReply::decode(req.payload.as_slice()) {
+            Ok(p) => broker
+                .reply(&conn.who(), &conn.bucket, p)
+                .map(|r| r.encode_to_vec()),
+            Err(e) => return Some(bad(e)),
+        },
+        _ => return None,
+    };
+    Some(match result {
+        Ok(payload) => ok(req.id, payload),
+        Err(e) => failure(req.id, e),
+    })
+}
+
+/// `messages.subscribe`: reply with this connection's recipient identity,
+/// then push `messages.deliver` for each message. Messages arrive only as
+/// these events: nothing is ever written to a pane.
+async fn messages_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
+    let p = match api::MessageSubscribe::decode(req.payload.as_slice()) {
+        Ok(p) => p,
+        Err(e) => {
+            let r = failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string()));
+            let _ = conn
+                .out
+                .send(Out::Frame(Kind::Response, r.encode_to_vec()))
+                .await;
+            return;
+        }
+    };
+    let who = conn.who();
+    let id = conn.next_sub.fetch_add(1, Ordering::Relaxed);
+    let mut rx = state.broker.subscribe(&who, p.topics);
+    let (go, ready) = tokio::sync::oneshot::channel::<()>();
+    let task_conn = conn.clone();
+    let task = tokio::spawn(async move {
+        if ready.await.is_err() {
+            return;
+        }
+        while let Some((envelope, missed)) = rx.recv().await {
+            let d = api::MessageDelivery {
+                subscription: id,
+                envelope: Some(envelope),
+                missed,
+            };
+            if !task_conn.event(TOPIC_MESSAGES, d.encode_to_vec()).await {
+                return;
+            }
+        }
+    });
+    conn.subs.lock().await.insert(id, task);
+    let r = api::MessageSubscription {
+        id,
+        instance: who.instance,
+    };
+    let _ = conn
+        .out
+        .send(Out::Frame(
+            Kind::Response,
+            ok(req.id, r.encode_to_vec()).encode_to_vec(),
+        ))
+        .await;
     let _ = go.send(());
 }
 

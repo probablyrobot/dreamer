@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 21;
+pub const PROTOCOL_MINOR: u32 = 22;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1913,6 +1913,190 @@ pub struct EventBatch {
     pub cursor: u64,
 }
 
+/// Who sent a message, stamped by the daemon from the connection; never taken from the sender.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessageSender {
+    /// A registered app's instance, or owner:<n> for one of the user's own clients.
+    #[prost(string, tag = "1")]
+    pub instance: String,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    /// The registered app's pane.
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u32>,
+    /// Sent under the owner grant.
+    #[prost(bool, tag = "4")]
+    pub owner: bool,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessageEnvelope {
+    /// Assigned by the daemon; increases per message.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<MessageSender>,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// The instance a direct message, request, or reply is for.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    /// The payload's schema version, chosen by the sender.
+    #[prost(uint32, tag = "5")]
+    pub schema: u32,
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<String>,
+    #[prost(uint64, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_unix_ms: Option<u64>,
+    #[prost(bytes = "vec", tag = "8")]
+    #[serde(with = "crate::json::base64")]
+    pub payload: Vec<u8>,
+    /// The message this one answers or was caused by.
+    #[prost(uint64, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<u64>,
+    /// The first message of this causal chain (its own id when it starts one).
+    #[prost(uint64, tag = "10")]
+    pub origin: u64,
+    /// Causal steps from the origin.
+    #[prost(uint32, tag = "11")]
+    pub depth: u32,
+    /// What the sender said about itself: a claim, never authority.
+    #[prost(string, optional, tag = "12")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claimed_sender: Option<String>,
+    #[prost(uint64, tag = "13")]
+    pub time_unix_ms: u64,
+    /// A request: answer it with messages.reply.
+    #[prost(bool, tag = "14")]
+    pub request: bool,
+}
+
+/// A topic message or a direct message: give exactly one of topic and recipient.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessagePublish {
+    /// Not dreamer.*, human.*, policy.*, or approval.*: those are the daemon's.
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    #[prost(uint32, tag = "3")]
+    pub schema: u32,
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<String>,
+    #[prost(uint64, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_unix_ms: Option<u64>,
+    /// At most 64 KiB.
+    #[prost(bytes = "vec", tag = "6")]
+    #[serde(with = "crate::json::base64")]
+    pub payload: Vec<u8>,
+    #[prost(uint64, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<u64>,
+    /// A claimed sender; recipients see it as claimed_sender, next to the stamped one.
+    #[prost(string, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessageSent {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// Subscriptions it was handed to.
+    #[prost(uint32, tag = "2")]
+    pub delivered: u32,
+    #[prost(uint32, tag = "3")]
+    pub depth: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessageRequest {
+    #[prost(string, tag = "1")]
+    pub recipient: String,
+    #[prost(uint32, tag = "2")]
+    pub schema: u32,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<String>,
+    #[prost(bytes = "vec", tag = "4")]
+    #[serde(with = "crate::json::base64")]
+    pub payload: Vec<u8>,
+    #[prost(uint64, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<u64>,
+    /// Default 10000, at most 60000.
+    #[prost(uint32, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u32>,
+    /// A claimed sender (see MessagePublish.sender).
+    #[prost(string, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessageReply {
+    /// The request's id.
+    #[prost(uint64, tag = "1")]
+    pub request: u64,
+    #[prost(uint32, tag = "2")]
+    pub schema: u32,
+    #[prost(bytes = "vec", tag = "3")]
+    #[serde(with = "crate::json::base64")]
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessageSubscribe {
+    /// Exact topics, service.* prefixes, or *. Direct messages and requests to this connection arrive regardless.
+    #[prost(string, repeated, tag = "1")]
+    pub topics: Vec<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessageSubscription {
+    /// Ends with messages.unsubscribe.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// This connection's identity as a recipient.
+    #[prost(string, tag = "2")]
+    pub instance: String,
+}
+
+/// Pushed as `messages.deliver`.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MessageDelivery {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub envelope: Option<MessageEnvelope>,
+    /// Messages dropped for this subscription since the previous delivery, because it was full.
+    #[prost(uint64, tag = "3")]
+    pub missed: u64,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -1944,6 +2128,11 @@ pub mod method {
     pub const APPS_LAUNCH: &str = "apps.launch";
     pub const EVENTS_SUBSCRIBE: &str = "events.subscribe";
     pub const EVENTS_UNSUBSCRIBE: &str = "events.unsubscribe";
+    pub const MESSAGES_PUBLISH: &str = "messages.publish";
+    pub const MESSAGES_REQUEST: &str = "messages.request";
+    pub const MESSAGES_REPLY: &str = "messages.reply";
+    pub const MESSAGES_SUBSCRIBE: &str = "messages.subscribe";
+    pub const MESSAGES_UNSUBSCRIBE: &str = "messages.unsubscribe";
     pub const APPS_REGISTER: &str = "apps.register";
 }
 
@@ -2161,6 +2350,41 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "",
     },
     MethodInfo {
+        name: "messages.publish",
+        params: "MessagePublish",
+        result: "MessageSent",
+        mutation: true,
+        doc: "Send a topic or direct message; the daemon stamps the sender. Never typed into a pane.",
+    },
+    MethodInfo {
+        name: "messages.request",
+        params: "MessageRequest",
+        result: "MessageEnvelope",
+        mutation: true,
+        doc: "Send a request to one instance and wait for its reply.",
+    },
+    MethodInfo {
+        name: "messages.reply",
+        params: "MessageReply",
+        result: "MessageSent",
+        mutation: true,
+        doc: "Answer a request sent to this connection.",
+    },
+    MethodInfo {
+        name: "messages.subscribe",
+        params: "MessageSubscribe",
+        result: "MessageSubscription",
+        mutation: false,
+        doc: "Receive messages: `messages.deliver` events follow.",
+    },
+    MethodInfo {
+        name: "messages.unsubscribe",
+        params: "Unsubscribe",
+        result: "Empty",
+        mutation: false,
+        doc: "",
+    },
+    MethodInfo {
         name: "apps.register",
         params: "RegisterApp",
         result: "Registration",
@@ -2201,6 +2425,11 @@ pub enum Request {
     AppsLaunch(LaunchApp),
     EventsSubscribe(EventSubscribe),
     EventsUnsubscribe(Unsubscribe),
+    MessagesPublish(MessagePublish),
+    MessagesRequest(MessageRequest),
+    MessagesReply(MessageReply),
+    MessagesSubscribe(MessageSubscribe),
+    MessagesUnsubscribe(Unsubscribe),
     AppsRegister(RegisterApp),
 }
 
@@ -2236,6 +2465,11 @@ impl Request {
             Self::AppsLaunch(_) => "apps.launch",
             Self::EventsSubscribe(_) => "events.subscribe",
             Self::EventsUnsubscribe(_) => "events.unsubscribe",
+            Self::MessagesPublish(_) => "messages.publish",
+            Self::MessagesRequest(_) => "messages.request",
+            Self::MessagesReply(_) => "messages.reply",
+            Self::MessagesSubscribe(_) => "messages.subscribe",
+            Self::MessagesUnsubscribe(_) => "messages.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -2272,6 +2506,11 @@ impl Request {
             Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
             Self::EventsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::EventsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesPublish(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesRequest(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesReply(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2309,6 +2548,13 @@ impl Request {
             "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
             "events.subscribe" => Ok(Self::EventsSubscribe(::prost::Message::decode(bytes)?)),
             "events.unsubscribe" => Ok(Self::EventsUnsubscribe(::prost::Message::decode(bytes)?)),
+            "messages.publish" => Ok(Self::MessagesPublish(::prost::Message::decode(bytes)?)),
+            "messages.request" => Ok(Self::MessagesRequest(::prost::Message::decode(bytes)?)),
+            "messages.reply" => Ok(Self::MessagesReply(::prost::Message::decode(bytes)?)),
+            "messages.subscribe" => Ok(Self::MessagesSubscribe(::prost::Message::decode(bytes)?)),
+            "messages.unsubscribe" => {
+                Ok(Self::MessagesUnsubscribe(::prost::Message::decode(bytes)?))
+            }
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2345,6 +2591,11 @@ impl Request {
             Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::EventsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::EventsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesPublish(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesRequest(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesReply(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2380,6 +2631,11 @@ impl Request {
             "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
             "events.subscribe" => Ok(Self::EventsSubscribe(serde_json::from_value(value)?)),
             "events.unsubscribe" => Ok(Self::EventsUnsubscribe(serde_json::from_value(value)?)),
+            "messages.publish" => Ok(Self::MessagesPublish(serde_json::from_value(value)?)),
+            "messages.request" => Ok(Self::MessagesRequest(serde_json::from_value(value)?)),
+            "messages.reply" => Ok(Self::MessagesReply(serde_json::from_value(value)?)),
+            "messages.subscribe" => Ok(Self::MessagesSubscribe(serde_json::from_value(value)?)),
+            "messages.unsubscribe" => Ok(Self::MessagesUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2418,6 +2674,11 @@ pub enum Response {
     AppsLaunch(LaunchedApp),
     EventsSubscribe(EventSubscription),
     EventsUnsubscribe(Empty),
+    MessagesPublish(MessageSent),
+    MessagesRequest(MessageEnvelope),
+    MessagesReply(MessageSent),
+    MessagesSubscribe(MessageSubscription),
+    MessagesUnsubscribe(Empty),
     AppsRegister(Registration),
 }
 
@@ -2453,6 +2714,11 @@ impl Response {
             Self::AppsLaunch(_) => "apps.launch",
             Self::EventsSubscribe(_) => "events.subscribe",
             Self::EventsUnsubscribe(_) => "events.unsubscribe",
+            Self::MessagesPublish(_) => "messages.publish",
+            Self::MessagesRequest(_) => "messages.request",
+            Self::MessagesReply(_) => "messages.reply",
+            Self::MessagesSubscribe(_) => "messages.subscribe",
+            Self::MessagesUnsubscribe(_) => "messages.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -2489,6 +2755,11 @@ impl Response {
             Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
             Self::EventsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::EventsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesPublish(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesRequest(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesReply(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2526,6 +2797,13 @@ impl Response {
             "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
             "events.subscribe" => Ok(Self::EventsSubscribe(::prost::Message::decode(bytes)?)),
             "events.unsubscribe" => Ok(Self::EventsUnsubscribe(::prost::Message::decode(bytes)?)),
+            "messages.publish" => Ok(Self::MessagesPublish(::prost::Message::decode(bytes)?)),
+            "messages.request" => Ok(Self::MessagesRequest(::prost::Message::decode(bytes)?)),
+            "messages.reply" => Ok(Self::MessagesReply(::prost::Message::decode(bytes)?)),
+            "messages.subscribe" => Ok(Self::MessagesSubscribe(::prost::Message::decode(bytes)?)),
+            "messages.unsubscribe" => {
+                Ok(Self::MessagesUnsubscribe(::prost::Message::decode(bytes)?))
+            }
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2562,6 +2840,11 @@ impl Response {
             Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::EventsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::EventsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesPublish(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesRequest(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesReply(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2597,6 +2880,11 @@ impl Response {
             "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
             "events.subscribe" => Ok(Self::EventsSubscribe(serde_json::from_value(value)?)),
             "events.unsubscribe" => Ok(Self::EventsUnsubscribe(serde_json::from_value(value)?)),
+            "messages.publish" => Ok(Self::MessagesPublish(serde_json::from_value(value)?)),
+            "messages.request" => Ok(Self::MessagesRequest(serde_json::from_value(value)?)),
+            "messages.reply" => Ok(Self::MessagesReply(serde_json::from_value(value)?)),
+            "messages.subscribe" => Ok(Self::MessagesSubscribe(serde_json::from_value(value)?)),
+            "messages.unsubscribe" => Ok(Self::MessagesUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2747,6 +3035,30 @@ pub trait Service: Sync {
         &self,
         params: Unsubscribe,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Send a topic or direct message; the daemon stamps the sender. Never typed into a pane.
+    fn messages_publish(
+        &self,
+        params: MessagePublish,
+    ) -> impl ::core::future::Future<Output = Result<MessageSent, RpcError>> + Send;
+    /// Send a request to one instance and wait for its reply.
+    fn messages_request(
+        &self,
+        params: MessageRequest,
+    ) -> impl ::core::future::Future<Output = Result<MessageEnvelope, RpcError>> + Send;
+    /// Answer a request sent to this connection.
+    fn messages_reply(
+        &self,
+        params: MessageReply,
+    ) -> impl ::core::future::Future<Output = Result<MessageSent, RpcError>> + Send;
+    /// Receive messages: `messages.deliver` events follow.
+    fn messages_subscribe(
+        &self,
+        params: MessageSubscribe,
+    ) -> impl ::core::future::Future<Output = Result<MessageSubscription, RpcError>> + Send;
+    fn messages_unsubscribe(
+        &self,
+        params: Unsubscribe,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
     /// Trade a launch ticket for the app's narrow grant on this connection.
     fn apps_register(
         &self,
@@ -2822,6 +3134,23 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .events_unsubscribe(p)
             .await
             .map(Response::EventsUnsubscribe),
+        Request::MessagesPublish(p) => service
+            .messages_publish(p)
+            .await
+            .map(Response::MessagesPublish),
+        Request::MessagesRequest(p) => service
+            .messages_request(p)
+            .await
+            .map(Response::MessagesRequest),
+        Request::MessagesReply(p) => service.messages_reply(p).await.map(Response::MessagesReply),
+        Request::MessagesSubscribe(p) => service
+            .messages_subscribe(p)
+            .await
+            .map(Response::MessagesSubscribe),
+        Request::MessagesUnsubscribe(p) => service
+            .messages_unsubscribe(p)
+            .await
+            .map(Response::MessagesUnsubscribe),
         Request::AppsRegister(p) => service.apps_register(p).await.map(Response::AppsRegister),
     }
 }

@@ -1223,3 +1223,77 @@ fn a_pane_app_registers_for_a_narrow_grant_and_its_ticket_never_leaks() {
     let log = std::fs::read_to_string(cli.root.join("st/dreamerd.log")).unwrap_or_default();
     assert!(!log.contains(&ticket), "ticket in the daemon log");
 }
+
+#[test]
+fn two_registered_apps_exchange_messages_with_stamped_senders() {
+    let cli = Cli::new();
+    // One app answers requests and prints what it receives.
+    let out = cli.ok(&[
+        "app",
+        "run",
+        "echo",
+        "--method",
+        "messages.*",
+        "--",
+        DREAM,
+        "app",
+        "probe",
+        "--serve",
+    ]);
+    let (echo_pane, echo_launch) = launched(&out);
+    let echo = format!("echo-{echo_launch}");
+    cli.wait_pane(&echo_pane, &format!("probe: serving as {echo}"));
+    // Another asks it, claiming to be the owner each time.
+    let out = cli.ok(&[
+        "app",
+        "run",
+        "asker",
+        "--method",
+        "messages.*",
+        "--",
+        DREAM,
+        "app",
+        "probe",
+        "--ask",
+        &echo,
+    ]);
+    let (ask_pane, ask_launch) = launched(&out);
+    let asker = format!("asker-{ask_launch}");
+    let shown = cli.wait_pane(&ask_pane, "probe: done");
+    let line = |shown: &str, prefix: &str| {
+        shown
+            .lines()
+            .find(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix:?} in:\n{shown}"))
+            .to_owned()
+    };
+    assert!(
+        line(&shown, "probe: reserved topic:").contains("reserved topic"),
+        "{shown}"
+    );
+    assert_eq!(
+        line(&shown, "probe: topic delivered"),
+        "probe: topic delivered 1"
+    );
+    assert_eq!(
+        line(&shown, "probe: reply from"),
+        format!("probe: reply from {echo}: echo:ping (depth 1)")
+    );
+    // The server saw the real sender; "owner" was only a claim.
+    let served = cli.wait_pane(&echo_pane, "probe: request from");
+    assert_eq!(
+        line(&served, "probe: chat.hello from"),
+        format!("probe: chat.hello from {asker} claimed owner: hello")
+    );
+    assert_eq!(
+        line(&served, "probe: request from"),
+        format!("probe: request from {asker} claimed owner: ping")
+    );
+    // Messages are never typed into a pane: nothing but the probe's own
+    // lines carries the payloads.
+    assert!(
+        !served
+            .lines()
+            .any(|l| l.trim() == "ping" || l.trim() == "hello")
+    );
+}

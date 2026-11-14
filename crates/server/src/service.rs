@@ -84,10 +84,20 @@ pub struct State {
     pub apps: crate::apps::Apps,
     /// The event log `events.subscribe` follows.
     pub events: Arc<crate::events::Events>,
+    /// Structured messages between connections.
+    pub broker: Arc<crate::messages::Broker>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DaemonService(pub Arc<State>);
+
+/// Methods that act as the calling connection are answered there.
+fn for_a_connection(method: &str) -> RpcError {
+    RpcError::new(
+        code::INVALID_REQUEST,
+        format!("{method} needs a streaming connection to the daemon"),
+    )
+}
 
 fn unavailable(msg: String) -> RpcError {
     RpcError::new(code::UNAVAILABLE, msg)
@@ -895,6 +905,32 @@ impl api::Service for DaemonService {
             code::INVALID_REQUEST,
             "events.unsubscribe needs a streaming connection to the daemon",
         ))
+    }
+
+    async fn messages_publish(&self, _: api::MessagePublish) -> Result<api::MessageSent, RpcError> {
+        Err(for_a_connection("messages.publish"))
+    }
+
+    async fn messages_request(
+        &self,
+        _: api::MessageRequest,
+    ) -> Result<api::MessageEnvelope, RpcError> {
+        Err(for_a_connection("messages.request"))
+    }
+
+    async fn messages_reply(&self, _: api::MessageReply) -> Result<api::MessageSent, RpcError> {
+        Err(for_a_connection("messages.reply"))
+    }
+
+    async fn messages_subscribe(
+        &self,
+        _: api::MessageSubscribe,
+    ) -> Result<api::MessageSubscription, RpcError> {
+        Err(for_a_connection("messages.subscribe"))
+    }
+
+    async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<api::Empty, RpcError> {
+        Err(for_a_connection("messages.unsubscribe"))
     }
 
     async fn apps_register(&self, _: api::RegisterApp) -> Result<api::Registration, RpcError> {

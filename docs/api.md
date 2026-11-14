@@ -55,8 +55,9 @@ field is absent.
   above 2^53.
 - Errors are JSON-RPC 2.0 error objects (`RpcError`). The codes are in
   `api::code`: the standard JSON-RPC codes, plus `-32001` not found,
-  `-32002` precondition failed, `-32003` idempotency conflict, and `-32004`
-  unavailable.
+  `-32002` precondition failed, `-32003` idempotency conflict, `-32004`
+  unavailable, `-32005` forbidden by the connection's grant, and `-32006`
+  limited (a rate, or a message chain's depth).
 
 ## Luau
 
