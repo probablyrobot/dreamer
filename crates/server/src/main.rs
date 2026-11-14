@@ -13,6 +13,7 @@
 
 mod apps;
 mod conn;
+mod events;
 mod grants;
 mod hosts;
 mod install;
@@ -211,6 +212,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             UnixListener::bind(&socket).map_err(|e| format!("{}: {e}", socket.display()))?;
         platform::owner_only(&socket)?;
         let (started, started_unix_ms) = service::started_now();
+        let events = Arc::new(events::Events::default());
         let state = Arc::new(State {
             identity: Identity::current("daemon"),
             instance: format!("{:x}-{:x}", started_unix_ms, std::process::id()),
@@ -234,7 +236,8 @@ fn run(args: Args) -> Result<ExitCode, String> {
             topology: tokio::sync::watch::channel(None).0,
             sizing: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             pastes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-            hosts: hosts::Hosts::default(),
+            hosts: hosts::Hosts::new(events.clone()),
+            events,
             apps: apps::Apps::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.

@@ -50,6 +50,14 @@ fn targets(r: &Request) -> Targets {
     }
 }
 
+/// The one pane a request is about, if it names exactly one.
+pub fn single_pane(r: &Request) -> Option<u32> {
+    match targets(r) {
+        Targets::Panes(p) if p.len() == 1 => Some(p[0]),
+        _ => None,
+    }
+}
+
 fn forbidden(why: String) -> RpcError {
     RpcError::new(code::FORBIDDEN, why)
 }

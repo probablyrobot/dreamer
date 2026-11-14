@@ -161,6 +161,47 @@
         },
         "type": "object"
       },
+      "DaemonEvent": {
+        "description": "One entry of the daemon's event log: metadata only, never terminal content.",
+        "properties": {
+          "host": {
+            "description": "The remote host the event is about, if any.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "tmux.topology, actions.outcome, hosts.state, or apps.registered (see docs/events.md).",
+            "type": "string"
+          },
+          "pane": {
+            "description": "The pane the event is about, if any.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "description": "The topology revision.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sequence": {
+            "description": "Increases by one per event within a daemon instance, from 1.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "description": "An action outcome or a host's link state.",
+            "type": "string"
+          },
+          "subject": {
+            "description": "An action id or launch id.",
+            "type": "string"
+          },
+          "time_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "DaemonStatus": {
         "properties": {
           "clients": {
@@ -236,6 +277,114 @@
           },
           "tmux_version": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "EventBatch": {
+        "description": "Pushed as `events.batch`: a gap, if any, comes before the events.",
+        "properties": {
+          "cursor": {
+            "description": "Resume after this sequence to continue where this batch ends.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DaemonEvent"
+            },
+            "type": "array"
+          },
+          "gap": {
+            "$ref": "#/components/schemas/EventGap"
+          },
+          "subscription": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "EventGap": {
+        "description": "Events in first..=last were not delivered; re-read state that depends on them.",
+        "properties": {
+          "first": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/EventGapReason"
+          }
+        },
+        "type": "object"
+      },
+      "EventGapReason": {
+        "enum": [
+          "unspecified",
+          "lagging",
+          "expired",
+          "restarted"
+        ],
+        "type": "string"
+      },
+      "EventSubscribe": {
+        "properties": {
+          "after": {
+            "description": "Resume after this sequence; without it, only new events follow.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "instance": {
+            "description": "The daemon instance the cursor came from (EventSubscription.instance).",
+            "type": "string"
+          },
+          "kinds": {
+            "description": "Kinds or kind prefixes (`actions` matches `actions.outcome`); empty means every kind.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "panes": {
+            "description": "Only events about these panes; empty means every event.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "quota": {
+            "description": "How many events this subscriber may fall behind before it skips ahead with a gap; default 1024.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "EventSubscription": {
+        "properties": {
+          "cursor": {
+            "description": "Events after this sequence follow.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Ends with events.unsubscribe.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "instance": {
+            "description": "This daemon instance; cursors are valid only within it.",
+            "type": "string"
+          },
+          "oldest": {
+            "description": "The oldest sequence the log still keeps.",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -1759,7 +1908,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.20"
+    "version": "1.21"
   },
   "methods": [
     {
@@ -2585,6 +2734,84 @@
       },
       "summary": "Start a program in a new tmux window with a single-use registration ticket (owner only).",
       "x-mutation": true
+    },
+    {
+      "name": "events.subscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Kinds or kind prefixes (`actions` matches `actions.outcome`); empty means every kind.",
+          "name": "kinds",
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "Only events about these panes; empty means every event.",
+          "name": "panes",
+          "schema": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "Resume after this sequence; without it, only new events follow.",
+          "name": "after",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "The daemon instance the cursor came from (EventSubscription.instance).",
+          "name": "instance",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "How many events this subscriber may fall behind before it skips ahead with a gap; default 1024.",
+          "name": "quota",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/EventSubscription"
+        }
+      },
+      "summary": "Follow the daemon's event log: `events.batch` events follow, with a gap whenever events were skipped.",
+      "x-mutation": false
+    },
+    {
+      "name": "events.unsubscribe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "subscription",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Empty"
+        }
+      },
+      "x-mutation": false
     },
     {
       "name": "apps.register",

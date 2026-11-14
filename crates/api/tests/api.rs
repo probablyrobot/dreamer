@@ -189,6 +189,15 @@ impl Service for Fixed {
     async fn apps_register(&self, _: api::RegisterApp) -> Result<api::Registration, RpcError> {
         Ok(api::Registration::default())
     }
+    async fn events_subscribe(
+        &self,
+        _: api::EventSubscribe,
+    ) -> Result<api::EventSubscription, RpcError> {
+        Ok(api::EventSubscription::default())
+    }
+    async fn events_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
     async fn grants_current(&self, _: Empty) -> Result<api::Grant, RpcError> {
         Ok(api::Grant::default())
     }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 20;
+pub const PROTOCOL_MINOR: u32 = 21;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -522,6 +522,55 @@ mod host_failure_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| HostFailure::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EventGapReason {
+    Unspecified = 0,
+    /// The subscriber fell further behind than its quota or the log.
+    Lagging = 1,
+    /// The resume cursor is older than the log.
+    Expired = 2,
+    /// The resume cursor is from another daemon instance; first and last are 0.
+    Restarted = 3,
+}
+
+impl EventGapReason {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Lagging => "lagging",
+            Self::Expired => "expired",
+            Self::Restarted => "restarted",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "lagging" => Some(Self::Lagging),
+            "expired" => Some(Self::Expired),
+            "restarted" => Some(Self::Restarted),
+            _ => None,
+        }
+    }
+}
+
+mod event_gap_reason_json {
+    use super::EventGapReason;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match EventGapReason::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| EventGapReason::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -1761,6 +1810,109 @@ pub struct Registration {
     pub grant: Option<Grant>,
 }
 
+/// One entry of the daemon's event log: metadata only, never terminal content.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DaemonEvent {
+    /// Increases by one per event within a daemon instance, from 1.
+    #[prost(uint64, tag = "1")]
+    pub sequence: u64,
+    /// tmux.topology, actions.outcome, hosts.state, or apps.registered (see docs/events.md).
+    #[prost(string, tag = "2")]
+    pub kind: String,
+    #[prost(uint64, tag = "3")]
+    pub time_unix_ms: u64,
+    /// The pane the event is about, if any.
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u32>,
+    /// The remote host the event is about, if any.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// An action id or launch id.
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// An action outcome or a host's link state.
+    #[prost(string, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// The topology revision.
+    #[prost(uint64, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventSubscribe {
+    /// Kinds or kind prefixes (`actions` matches `actions.outcome`); empty means every kind.
+    #[prost(string, repeated, tag = "1")]
+    pub kinds: Vec<String>,
+    /// Only events about these panes; empty means every event.
+    #[prost(uint32, repeated, tag = "2")]
+    pub panes: Vec<u32>,
+    /// Resume after this sequence; without it, only new events follow.
+    #[prost(uint64, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+    /// The daemon instance the cursor came from (EventSubscription.instance).
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    /// How many events this subscriber may fall behind before it skips ahead with a gap; default 1024.
+    #[prost(uint32, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventSubscription {
+    /// Ends with events.unsubscribe.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// This daemon instance; cursors are valid only within it.
+    #[prost(string, tag = "2")]
+    pub instance: String,
+    /// Events after this sequence follow.
+    #[prost(uint64, tag = "3")]
+    pub cursor: u64,
+    /// The oldest sequence the log still keeps.
+    #[prost(uint64, tag = "4")]
+    pub oldest: u64,
+}
+
+/// Events in first..=last were not delivered; re-read state that depends on them.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventGap {
+    #[prost(uint64, tag = "1")]
+    pub first: u64,
+    #[prost(uint64, tag = "2")]
+    pub last: u64,
+    #[prost(enumeration = "EventGapReason", tag = "3")]
+    #[serde(with = "event_gap_reason_json")]
+    pub reason: i32,
+}
+
+/// Pushed as `events.batch`: a gap, if any, comes before the events.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventBatch {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap: Option<EventGap>,
+    #[prost(message, repeated, tag = "3")]
+    pub events: Vec<DaemonEvent>,
+    /// Resume after this sequence to continue where this batch ends.
+    #[prost(uint64, tag = "4")]
+    pub cursor: u64,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -1790,6 +1942,8 @@ pub mod method {
     pub const HOSTS_CALL: &str = "hosts.call";
     pub const GRANTS_CURRENT: &str = "grants.current";
     pub const APPS_LAUNCH: &str = "apps.launch";
+    pub const EVENTS_SUBSCRIBE: &str = "events.subscribe";
+    pub const EVENTS_UNSUBSCRIBE: &str = "events.unsubscribe";
     pub const APPS_REGISTER: &str = "apps.register";
 }
 
@@ -1993,6 +2147,20 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "Start a program in a new tmux window with a single-use registration ticket (owner only).",
     },
     MethodInfo {
+        name: "events.subscribe",
+        params: "EventSubscribe",
+        result: "EventSubscription",
+        mutation: false,
+        doc: "Follow the daemon's event log: `events.batch` events follow, with a gap whenever events were skipped.",
+    },
+    MethodInfo {
+        name: "events.unsubscribe",
+        params: "Unsubscribe",
+        result: "Empty",
+        mutation: false,
+        doc: "",
+    },
+    MethodInfo {
         name: "apps.register",
         params: "RegisterApp",
         result: "Registration",
@@ -2031,6 +2199,8 @@ pub enum Request {
     HostsCall(HostCall),
     GrantsCurrent(Empty),
     AppsLaunch(LaunchApp),
+    EventsSubscribe(EventSubscribe),
+    EventsUnsubscribe(Unsubscribe),
     AppsRegister(RegisterApp),
 }
 
@@ -2064,6 +2234,8 @@ impl Request {
             Self::HostsCall(_) => "hosts.call",
             Self::GrantsCurrent(_) => "grants.current",
             Self::AppsLaunch(_) => "apps.launch",
+            Self::EventsSubscribe(_) => "events.subscribe",
+            Self::EventsUnsubscribe(_) => "events.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -2098,6 +2270,8 @@ impl Request {
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
+            Self::EventsSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::EventsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2133,6 +2307,8 @@ impl Request {
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
             "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
+            "events.subscribe" => Ok(Self::EventsSubscribe(::prost::Message::decode(bytes)?)),
+            "events.unsubscribe" => Ok(Self::EventsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2167,6 +2343,8 @@ impl Request {
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::EventsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::EventsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2200,6 +2378,8 @@ impl Request {
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
             "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
+            "events.subscribe" => Ok(Self::EventsSubscribe(serde_json::from_value(value)?)),
+            "events.unsubscribe" => Ok(Self::EventsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2236,6 +2416,8 @@ pub enum Response {
     HostsCall(HostReply),
     GrantsCurrent(Grant),
     AppsLaunch(LaunchedApp),
+    EventsSubscribe(EventSubscription),
+    EventsUnsubscribe(Empty),
     AppsRegister(Registration),
 }
 
@@ -2269,6 +2451,8 @@ impl Response {
             Self::HostsCall(_) => "hosts.call",
             Self::GrantsCurrent(_) => "grants.current",
             Self::AppsLaunch(_) => "apps.launch",
+            Self::EventsSubscribe(_) => "events.subscribe",
+            Self::EventsUnsubscribe(_) => "events.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -2303,6 +2487,8 @@ impl Response {
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
+            Self::EventsSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::EventsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2338,6 +2524,8 @@ impl Response {
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
             "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
             "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
+            "events.subscribe" => Ok(Self::EventsSubscribe(::prost::Message::decode(bytes)?)),
+            "events.unsubscribe" => Ok(Self::EventsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2372,6 +2560,8 @@ impl Response {
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::EventsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::EventsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2405,6 +2595,8 @@ impl Response {
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
             "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
             "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
+            "events.subscribe" => Ok(Self::EventsSubscribe(serde_json::from_value(value)?)),
+            "events.unsubscribe" => Ok(Self::EventsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2546,6 +2738,15 @@ pub trait Service: Sync {
         &self,
         params: LaunchApp,
     ) -> impl ::core::future::Future<Output = Result<LaunchedApp, RpcError>> + Send;
+    /// Follow the daemon's event log: `events.batch` events follow, with a gap whenever events were skipped.
+    fn events_subscribe(
+        &self,
+        params: EventSubscribe,
+    ) -> impl ::core::future::Future<Output = Result<EventSubscription, RpcError>> + Send;
+    fn events_unsubscribe(
+        &self,
+        params: Unsubscribe,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
     /// Trade a launch ticket for the app's narrow grant on this connection.
     fn apps_register(
         &self,
@@ -2613,6 +2814,14 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
         Request::GrantsCurrent(p) => service.grants_current(p).await.map(Response::GrantsCurrent),
         Request::AppsLaunch(p) => service.apps_launch(p).await.map(Response::AppsLaunch),
+        Request::EventsSubscribe(p) => service
+            .events_subscribe(p)
+            .await
+            .map(Response::EventsSubscribe),
+        Request::EventsUnsubscribe(p) => service
+            .events_unsubscribe(p)
+            .await
+            .map(Response::EventsUnsubscribe),
         Request::AppsRegister(p) => service.apps_register(p).await.map(Response::AppsRegister),
     }
 }
