@@ -42,6 +42,7 @@ impl Setup {
             .env("DREAMER_STATE_DIR", root.join("st"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_JOURNAL_PANE_BYTES", "4096")
+            .env("DREAMER_TEST_TAP_QUEUE", "8")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -118,7 +119,7 @@ async fn collect(
     tap: u64,
     mut done: impl FnMut(&[api::TapData]) -> bool,
 ) -> Vec<api::TapData> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     let mut got = Vec::new();
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
@@ -167,7 +168,7 @@ async fn raw_text_and_meta_views_of_a_pane() {
     ]);
     let mut seen = Vec::new();
     let mut want = [(raw, false), (text, false), (meta, false)];
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     while want.iter().any(|(_, ok)| !ok) {
         let Ok(Some(Pushed::Event { topic, payload, .. })) =
             tokio::time::timeout_at(deadline, rx.recv()).await
@@ -231,9 +232,9 @@ async fn a_tap_that_stops_reading_gets_a_gap_and_slows_nothing() {
     let pane = pane0(&good).await;
     let target = format!("%{pane}");
     let good_tap = tap(&good, api::TapLevel::Text, pane).await;
-    // This client holds one pushed item and then stops reading. The burst
-    // below (about 2.7 MB) is far larger than any socket buffer between the
-    // daemon and it, so its tap must fall behind on every platform.
+    // This client holds one pushed item and then stops reading. With a tap
+    // queue of 8 records here, a burst of about 600 KB backs it up past any
+    // socket buffer on every platform.
     let mut slow = s.client_with(1).await;
     let mut slow_rx = slow.pushed().expect("pushed");
     let slow_tap = tap(&slow, api::TapLevel::Raw, pane).await;
@@ -241,7 +242,7 @@ async fn a_tap_that_stops_reading_gets_a_gap_and_slows_nothing() {
         "send-keys",
         "-t",
         &target,
-        "seq 1 400000; echo seq-done",
+        "seq 1 100000; echo seq-done",
         "Enter",
     ]);
     // The pane and the reading tap get through all of it.

@@ -71,16 +71,21 @@ impl TextState {
             return out;
         }
         self.alt = None;
-        let shifted = if t.scrollback > self.scrollback {
-            (t.scrollback - self.scrollback) as i64
-        } else if t.scrollback == self.scrollback {
-            // At the scrollback limit the count stops growing; the content
-            // still shifts. Find by how much.
-            shift(&self.history, &t.history) as i64
+        // How many lines joined the history since the last look, found by
+        // content: the scrollback is limited in bytes, so its row count
+        // near the limit says nothing about how much scrolled.
+        let (shifted, beyond) = if self.history.is_empty() {
+            // Nothing to align with yet: below its limit the row count is
+            // exact, so it says how many lines entered the history.
+            let grown = t.scrollback.saturating_sub(self.scrollback);
+            (grown.max(t.history.len()) as i64, false)
         } else {
-            // History was cleared: start over from here.
-            *self = TextState::new(t);
-            return out;
+            match appended(&self.history, &t.history) {
+                Some(n) => (n as i64, false),
+                // No overlap: more scrolled than a window holds. Start at
+                // the oldest line of the new window.
+                None => (t.history.len() as i64 + self.cursor_row, true),
+            }
         };
         let before = self.scrolled + self.cursor_row;
         let scrolled = self.scrolled + shifted;
@@ -113,7 +118,10 @@ impl TextState {
                 None => missed += 1,
             }
         }
-        if missed > 0 {
+        if beyond {
+            // Lines older than the window are gone; how many is unknown.
+            out.gap = Some(("window", None));
+        } else if missed > 0 {
             out.gap = Some(("window", Some(missed)));
         }
         self.scrolled = scrolled;
@@ -124,20 +132,21 @@ impl TextState {
     }
 }
 
-/// How many lines `now` is ahead of `before`, two windows of the newest
-/// history lines: the smallest shift that makes them agree, or all of
-/// `now` when none does.
-fn shift(before: &[String], now: &[String]) -> usize {
-    if before == now {
-        return 0;
+/// How many lines were appended to the history between two windows of
+/// its newest lines: the new window's length minus its overlap with the
+/// old one, found by content. `None` when they do not overlap at all (more
+/// scrolled than a window holds). With no old window, everything is new.
+fn appended(before: &[String], now: &[String]) -> Option<usize> {
+    if before.is_empty() {
+        return Some(now.len());
     }
-    for d in 1..=before.len() {
+    for d in 0..before.len() {
         let kept = before.len() - d;
         if kept <= now.len() && before[d..] == now[..kept] {
-            return d;
+            return Some(now.len() - kept);
         }
     }
-    now.len()
+    None
 }
 
 /// How a tap delivers: one `taps.data` per call; `false` once the
@@ -176,7 +185,14 @@ async fn raw<D: Deliver>(host: mirror::MirrorHost, out: D, tap: u64, pane: u32) 
     let id = domain::TmuxPaneId(pane);
     let mut resume: Option<(domain::PaneGeneration, u64)> = None;
     loop {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        // Records held for this tap before the mirror drops it as lagging
+        // (tests make it small, so falling behind needs little output).
+        let capacity = std::env::var("DREAMER_TEST_TAP_QUEUE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(256)
+            .max(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(capacity);
         let ended = Arc::new(AtomicU8::new(mirror::end::RUNNING));
         let sink = mirror::Sink {
             records: tx,
@@ -279,7 +295,14 @@ async fn look<D: Deliver>(
         let t = match host.tail(id, history, after).await {
             Some(Ok(Some(t))) => t,
             Some(Ok(None)) => continue,
+            // Not readable right now: the mirror may be being rebuilt (a
+            // reattach after output outran it). The tap ends only when the
+            // pane itself is gone.
             Some(Err(_)) | None => {
+                let present = host.status().await.iter().any(|m| m.pane == id);
+                if present {
+                    continue;
+                }
                 let mut d = data(tap, pane, 0);
                 d.ended = true;
                 out.send(d).await;
@@ -374,6 +397,19 @@ mod tests {
         let step = s.step(&tail(3, &["c", "d", "e"], &["f", ""], 1));
         assert_eq!(step.lines, ["e", "f"]);
         assert_eq!(step.gap, None);
+    }
+
+    #[test]
+    fn a_scrollback_count_that_wobbles_at_its_limit_changes_nothing() {
+        // Limited in bytes, the row count drops while lines keep coming.
+        let mut s = TextState::new(&tail(1649, &["a", "b", "c"], &["d", ""], 1));
+        let step = s.step(&tail(1648, &["b", "c", "d"], &["e", ""], 1));
+        assert_eq!(step.lines, ["e"]);
+        assert_eq!(step.gap, None);
+        // More than a window scrolled: what is there, and a gap of unknown size.
+        let step = s.step(&tail(1650, &["x", "y", "z"], &["w", ""], 1));
+        assert_eq!(step.lines, ["x", "y", "z", "w"]);
+        assert_eq!(step.gap, Some(("window", None)));
     }
 
     #[test]

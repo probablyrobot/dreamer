@@ -32,6 +32,12 @@ is gone. End a tap with `taps.unsubscribe`.
 produced output, so an idle pane costs nothing and a busy one a bounded
 amount. `raw` follows the record stream.
 
+A `text` tap finds which lines are new by comparing the newest history
+lines with those of its last look, by content: the history is limited in
+bytes, so its length says nothing once it is full. A run of identical
+lines can make the overlap ambiguous; the tap then reports the fewest new
+lines that fit.
+
 ## Gaps
 
 Output a tap did not deliver is reported as a `gap`. The pane itself lost
@@ -40,7 +46,7 @@ nothing.
 | Reason | Meaning |
 | --- | --- |
 | `lagging` | A `raw` tap fell behind (its reader was slow) and the journal no longer had what it missed; it continues from now |
-| `window` | More than 200 lines were committed between two looks of a `text` tap; `lines` says how many were skipped |
+| `window` | More than 200 lines were committed between two looks of a `text` tap; `lines` says how many were skipped when that is known |
 | `restarted` | The pane's program was replaced (respawned) |
 
 A tap that falls behind is dropped by the mirror rather than waited for.
