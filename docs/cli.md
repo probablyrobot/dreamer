@@ -103,6 +103,21 @@ remote host through `ssh -T`; you do not normally run it yourself.
   is detached from it: closing the bridge or the SSH connection leaves the
   daemon, tmux, and every pane running.
 
+## JSON-RPC
+
+`dream rpc [tmux options]` speaks JSON-RPC 2.0 on standard input and
+output, one JSON object per line, through the daemon's JSON-RPC socket
+(see [api.md](api.md#json-rpc-endpoint)). It starts `dreamerd` if nothing
+answers. Scripts in any language can drive the daemon with it:
+
+```sh
+echo '{"jsonrpc":"2.0","id":1,"method":"tmux.topology"}' | dream rpc
+```
+
+It ends like the bridge: when its standard input ends (after two seconds
+for the last replies) or when the daemon closes the connection. Keep its
+input open to receive notifications from subscriptions.
+
 ## Workspaces
 
 `dream config-dir`, `dream workspace list | check | up` work on workspace

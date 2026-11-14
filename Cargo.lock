@@ -1275,6 +1275,7 @@ dependencies = [
  "platform",
  "prost",
  "replica",
+ "serde_json",
  "terminal-core",
  "terminal-ghostty",
  "tmux-backend",

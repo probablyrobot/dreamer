@@ -38,12 +38,12 @@ fn queues() -> (usize, usize) {
     }
 }
 
-pub const TOPIC_RECORDS: &str = "terminal.records";
-pub const TOPIC_END: &str = "terminal.end";
-pub const TOPIC_CHECKPOINT: &str = "terminal.checkpoint";
-pub const TOPIC_TOPOLOGY: &str = "tmux.topology";
-pub const TOPIC_EVENTS: &str = "events.batch";
-pub const TOPIC_MESSAGES: &str = "messages.deliver";
+pub const TOPIC_RECORDS: &str = api::topic::TERMINAL_RECORDS;
+pub const TOPIC_END: &str = api::topic::TERMINAL_END;
+pub const TOPIC_CHECKPOINT: &str = api::topic::TERMINAL_CHECKPOINT;
+pub const TOPIC_TOPOLOGY: &str = api::topic::TMUX_TOPOLOGY;
+pub const TOPIC_EVENTS: &str = api::topic::EVENTS_BATCH;
+pub const TOPIC_MESSAGES: &str = api::topic::MESSAGES_DELIVER;
 
 /// Connection ids, for the broker; unique within a daemon.
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
@@ -122,6 +122,19 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         .ok()
         .and_then(|c| c.pid())
         .and_then(|p| u32::try_from(p).ok());
+    // The socket is owner-only: whoever connects is the user.
+    connection_as(stream, state, peer_pid, crate::grants::Grant::owner()).await;
+}
+
+/// A connection whose peer process and starting grant the daemon already
+/// knows: the JSON-RPC endpoint and supervised extensions reach the
+/// service this way, over an in-process socket.
+pub async fn connection_as(
+    stream: UnixStream,
+    state: Arc<State>,
+    peer_pid: Option<u32>,
+    grant: crate::grants::Grant,
+) {
     let (r, mut w) = stream.into_split();
     let me = &state.identity;
     let mut reader = Reader::new(r, me.limits);
@@ -160,8 +173,7 @@ pub async fn connection(stream: UnixStream, state: Arc<State>) {
         sizers: Arc::default(),
         next_sub: Arc::new(AtomicU64::new(1)),
         max_frame: negotiated.limits.max_frame,
-        // The socket is owner-only: whoever connects is the user.
-        grant: Arc::new(std::sync::Mutex::new(crate::grants::Grant::owner())),
+        grant: Arc::new(std::sync::Mutex::new(grant)),
         peer_pid,
         events: Arc::new(AtomicU64::new(1)),
         id: CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1,

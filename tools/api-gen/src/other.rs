@@ -67,6 +67,16 @@ pub fn openrpc(s: &Schema) -> String {
             ),
         },
         "methods": methods,
+        "x-notifications": s.notifications.iter().map(|n| {
+            let mut v = json!({
+                "name": n.topic,
+                "params": { "$ref": format!("#/components/schemas/{}", n.payload) },
+            });
+            if let Some(d) = &n.doc {
+                v["summary"] = json!(d);
+            }
+            v
+        }).collect::<Vec<Value>>(),
         "components": { "schemas": schemas },
     });
     let mut out = serde_json::to_string_pretty(&doc).unwrap_or_default();
@@ -256,6 +266,18 @@ pub fn luau(s: &Schema) -> String {
             o.push_str("\t}?,\n");
         }
         o.push_str("}\n\n");
+    }
+    if !s.notifications.is_empty() {
+        o.push_str("--- What the daemon pushes, by topic.\nexport type Notification =\n");
+        for (i, n) in s.notifications.iter().enumerate() {
+            let sep = if i == 0 { "\t" } else { "\t| " };
+            let _ = writeln!(
+                o,
+                "{sep}{{ topic: \"{}\", payload: {} }}",
+                n.topic, n.payload
+            );
+        }
+        o.push('\n');
     }
     o.push_str("export type Call = (method: string, params: any) -> any\n\nreturn function(call: Call)\n\tlocal dreamer = {}\n");
     let mut services: Vec<&str> = Vec::new();

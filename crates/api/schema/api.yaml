@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 22 }
+version: { major: 1, minor: 23 }
 package: dreamer.v1
 
 types:
@@ -892,3 +892,14 @@ methods:
   - { method: messages.subscribe, params: MessageSubscribe, result: MessageSubscription, doc: "Receive messages: `messages.deliver` events follow." }
   - { method: messages.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }
+
+# What the daemon pushes on a connection, by topic. JSON-RPC clients receive
+# each as a notification whose method is the topic and whose params is the
+# payload record.
+notifications:
+  - { topic: terminal.records, payload: RecordBatch, doc: "Records of a terminal or host subscription, in order." }
+  - { topic: terminal.checkpoint, payload: CheckpointData, doc: "A subscription's starting snapshot (a bulk stream on the native wire)." }
+  - { topic: terminal.end, payload: SubscriptionEnd, doc: "A subscription ended; nothing more follows for it." }
+  - { topic: tmux.topology, payload: TopologyUpdate, doc: "The watched topology changed." }
+  - { topic: events.batch, payload: EventBatch, doc: "Events of an events.subscribe subscription, after its gap if any." }
+  - { topic: messages.deliver, payload: MessageDelivery, doc: "A message for a messages.subscribe subscription." }

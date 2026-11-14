@@ -1297,3 +1297,54 @@ fn two_registered_apps_exchange_messages_with_stamped_senders() {
             .any(|l| l.trim() == "ping" || l.trim() == "hello")
     );
 }
+
+#[test]
+fn a_pane_app_over_json_rpc_is_held_to_its_grant() {
+    let cli = Cli::new();
+    // A shell script in the pane registers through `dream rpc` and then
+    // tries to stop the daemon; it may only read.
+    let script = format!(
+        "t=$(cat \"$DREAMER_LAUNCH_TICKET\"); \
+         {{ printf '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"apps.register\",\"params\":{{\"launch_id\":\"%s\",\"ticket\":\"%s\"}}}}\\n' \"$DREAMER_LAUNCH_ID\" \"$t\"; \
+         sleep 1; \
+         printf '{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"daemon.shutdown\"}}\\n'; \
+         sleep 1; }} | {DREAM} rpc; echo rpc-done; sleep 60"
+    );
+    let out = cli.ok(&[
+        "app",
+        "run",
+        "jsonapp",
+        "--method",
+        "terminal.read",
+        "--",
+        "/bin/sh",
+        "-c",
+        &script,
+    ]);
+    let (pane, _) = launched(&out);
+    let shown = cli.wait_pane(&pane, "rpc-done");
+    // Replies are one JSON object per line; a long one may wrap in the pane.
+    let joined: String = shown.lines().map(str::trim_end).collect();
+    let replies: Vec<serde_json::Value> =
+        serde_json::Deserializer::from_str(&joined.replace("rpc-done", ""))
+            .into_iter::<serde_json::Value>()
+            .filter_map(Result::ok)
+            .collect();
+    let by_id = |id: u64| {
+        replies
+            .iter()
+            .find(|r| r["id"] == serde_json::json!(id))
+            .unwrap_or_else(|| panic!("no reply {id} in:\n{shown}"))
+    };
+    assert_eq!(by_id(1)["result"]["app_id"], "jsonapp", "{shown}");
+    let refused = &by_id(2)["error"];
+    assert_eq!(refused["code"], -32005, "{shown}");
+    assert_eq!(
+        refused["message"], "`daemon.shutdown` is not in this connection's grant",
+        "the same refusal as a native client"
+    );
+    assert!(
+        cli.run(&["status"]).status.success(),
+        "the daemon still runs"
+    );
+}

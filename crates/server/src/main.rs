@@ -17,6 +17,7 @@ mod events;
 mod grants;
 mod hosts;
 mod install;
+mod jsonrpc;
 mod log;
 mod messages;
 mod service;
@@ -186,8 +187,10 @@ fn run(args: Args) -> Result<ExitCode, String> {
         return Ok(ExitCode::from(ALREADY_RUNNING));
     };
     let socket = platform::socket_path();
+    let rpc_socket = jsonrpc::socket_path();
     // Holding the lock means any socket file left here is stale.
     let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(&rpc_socket);
 
     let (ledger, settled) = Ledger::open(&platform::ledger_path()).map_err(|e| e.to_string())?;
     for r in &settled {
@@ -212,6 +215,9 @@ fn run(args: Args) -> Result<ExitCode, String> {
         let listener =
             UnixListener::bind(&socket).map_err(|e| format!("{}: {e}", socket.display()))?;
         platform::owner_only(&socket)?;
+        let rpc = UnixListener::bind(&rpc_socket)
+            .map_err(|e| format!("{}: {e}", rpc_socket.display()))?;
+        platform::owner_only(&rpc_socket)?;
         let (started, started_unix_ms) = service::started_now();
         let events = Arc::new(events::Events::default());
         let state = Arc::new(State {
@@ -252,15 +258,16 @@ fn run(args: Args) -> Result<ExitCode, String> {
             socket.display(),
             args.background
         ));
-        serve(listener, state).await
+        serve(listener, rpc, state).await
     });
     let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(&rpc_socket);
     drop(lock);
     log::info("stopped");
     result.map(|()| ExitCode::SUCCESS)
 }
 
-async fn serve(listener: UnixListener, state: Arc<State>) -> Result<(), String> {
+async fn serve(listener: UnixListener, rpc: UnixListener, state: Arc<State>) -> Result<(), String> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
     let mut int = signal(SignalKind::interrupt()).map_err(|e| e.to_string())?;
@@ -275,6 +282,13 @@ async fn serve(listener: UnixListener, state: Arc<State>) -> Result<(), String> 
                     tokio::spawn(async move { conn::connection(stream, state).await });
                 }
                 Err(e) => log::warn(format!("accept: {e}")),
+            },
+            accepted = rpc.accept() => match accepted {
+                Ok((stream, _)) => {
+                    let state = state.clone();
+                    tokio::spawn(async move { jsonrpc::connection(stream, state).await });
+                }
+                Err(e) => log::warn(format!("accept (json-rpc): {e}")),
             },
             () = state.shutdown.notified() => break,
             _ = term.recv() => { log::info("SIGTERM"); break }

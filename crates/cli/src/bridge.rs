@@ -22,6 +22,37 @@ use crate::daemon::{DaemonArgs, explain};
 /// input ends, so a final reply still reaches the peer.
 const LINGER: Duration = Duration::from_secs(2);
 
+/// `dream rpc`: JSON-RPC 2.0 on standard input and output, one JSON
+/// object per line, through the daemon's JSON-RPC socket. Starts the
+/// daemon if it is not running.
+pub fn rpc(d: &DaemonArgs) -> Result<(), String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    rt.block_on(async {
+        let (native, started) = ensure_running_raw(&Launch::new(d.start.clone()))
+            .await
+            .map_err(explain)?;
+        drop(native);
+        if started {
+            eprintln!("dream rpc: started dreamerd");
+        }
+        let path = platform::rpc_socket_path();
+        let socket = tokio::net::UnixStream::connect(&path)
+            .await
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let (from_daemon, to_daemon) = socket.into_split();
+        splice(
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            from_daemon,
+            to_daemon,
+        )
+        .await
+    })
+}
+
 pub fn stdio(d: &DaemonArgs) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

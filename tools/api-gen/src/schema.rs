@@ -11,6 +11,17 @@ pub struct Schema {
     pub package: String,
     pub types: Vec<TypeDef>,
     pub methods: Vec<MethodDef>,
+    /// What the daemon pushes, by topic.
+    #[serde(default)]
+    pub notifications: Vec<NotificationDef>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationDef {
+    pub topic: String,
+    pub payload: String,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +266,25 @@ impl Schema {
                 if self.kind(ty) != Some(Kind::Message) {
                     errors.push(format!("method `{}`: `{ty}` is not a message", m.method));
                 }
+            }
+        }
+        let mut topics = BTreeSet::new();
+        for n in &self.notifications {
+            let parts: Vec<&str> = n.topic.split('.').collect();
+            if parts.len() != 2 || !parts.iter().all(|p| is_snake(p)) {
+                errors.push(format!(
+                    "notification `{}` must be `service.name` in snake_case",
+                    n.topic
+                ));
+            }
+            if !topics.insert(n.topic.clone()) {
+                errors.push(format!("notification `{}` defined twice", n.topic));
+            }
+            if self.kind(&n.payload) != Some(Kind::Message) {
+                errors.push(format!(
+                    "notification `{}`: `{}` is not a message",
+                    n.topic, n.payload
+                ));
             }
         }
         errors
