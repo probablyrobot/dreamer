@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 26 }
+version: { major: 1, minor: 27 }
 package: dreamer.v1
 
 types:
@@ -1007,6 +1007,38 @@ types:
       - { n: 8, name: meta, type: TapMeta, doc: "meta: the pane's state when it changed." }
       - { n: 9, name: ended, type: bool, doc: "The pane is gone; nothing more follows for it." }
 
+  # ---- terminal.query -----------------------------------------------------
+
+  - message: TerminalQuery
+    doc: "Which panes' recent lines match a pattern. Every bound is enforced; a truncated answer says so."
+    fields:
+      - { n: 1, name: pattern, type: string, doc: "A regular expression (linear time, size-limited), or plain text with `literal`." }
+      - { n: 2, name: literal, type: bool }
+      - { n: 3, name: ignore_case, type: bool }
+      - { n: 4, name: literals, type: string, repeated: true, doc: "More plain-text alternatives." }
+      - { n: 5, name: panes, type: u32, repeated: true, doc: "The panes to search; empty means every mirrored pane (needs all_panes)." }
+      - { n: 6, name: lines, type: u32, optional: true, doc: "How many of each pane's newest lines (screen included); default 200, at most 2000." }
+      - { n: 7, name: max_matches, type: u32, optional: true, doc: "Default 100, at most 1000." }
+      - { n: 8, name: hosts, type: string, repeated: true, doc: "Connected hosts to search too (all their panes); `*` means every live host." }
+      - { n: 9, name: timeout_ms, type: u32, optional: true, doc: "Default 2000, at most 10000; panes not searched in time are reported." }
+      - { n: 10, name: title, type: string, optional: true, doc: "Only panes whose title matches this regular expression." }
+
+  - message: QueryMatch
+    fields:
+      - { n: 1, name: host, type: string, optional: true, doc: "Absent for this host." }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: line, type: u32, doc: "Index in the searched window, oldest first." }
+      - { n: 4, name: text, type: string }
+      - { n: 5, name: match_start, type: u32, doc: "Byte offsets of the match in text." }
+      - { n: 6, name: match_end, type: u32 }
+
+  - message: QueryResult
+    fields:
+      - { n: 1, name: matches, type: QueryMatch, repeated: true }
+      - { n: 2, name: panes_searched, type: u32 }
+      - { n: 3, name: truncated, type: bool, doc: "A bound cut the answer short; see notes." }
+      - { n: 4, name: notes, type: string, repeated: true, doc: "What was cut and why, and hosts that could not be searched." }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -1049,6 +1081,7 @@ methods:
   - { method: scripts.reload, params: ScriptSource, result: ScriptStatus, mutation: true, doc: "Replace a script's source atomically; an update that does not load leaves the last-good version running (owner only)." }
   - { method: scripts.stop, params: ScriptRef, result: ScriptStatus, mutation: true, doc: "Stop and unload a script (owner only)." }
   - { method: scripts.list, params: Empty, result: ScriptList }
+  - { method: terminal.query, params: TerminalQuery, result: QueryResult, doc: "Search the newest lines of many panes, here and on connected hosts, within fixed bounds." }
   - { method: taps.subscribe, params: TapSubscribe, result: TapSubscription, doc: "Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap." }
   - { method: taps.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }

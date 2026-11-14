@@ -937,6 +937,16 @@ impl api::Service for DaemonService {
         Err(for_a_connection("messages.unsubscribe"))
     }
 
+    async fn terminal_query(&self, p: api::TerminalQuery) -> Result<api::QueryResult, RpcError> {
+        // Hosts can be searched without a local tmux connection.
+        let host = if p.panes.is_empty() && !p.hosts.is_empty() {
+            self.mirror_host(None).await.ok()
+        } else {
+            Some(self.mirror_host(None).await?)
+        };
+        crate::query::query(&self.0, host, p).await
+    }
+
     async fn taps_subscribe(&self, _: api::TapSubscribe) -> Result<api::TapSubscription, RpcError> {
         Err(for_a_connection("taps.subscribe"))
     }

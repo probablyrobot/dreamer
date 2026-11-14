@@ -219,6 +219,9 @@ impl Service for Fixed {
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn terminal_query(&self, _: api::TerminalQuery) -> Result<api::QueryResult, RpcError> {
+        Ok(api::QueryResult::default())
+    }
     async fn taps_subscribe(&self, _: api::TapSubscribe) -> Result<api::TapSubscription, RpcError> {
         Ok(api::TapSubscription::default())
     }
