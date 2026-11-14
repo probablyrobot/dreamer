@@ -109,6 +109,12 @@ remote host through `ssh -T`; you do not normally run it yourself.
 `extensions.yaml` and their state; `dream extensions restart NAME` starts
 one again now. See [extensions.md](extensions.md).
 
+## Jobs
+
+`dream jobs` lists jobs; `dream jobs start [--cwd DIR] [--name NAME] --
+PROGRAM [ARGS...]`, `cancel ID`, and `artifacts ID` manage them. See
+[jobs.md](jobs.md).
+
 ## Scripts
 
 `dream scripts` lists loaded scripts; `dream scripts load NAME FILE
