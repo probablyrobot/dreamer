@@ -3060,6 +3060,7 @@ checksum = "7a7ae6b65bf54b7fdd4cf5b6f44f60862350ebf3fe3779b3a9cc005e7fa14f81"
 dependencies = [
  "bstr",
  "either",
+ "futures-util",
  "libc",
  "mlua-sys",
  "num-traits",
@@ -4617,7 +4618,10 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "script-runtime"
 version = "0.1.0"
 dependencies = [
+ "api",
  "mlua",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
