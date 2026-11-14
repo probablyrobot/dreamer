@@ -22,6 +22,10 @@ pub struct Manifest {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub data: BTreeMap<String, Source>,
+    /// A Luau module beside the manifest, for logic the manifest cannot
+    /// express: `transform(rows)` and command handlers.
+    #[serde(default)]
+    pub module: Option<String>,
     pub view: View,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
@@ -59,6 +63,31 @@ pub enum ViewKind {
     List,
     Log,
     Text,
+    /// One value from 0 to 1 (or a percentage above 1) as a bar.
+    Gauge,
+    /// A numeric field across the rows, as a sparkline.
+    Chart,
+    /// Typed fields and a submit command.
+    Form,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldKind {
+    Text,
+    Number,
+    Toggle,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormField {
+    pub name: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    pub kind: FieldKind,
+    #[serde(default)]
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,16 +102,31 @@ pub struct View {
     /// Table: the fields shown, as columns.
     #[serde(default)]
     pub columns: Vec<String>,
-    /// List and log: the field shown per row (default the whole row).
+    /// List, log, gauge, and chart: the field shown per row (default the
+    /// whole row).
     #[serde(default)]
     pub field: Option<String>,
+    /// Gauge: the field with its label.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Form: its fields, and the command Enter runs.
+    #[serde(default)]
+    pub fields: Vec<FormField>,
+    #[serde(default)]
+    pub submit: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
     pub key: String,
-    pub method: String,
+    /// An API method to call, or
+    #[serde(default)]
+    pub method: Option<String>,
+    /// a function of the module, called with the selected row (and the
+    /// form) to do the work.
+    #[serde(default)]
+    pub handler: Option<String>,
     #[serde(default)]
     pub params: toml::Table,
     #[serde(default)]
@@ -132,9 +176,13 @@ fn check_templates(v: &toml::Value, at: &str, errors: &mut Vec<String>) {
                     return;
                 };
                 let inner = &after[..end];
-                if !inner.strip_prefix("selected.").is_some_and(path_ok) {
+                let ok = inner
+                    .strip_prefix("selected.")
+                    .or_else(|| inner.strip_prefix("form."))
+                    .is_some_and(path_ok);
+                if !ok {
                     errors.push(format!(
-                        "{at}: `${{{inner}}}` is not `${{selected.<field>}}`"
+                        "{at}: `${{{inner}}}` is not `${{selected.<field>}}` or `${{form.<field>}}`"
                     ));
                 }
                 rest = &after[end + 1..];
@@ -232,11 +280,37 @@ impl Manifest {
                 errors.push(format!("{at}.params: placeholders belong to commands"));
             }
         }
-        if !self.data.contains_key(&self.view.source) {
+        if self.view.kind != ViewKind::Form && !self.data.contains_key(&self.view.source) {
             errors.push(format!(
                 "view.source: no data source `{}`",
                 self.view.source
             ));
+        }
+        if self.view.kind == ViewKind::Form {
+            if self.view.fields.is_empty() {
+                errors.push("view.fields: a form needs fields".into());
+            }
+            match &self.view.submit {
+                None => errors.push("view.submit: a form needs a submit command".into()),
+                Some(c) if !self.commands.contains_key(c) => {
+                    errors.push(format!("view.submit: no command `{c}`"));
+                }
+                Some(_) => {}
+            }
+            let mut names = std::collections::BTreeSet::new();
+            for f in &self.view.fields {
+                if !path_ok(&f.name) || f.name.contains('.') || !names.insert(f.name.clone()) {
+                    errors.push(format!(
+                        "view.fields: `{}` is not a unique field name",
+                        f.name
+                    ));
+                }
+            }
+        }
+        if let Some(m) = &self.module
+            && (m.is_empty() || m.contains("..") || m.starts_with('/'))
+        {
+            errors.push(format!("module: `{m}` must be a file beside the manifest"));
         }
         if self.view.kind == ViewKind::Table && self.view.columns.is_empty() {
             errors.push("view.columns: a table needs columns".into());
@@ -262,8 +336,21 @@ impl Manifest {
             } else if let Some(other) = keys.insert(c.key.clone(), name.clone()) {
                 errors.push(format!("{at}.key: `{}` is also {other}'s", c.key));
             }
-            if method_info(&c.method).is_none() {
-                errors.push(format!("{at}.method: no method `{}`", c.method));
+            match (&c.method, &c.handler) {
+                (Some(m), None) => {
+                    if method_info(m).is_none() {
+                        errors.push(format!("{at}.method: no method `{m}`"));
+                    }
+                }
+                (None, Some(h)) => {
+                    if self.module.is_none() {
+                        errors.push(format!("{at}.handler: `{h}` needs a module"));
+                    }
+                    if !path_ok(h) || h.contains('.') {
+                        errors.push(format!("{at}.handler: `{h}` is not a function name"));
+                    }
+                }
+                _ => errors.push(format!("{at}: give a method or a handler, not both")),
             }
             check_templates(
                 &toml::Value::Table(c.params.clone()),
@@ -303,24 +390,29 @@ pub fn field<'a>(v: &'a serde_json::Value, path: &str) -> Option<&'a serde_json:
 pub fn fill(
     params: &toml::Table,
     selected: Option<&serde_json::Value>,
+    form: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    fn go(
-        v: &serde_json::Value,
-        row: Option<&serde_json::Value>,
-    ) -> Result<serde_json::Value, String> {
+    type Ctx<'a> = (Option<&'a serde_json::Value>, Option<&'a serde_json::Value>);
+    fn lookup(inner: &str, (row, form): Ctx) -> Result<serde_json::Value, String> {
+        if let Some(path) = inner.strip_prefix("form.") {
+            let form = form.ok_or("there is no form")?;
+            return field(form, path)
+                .cloned()
+                .ok_or_else(|| format!("the form has no `{path}`"));
+        }
+        let row = row.ok_or("nothing is selected")?;
+        let path = inner.strip_prefix("selected.").unwrap_or(inner);
+        field(row, path)
+            .cloned()
+            .ok_or_else(|| format!("the selected row has no `{path}`"))
+    }
+    fn go(v: &serde_json::Value, ctx: Ctx) -> Result<serde_json::Value, String> {
         Ok(match v {
             serde_json::Value::String(s) if s.contains("${") => {
-                let row = row.ok_or("nothing is selected")?;
-                let lookup = |inner: &str| -> Result<serde_json::Value, String> {
-                    let path = inner.strip_prefix("selected.").unwrap_or(inner);
-                    field(row, path)
-                        .cloned()
-                        .ok_or_else(|| format!("the selected row has no `{path}`"))
-                };
                 if let Some(inner) = s.strip_prefix("${").and_then(|r| r.strip_suffix('}'))
                     && !inner.contains("${")
                 {
-                    return lookup(inner);
+                    return lookup(inner, ctx);
                 }
                 let mut out = String::new();
                 let mut rest = s.as_str();
@@ -328,7 +420,7 @@ pub fn fill(
                     out.push_str(&rest[..i]);
                     let after = &rest[i + 2..];
                     let end = after.find('}').ok_or("an unclosed placeholder")?;
-                    match lookup(&after[..end])? {
+                    match lookup(&after[..end], ctx)? {
                         serde_json::Value::String(x) => out.push_str(&x),
                         other => out.push_str(&other.to_string()),
                     }
@@ -338,17 +430,20 @@ pub fn fill(
                 serde_json::Value::String(out)
             }
             serde_json::Value::Array(a) => {
-                serde_json::Value::Array(a.iter().map(|x| go(x, row)).collect::<Result<_, _>>()?)
+                serde_json::Value::Array(a.iter().map(|x| go(x, ctx)).collect::<Result<_, _>>()?)
             }
             serde_json::Value::Object(o) => serde_json::Value::Object(
                 o.iter()
-                    .map(|(k, x)| go(x, row).map(|x| (k.clone(), x)))
+                    .map(|(k, x)| go(x, ctx).map(|x| (k.clone(), x)))
                     .collect::<Result<_, _>>()?,
             ),
             other => other.clone(),
         })
     }
-    go(&to_json(&toml::Value::Table(params.clone())), selected)
+    go(
+        &to_json(&toml::Value::Table(params.clone())),
+        (selected, form),
+    )
 }
 
 #[cfg(test)]
@@ -383,15 +478,15 @@ params = { action = { rename_window = { window = "${selected.window}", name = "w
     fn a_manifest_parses_and_fills_typed_placeholders() {
         let m = Manifest::parse(GOOD).expect("valid");
         let row = serde_json::json!({ "id": 3, "window": 7, "title": "x" });
-        let p = fill(&m.commands["rename"].params, Some(&row)).expect("fill");
+        let p = fill(&m.commands["rename"].params, Some(&row), None).expect("fill");
         assert_eq!(
             p,
             serde_json::json!({ "action": { "rename_window": { "window": 7, "name": "w-3" } } })
         );
-        assert!(fill(&m.commands["rename"].params, None).is_err());
+        assert!(fill(&m.commands["rename"].params, None, None).is_err());
         let missing = serde_json::json!({ "id": 3 });
         assert!(
-            fill(&m.commands["rename"].params, Some(&missing))
+            fill(&m.commands["rename"].params, Some(&missing), None)
                 .expect_err("missing field")
                 .contains("window")
         );

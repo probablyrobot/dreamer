@@ -1408,6 +1408,7 @@ dependencies = [
  "crossterm",
  "platform",
  "ratatui",
+ "script-runtime",
  "serde",
  "serde_json",
  "tmux-backend",
