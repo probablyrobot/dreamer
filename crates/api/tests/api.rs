@@ -198,6 +198,27 @@ impl Service for Fixed {
     async fn events_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn messages_publish(&self, _: api::MessagePublish) -> Result<api::MessageSent, RpcError> {
+        Ok(api::MessageSent::default())
+    }
+    async fn messages_request(
+        &self,
+        _: api::MessageRequest,
+    ) -> Result<api::MessageEnvelope, RpcError> {
+        Ok(api::MessageEnvelope::default())
+    }
+    async fn messages_reply(&self, _: api::MessageReply) -> Result<api::MessageSent, RpcError> {
+        Ok(api::MessageSent::default())
+    }
+    async fn messages_subscribe(
+        &self,
+        _: api::MessageSubscribe,
+    ) -> Result<api::MessageSubscription, RpcError> {
+        Ok(api::MessageSubscription::default())
+    }
+    async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
     async fn grants_current(&self, _: Empty) -> Result<api::Grant, RpcError> {
         Ok(api::Grant::default())
     }

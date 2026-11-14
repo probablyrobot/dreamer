@@ -81,7 +81,9 @@ See [remote.md](remote.md) for what runs where.
 [--ttl-ms N] [--name NAME] -- PROGRAM [ARGS...]` starts a program in a new
 tmux window as a registered app. The program gets a single-use ticket, and
 once it registers it may call only the listed methods, on its own pane
-unless `--all-panes` is given. See [grants.md](grants.md).
+unless `--all-panes` is given. See [grants.md](grants.md). An app that
+should exchange messages needs `--method 'messages.*'` (see
+[messages.md](messages.md)).
 
 ## Bridge
 

@@ -30,6 +30,8 @@ pub mod code {
     pub const UNAVAILABLE: i32 = -32004;
     /// The connection's grant does not allow this method or target.
     pub const FORBIDDEN: i32 = -32005;
+    /// A limit was reached: a rate, or a message chain's causal depth.
+    pub const LIMITED: i32 = -32006;
 }
 
 /// A request or response that could not be decoded for a method.

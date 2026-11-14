@@ -94,15 +94,21 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     })
 }
 
-/// `dream app probe [--other %N] [--delay MS]`: register from the launch
-/// environment, then try a few things and print what happened, one line
-/// each, so a test can read them from the pane. Never prints the ticket.
+/// `dream app probe [--other %N] [--delay MS] [--serve | --ask INSTANCE]`:
+/// register from the launch environment, then try a few things and print
+/// what happened, one line each, so a test can read them from the pane.
+/// Never prints the ticket. `--serve` answers message requests instead;
+/// `--ask` sends messages to a serving instance.
 pub fn probe(args: &[String]) -> Result<(), String> {
     let mut other = None;
     let mut delay = 0u64;
+    let mut serve = false;
+    let mut ask = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--serve" => serve = true,
+            "--ask" => ask = it.next().cloned(),
             "--other" => {
                 other = it
                     .next()
@@ -144,6 +150,14 @@ pub fn probe(args: &[String]) -> Result<(), String> {
                 println!("probe: register refused: {e}");
                 return Ok(());
             }
+        }
+        if serve {
+            return serve_messages(&mut c).await;
+        }
+        if let Some(instance) = &ask {
+            ask_messages(&mut c, instance).await;
+            println!("probe: done");
+            return Ok(());
         }
         let read = |pane| {
             Request::TerminalRead(api::ReadParams {
@@ -193,4 +207,111 @@ pub fn probe(args: &[String]) -> Result<(), String> {
     // Stay, so the pane (and what it printed) can be read.
     std::thread::sleep(std::time::Duration::from_secs(120));
     Ok(())
+}
+
+/// Answer every request with `echo:` and the payload, and print who sent
+/// each message, as stamped by the daemon and as claimed.
+async fn serve_messages(c: &mut client::Client) -> Result<(), String> {
+    let mut pushed = c.pushed().ok_or("no event stream")?;
+    let sub = call(
+        c,
+        Request::MessagesSubscribe(api::MessageSubscribe {
+            topics: vec!["chat.*".into()],
+        }),
+    )
+    .await?;
+    let Response::MessagesSubscribe(sub) = sub else {
+        return Err("unexpected reply".into());
+    };
+    println!("probe: serving as {}", sub.instance);
+    while let Some(p) = pushed.recv().await {
+        let client::Pushed::Event { topic, payload, .. } = p else {
+            continue;
+        };
+        if topic != "messages.deliver" {
+            continue;
+        }
+        let Ok(d) = <api::MessageDelivery as prost::Message>::decode(payload.as_slice()) else {
+            continue;
+        };
+        let Some(e) = d.envelope else { continue };
+        let from = e
+            .sender
+            .as_ref()
+            .map(|s| s.instance.clone())
+            .unwrap_or_default();
+        let claimed = e.claimed_sender.clone().unwrap_or_else(|| "-".into());
+        let text = String::from_utf8_lossy(&e.payload).into_owned();
+        if e.request {
+            println!("probe: request from {from} claimed {claimed}: {text}");
+            let reply = Request::MessagesReply(api::MessageReply {
+                request: e.id,
+                schema: e.schema,
+                payload: format!("echo:{text}").into_bytes(),
+            });
+            if let Err(err) = call(c, reply).await {
+                println!("probe: reply failed: {err}");
+            }
+        } else {
+            println!(
+                "probe: {} from {from} claimed {claimed}: {text}",
+                e.topic.as_deref().unwrap_or("direct")
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Try a reserved topic, a topic message, and a request to `instance`,
+/// each claiming to come from the owner.
+async fn ask_messages(c: &mut client::Client, instance: &str) {
+    let reserved = call(
+        c,
+        Request::MessagesPublish(api::MessagePublish {
+            topic: Some("approval.granted".into()),
+            payload: b"yes".to_vec(),
+            ..api::MessagePublish::default()
+        }),
+    )
+    .await;
+    match reserved {
+        Ok(_) => println!("probe: reserved topic: sent"),
+        Err(e) => println!("probe: reserved topic: refused: {e}"),
+    }
+    let topic = call(
+        c,
+        Request::MessagesPublish(api::MessagePublish {
+            topic: Some("chat.hello".into()),
+            payload: b"hello".to_vec(),
+            sender: Some("owner".into()),
+            ..api::MessagePublish::default()
+        }),
+    )
+    .await;
+    match topic {
+        Ok(Response::MessagesPublish(s)) => println!("probe: topic delivered {}", s.delivered),
+        Ok(_) => println!("probe: topic: unexpected reply"),
+        Err(e) => println!("probe: topic refused: {e}"),
+    }
+    let request = call(
+        c,
+        Request::MessagesRequest(api::MessageRequest {
+            recipient: instance.to_owned(),
+            payload: b"ping".to_vec(),
+            sender: Some("owner".into()),
+            timeout_ms: Some(5000),
+            ..api::MessageRequest::default()
+        }),
+    )
+    .await;
+    match request {
+        Ok(Response::MessagesRequest(e)) => println!(
+            "probe: reply from {}: {} (depth {})",
+            e.sender.map(|s| s.instance).unwrap_or_default(),
+            String::from_utf8_lossy(&e.payload),
+            e.depth
+        ),
+        Ok(_) => println!("probe: request: unexpected reply"),
+        Err(e) => println!("probe: request refused: {e}"),
+    }
 }

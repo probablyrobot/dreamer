@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 21 }
+version: { major: 1, minor: 22 }
 package: dreamer.v1
 
 types:
@@ -779,6 +779,83 @@ types:
       - { n: 3, name: events, type: DaemonEvent, repeated: true }
       - { n: 4, name: cursor, type: u64, doc: "Resume after this sequence to continue where this batch ends." }
 
+  # ---- messages -----------------------------------------------------------
+
+  - message: MessageSender
+    doc: "Who sent a message, stamped by the daemon from the connection; never taken from the sender."
+    fields:
+      - { n: 1, name: instance, type: string, doc: "A registered app's instance, or owner:<n> for one of the user's own clients." }
+      - { n: 2, name: app_id, type: string, optional: true }
+      - { n: 3, name: pane, type: u32, optional: true, doc: "The registered app's pane." }
+      - { n: 4, name: owner, type: bool, doc: "Sent under the owner grant." }
+
+  - message: MessageEnvelope
+    fields:
+      - { n: 1, name: id, type: u64, doc: "Assigned by the daemon; increases per message." }
+      - { n: 2, name: sender, type: MessageSender }
+      - { n: 3, name: topic, type: string, optional: true }
+      - { n: 4, name: recipient, type: string, optional: true, doc: "The instance a direct message, request, or reply is for." }
+      - { n: 5, name: schema, type: u32, doc: "The payload's schema version, chosen by the sender." }
+      - { n: 6, name: correlation, type: string, optional: true }
+      - { n: 7, name: expires_unix_ms, type: u64, optional: true }
+      - { n: 8, name: payload, type: bytes }
+      - { n: 9, name: cause, type: u64, optional: true, doc: "The message this one answers or was caused by." }
+      - { n: 10, name: origin, type: u64, doc: "The first message of this causal chain (its own id when it starts one)." }
+      - { n: 11, name: depth, type: u32, doc: "Causal steps from the origin." }
+      - { n: 12, name: claimed_sender, type: string, optional: true, doc: "What the sender said about itself: a claim, never authority." }
+      - { n: 13, name: time_unix_ms, type: u64 }
+      - { n: 14, name: request, type: bool, doc: "A request: answer it with messages.reply." }
+
+  - message: MessagePublish
+    doc: "A topic message or a direct message: give exactly one of topic and recipient."
+    fields:
+      - { n: 1, name: topic, type: string, optional: true, doc: "Not dreamer.*, human.*, policy.*, or approval.*: those are the daemon's." }
+      - { n: 2, name: recipient, type: string, optional: true }
+      - { n: 3, name: schema, type: u32 }
+      - { n: 4, name: correlation, type: string, optional: true }
+      - { n: 5, name: expires_unix_ms, type: u64, optional: true }
+      - { n: 6, name: payload, type: bytes, doc: "At most 64 KiB." }
+      - { n: 7, name: cause, type: u64, optional: true }
+      - { n: 8, name: sender, type: string, optional: true, doc: "A claimed sender; recipients see it as claimed_sender, next to the stamped one." }
+
+  - message: MessageSent
+    fields:
+      - { n: 1, name: id, type: u64 }
+      - { n: 2, name: delivered, type: u32, doc: "Subscriptions it was handed to." }
+      - { n: 3, name: depth, type: u32 }
+
+  - message: MessageRequest
+    fields:
+      - { n: 1, name: recipient, type: string }
+      - { n: 2, name: schema, type: u32 }
+      - { n: 3, name: correlation, type: string, optional: true }
+      - { n: 4, name: payload, type: bytes }
+      - { n: 5, name: cause, type: u64, optional: true }
+      - { n: 6, name: timeout_ms, type: u32, optional: true, doc: "Default 10000, at most 60000." }
+      - { n: 7, name: sender, type: string, optional: true, doc: "A claimed sender (see MessagePublish.sender)." }
+
+  - message: MessageReply
+    fields:
+      - { n: 1, name: request, type: u64, doc: "The request's id." }
+      - { n: 2, name: schema, type: u32 }
+      - { n: 3, name: payload, type: bytes }
+
+  - message: MessageSubscribe
+    fields:
+      - { n: 1, name: topics, type: string, repeated: true, doc: "Exact topics, service.* prefixes, or *. Direct messages and requests to this connection arrive regardless." }
+
+  - message: MessageSubscription
+    fields:
+      - { n: 1, name: id, type: u64, doc: "Ends with messages.unsubscribe." }
+      - { n: 2, name: instance, type: string, doc: "This connection's identity as a recipient." }
+
+  - message: MessageDelivery
+    doc: "Pushed as `messages.deliver`."
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: envelope, type: MessageEnvelope }
+      - { n: 3, name: missed, type: u64, doc: "Messages dropped for this subscription since the previous delivery, because it was full." }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -809,4 +886,9 @@ methods:
   - { method: apps.launch, params: LaunchApp, result: LaunchedApp, mutation: true, doc: "Start a program in a new tmux window with a single-use registration ticket (owner only)." }
   - { method: events.subscribe, params: EventSubscribe, result: EventSubscription, doc: "Follow the daemon's event log: `events.batch` events follow, with a gap whenever events were skipped." }
   - { method: events.unsubscribe, params: Unsubscribe, result: Empty }
+  - { method: messages.publish, params: MessagePublish, result: MessageSent, mutation: true, doc: "Send a topic or direct message; the daemon stamps the sender. Never typed into a pane." }
+  - { method: messages.request, params: MessageRequest, result: MessageEnvelope, mutation: true, doc: "Send a request to one instance and wait for its reply." }
+  - { method: messages.reply, params: MessageReply, result: MessageSent, mutation: true, doc: "Answer a request sent to this connection." }
+  - { method: messages.subscribe, params: MessageSubscribe, result: MessageSubscription, doc: "Receive messages: `messages.deliver` events follow." }
+  - { method: messages.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }

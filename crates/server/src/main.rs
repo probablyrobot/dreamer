@@ -18,6 +18,7 @@ mod grants;
 mod hosts;
 mod install;
 mod log;
+mod messages;
 mod service;
 
 use std::fs::{File, OpenOptions};
@@ -238,6 +239,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             pastes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             hosts: hosts::Hosts::new(events.clone()),
             events,
+            broker: Arc::default(),
             apps: apps::Apps::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.

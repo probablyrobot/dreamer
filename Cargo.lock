@@ -1255,6 +1255,7 @@ dependencies = [
  "api",
  "client",
  "platform",
+ "prost",
  "serde_json",
  "terminal-core",
  "tmux-backend",
