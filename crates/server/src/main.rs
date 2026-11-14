@@ -21,6 +21,7 @@ mod install;
 mod jsonrpc;
 mod log;
 mod messages;
+mod query;
 mod scripts;
 mod service;
 mod taps;

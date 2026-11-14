@@ -1548,3 +1548,95 @@ fn an_extension_is_held_to_its_grant_and_messages_as_itself() {
     }
     assert!(cli.extension_log("nosy").contains("probe: shutdown"));
 }
+
+#[test]
+fn a_query_reaches_a_connected_host() {
+    let cli = Cli::new();
+    let far = TmuxServer::start(100, 30, "/bin/sh").expect("remote tmux");
+    let far_root = cli.root.join("far");
+    let _far_daemon = DaemonGuard(far_root.join("rt"));
+    let r = |name: &str| cli.root.join(name);
+    std::fs::write(
+        r("ssh"),
+        format!(
+            r#"#!/bin/sh
+[ "$1" = -T ] || exit 90
+while [ "$1" != -- ]; do shift; done
+export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
+export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
+exec /bin/sh -c "exec $3"
+"#,
+            rt = far_root.join("rt").display(),
+            st = far_root.join("st").display(),
+            daemon = Cli::daemon().display(),
+        ),
+    )
+    .expect("stand-in ssh");
+    std::fs::set_permissions(
+        r("ssh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+    std::fs::create_dir_all(r("config")).expect("config dir");
+    std::fs::write(
+        r("config/hosts.yaml"),
+        format!(
+            "hosts:\n  - name: devbox\n    destination: devbox\n    dream: '{}'\n    tmux: '{}'\n    tmux_socket: '{}'\n",
+            DREAM,
+            tmux_program().display(),
+            far.socket()
+        ),
+    )
+    .expect("hosts.yaml");
+    far.run_checked(&["send-keys", "-t", "main", "echo far-''marker", "Enter"])
+        .expect("far output");
+    cli.ok(&["ensure-running"]);
+    cli.ok(&["hosts", "connect", "devbox"]);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let c = client::Client::connect(&cli.root.join("rt/dreamerd.sock"), "test")
+            .await
+            .expect("connect");
+        for hosts in [vec!["devbox".to_owned()], vec!["*".to_owned()]] {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let r = loop {
+                let q = api::TerminalQuery {
+                    pattern: "^far-marker$".into(),
+                    hosts: hosts.clone(),
+                    ..api::TerminalQuery::default()
+                };
+                let Ok(api::Response::TerminalQuery(r)) =
+                    c.call(api::Request::TerminalQuery(q)).await
+                else {
+                    panic!("query")
+                };
+                if !r.matches.is_empty() {
+                    break r;
+                }
+                assert!(Instant::now() < deadline, "never found on the host: {r:?}");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            };
+            assert_eq!(r.matches.len(), 1, "{r:?}");
+            assert_eq!(r.matches[0].host.as_deref(), Some("devbox"), "{r:?}");
+            assert_eq!(r.matches[0].text, "far-marker");
+            assert!(r.panes_searched >= 2, "local and remote panes: {r:?}");
+        }
+        // An unknown host is a note, not a failure.
+        let q = api::TerminalQuery {
+            pattern: "x".into(),
+            hosts: vec!["nowhere".into()],
+            ..api::TerminalQuery::default()
+        };
+        let Ok(api::Response::TerminalQuery(r)) = c.call(api::Request::TerminalQuery(q)).await
+        else {
+            panic!("query")
+        };
+        assert!(
+            r.notes.iter().any(|n| n.starts_with("host nowhere")),
+            "{r:?}"
+        );
+    });
+}

@@ -24,6 +24,10 @@ fn targets(r: &Request) -> Targets {
         Request::TerminalSubscribe(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalInput(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalSetTier(p) => Targets::Panes(vec![p.pane]),
+        Request::TerminalQuery(p) if p.panes.is_empty() || !p.hosts.is_empty() => {
+            Targets::Everything
+        }
+        Request::TerminalQuery(p) => Targets::Panes(p.panes.clone()),
         Request::TapsSubscribe(p) if p.every_pane => Targets::Everything,
         Request::TapsSubscribe(p) => Targets::Panes(p.panes.clone()),
         Request::ActionsSubmit(s) => match s.action.as_ref().and_then(|a| a.kind.as_ref()) {

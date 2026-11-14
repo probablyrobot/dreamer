@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 26;
+pub const PROTOCOL_MINOR: u32 = 27;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2531,6 +2531,80 @@ pub struct TapData {
     pub ended: bool,
 }
 
+/// Which panes' recent lines match a pattern. Every bound is enforced; a truncated answer says so.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalQuery {
+    /// A regular expression (linear time, size-limited), or plain text with `literal`.
+    #[prost(string, tag = "1")]
+    pub pattern: String,
+    #[prost(bool, tag = "2")]
+    pub literal: bool,
+    #[prost(bool, tag = "3")]
+    pub ignore_case: bool,
+    /// More plain-text alternatives.
+    #[prost(string, repeated, tag = "4")]
+    pub literals: Vec<String>,
+    /// The panes to search; empty means every mirrored pane (needs all_panes).
+    #[prost(uint32, repeated, tag = "5")]
+    pub panes: Vec<u32>,
+    /// How many of each pane's newest lines (screen included); default 200, at most 2000.
+    #[prost(uint32, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u32>,
+    /// Default 100, at most 1000.
+    #[prost(uint32, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_matches: Option<u32>,
+    /// Connected hosts to search too (all their panes); `*` means every live host.
+    #[prost(string, repeated, tag = "8")]
+    pub hosts: Vec<String>,
+    /// Default 2000, at most 10000; panes not searched in time are reported.
+    #[prost(uint32, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u32>,
+    /// Only panes whose title matches this regular expression.
+    #[prost(string, optional, tag = "10")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QueryMatch {
+    /// Absent for this host.
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    /// Index in the searched window, oldest first.
+    #[prost(uint32, tag = "3")]
+    pub line: u32,
+    #[prost(string, tag = "4")]
+    pub text: String,
+    /// Byte offsets of the match in text.
+    #[prost(uint32, tag = "5")]
+    pub match_start: u32,
+    #[prost(uint32, tag = "6")]
+    pub match_end: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QueryResult {
+    #[prost(message, repeated, tag = "1")]
+    pub matches: Vec<QueryMatch>,
+    #[prost(uint32, tag = "2")]
+    pub panes_searched: u32,
+    /// A bound cut the answer short; see notes.
+    #[prost(bool, tag = "3")]
+    pub truncated: bool,
+    /// What was cut and why, and hosts that could not be searched.
+    #[prost(string, repeated, tag = "4")]
+    pub notes: Vec<String>,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -2574,6 +2648,7 @@ pub mod method {
     pub const SCRIPTS_RELOAD: &str = "scripts.reload";
     pub const SCRIPTS_STOP: &str = "scripts.stop";
     pub const SCRIPTS_LIST: &str = "scripts.list";
+    pub const TERMINAL_QUERY: &str = "terminal.query";
     pub const TAPS_SUBSCRIBE: &str = "taps.subscribe";
     pub const TAPS_UNSUBSCRIBE: &str = "taps.unsubscribe";
     pub const APPS_REGISTER: &str = "apps.register";
@@ -2877,6 +2952,13 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "",
     },
     MethodInfo {
+        name: "terminal.query",
+        params: "TerminalQuery",
+        result: "QueryResult",
+        mutation: false,
+        doc: "Search the newest lines of many panes, here and on connected hosts, within fixed bounds.",
+    },
+    MethodInfo {
         name: "taps.subscribe",
         params: "TapSubscribe",
         result: "TapSubscription",
@@ -2943,6 +3025,7 @@ pub enum Request {
     ScriptsReload(ScriptSource),
     ScriptsStop(ScriptRef),
     ScriptsList(Empty),
+    TerminalQuery(TerminalQuery),
     TapsSubscribe(TapSubscribe),
     TapsUnsubscribe(Unsubscribe),
     AppsRegister(RegisterApp),
@@ -2992,6 +3075,7 @@ impl Request {
             Self::ScriptsReload(_) => "scripts.reload",
             Self::ScriptsStop(_) => "scripts.stop",
             Self::ScriptsList(_) => "scripts.list",
+            Self::TerminalQuery(_) => "terminal.query",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -3042,6 +3126,7 @@ impl Request {
             Self::ScriptsReload(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalQuery(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -3095,6 +3180,7 @@ impl Request {
             "scripts.reload" => Ok(Self::ScriptsReload(::prost::Message::decode(bytes)?)),
             "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
             "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
+            "terminal.query" => Ok(Self::TerminalQuery(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -3145,6 +3231,7 @@ impl Request {
             Self::ScriptsReload(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalQuery(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3194,6 +3281,7 @@ impl Request {
             "scripts.reload" => Ok(Self::ScriptsReload(serde_json::from_value(value)?)),
             "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
             "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
+            "terminal.query" => Ok(Self::TerminalQuery(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -3246,6 +3334,7 @@ pub enum Response {
     ScriptsReload(ScriptStatus),
     ScriptsStop(ScriptStatus),
     ScriptsList(ScriptList),
+    TerminalQuery(QueryResult),
     TapsSubscribe(TapSubscription),
     TapsUnsubscribe(Empty),
     AppsRegister(Registration),
@@ -3295,6 +3384,7 @@ impl Response {
             Self::ScriptsReload(_) => "scripts.reload",
             Self::ScriptsStop(_) => "scripts.stop",
             Self::ScriptsList(_) => "scripts.list",
+            Self::TerminalQuery(_) => "terminal.query",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -3345,6 +3435,7 @@ impl Response {
             Self::ScriptsReload(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalQuery(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -3398,6 +3489,7 @@ impl Response {
             "scripts.reload" => Ok(Self::ScriptsReload(::prost::Message::decode(bytes)?)),
             "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
             "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
+            "terminal.query" => Ok(Self::TerminalQuery(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -3448,6 +3540,7 @@ impl Response {
             Self::ScriptsReload(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalQuery(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3497,6 +3590,7 @@ impl Response {
             "scripts.reload" => Ok(Self::ScriptsReload(serde_json::from_value(value)?)),
             "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
             "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
+            "terminal.query" => Ok(Self::TerminalQuery(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -3707,6 +3801,11 @@ pub trait Service: Sync {
         &self,
         params: Empty,
     ) -> impl ::core::future::Future<Output = Result<ScriptList, RpcError>> + Send;
+    /// Search the newest lines of many panes, here and on connected hosts, within fixed bounds.
+    fn terminal_query(
+        &self,
+        params: TerminalQuery,
+    ) -> impl ::core::future::Future<Output = Result<QueryResult, RpcError>> + Send;
     /// Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap.
     fn taps_subscribe(
         &self,
@@ -3824,6 +3923,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::ScriptsReload(p) => service.scripts_reload(p).await.map(Response::ScriptsReload),
         Request::ScriptsStop(p) => service.scripts_stop(p).await.map(Response::ScriptsStop),
         Request::ScriptsList(p) => service.scripts_list(p).await.map(Response::ScriptsList),
+        Request::TerminalQuery(p) => service.terminal_query(p).await.map(Response::TerminalQuery),
         Request::TapsSubscribe(p) => service.taps_subscribe(p).await.map(Response::TapsSubscribe),
         Request::TapsUnsubscribe(p) => service
             .taps_unsubscribe(p)
