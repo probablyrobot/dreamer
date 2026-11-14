@@ -8,7 +8,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
-mlua = { version = "0.12.2", features = ["luau", "vendored"] }
+api = { path = "../api" }
+mlua = { version = "0.12.2", features = ["luau", "vendored", "async"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["time"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["rt", "macros", "time"] }
 
 [lints]
 workspace = true
