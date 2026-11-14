@@ -231,7 +231,9 @@ async fn a_tap_that_stops_reading_gets_a_gap_and_slows_nothing() {
     let pane = pane0(&good).await;
     let target = format!("%{pane}");
     let good_tap = tap(&good, api::TapLevel::Text, pane).await;
-    // This client holds one pushed item and then stops reading.
+    // This client holds one pushed item and then stops reading. The burst
+    // below (about 2.7 MB) is far larger than any socket buffer between the
+    // daemon and it, so its tap must fall behind on every platform.
     let mut slow = s.client_with(1).await;
     let mut slow_rx = slow.pushed().expect("pushed");
     let slow_tap = tap(&slow, api::TapLevel::Raw, pane).await;
@@ -239,7 +241,7 @@ async fn a_tap_that_stops_reading_gets_a_gap_and_slows_nothing() {
         "send-keys",
         "-t",
         &target,
-        "seq 1 60000; echo seq-done",
+        "seq 1 400000; echo seq-done",
         "Enter",
     ]);
     // The pane and the reading tap get through all of it.
