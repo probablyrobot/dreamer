@@ -1059,17 +1059,27 @@ impl api::Service for DaemonService {
         p: api::DecorationQuery,
     ) -> Result<api::DecorationList, RpcError> {
         let host = self.mirror_host(None).await?;
+        let id = domain::TmuxPaneId(p.pane);
         // Every line, from the top of history, to check each mark against.
-        let r = host
-            .read(domain::TmuxPaneId(p.pane), usize::MAX / 2)
-            .await
-            .ok_or_else(|| {
-                RpcError::new(
+        // A respawn or reflow (exactly when marks change) can rebuild the
+        // mirror briefly: wait for it as taps.subscribe does.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        let r = loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if host.wait_live(&[id], remaining).await
+                && let Some(r) = host.read(id, usize::MAX / 2).await
+            {
+                break r.map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(RpcError::new(
                     code::NOT_FOUND,
                     format!("pane %{} has no live mirror", p.pane),
-                )
-            })?
-            .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+                ));
+            }
+            // Live a moment ago but gone by the read: look again shortly.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
         let (decorations, dropped) =
             self.0
                 .decorations
