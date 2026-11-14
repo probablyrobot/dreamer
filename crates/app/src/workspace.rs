@@ -1776,7 +1776,7 @@ mod smoke {
         let deadline = Instant::now() + Duration::from_secs(10);
         while read(any, ws, cx, &check) != Some(true) {
             if Instant::now() > deadline {
-                fail(&format!("never saw: {what}"));
+                crate::stalled(any, cx, &format!("never saw: {what}")).await;
             }
             cx.background_executor()
                 .timer(Duration::from_millis(50))
@@ -2046,7 +2046,7 @@ mod smoke {
         let deadline = Instant::now() + limit;
         while read(any, ws, cx, &check) != Some(true) {
             if Instant::now() > deadline {
-                fail(&format!("never saw: {what}"));
+                crate::stalled(any, cx, &format!("never saw: {what}")).await;
             }
             cx.background_executor()
                 .timer(Duration::from_millis(50))

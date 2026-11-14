@@ -369,8 +369,10 @@ fn live_smoke(dir: &Path) -> Result<Done, String> {
 }
 
 /// Typing and IME composition through the window reach the pane (only
-/// committed text; preedit is never sent). Needs a GUI session but not a
-/// refreshing display: keys are dispatched, frames arrive from the feed.
+/// committed text; preedit is never sent). Needs a GUI session, and a
+/// window that is being drawn: a step that stalls while the window does
+/// not repaint when asked (behind the frontmost app, or the display
+/// asleep) exits 5 and is recorded as not run.
 fn input_smoke(dir: &Path) -> Result<Done, String> {
     if !require_gui()? {
         return Ok(Done::NotRun);
@@ -378,6 +380,12 @@ fn input_smoke(dir: &Path) -> Result<Done, String> {
     let out = input_smoke_output(dir, &[])?;
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         println!("gate:   {line}");
+    }
+    if out.status.code() == Some(5) {
+        println!(
+            "gate: the input smoke window was not being drawn; input checks recorded as not run"
+        );
+        return Ok(Done::NotRun);
     }
     if out.status.success() {
         Ok(Done::Passed)
