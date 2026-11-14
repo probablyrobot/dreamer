@@ -16,6 +16,7 @@ output; read that with `terminal.read` or `terminal.subscribe`.
 | `scripts.failed` | A script instance was terminated (a budget overrun, or its connection ended) | `subject`: the script; `state`: why |
 | `filters.matched` | A filter with `event` matched | `subject`: the filter; `pane`; `state`: the line (at most 512 bytes) |
 | `filters.tripped` | A filter's circuit breaker stopped it | `subject`: the filter; `state`: why |
+| `decorations.changed` | A pane's decorations were added or dropped | `pane`; list them with `decorations.list` |
 
 Every event also has a `sequence` and `time_unix_ms`. Sequences start at 1
 when the daemon starts and increase by one per event.

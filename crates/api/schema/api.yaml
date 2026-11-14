@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 28 }
+version: { major: 1, minor: 29 }
 package: dreamer.v1
 
 types:
@@ -1006,6 +1006,8 @@ types:
       - { n: 7, name: screen, type: TapRow, repeated: true, doc: "text: rows of an alternate screen that changed." }
       - { n: 8, name: meta, type: TapMeta, doc: "meta: the pane's state when it changed." }
       - { n: 9, name: ended, type: bool, doc: "The pane is gone; nothing more follows for it." }
+      - { n: 10, name: rows, type: u64, repeated: true, doc: "text: each line's row, counted from the top of the pane's history at the time." }
+      - { n: 11, name: cols, type: u32, doc: "text: the pane's width when the lines were read." }
 
   # ---- terminal.query -----------------------------------------------------
 
@@ -1041,6 +1043,36 @@ types:
 
   # ---- filters ------------------------------------------------------------
 
+  - enum: DecorationStyle
+    values:
+      - { n: 0, name: unspecified, doc: "No decoration." }
+      - { n: 1, name: highlight }
+      - { n: 2, name: dim }
+      - { n: 3, name: fold, doc: "Clients may fold the line away; a local presentation choice." }
+      - { n: 4, name: badge }
+
+  - message: Decoration
+    doc: "A mark on one line of a pane: data for clients to draw, never part of the terminal stream."
+    fields:
+      - { n: 1, name: id, type: u64 }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: generation, type: u64 }
+      - { n: 4, name: row, type: u64, doc: "The line's row counted from the top of the pane's history." }
+      - { n: 5, name: text, type: string, doc: "The line, as it was when marked." }
+      - { n: 6, name: style, type: DecorationStyle }
+      - { n: 7, name: badge, type: string, optional: true }
+      - { n: 8, name: filter, type: string, doc: "The filter that made it." }
+      - { n: 9, name: cols, type: u32, doc: "The pane's width when marked; a reflow invalidates it." }
+
+  - message: DecorationQuery
+    fields:
+      - { n: 1, name: pane, type: u32 }
+
+  - message: DecorationList
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: decorations, type: Decoration, repeated: true, doc: "Still valid: same generation and width, and the line is still at its row." }
+
   - enum: FilterState
     values:
       - { n: 0, name: unspecified }
@@ -1070,6 +1102,8 @@ types:
       - { n: 12, name: grant, type: ScriptGrant, doc: "What the filter may do: taps.subscribe for its panes, plus what its outputs need." }
       - { n: 13, name: per_second, type: u32, optional: true, doc: "Matches acted on per second; more are counted as dropped. Default 20." }
       - { n: 14, name: breaker, type: u32, optional: true, doc: "Triggers (topic, recipient, input) allowed in any 10 s; one more trips the filter. Default 50." }
+      - { n: 15, name: decorate, type: DecorationStyle, doc: "Mark each matched line on its pane (drawn by clients)." }
+      - { n: 16, name: badge, type: string, optional: true, doc: "The badge text for decorate: badge." }
 
   - message: FilterRef
     fields:
@@ -1133,6 +1167,7 @@ methods:
   - { method: scripts.stop, params: ScriptRef, result: ScriptStatus, mutation: true, doc: "Stop and unload a script (owner only)." }
   - { method: scripts.list, params: Empty, result: ScriptList }
   - { method: terminal.query, params: TerminalQuery, result: QueryResult, doc: "Search the newest lines of many panes, here and on connected hosts, within fixed bounds." }
+  - { method: decorations.list, params: DecorationQuery, result: DecorationList, doc: "A pane's valid decorations; a decorations.changed event says when to list again." }
   - { method: filters.install, params: FilterSpec, result: FilterStatus, mutation: true, doc: "Start a filter: a text tap, the Rust match stage, and its outputs, under its own grant (owner only)." }
   - { method: filters.list, params: Empty, result: FilterList }
   - { method: filters.pause, params: FilterRef, result: FilterStatus, mutation: true, doc: "(owner only)" }

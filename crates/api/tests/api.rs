@@ -219,6 +219,12 @@ impl Service for Fixed {
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn decorations_list(
+        &self,
+        _: api::DecorationQuery,
+    ) -> Result<api::DecorationList, RpcError> {
+        Ok(api::DecorationList::default())
+    }
     async fn filters_install(&self, _: api::FilterSpec) -> Result<api::FilterStatus, RpcError> {
         Ok(api::FilterStatus::default())
     }

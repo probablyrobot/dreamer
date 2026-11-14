@@ -10,7 +10,7 @@ and it can never slow a pane down.
 | Level | Delivers | Typical use |
 | --- | --- | --- |
 | `raw` | The bytes programs wrote, in order (`raw`) | Recorders, protocol tools |
-| `text` | Committed lines without escapes (`lines`), and changed rows of an alternate screen (`screen`) | Filters, monitors, agents |
+| `text` | Committed lines without escapes (`lines`, with each line's `rows` from the top of history and the pane's `cols`), and changed rows of an alternate screen (`screen`) | Filters, monitors, agents |
 | `meta` | Size, title, cwd, sequence, and whether an alternate screen is active (`meta`), when they change | Dashboards that need no content |
 
 A **committed** line is one the cursor has moved past: output lines, and

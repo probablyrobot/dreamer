@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 28;
+pub const PROTOCOL_MINOR: u32 = 29;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -731,6 +731,57 @@ mod tap_level_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| TapLevel::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum DecorationStyle {
+    /// No decoration.
+    Unspecified = 0,
+    Highlight = 1,
+    Dim = 2,
+    /// Clients may fold the line away; a local presentation choice.
+    Fold = 3,
+    Badge = 4,
+}
+
+impl DecorationStyle {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Highlight => "highlight",
+            Self::Dim => "dim",
+            Self::Fold => "fold",
+            Self::Badge => "badge",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "highlight" => Some(Self::Highlight),
+            "dim" => Some(Self::Dim),
+            "fold" => Some(Self::Fold),
+            "badge" => Some(Self::Badge),
+            _ => None,
+        }
+    }
+}
+
+mod decoration_style_json {
+    use super::DecorationStyle;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match DecorationStyle::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| DecorationStyle::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -2577,6 +2628,12 @@ pub struct TapData {
     /// The pane is gone; nothing more follows for it.
     #[prost(bool, tag = "9")]
     pub ended: bool,
+    /// text: each line's row, counted from the top of the pane's history at the time.
+    #[prost(uint64, repeated, tag = "10")]
+    pub rows: Vec<u64>,
+    /// text: the pane's width when the lines were read.
+    #[prost(uint32, tag = "11")]
+    pub cols: u32,
 }
 
 /// Which panes' recent lines match a pattern. Every bound is enforced; a truncated answer says so.
@@ -2653,6 +2710,53 @@ pub struct QueryResult {
     pub notes: Vec<String>,
 }
 
+/// A mark on one line of a pane: data for clients to draw, never part of the terminal stream.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Decoration {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    #[prost(uint64, tag = "3")]
+    pub generation: u64,
+    /// The line's row counted from the top of the pane's history.
+    #[prost(uint64, tag = "4")]
+    pub row: u64,
+    /// The line, as it was when marked.
+    #[prost(string, tag = "5")]
+    pub text: String,
+    #[prost(enumeration = "DecorationStyle", tag = "6")]
+    #[serde(with = "decoration_style_json")]
+    pub style: i32,
+    #[prost(string, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
+    /// The filter that made it.
+    #[prost(string, tag = "8")]
+    pub filter: String,
+    /// The pane's width when marked; a reflow invalidates it.
+    #[prost(uint32, tag = "9")]
+    pub cols: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DecorationQuery {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DecorationList {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// Still valid: same generation and width, and the line is still at its row.
+    #[prost(message, repeated, tag = "2")]
+    pub decorations: Vec<Decoration>,
+}
+
 /// A typed trigger: fixed text typed into a pane. Matched text is never typed.
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
@@ -2709,6 +2813,14 @@ pub struct FilterSpec {
     #[prost(uint32, optional, tag = "14")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub breaker: Option<u32>,
+    /// Mark each matched line on its pane (drawn by clients).
+    #[prost(enumeration = "DecorationStyle", tag = "15")]
+    #[serde(with = "decoration_style_json")]
+    pub decorate: i32,
+    /// The badge text for decorate: badge.
+    #[prost(string, optional, tag = "16")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -2796,6 +2908,7 @@ pub mod method {
     pub const SCRIPTS_STOP: &str = "scripts.stop";
     pub const SCRIPTS_LIST: &str = "scripts.list";
     pub const TERMINAL_QUERY: &str = "terminal.query";
+    pub const DECORATIONS_LIST: &str = "decorations.list";
     pub const FILTERS_INSTALL: &str = "filters.install";
     pub const FILTERS_LIST: &str = "filters.list";
     pub const FILTERS_PAUSE: &str = "filters.pause";
@@ -3111,6 +3224,13 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "Search the newest lines of many panes, here and on connected hosts, within fixed bounds.",
     },
     MethodInfo {
+        name: "decorations.list",
+        params: "DecorationQuery",
+        result: "DecorationList",
+        mutation: false,
+        doc: "A pane's valid decorations; a decorations.changed event says when to list again.",
+    },
+    MethodInfo {
         name: "filters.install",
         params: "FilterSpec",
         result: "FilterStatus",
@@ -3213,6 +3333,7 @@ pub enum Request {
     ScriptsStop(ScriptRef),
     ScriptsList(Empty),
     TerminalQuery(TerminalQuery),
+    DecorationsList(DecorationQuery),
     FiltersInstall(FilterSpec),
     FiltersList(Empty),
     FiltersPause(FilterRef),
@@ -3268,6 +3389,7 @@ impl Request {
             Self::ScriptsStop(_) => "scripts.stop",
             Self::ScriptsList(_) => "scripts.list",
             Self::TerminalQuery(_) => "terminal.query",
+            Self::DecorationsList(_) => "decorations.list",
             Self::FiltersInstall(_) => "filters.install",
             Self::FiltersList(_) => "filters.list",
             Self::FiltersPause(_) => "filters.pause",
@@ -3324,6 +3446,7 @@ impl Request {
             Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalQuery(v) => ::prost::Message::encode_to_vec(v),
+            Self::DecorationsList(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersList(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersPause(v) => ::prost::Message::encode_to_vec(v),
@@ -3383,6 +3506,7 @@ impl Request {
             "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
             "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
             "terminal.query" => Ok(Self::TerminalQuery(::prost::Message::decode(bytes)?)),
+            "decorations.list" => Ok(Self::DecorationsList(::prost::Message::decode(bytes)?)),
             "filters.install" => Ok(Self::FiltersInstall(::prost::Message::decode(bytes)?)),
             "filters.list" => Ok(Self::FiltersList(::prost::Message::decode(bytes)?)),
             "filters.pause" => Ok(Self::FiltersPause(::prost::Message::decode(bytes)?)),
@@ -3439,6 +3563,7 @@ impl Request {
             Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalQuery(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DecorationsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersPause(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3494,6 +3619,7 @@ impl Request {
             "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
             "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
             "terminal.query" => Ok(Self::TerminalQuery(serde_json::from_value(value)?)),
+            "decorations.list" => Ok(Self::DecorationsList(serde_json::from_value(value)?)),
             "filters.install" => Ok(Self::FiltersInstall(serde_json::from_value(value)?)),
             "filters.list" => Ok(Self::FiltersList(serde_json::from_value(value)?)),
             "filters.pause" => Ok(Self::FiltersPause(serde_json::from_value(value)?)),
@@ -3552,6 +3678,7 @@ pub enum Response {
     ScriptsStop(ScriptStatus),
     ScriptsList(ScriptList),
     TerminalQuery(QueryResult),
+    DecorationsList(DecorationList),
     FiltersInstall(FilterStatus),
     FiltersList(FilterList),
     FiltersPause(FilterStatus),
@@ -3607,6 +3734,7 @@ impl Response {
             Self::ScriptsStop(_) => "scripts.stop",
             Self::ScriptsList(_) => "scripts.list",
             Self::TerminalQuery(_) => "terminal.query",
+            Self::DecorationsList(_) => "decorations.list",
             Self::FiltersInstall(_) => "filters.install",
             Self::FiltersList(_) => "filters.list",
             Self::FiltersPause(_) => "filters.pause",
@@ -3663,6 +3791,7 @@ impl Response {
             Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalQuery(v) => ::prost::Message::encode_to_vec(v),
+            Self::DecorationsList(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersList(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersPause(v) => ::prost::Message::encode_to_vec(v),
@@ -3722,6 +3851,7 @@ impl Response {
             "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
             "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
             "terminal.query" => Ok(Self::TerminalQuery(::prost::Message::decode(bytes)?)),
+            "decorations.list" => Ok(Self::DecorationsList(::prost::Message::decode(bytes)?)),
             "filters.install" => Ok(Self::FiltersInstall(::prost::Message::decode(bytes)?)),
             "filters.list" => Ok(Self::FiltersList(::prost::Message::decode(bytes)?)),
             "filters.pause" => Ok(Self::FiltersPause(::prost::Message::decode(bytes)?)),
@@ -3778,6 +3908,7 @@ impl Response {
             Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalQuery(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DecorationsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersPause(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3833,6 +3964,7 @@ impl Response {
             "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
             "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
             "terminal.query" => Ok(Self::TerminalQuery(serde_json::from_value(value)?)),
+            "decorations.list" => Ok(Self::DecorationsList(serde_json::from_value(value)?)),
             "filters.install" => Ok(Self::FiltersInstall(serde_json::from_value(value)?)),
             "filters.list" => Ok(Self::FiltersList(serde_json::from_value(value)?)),
             "filters.pause" => Ok(Self::FiltersPause(serde_json::from_value(value)?)),
@@ -4053,6 +4185,11 @@ pub trait Service: Sync {
         &self,
         params: TerminalQuery,
     ) -> impl ::core::future::Future<Output = Result<QueryResult, RpcError>> + Send;
+    /// A pane's valid decorations; a decorations.changed event says when to list again.
+    fn decorations_list(
+        &self,
+        params: DecorationQuery,
+    ) -> impl ::core::future::Future<Output = Result<DecorationList, RpcError>> + Send;
     /// Start a filter: a text tap, the Rust match stage, and its outputs, under its own grant (owner only).
     fn filters_install(
         &self,
@@ -4195,6 +4332,10 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::ScriptsStop(p) => service.scripts_stop(p).await.map(Response::ScriptsStop),
         Request::ScriptsList(p) => service.scripts_list(p).await.map(Response::ScriptsList),
         Request::TerminalQuery(p) => service.terminal_query(p).await.map(Response::TerminalQuery),
+        Request::DecorationsList(p) => service
+            .decorations_list(p)
+            .await
+            .map(Response::DecorationsList),
         Request::FiltersInstall(p) => service
             .filters_install(p)
             .await

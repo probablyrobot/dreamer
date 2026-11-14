@@ -310,3 +310,80 @@ async fn a_self_triggering_filter_is_tripped() {
     assert_eq!(count(), settled, "no more triggers after the trip");
     assert!(settled <= 8, "{settled} pongs");
 }
+
+async fn decorations(c: &Client, pane: u32) -> Vec<api::Decoration> {
+    match call(c, Request::DecorationsList(api::DecorationQuery { pane })).await {
+        Ok(Response::DecorationsList(l)) => l.decorations,
+        other => panic!("{other:?}"),
+    }
+}
+
+async fn wait_marks(c: &Client, pane: u32, n: usize) -> Vec<api::Decoration> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let d = decorations(c, pane).await;
+        if d.len() == n {
+            return d;
+        }
+        assert!(Instant::now() < deadline, "wanted {n} marks, have {d:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn decorations_mark_matched_lines_until_a_reflow_or_respawn() {
+    let s = Setup::new();
+    let c = s.client().await;
+    let pane = pane0(&c).await;
+    let target = format!("%{pane}");
+    call(
+        &c,
+        Request::FiltersInstall(api::FilterSpec {
+            name: "marks".into(),
+            panes: vec![pane],
+            pattern: "^WARN ".into(),
+            decorate: api::DecorationStyle::Badge as i32,
+            badge: Some("!".into()),
+            grant: grant(&["taps.subscribe"], &[pane]),
+            ..api::FilterSpec::default()
+        }),
+    )
+    .await
+    .expect("install");
+    s.tmux(&[
+        "send-keys",
+        "-t",
+        &target,
+        "printf 'a\\nWARN one\\nb\\n'",
+        "Enter",
+    ]);
+    let marks = wait_marks(&c, pane, 1).await;
+    let m = &marks[0];
+    assert_eq!(
+        (m.text.as_str(), m.badge.as_deref(), m.filter.as_str()),
+        ("WARN one", Some("!"), "marks")
+    );
+    // The row names that very line, counted from the top of history.
+    let Ok(Response::TerminalRead(t)) = call(
+        &c,
+        Request::TerminalRead(api::ReadParams {
+            pane,
+            history: Some(100_000),
+            endpoint: None,
+        }),
+    )
+    .await
+    else {
+        panic!("read")
+    };
+    assert_eq!(t.lines[m.row as usize], "WARN one", "{t:?}");
+
+    // A reflow drops it.
+    s.tmux(&["resize-window", "-t", "main", "-x", "70"]);
+    wait_marks(&c, pane, 0).await;
+    // So does a respawn, after a new mark.
+    s.tmux(&["send-keys", "-t", &target, "echo 'WARN two'", "Enter"]);
+    wait_marks(&c, pane, 1).await;
+    s.tmux(&["respawn-pane", "-k", "-t", &target, "/bin/sh"]);
+    wait_marks(&c, pane, 0).await;
+}

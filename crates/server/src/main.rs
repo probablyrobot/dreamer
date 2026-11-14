@@ -13,6 +13,7 @@
 
 mod apps;
 mod conn;
+mod decorations;
 mod events;
 mod extensions;
 mod filters;
@@ -254,6 +255,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             extensions: extensions::Extensions::default(),
             scripts: scripts::Scripts::default(),
             filters: filters::Filters::default(),
+            decorations: decorations::Decorations::default(),
             apps: apps::Apps::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.

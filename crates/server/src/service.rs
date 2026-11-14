@@ -92,6 +92,8 @@ pub struct State {
     pub scripts: crate::scripts::Scripts,
     /// Installed filters.
     pub filters: crate::filters::Filters,
+    /// Marks filters put on lines, for clients to draw.
+    pub decorations: crate::decorations::Decorations,
 }
 
 #[derive(Debug, Clone)]
@@ -937,6 +939,35 @@ impl api::Service for DaemonService {
 
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<api::Empty, RpcError> {
         Err(for_a_connection("messages.unsubscribe"))
+    }
+
+    async fn decorations_list(
+        &self,
+        p: api::DecorationQuery,
+    ) -> Result<api::DecorationList, RpcError> {
+        let host = self.mirror_host(None).await?;
+        // Every line, from the top of history, to check each mark against.
+        let r = host
+            .read(domain::TmuxPaneId(p.pane), usize::MAX / 2)
+            .await
+            .ok_or_else(|| {
+                RpcError::new(
+                    code::NOT_FOUND,
+                    format!("pane %{} has no live mirror", p.pane),
+                )
+            })?
+            .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+        let (decorations, dropped) =
+            self.0
+                .decorations
+                .valid(p.pane, r.generation.0, u32::from(r.cols), &r.lines);
+        if dropped {
+            self.0.events.decorations_changed(p.pane);
+        }
+        Ok(api::DecorationList {
+            pane: p.pane,
+            decorations,
+        })
     }
 
     async fn filters_install(&self, p: api::FilterSpec) -> Result<api::FilterStatus, RpcError> {
