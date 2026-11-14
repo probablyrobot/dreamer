@@ -41,6 +41,7 @@ pub const PACKAGES: &[&str] = &[
 /// only their unit tests run.
 pub const NEEDS_TMUX: &[&str] = &[
     "dreamer-cli",
+    "dreamer-termapp",
     "dreamer-sdk",
     "dreamer-server",
     "mirror",
