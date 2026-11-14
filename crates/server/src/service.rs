@@ -338,6 +338,39 @@ pub fn publish_topology(state: &State, ep: &Endpoint) {
     });
 }
 
+/// The runs in a process list, each with how many processes serve it.
+fn runs_of(
+    list: &api::ProcessList,
+    host: Option<&str>,
+    provider: Option<&str>,
+) -> Vec<api::AgentRun> {
+    list.processes
+        .iter()
+        .filter(|p| p.provider.is_some())
+        .filter(|p| provider.is_none_or(|w| p.provider.as_deref() == Some(w)))
+        .map(|p| api::AgentRun {
+            host: host.map(str::to_owned),
+            pid: p.pid,
+            started_unix_ms: p.started_unix_ms,
+            provider: p.provider.clone().unwrap_or_default(),
+            pane: p.pane,
+            cwd: p.cwd.clone(),
+            age_ms: list.taken_unix_ms.saturating_sub(p.started_unix_ms),
+            cpu_permille: p.cpu_permille,
+            rss_kib: p.rss_kib,
+            confidence: p.confidence.clone().unwrap_or_default(),
+            evidence: p.evidence.clone().unwrap_or_default(),
+            instrumentation: "passive".into(),
+            state: "running".into(),
+            helpers: list
+                .processes
+                .iter()
+                .filter(|h| h.helper_of == Some(p.pid))
+                .count() as u32,
+        })
+        .collect()
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1026,12 +1059,54 @@ impl api::Service for DaemonService {
                 }),
                 evidence: e.run.map(|r| r.2.to_owned()),
                 helper_of: e.helper_of,
+                cpu_permille: e.proc.cpu_permille,
+                rss_kib: e.proc.rss_kib,
             })
             .collect();
         Ok(api::ProcessList {
             processes,
             taken_unix_ms: taken,
         })
+    }
+
+    async fn agents_runs(&self, p: api::AgentRunQuery) -> Result<api::AgentRunList, RpcError> {
+        let mut out = api::AgentRunList::default();
+        let here = self.processes_list(api::ProcessQuery::default()).await?;
+        out.runs.extend(runs_of(&here, None, p.provider.as_deref()));
+        let hosts: Vec<String> = if p.hosts.iter().any(|h| h == "*") {
+            self.0
+                .hosts
+                .list()
+                .await
+                .hosts
+                .into_iter()
+                .filter(|h| h.state == api::LinkState::Live as i32)
+                .map(|h| h.name)
+                .collect()
+        } else {
+            p.hosts.clone()
+        };
+        for name in hosts {
+            let call = self.0.hosts.call(api::HostCall {
+                name: name.clone(),
+                method: api::method::PROCESSES_LIST.into(),
+                payload: prost::Message::encode_to_vec(&api::ProcessQuery::default()),
+            });
+            match tokio::time::timeout(std::time::Duration::from_secs(5), call).await {
+                Ok(Ok(reply)) => {
+                    match <api::ProcessList as prost::Message>::decode(reply.payload.as_slice()) {
+                        Ok(list) => {
+                            out.runs
+                                .extend(runs_of(&list, Some(&name), p.provider.as_deref()))
+                        }
+                        Err(e) => out.notes.push(format!("host {name}: {e}")),
+                    }
+                }
+                Ok(Err(e)) => out.notes.push(format!("host {name}: {}", e.message)),
+                Err(_) => out.notes.push(format!("host {name}: no answer in time")),
+            }
+        }
+        Ok(out)
     }
 
     async fn jobs_start(&self, p: api::JobStart) -> Result<api::JobRecord, RpcError> {

@@ -51,3 +51,18 @@ so listing processes outside given panes needs `all_panes`
 The list comes from `ps` with fields that read the same on Linux and
 macOS (pid, parent, process group, uid, terminal, elapsed time, command
 line), filtered to the daemon's user.
+
+## Agent runs across hosts
+
+`agents.runs` lists the runs from this host's registry and, with `hosts`
+(or `*` for every live host), from connected hosts through the
+coordinator. Each run has its `host` (absent for this one), pid and start
+time (together its identity), provider, pane, cwd, age, CPU (tenths of a
+percent of one core, as `ps` averages it) and resident memory, its
+confidence and evidence, and `helpers`: how many processes serve it.
+Helpers are never runs.
+
+`instrumentation` is `passive`: the run was found from its process alone,
+so `state` is `running` while that process lives and says nothing about
+what the run is doing. A host that cannot be asked is a note, not a
+failure. Listing runs needs `all_panes`.

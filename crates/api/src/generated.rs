@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 31;
+pub const PROTOCOL_MINOR: u32 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -3089,6 +3089,76 @@ pub struct ProcessRecord {
     #[prost(uint32, optional, tag = "14")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub helper_of: Option<u32>,
+    /// CPU use in tenths of a percent of one core, as ps averages it.
+    #[prost(uint32, tag = "15")]
+    pub cpu_permille: u32,
+    /// Resident memory.
+    #[prost(uint64, tag = "16")]
+    pub rss_kib: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentRunQuery {
+    /// Connected hosts to ask too; `*` means every live host.
+    #[prost(string, repeated, tag = "1")]
+    pub hosts: Vec<String>,
+    /// claude or codex.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+/// One agent run, by evidence. State says only what is known: never inferred from titles, CPU, or output.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentRun {
+    /// Absent for this host.
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[prost(uint32, tag = "2")]
+    pub pid: u32,
+    /// With host and pid, the run's identity.
+    #[prost(uint64, tag = "3")]
+    pub started_unix_ms: u64,
+    #[prost(string, tag = "4")]
+    pub provider: String,
+    #[prost(uint32, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u32>,
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[prost(uint64, tag = "7")]
+    pub age_ms: u64,
+    #[prost(uint32, tag = "8")]
+    pub cpu_permille: u32,
+    #[prost(uint64, tag = "9")]
+    pub rss_kib: u64,
+    #[prost(string, tag = "10")]
+    pub confidence: String,
+    #[prost(string, tag = "11")]
+    pub evidence: String,
+    /// passive: found from its process only.
+    #[prost(string, tag = "12")]
+    pub instrumentation: String,
+    /// running while its process lives; unknown otherwise.
+    #[prost(string, tag = "13")]
+    pub state: String,
+    /// Processes serving it (tools, servers), not counted as runs.
+    #[prost(uint32, tag = "14")]
+    pub helpers: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentRunList {
+    #[prost(message, repeated, tag = "1")]
+    pub runs: Vec<AgentRun>,
+    /// Hosts that could not be asked, and why.
+    #[prost(string, repeated, tag = "2")]
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -3156,6 +3226,7 @@ pub mod method {
     pub const JOBS_CANCEL: &str = "jobs.cancel";
     pub const JOBS_ARTIFACTS: &str = "jobs.artifacts";
     pub const PROCESSES_LIST: &str = "processes.list";
+    pub const AGENTS_RUNS: &str = "agents.runs";
     pub const TAPS_SUBSCRIBE: &str = "taps.subscribe";
     pub const TAPS_UNSUBSCRIBE: &str = "taps.unsubscribe";
     pub const APPS_REGISTER: &str = "apps.register";
@@ -3550,6 +3621,13 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "The user's processes on this host, with their panes and agent runs, by evidence.",
     },
     MethodInfo {
+        name: "agents.runs",
+        params: "AgentRunQuery",
+        result: "AgentRunList",
+        mutation: false,
+        doc: "Agent runs (Claude Code, Codex) here and on connected hosts, from the process registry.",
+    },
+    MethodInfo {
         name: "taps.subscribe",
         params: "TapSubscribe",
         result: "TapSubscription",
@@ -3629,6 +3707,7 @@ pub enum Request {
     JobsCancel(JobRef),
     JobsArtifacts(JobRef),
     ProcessesList(ProcessQuery),
+    AgentsRuns(AgentRunQuery),
     TapsSubscribe(TapSubscribe),
     TapsUnsubscribe(Unsubscribe),
     AppsRegister(RegisterApp),
@@ -3691,6 +3770,7 @@ impl Request {
             Self::JobsCancel(_) => "jobs.cancel",
             Self::JobsArtifacts(_) => "jobs.artifacts",
             Self::ProcessesList(_) => "processes.list",
+            Self::AgentsRuns(_) => "agents.runs",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -3754,6 +3834,7 @@ impl Request {
             Self::JobsCancel(v) => ::prost::Message::encode_to_vec(v),
             Self::JobsArtifacts(v) => ::prost::Message::encode_to_vec(v),
             Self::ProcessesList(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentsRuns(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -3820,6 +3901,7 @@ impl Request {
             "jobs.cancel" => Ok(Self::JobsCancel(::prost::Message::decode(bytes)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(::prost::Message::decode(bytes)?)),
             "processes.list" => Ok(Self::ProcessesList(::prost::Message::decode(bytes)?)),
+            "agents.runs" => Ok(Self::AgentsRuns(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -3883,6 +3965,7 @@ impl Request {
             Self::JobsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::JobsArtifacts(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ProcessesList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentsRuns(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3945,6 +4028,7 @@ impl Request {
             "jobs.cancel" => Ok(Self::JobsCancel(serde_json::from_value(value)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(serde_json::from_value(value)?)),
             "processes.list" => Ok(Self::ProcessesList(serde_json::from_value(value)?)),
+            "agents.runs" => Ok(Self::AgentsRuns(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -4010,6 +4094,7 @@ pub enum Response {
     JobsCancel(JobRecord),
     JobsArtifacts(JobArtifacts),
     ProcessesList(ProcessList),
+    AgentsRuns(AgentRunList),
     TapsSubscribe(TapSubscription),
     TapsUnsubscribe(Empty),
     AppsRegister(Registration),
@@ -4072,6 +4157,7 @@ impl Response {
             Self::JobsCancel(_) => "jobs.cancel",
             Self::JobsArtifacts(_) => "jobs.artifacts",
             Self::ProcessesList(_) => "processes.list",
+            Self::AgentsRuns(_) => "agents.runs",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -4135,6 +4221,7 @@ impl Response {
             Self::JobsCancel(v) => ::prost::Message::encode_to_vec(v),
             Self::JobsArtifacts(v) => ::prost::Message::encode_to_vec(v),
             Self::ProcessesList(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentsRuns(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -4201,6 +4288,7 @@ impl Response {
             "jobs.cancel" => Ok(Self::JobsCancel(::prost::Message::decode(bytes)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(::prost::Message::decode(bytes)?)),
             "processes.list" => Ok(Self::ProcessesList(::prost::Message::decode(bytes)?)),
+            "agents.runs" => Ok(Self::AgentsRuns(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -4264,6 +4352,7 @@ impl Response {
             Self::JobsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::JobsArtifacts(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ProcessesList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentsRuns(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -4326,6 +4415,7 @@ impl Response {
             "jobs.cancel" => Ok(Self::JobsCancel(serde_json::from_value(value)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(serde_json::from_value(value)?)),
             "processes.list" => Ok(Self::ProcessesList(serde_json::from_value(value)?)),
+            "agents.runs" => Ok(Self::AgentsRuns(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -4598,6 +4688,11 @@ pub trait Service: Sync {
         &self,
         params: ProcessQuery,
     ) -> impl ::core::future::Future<Output = Result<ProcessList, RpcError>> + Send;
+    /// Agent runs (Claude Code, Codex) here and on connected hosts, from the process registry.
+    fn agents_runs(
+        &self,
+        params: AgentRunQuery,
+    ) -> impl ::core::future::Future<Output = Result<AgentRunList, RpcError>> + Send;
     /// Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap.
     fn taps_subscribe(
         &self,
@@ -4734,6 +4829,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::JobsCancel(p) => service.jobs_cancel(p).await.map(Response::JobsCancel),
         Request::JobsArtifacts(p) => service.jobs_artifacts(p).await.map(Response::JobsArtifacts),
         Request::ProcessesList(p) => service.processes_list(p).await.map(Response::ProcessesList),
+        Request::AgentsRuns(p) => service.agents_runs(p).await.map(Response::AgentsRuns),
         Request::TapsSubscribe(p) => service.taps_subscribe(p).await.map(Response::TapsSubscribe),
         Request::TapsUnsubscribe(p) => service
             .taps_unsubscribe(p)

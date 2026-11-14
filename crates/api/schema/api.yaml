@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 31 }
+version: { major: 1, minor: 32 }
 package: dreamer.v1
 
 types:
@@ -1207,6 +1207,36 @@ types:
       - { n: 12, name: confidence, type: string, optional: true, doc: "high, medium, or low, for a run." }
       - { n: 13, name: evidence, type: string, optional: true, doc: "Why it is counted as a run." }
       - { n: 14, name: helper_of, type: u32, optional: true, doc: "The run this process serves (a tool, a server); never itself a run." }
+      - { n: 15, name: cpu_permille, type: u32, doc: "CPU use in tenths of a percent of one core, as ps averages it." }
+      - { n: 16, name: rss_kib, type: u64, doc: "Resident memory." }
+
+  - message: AgentRunQuery
+    fields:
+      - { n: 1, name: hosts, type: string, repeated: true, doc: "Connected hosts to ask too; `*` means every live host." }
+      - { n: 2, name: provider, type: string, optional: true, doc: "claude or codex." }
+
+  - message: AgentRun
+    doc: "One agent run, by evidence. State says only what is known: never inferred from titles, CPU, or output."
+    fields:
+      - { n: 1, name: host, type: string, optional: true, doc: "Absent for this host." }
+      - { n: 2, name: pid, type: u32 }
+      - { n: 3, name: started_unix_ms, type: u64, doc: "With host and pid, the run's identity." }
+      - { n: 4, name: provider, type: string }
+      - { n: 5, name: pane, type: u32, optional: true }
+      - { n: 6, name: cwd, type: string, optional: true }
+      - { n: 7, name: age_ms, type: u64 }
+      - { n: 8, name: cpu_permille, type: u32 }
+      - { n: 9, name: rss_kib, type: u64 }
+      - { n: 10, name: confidence, type: string }
+      - { n: 11, name: evidence, type: string }
+      - { n: 12, name: instrumentation, type: string, doc: "passive: found from its process only." }
+      - { n: 13, name: state, type: string, doc: "running while its process lives; unknown otherwise." }
+      - { n: 14, name: helpers, type: u32, doc: "Processes serving it (tools, servers), not counted as runs." }
+
+  - message: AgentRunList
+    fields:
+      - { n: 1, name: runs, type: AgentRun, repeated: true }
+      - { n: 2, name: notes, type: string, repeated: true, doc: "Hosts that could not be asked, and why." }
 
   - message: ProcessList
     fields:
@@ -1268,6 +1298,7 @@ methods:
   - { method: jobs.cancel, params: JobRef, result: JobRecord, mutation: true, doc: "Send SIGTERM to the job's program; its record says killed once it ends." }
   - { method: jobs.artifacts, params: JobRef, result: JobArtifacts, doc: "The files the job left in its artifacts directory." }
   - { method: processes.list, params: ProcessQuery, result: ProcessList, doc: "The user's processes on this host, with their panes and agent runs, by evidence." }
+  - { method: agents.runs, params: AgentRunQuery, result: AgentRunList, doc: "Agent runs (Claude Code, Codex) here and on connected hosts, from the process registry." }
   - { method: taps.subscribe, params: TapSubscribe, result: TapSubscription, doc: "Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap." }
   - { method: taps.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }

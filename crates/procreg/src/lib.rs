@@ -27,6 +27,10 @@ pub struct Proc {
     pub tty: Option<String>,
     /// When it started, from its elapsed time, to within a second.
     pub started_unix_s: u64,
+    /// CPU use, in tenths of a percent of one core, as `ps` averages it.
+    pub cpu_permille: u32,
+    /// Resident memory in KiB.
+    pub rss_kib: u64,
     /// Its command line, as `ps` shows it.
     pub args: String,
 }
@@ -64,7 +68,7 @@ fn elapsed(e: &str) -> Option<u64> {
     Some(((days * 24 + h) * 60 + m) * 60 + s)
 }
 
-/// Parse `ps -o pid=,ppid=,pgid=,uid=,tty=,etime=,args=` output taken at
+/// Parse `ps -o pid=,ppid=,pgid=,uid=,tty=,%cpu=,rss=,etime=,args=` output taken at
 /// `now_s`. Lines that do not parse are skipped.
 pub fn parse_ps(text: &str, now_s: u64) -> Vec<Proc> {
     text.lines()
@@ -75,6 +79,8 @@ pub fn parse_ps(text: &str, now_s: u64) -> Vec<Proc> {
             let pgid = it.next()?.parse().ok()?;
             let uid = it.next()?.parse().ok()?;
             let tty = it.next()?;
+            let cpu: f64 = it.next()?.replace(',', ".").parse().ok()?;
+            let rss: u64 = it.next()?.parse().ok()?;
             let started = now_s.checked_sub(elapsed(it.next()?)?)?;
             let args = it.collect::<Vec<_>>().join(" ");
             Some(Proc {
@@ -84,6 +90,8 @@ pub fn parse_ps(text: &str, now_s: u64) -> Vec<Proc> {
                 uid,
                 tty: (!tty.starts_with('?') && tty != "-").then(|| tty.to_owned()),
                 started_unix_s: started,
+                cpu_permille: (cpu * 10.0).round().max(0.0) as u32,
+                rss_kib: rss,
                 args,
             })
         })
@@ -100,7 +108,11 @@ fn now_s() -> u64 {
 pub fn snapshot() -> Result<Vec<Proc>, String> {
     let out = std::process::Command::new("ps")
         .env("LC_ALL", "C")
-        .args(["-axww", "-o", "pid=,ppid=,pgid=,uid=,tty=,etime=,args="])
+        .args([
+            "-axww",
+            "-o",
+            "pid=,ppid=,pgid=,uid=,tty=,%cpu=,rss=,etime=,args=",
+        ])
         .output()
         .map_err(|e| format!("ps: {e}"))?;
     if !out.status.success() {
@@ -294,17 +306,17 @@ mod tests {
     use super::*;
 
     const PS: &str = "\
-    1     0     1     0 ??          10-00:00:00 /sbin/launchd
-  100     1   100   501 ttys001        01:00:00 -zsh
-  200   100   200   501 ttys001           10:00 node /Users/u/.npm/lib/node_modules/@anthropic-ai/claude-code/cli.js
-  210   200   200   501 ttys001           09:00 /bin/zsh -c npm test
-  211   210   200   501 ttys001           08:59 node /repo/node_modules/.bin/jest
-  220   200   200   501 ttys001           09:30 node /Users/u/mcp-server/index.js
-  300     1   300   501 ttys002        02:00:00 -zsh
-  310   300   310   501 ttys002           05:00 codex --model gpt-5
-  400     1   400   501 ttys001           01:00 vim notes.txt
-  500     1   500   501 ??             1:00:00 claude --print hi
-  600   100   600   501 ttys001           00:01 grep claude
+  1 0 1 0 ?? 1.5 2048 10-00:00:00 /sbin/launchd
+  100 1 100 501 ttys001 1.5 2048 01:00:00 -zsh
+  200 100 200 501 ttys001 1.5 2048 10:00 node /Users/u/.npm/lib/node_modules/@anthropic-ai/claude-code/cli.js
+  210 200 200 501 ttys001 1.5 2048 09:00 /bin/zsh -c npm test
+  211 210 200 501 ttys001 1.5 2048 08:59 node /repo/node_modules/.bin/jest
+  220 200 200 501 ttys001 1.5 2048 09:30 node /Users/u/mcp-server/index.js
+  300 1 300 501 ttys002 1.5 2048 02:00:00 -zsh
+  310 300 310 501 ttys002 1.5 2048 05:00 codex --model gpt-5
+  400 1 400 501 ttys001 1.5 2048 01:00 vim notes.txt
+  500 1 500 501 ?? 1.5 2048 1:00:00 claude --print hi
+  600 100 600 501 ttys001 1.5 2048 00:01 grep claude
 ";
 
     fn procs() -> Vec<Proc> {
@@ -320,6 +332,7 @@ mod tests {
         assert_eq!(p[0].tty, None);
         assert_eq!(p[1].tty.as_deref(), Some("ttys001"));
         assert_eq!(p[2].command(), "node");
+        assert_eq!((p[2].cpu_permille, p[2].rss_kib), (15, 2048));
         assert_eq!(parse_ps("garbage\n 1 2 3\n", 10), Vec::new());
     }
 
