@@ -94,6 +94,8 @@ pub struct State {
     pub filters: crate::filters::Filters,
     /// Marks filters put on lines, for clients to draw.
     pub decorations: crate::decorations::Decorations,
+    /// What provider hooks report about their sessions.
+    pub agents: crate::agents::Agents,
 }
 
 #[derive(Debug, Clone)]
@@ -362,6 +364,8 @@ fn runs_of(
             evidence: p.evidence.clone().unwrap_or_default(),
             instrumentation: "passive".into(),
             state: "running".into(),
+            session_id: None,
+            last_event_unix_ms: None,
             helpers: list
                 .processes
                 .iter()
@@ -1069,10 +1073,37 @@ impl api::Service for DaemonService {
         })
     }
 
+    async fn agents_event(&self, e: api::AgentEvent) -> Result<api::Empty, RpcError> {
+        if e.session_id.is_empty() || e.provider.is_empty() {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "a report needs a provider and a session",
+            ));
+        }
+        self.0.agents.report(e).await;
+        Ok(api::Empty {})
+    }
+
     async fn agents_runs(&self, p: api::AgentRunQuery) -> Result<api::AgentRunList, RpcError> {
         let mut out = api::AgentRunList::default();
         let here = self.processes_list(api::ProcessQuery::default()).await?;
-        out.runs.extend(runs_of(&here, None, p.provider.as_deref()));
+        for mut run in runs_of(&here, None, p.provider.as_deref()) {
+            // What its hooks say, when they report.
+            if let Some(s) = self
+                .0
+                .agents
+                .for_run(&run.provider, run.pid, run.started_unix_ms)
+            {
+                run.instrumentation = "hooks".into();
+                run.state = s.state.into();
+                run.session_id = Some(s.session_id);
+                run.last_event_unix_ms = Some(s.last_unix_ms);
+                if run.cwd.is_none() {
+                    run.cwd = s.cwd;
+                }
+            }
+            out.runs.push(run);
+        }
         let hosts: Vec<String> = if p.hosts.iter().any(|h| h == "*") {
             self.0
                 .hosts

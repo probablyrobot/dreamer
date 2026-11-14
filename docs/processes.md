@@ -66,3 +66,33 @@ Helpers are never runs.
 so `state` is `running` while that process lives and says nothing about
 what the run is doing. A host that cannot be asked is a note, not a
 failure. Listing runs needs `all_panes`.
+
+## Instrumented runs (Claude Code hooks)
+
+With Claude Code's hooks reporting to the daemon, a run's `instrumentation`
+is `hooks` and its `state` comes from those reports:
+
+| Report | `state` |
+| --- | --- |
+| `SessionStart` | `active` |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | `working` |
+| `PermissionRequest`, `Notification` (permission prompt) | `waiting_for_permission` |
+| `Stop`, `Notification` (idle prompt) | `idle`: a turn ended; the CLI may still be running |
+| `SessionEnd` | `ended` |
+
+A run whose reports stop for ten minutes before it ended is `stale`, not
+still in its last state. The report also gives the run its `session_id`.
+
+**Setting up.** `dream agents hooks` prints the settings to add to Claude
+Code (for example `~/.claude/settings.json`). `dream agents hooks --write
+FILE` adds them to that file: it keeps everything already there, adds each
+hook only once, and first copies the file to `FILE.bak`. Nothing changes a
+settings file unless asked this way.
+
+**The hook helper.** Each hook runs `dream hook claude`. It reads the
+report from standard input, sends it to the local daemon within 0.8 s,
+and exits 0 every time, whether the daemon runs or not. It never starts
+the daemon, never writes to standard output, and so never blocks or
+delays Claude Code. The daemon ties a report to its run by walking up
+from the helper's process to the `claude` process. It does this once per
+session, and never mistakes the helper for the run.
