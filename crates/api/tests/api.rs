@@ -219,6 +219,12 @@ impl Service for Fixed {
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn taps_subscribe(&self, _: api::TapSubscribe) -> Result<api::TapSubscription, RpcError> {
+        Ok(api::TapSubscription::default())
+    }
+    async fn taps_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
     async fn scripts_validate(&self, _: api::ScriptSource) -> Result<api::ScriptCheck, RpcError> {
         Ok(api::ScriptCheck::default())
     }

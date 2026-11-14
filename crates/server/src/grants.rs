@@ -24,6 +24,8 @@ fn targets(r: &Request) -> Targets {
         Request::TerminalSubscribe(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalInput(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalSetTier(p) => Targets::Panes(vec![p.pane]),
+        Request::TapsSubscribe(p) if p.every_pane => Targets::Everything,
+        Request::TapsSubscribe(p) => Targets::Panes(p.panes.clone()),
         Request::ActionsSubmit(s) => match s.action.as_ref().and_then(|a| a.kind.as_ref()) {
             Some(Kind::SplitPane(a)) => Targets::Panes(vec![a.pane]),
             Some(Kind::ResizePane(a)) => Targets::Panes(vec![a.pane]),

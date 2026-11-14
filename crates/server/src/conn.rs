@@ -44,6 +44,7 @@ pub const TOPIC_CHECKPOINT: &str = api::topic::TERMINAL_CHECKPOINT;
 pub const TOPIC_TOPOLOGY: &str = api::topic::TMUX_TOPOLOGY;
 pub const TOPIC_EVENTS: &str = api::topic::EVENTS_BATCH;
 pub const TOPIC_MESSAGES: &str = api::topic::MESSAGES_DELIVER;
+pub const TOPIC_TAPS: &str = api::topic::TAPS_DATA;
 
 /// Connection ids, for the broker; unique within a daemon.
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
@@ -271,6 +272,10 @@ pub async fn connection_as(
                         events_subscribe(&state, &conn, req).await;
                         return;
                     }
+                    if req.method == api::method::TAPS_SUBSCRIBE {
+                        taps_subscribe(&service, &conn, req).await;
+                        return;
+                    }
                     if req.method == api::method::HOSTS_WATCH {
                         host_watch(&state, &conn, req).await;
                         return;
@@ -284,6 +289,7 @@ pub async fn connection_as(
                     let response = if req.method == api::method::TERMINAL_UNSUBSCRIBE
                         || req.method == api::method::EVENTS_UNSUBSCRIBE
                         || req.method == api::method::MESSAGES_UNSUBSCRIBE
+                        || req.method == api::method::TAPS_UNSUBSCRIBE
                     {
                         unsubscribe(&conn, req).await
                     } else {
@@ -714,6 +720,125 @@ async fn messages_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request)
             ok(req.id, r.encode_to_vec()).encode_to_vec(),
         ))
         .await;
+    let _ = go.send(());
+}
+
+impl crate::taps::Deliver for Conn {
+    fn send(&self, d: api::TapData) -> impl std::future::Future<Output = bool> + Send {
+        let c = self.clone();
+        async move { c.event(TOPIC_TAPS, d.encode_to_vec()).await }
+    }
+}
+
+/// `taps.subscribe`: reply with the panes followed, then push `taps.data`.
+/// One task per pane; with `every_pane`, panes that appear later are
+/// followed too.
+async fn taps_subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
+    let reply = |r: wire::Response| {
+        let conn = conn.clone();
+        async move {
+            let _ = conn
+                .out
+                .send(Out::Frame(Kind::Response, r.encode_to_vec()))
+                .await;
+        }
+    };
+    let p = match api::TapSubscribe::decode(req.payload.as_slice()) {
+        Ok(p) => p,
+        Err(e) => {
+            return reply(failure(
+                req.id,
+                RpcError::new(code::INVALID_PARAMS, e.to_string()),
+            ))
+            .await;
+        }
+    };
+    let level = api::TapLevel::try_from(p.level).unwrap_or(api::TapLevel::Unspecified);
+    if level == api::TapLevel::Unspecified {
+        return reply(failure(
+            req.id,
+            RpcError::new(code::INVALID_PARAMS, "choose a level: raw, text, or meta"),
+        ))
+        .await;
+    }
+    let host = match service.mirror_host(None).await {
+        Ok(h) => h,
+        Err(e) => return reply(failure(req.id, e)).await,
+    };
+    let live = |host: &mirror::MirrorHost| {
+        let host = host.clone();
+        async move {
+            host.status()
+                .await
+                .into_iter()
+                .filter(|m| m.state == mirror::MirrorState::Live)
+                .map(|m| m.pane.0)
+                .collect::<Vec<u32>>()
+        }
+    };
+    let panes = if p.every_pane {
+        live(&host).await
+    } else {
+        let ids: Vec<domain::TmuxPaneId> = p.panes.iter().map(|&p| domain::TmuxPaneId(p)).collect();
+        if !host.wait_live(&ids, Duration::from_secs(3)).await {
+            return reply(failure(
+                req.id,
+                RpcError::new(code::NOT_FOUND, "a listed pane has no live mirror"),
+            ))
+            .await;
+        }
+        p.panes.clone()
+    };
+    let interval = Duration::from_millis(u64::from(p.interval_ms.unwrap_or(250).clamp(50, 10_000)));
+    let id = conn.next_sub.fetch_add(1, Ordering::Relaxed);
+    let (go, ready) = tokio::sync::oneshot::channel::<()>();
+    let (task_conn, task_panes, every) = (conn.clone(), panes.clone(), p.every_pane);
+    let task = tokio::spawn(async move {
+        if ready.await.is_err() {
+            return;
+        }
+        let mut followed = std::collections::HashSet::new();
+        let mut set = tokio::task::JoinSet::new();
+        for pane in task_panes {
+            followed.insert(pane);
+            set.spawn(crate::taps::follow(
+                host.clone(),
+                task_conn.clone(),
+                id,
+                pane,
+                level,
+                interval,
+            ));
+        }
+        if !every {
+            while set.join_next().await.is_some() {}
+            return;
+        }
+        // Every pane: pick up new ones as they appear.
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            while set.try_join_next().is_some() {}
+            for pane in live(&host).await {
+                if followed.insert(pane) {
+                    set.spawn(crate::taps::follow(
+                        host.clone(),
+                        task_conn.clone(),
+                        id,
+                        pane,
+                        level,
+                        interval,
+                    ));
+                }
+            }
+        }
+    });
+    conn.subs.lock().await.insert(id, task);
+    reply(ok(
+        req.id,
+        api::TapSubscription { id, panes }.encode_to_vec(),
+    ))
+    .await;
     let _ = go.send(());
 }
 

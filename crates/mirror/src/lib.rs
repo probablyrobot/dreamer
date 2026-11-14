@@ -23,7 +23,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 pub use journal::Retention;
 pub use terminal_ghostty::input::{MouseAction, MouseButton};
 pub use worker::{
-    Effect, InputEvent, Live, LiveStats, ReadResult, Record, Sink, Start, Started, Tier, end,
+    Effect, InputEvent, Live, LiveStats, ReadResult, Record, Sink, Start, Started, TailResult,
+    Tier, end,
 };
 
 #[derive(Debug, Clone)]
@@ -279,6 +280,27 @@ impl MirrorHost {
         w.urgent(worker::WorkerMsg::Read {
             pane,
             history,
+            reply,
+        })
+        .ok()?;
+        answer.await.ok().flatten()
+    }
+
+    /// The newest `history` scrollback lines, the active screen, and the
+    /// scrollback size of a live mirror (for taps); `Ok(None)` when it is
+    /// still at sequence `after`. `None` when the pane is not mirrored.
+    pub async fn tail(
+        &self,
+        pane: TmuxPaneId,
+        history: usize,
+        after: Option<u64>,
+    ) -> Option<Result<Option<worker::TailResult>, String>> {
+        let (reply, answer) = oneshot::channel();
+        let w = &self.workers[worker_of(pane, self.workers.len())];
+        w.urgent(worker::WorkerMsg::Tail {
+            pane,
+            history,
+            after,
             reply,
         })
         .ok()?;
