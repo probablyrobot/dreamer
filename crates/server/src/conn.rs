@@ -791,17 +791,24 @@ async fn taps_subscribe(service: &DaemonService, conn: &Conn, req: wire::Request
     };
     let interval = Duration::from_millis(u64::from(p.interval_ms.unwrap_or(250).clamp(50, 10_000)));
     let id = conn.next_sub.fetch_add(1, Ordering::Relaxed);
+    // Where each tap starts is taken before the reply, so nothing the panes
+    // write after it is missed.
+    let mut begun = Vec::with_capacity(panes.len());
+    for &pane in &panes {
+        begun.push((pane, crate::taps::begin(&host, pane, level).await));
+    }
     let (go, ready) = tokio::sync::oneshot::channel::<()>();
-    let (task_conn, task_panes, every) = (conn.clone(), panes.clone(), p.every_pane);
+    let (task_conn, every) = (conn.clone(), p.every_pane);
     let task = tokio::spawn(async move {
         if ready.await.is_err() {
             return;
         }
         let mut followed = std::collections::HashSet::new();
         let mut set = tokio::task::JoinSet::new();
-        for pane in task_panes {
+        for (pane, begun) in begun {
             followed.insert(pane);
             set.spawn(crate::taps::follow(
+                begun,
                 host.clone(),
                 task_conn.clone(),
                 id,
@@ -821,7 +828,9 @@ async fn taps_subscribe(service: &DaemonService, conn: &Conn, req: wire::Request
             while set.try_join_next().is_some() {}
             for pane in live(&host).await {
                 if followed.insert(pane) {
+                    let begun = crate::taps::begin(&host, pane, level).await;
                     set.spawn(crate::taps::follow(
+                        begun,
                         host.clone(),
                         task_conn.clone(),
                         id,
