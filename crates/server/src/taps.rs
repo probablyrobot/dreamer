@@ -164,8 +164,45 @@ fn data(tap: u64, pane: u32, generation: u64) -> api::TapData {
     }
 }
 
-/// Follow one pane at `level` until it is gone or the connection is.
+/// Where a tap starts on one pane. It is taken before `taps.subscribe`
+/// replies, so everything the pane writes after the reply is delivered.
+pub enum Begun {
+    /// Subscribed to the mirror's records (`None`: the subscription failed).
+    Raw(Option<RawStart>),
+    /// The first look at the mirror (`None`: not readable yet).
+    Look(Option<TailResult>),
+}
+
+pub struct RawStart {
+    started: mirror::Started,
+    rx: tokio::sync::mpsc::Receiver<mirror::Live>,
+    ended: std::sync::Arc<std::sync::atomic::AtomicU8>,
+}
+
+/// Take the starting point of a tap on `pane` at `level`.
+pub async fn begin(host: &mirror::MirrorHost, pane: u32, level: api::TapLevel) -> Begun {
+    let id = domain::TmuxPaneId(pane);
+    match level {
+        api::TapLevel::Raw => Begun::Raw(raw_subscribe(host, id, None).await),
+        _ => Begun::Look(match host.tail(id, history_for(level), None).await {
+            Some(Ok(Some(t))) => Some(t),
+            _ => None,
+        }),
+    }
+}
+
+fn history_for(level: api::TapLevel) -> usize {
+    if level == api::TapLevel::Text {
+        WINDOW
+    } else {
+        0
+    }
+}
+
+/// Follow one pane at `level` from `begun` until it is gone or the
+/// connection is.
 pub async fn follow<D: Deliver>(
+    begun: Begun,
     host: mirror::MirrorHost,
     out: D,
     tap: u64,
@@ -173,33 +210,58 @@ pub async fn follow<D: Deliver>(
     level: api::TapLevel,
     interval: std::time::Duration,
 ) {
-    match level {
-        api::TapLevel::Raw => raw(host, out, tap, pane).await,
-        _ => look(host, out, tap, pane, level, interval).await,
+    match begun {
+        Begun::Raw(first) => raw(first, host, out, tap, pane).await,
+        Begun::Look(first) => look(first, host, out, tap, pane, level, interval).await,
     }
 }
 
-async fn raw<D: Deliver>(host: mirror::MirrorHost, out: D, tap: u64, pane: u32) {
+async fn raw_subscribe(
+    host: &mirror::MirrorHost,
+    id: domain::TmuxPaneId,
+    resume: Option<(domain::PaneGeneration, u64)>,
+) -> Option<RawStart> {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::sync::atomic::AtomicU8;
+    // Records held for this tap before the mirror drops it as lagging
+    // (tests make it small, so falling behind needs little output).
+    let capacity = std::env::var("DREAMER_TEST_TAP_QUEUE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(256)
+        .max(1);
+    let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+    let ended = Arc::new(AtomicU8::new(mirror::end::RUNNING));
+    let sink = mirror::Sink {
+        records: tx,
+        client: None,
+        ended: ended.clone(),
+    };
+    let started = host.subscribe(id, resume, sink).await.ok()?;
+    Some(RawStart { started, rx, ended })
+}
+
+async fn raw<D: Deliver>(
+    mut first: Option<RawStart>,
+    host: mirror::MirrorHost,
+    out: D,
+    tap: u64,
+    pane: u32,
+) {
+    use std::sync::atomic::Ordering;
     let id = domain::TmuxPaneId(pane);
     let mut resume: Option<(domain::PaneGeneration, u64)> = None;
     loop {
-        // Records held for this tap before the mirror drops it as lagging
-        // (tests make it small, so falling behind needs little output).
-        let capacity = std::env::var("DREAMER_TEST_TAP_QUEUE")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(256)
-            .max(1);
-        let (tx, mut rx) = tokio::sync::mpsc::channel(capacity);
-        let ended = Arc::new(AtomicU8::new(mirror::end::RUNNING));
-        let sink = mirror::Sink {
-            records: tx,
-            client: None,
-            ended: ended.clone(),
+        let start = match first.take() {
+            Some(s) => Some(s),
+            None => raw_subscribe(&host, id, resume).await,
         };
-        let Ok(started) = host.subscribe(id, resume, sink).await else {
+        let Some(RawStart {
+            started,
+            mut rx,
+            ended,
+        }) = start
+        else {
             let mut d = data(tap, pane, 0);
             d.ended = true;
             out.send(d).await;
@@ -272,6 +334,7 @@ async fn raw<D: Deliver>(host: mirror::MirrorHost, out: D, tap: u64, pane: u32) 
 }
 
 async fn look<D: Deliver>(
+    mut first: Option<TailResult>,
     host: mirror::MirrorHost,
     out: D,
     tap: u64,
@@ -280,11 +343,7 @@ async fn look<D: Deliver>(
     interval: std::time::Duration,
 ) {
     let id = domain::TmuxPaneId(pane);
-    let history = if level == api::TapLevel::Text {
-        WINDOW
-    } else {
-        0
-    };
+    let history = history_for(level);
     let mut after = None;
     let mut text: Option<TextState> = None;
     let mut meta: Option<api::TapMeta> = None;
@@ -292,7 +351,11 @@ async fn look<D: Deliver>(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        let t = match host.tail(id, history, after).await {
+        let looked = match first.take() {
+            Some(t) => Some(Ok(Some(t))),
+            None => host.tail(id, history, after).await,
+        };
+        let t = match looked {
             Some(Ok(Some(t))) => t,
             Some(Ok(None)) => continue,
             // Not readable right now: the mirror may be being rebuilt (a

@@ -1556,7 +1556,12 @@ async fn link_check(
         }
     }
     let Some(link) = link else {
-        fail("hovering the link with the open modifier found nothing".into())
+        stalled(
+            any,
+            cx,
+            "hovering the link with the open modifier found nothing",
+        )
+        .await
     };
     let want = [terminal_ghostty::core::SelectedCells {
         row: row as u16,
@@ -1600,7 +1605,7 @@ async fn link_check(
             return;
         }
     }
-    fail("the modifier-click never opened the link".into())
+    stalled(any, cx, "the modifier-click never opened the link").await
 }
 
 /// The line the smoke selects by dragging across it.
@@ -1678,6 +1683,26 @@ async fn wheel_history(any: gpui::AnyWindowHandle, grid: input::Grid, cx: &mut g
     fail_unless_past(any, 4, cx, "the wheel never scrolled the local history").await;
 }
 
+/// A smoke wait ran out. If the window then does not paint when asked, it
+/// was not being drawn (behind the frontmost app, or the display asleep)
+/// and the wait proved nothing: exit `INCONCLUSIVE`. Otherwise the check
+/// failed: exit 3.
+pub(crate) async fn stalled(any: gpui::AnyWindowHandle, cx: &mut gpui::AsyncApp, why: &str) -> ! {
+    let before = paint_count();
+    let _ = cx.update_window(any, |_, window, _| window.refresh());
+    cx.background_executor()
+        .timer(Duration::from_millis(500))
+        .await;
+    if paint_count() == before {
+        println!(
+            "smoke: {why}, but the window did not repaint when asked (behind another app, or the display asleep?); not run"
+        );
+        std::process::exit(INCONCLUSIVE);
+    }
+    eprintln!("smoke: {why}");
+    std::process::exit(3)
+}
+
 /// Fail the input smoke if it is still at `phase` after ten seconds.
 async fn fail_unless_past(
     any: gpui::AnyWindowHandle,
@@ -1695,8 +1720,7 @@ async fn fail_unless_past(
         })
         .unwrap_or(true);
     if stuck {
-        eprintln!("smoke: {why}");
-        std::process::exit(3);
+        stalled(any, cx, why).await;
     }
 }
 
