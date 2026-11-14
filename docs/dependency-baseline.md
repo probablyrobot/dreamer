@@ -69,9 +69,11 @@ From `deps/libghostty-vt-third-party.json` in the release source:
 | Crate | Version | Used by | License |
 | --- | --- | --- | --- |
 | `png` | `=0.18.1` (pure Rust) | `terminal-ghostty`: Ghostty's PNG decode callback for Kitty images | MIT OR Apache-2.0 |
+| `resvg` | `=0.46.0` (pure Rust, default features off) | `xtask icons`: renders `packaging/icons/dreamer.svg` into the Linux PNGs and the macOS `icns` | Apache-2.0 OR MIT |
 
-It is pinned exactly and already in `Cargo.lock` through GPUI's graph. It
-has no native code, and headless crates may use it.
+Both are pinned exactly and already in `Cargo.lock` through GPUI's graph.
+They have no native code, and headless crates may use `png`; `resvg` is
+used only by the build tool.
 
 ## GPUI
 

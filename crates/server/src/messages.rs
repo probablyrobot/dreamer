@@ -91,8 +91,11 @@ impl Default for Bucket {
 
 impl Bucket {
     fn take(&mut self) -> bool {
+        self.take_at(Instant::now())
+    }
+
+    fn take_at(&mut self, now: Instant) -> bool {
         let (burst, per_second) = rate();
-        let now = Instant::now();
         let refill = now.duration_since(self.at).as_secs_f64() * per_second;
         self.tokens = (self.tokens + refill).min(burst);
         self.at = now;
@@ -599,14 +602,29 @@ mod tests {
     }
 
     #[test]
+    fn a_bucket_allows_its_burst_then_refills_at_its_rate() {
+        // A fixed clock: on a slow (emulated) machine real time would
+        // refill the bucket while the burst is still being taken.
+        let mut bucket = Bucket::default();
+        let start = bucket.at;
+        let (burst, per_second) = rate();
+        for _ in 0..burst as usize {
+            assert!(bucket.take_at(start));
+        }
+        assert!(!bucket.take_at(start));
+        assert!(bucket.take_at(start + Duration::from_secs_f64(1.0 / per_second)));
+        assert!(!bucket.take_at(start + Duration::from_secs_f64(1.0 / per_second)));
+    }
+
+    #[test]
     fn a_connection_over_its_rate_is_refused() {
         let b = Broker::default();
-        let bucket = Mutex::default();
         let a = who(1, "app-a");
-        let (burst, _) = rate();
-        for _ in 0..burst as usize {
-            b.publish(&a, &bucket, publish("t", "x")).expect("burst");
-        }
+        // Empty, and last filled in the future so no time refills it.
+        let bucket = Mutex::new(Bucket {
+            tokens: 0.0,
+            at: Instant::now() + Duration::from_secs(3600),
+        });
         let e = b.publish(&a, &bucket, publish("t", "x")).expect_err("rate");
         assert_eq!(e.code, code::LIMITED);
     }
