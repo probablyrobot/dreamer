@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 25 }
+version: { major: 1, minor: 26 }
 package: dreamer.v1
 
 types:
@@ -953,6 +953,60 @@ types:
     fields:
       - { n: 1, name: scripts, type: ScriptStatus, repeated: true }
 
+  # ---- taps ---------------------------------------------------------------
+
+  - enum: TapLevel
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: raw, doc: "Decoded VT bytes in journal order." }
+      - { n: 2, name: text, doc: "Committed lines without escapes; screen rows while an alternate-screen application runs." }
+      - { n: 3, name: meta, doc: "Size, title, cwd, and activity; no content." }
+
+  - message: TapSubscribe
+    fields:
+      - { n: 1, name: level, type: TapLevel }
+      - { n: 2, name: panes, type: u32, repeated: true, doc: "The panes to follow." }
+      - { n: 3, name: every_pane, type: bool, doc: "Follow every mirrored pane, including later ones (needs all_panes)." }
+      - { n: 4, name: interval_ms, type: u32, optional: true, doc: "How often text and meta taps look for changes; default 250, at least 50." }
+
+  - message: TapSubscription
+    fields:
+      - { n: 1, name: id, type: u64, doc: "Ends with taps.unsubscribe." }
+      - { n: 2, name: panes, type: u32, repeated: true, doc: "The panes followed now." }
+
+  - message: TapMeta
+    fields:
+      - { n: 1, name: cols, type: u32 }
+      - { n: 2, name: rows, type: u32 }
+      - { n: 3, name: title, type: string, optional: true }
+      - { n: 4, name: cwd, type: string, optional: true }
+      - { n: 5, name: sequence, type: u64, doc: "Records applied; it advancing means output." }
+      - { n: 6, name: alt_screen, type: bool }
+
+  - message: TapRow
+    fields:
+      - { n: 1, name: row, type: u32, doc: "0 is the top row of the screen." }
+      - { n: 2, name: text, type: string }
+
+  - message: TapGap
+    doc: "Output this tap did not deliver. The pane itself lost nothing."
+    fields:
+      - { n: 1, name: reason, type: string, doc: "lagging (the tap fell behind), window (more lines scrolled between looks than a look reads), or restarted (the pane's program was replaced)." }
+      - { n: 2, name: lines, type: u64, optional: true, doc: "Lines missed, when known." }
+
+  - message: TapData
+    doc: "Pushed as `taps.data`, for one pane."
+    fields:
+      - { n: 1, name: tap, type: u64 }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: generation, type: u64 }
+      - { n: 4, name: gap, type: TapGap }
+      - { n: 5, name: raw, type: bytes, doc: "raw: bytes as the program wrote them." }
+      - { n: 6, name: lines, type: string, repeated: true, doc: "text: lines that scrolled into history, oldest first." }
+      - { n: 7, name: screen, type: TapRow, repeated: true, doc: "text: rows of an alternate screen that changed." }
+      - { n: 8, name: meta, type: TapMeta, doc: "meta: the pane's state when it changed." }
+      - { n: 9, name: ended, type: bool, doc: "The pane is gone; nothing more follows for it." }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -995,6 +1049,8 @@ methods:
   - { method: scripts.reload, params: ScriptSource, result: ScriptStatus, mutation: true, doc: "Replace a script's source atomically; an update that does not load leaves the last-good version running (owner only)." }
   - { method: scripts.stop, params: ScriptRef, result: ScriptStatus, mutation: true, doc: "Stop and unload a script (owner only)." }
   - { method: scripts.list, params: Empty, result: ScriptList }
+  - { method: taps.subscribe, params: TapSubscribe, result: TapSubscription, doc: "Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap." }
+  - { method: taps.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
@@ -1007,3 +1063,4 @@ notifications:
   - { topic: tmux.topology, payload: TopologyUpdate, doc: "The watched topology changed." }
   - { topic: events.batch, payload: EventBatch, doc: "Events of an events.subscribe subscription, after its gap if any." }
   - { topic: messages.deliver, payload: MessageDelivery, doc: "A message for a messages.subscribe subscription." }
+  - { topic: taps.data, payload: TapData, doc: "Output of a taps.subscribe subscription, for one pane." }

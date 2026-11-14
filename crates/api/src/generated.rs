@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 25;
+pub const PROTOCOL_MINOR: u32 = 26;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -682,6 +682,55 @@ mod script_state_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| ScriptState::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum TapLevel {
+    Unspecified = 0,
+    /// Decoded VT bytes in journal order.
+    Raw = 1,
+    /// Committed lines without escapes; screen rows while an alternate-screen application runs.
+    Text = 2,
+    /// Size, title, cwd, and activity; no content.
+    Meta = 3,
+}
+
+impl TapLevel {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Raw => "raw",
+            Self::Text => "text",
+            Self::Meta => "meta",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "raw" => Some(Self::Raw),
+            "text" => Some(Self::Text),
+            "meta" => Some(Self::Meta),
+            _ => None,
+        }
+    }
+}
+
+mod tap_level_json {
+    use super::TapLevel;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match TapLevel::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| TapLevel::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -2378,6 +2427,110 @@ pub struct ScriptList {
     pub scripts: Vec<ScriptStatus>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TapSubscribe {
+    #[prost(enumeration = "TapLevel", tag = "1")]
+    #[serde(with = "tap_level_json")]
+    pub level: i32,
+    /// The panes to follow.
+    #[prost(uint32, repeated, tag = "2")]
+    pub panes: Vec<u32>,
+    /// Follow every mirrored pane, including later ones (needs all_panes).
+    #[prost(bool, tag = "3")]
+    pub every_pane: bool,
+    /// How often text and meta taps look for changes; default 250, at least 50.
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TapSubscription {
+    /// Ends with taps.unsubscribe.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// The panes followed now.
+    #[prost(uint32, repeated, tag = "2")]
+    pub panes: Vec<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TapMeta {
+    #[prost(uint32, tag = "1")]
+    pub cols: u32,
+    #[prost(uint32, tag = "2")]
+    pub rows: u32,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Records applied; it advancing means output.
+    #[prost(uint64, tag = "5")]
+    pub sequence: u64,
+    #[prost(bool, tag = "6")]
+    pub alt_screen: bool,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TapRow {
+    /// 0 is the top row of the screen.
+    #[prost(uint32, tag = "1")]
+    pub row: u32,
+    #[prost(string, tag = "2")]
+    pub text: String,
+}
+
+/// Output this tap did not deliver. The pane itself lost nothing.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TapGap {
+    /// lagging (the tap fell behind), window (more lines scrolled between looks than a look reads), or restarted (the pane's program was replaced).
+    #[prost(string, tag = "1")]
+    pub reason: String,
+    /// Lines missed, when known.
+    #[prost(uint64, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u64>,
+}
+
+/// Pushed as `taps.data`, for one pane.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TapData {
+    #[prost(uint64, tag = "1")]
+    pub tap: u64,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    #[prost(uint64, tag = "3")]
+    pub generation: u64,
+    #[prost(message, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap: Option<TapGap>,
+    /// raw: bytes as the program wrote them.
+    #[prost(bytes = "vec", tag = "5")]
+    #[serde(with = "crate::json::base64")]
+    pub raw: Vec<u8>,
+    /// text: lines that scrolled into history, oldest first.
+    #[prost(string, repeated, tag = "6")]
+    pub lines: Vec<String>,
+    /// text: rows of an alternate screen that changed.
+    #[prost(message, repeated, tag = "7")]
+    pub screen: Vec<TapRow>,
+    /// meta: the pane's state when it changed.
+    #[prost(message, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<TapMeta>,
+    /// The pane is gone; nothing more follows for it.
+    #[prost(bool, tag = "9")]
+    pub ended: bool,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -2421,6 +2574,8 @@ pub mod method {
     pub const SCRIPTS_RELOAD: &str = "scripts.reload";
     pub const SCRIPTS_STOP: &str = "scripts.stop";
     pub const SCRIPTS_LIST: &str = "scripts.list";
+    pub const TAPS_SUBSCRIBE: &str = "taps.subscribe";
+    pub const TAPS_UNSUBSCRIBE: &str = "taps.unsubscribe";
     pub const APPS_REGISTER: &str = "apps.register";
 }
 
@@ -2722,6 +2877,20 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "",
     },
     MethodInfo {
+        name: "taps.subscribe",
+        params: "TapSubscribe",
+        result: "TapSubscription",
+        mutation: false,
+        doc: "Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap.",
+    },
+    MethodInfo {
+        name: "taps.unsubscribe",
+        params: "Unsubscribe",
+        result: "Empty",
+        mutation: false,
+        doc: "",
+    },
+    MethodInfo {
         name: "apps.register",
         params: "RegisterApp",
         result: "Registration",
@@ -2774,6 +2943,8 @@ pub enum Request {
     ScriptsReload(ScriptSource),
     ScriptsStop(ScriptRef),
     ScriptsList(Empty),
+    TapsSubscribe(TapSubscribe),
+    TapsUnsubscribe(Unsubscribe),
     AppsRegister(RegisterApp),
 }
 
@@ -2821,6 +2992,8 @@ impl Request {
             Self::ScriptsReload(_) => "scripts.reload",
             Self::ScriptsStop(_) => "scripts.stop",
             Self::ScriptsList(_) => "scripts.list",
+            Self::TapsSubscribe(_) => "taps.subscribe",
+            Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -2869,6 +3042,8 @@ impl Request {
             Self::ScriptsReload(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2920,6 +3095,8 @@ impl Request {
             "scripts.reload" => Ok(Self::ScriptsReload(::prost::Message::decode(bytes)?)),
             "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
             "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
+            "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
+            "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2968,6 +3145,8 @@ impl Request {
             Self::ScriptsReload(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -3015,6 +3194,8 @@ impl Request {
             "scripts.reload" => Ok(Self::ScriptsReload(serde_json::from_value(value)?)),
             "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
             "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
+            "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
+            "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -3065,6 +3246,8 @@ pub enum Response {
     ScriptsReload(ScriptStatus),
     ScriptsStop(ScriptStatus),
     ScriptsList(ScriptList),
+    TapsSubscribe(TapSubscription),
+    TapsUnsubscribe(Empty),
     AppsRegister(Registration),
 }
 
@@ -3112,6 +3295,8 @@ impl Response {
             Self::ScriptsReload(_) => "scripts.reload",
             Self::ScriptsStop(_) => "scripts.stop",
             Self::ScriptsList(_) => "scripts.list",
+            Self::TapsSubscribe(_) => "taps.subscribe",
+            Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -3160,6 +3345,8 @@ impl Response {
             Self::ScriptsReload(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsStop(v) => ::prost::Message::encode_to_vec(v),
             Self::ScriptsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -3211,6 +3398,8 @@ impl Response {
             "scripts.reload" => Ok(Self::ScriptsReload(::prost::Message::decode(bytes)?)),
             "scripts.stop" => Ok(Self::ScriptsStop(::prost::Message::decode(bytes)?)),
             "scripts.list" => Ok(Self::ScriptsList(::prost::Message::decode(bytes)?)),
+            "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
+            "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -3259,6 +3448,8 @@ impl Response {
             Self::ScriptsReload(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ScriptsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -3306,6 +3497,8 @@ impl Response {
             "scripts.reload" => Ok(Self::ScriptsReload(serde_json::from_value(value)?)),
             "scripts.stop" => Ok(Self::ScriptsStop(serde_json::from_value(value)?)),
             "scripts.list" => Ok(Self::ScriptsList(serde_json::from_value(value)?)),
+            "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
+            "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -3514,6 +3707,15 @@ pub trait Service: Sync {
         &self,
         params: Empty,
     ) -> impl ::core::future::Future<Output = Result<ScriptList, RpcError>> + Send;
+    /// Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap.
+    fn taps_subscribe(
+        &self,
+        params: TapSubscribe,
+    ) -> impl ::core::future::Future<Output = Result<TapSubscription, RpcError>> + Send;
+    fn taps_unsubscribe(
+        &self,
+        params: Unsubscribe,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
     /// Trade a launch ticket for the app's narrow grant on this connection.
     fn apps_register(
         &self,
@@ -3622,6 +3824,11 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::ScriptsReload(p) => service.scripts_reload(p).await.map(Response::ScriptsReload),
         Request::ScriptsStop(p) => service.scripts_stop(p).await.map(Response::ScriptsStop),
         Request::ScriptsList(p) => service.scripts_list(p).await.map(Response::ScriptsList),
+        Request::TapsSubscribe(p) => service.taps_subscribe(p).await.map(Response::TapsSubscribe),
+        Request::TapsUnsubscribe(p) => service
+            .taps_unsubscribe(p)
+            .await
+            .map(Response::TapsUnsubscribe),
         Request::AppsRegister(p) => service.apps_register(p).await.map(Response::AppsRegister),
     }
 }
@@ -3640,6 +3847,8 @@ pub mod topic {
     pub const EVENTS_BATCH: &str = "events.batch";
     /// A message for a messages.subscribe subscription.
     pub const MESSAGES_DELIVER: &str = "messages.deliver";
+    /// Output of a taps.subscribe subscription, for one pane.
+    pub const TAPS_DATA: &str = "taps.data";
 }
 
 /// Something the daemon pushed, typed by its topic.
@@ -3651,6 +3860,7 @@ pub enum Notification {
     TmuxTopology(TopologyUpdate),
     EventsBatch(EventBatch),
     MessagesDeliver(MessageDelivery),
+    TapsData(TapData),
 }
 
 impl Notification {
@@ -3662,6 +3872,7 @@ impl Notification {
             Self::TmuxTopology(_) => "tmux.topology",
             Self::EventsBatch(_) => "events.batch",
             Self::MessagesDeliver(_) => "messages.deliver",
+            Self::TapsData(_) => "taps.data",
         }
     }
 
@@ -3673,6 +3884,7 @@ impl Notification {
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
             Self::EventsBatch(v) => ::prost::Message::encode_to_vec(v),
             Self::MessagesDeliver(v) => ::prost::Message::encode_to_vec(v),
+            Self::TapsData(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -3684,6 +3896,7 @@ impl Notification {
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
             "events.batch" => Ok(Self::EventsBatch(::prost::Message::decode(bytes)?)),
             "messages.deliver" => Ok(Self::MessagesDeliver(::prost::Message::decode(bytes)?)),
+            "taps.data" => Ok(Self::TapsData(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -3696,6 +3909,7 @@ impl Notification {
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::EventsBatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MessagesDeliver(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TapsData(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -3707,6 +3921,7 @@ impl Notification {
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
             "events.batch" => Ok(Self::EventsBatch(serde_json::from_value(value)?)),
             "messages.deliver" => Ok(Self::MessagesDeliver(serde_json::from_value(value)?)),
+            "taps.data" => Ok(Self::TapsData(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }

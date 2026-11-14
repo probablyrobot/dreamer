@@ -187,6 +187,27 @@ pub struct ReadResult {
     pub history: usize,
 }
 
+/// What a tap's text level needs from a mirror: how much scrollback there
+/// is, which screen is active, and the newest lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailResult {
+    pub generation: PaneGeneration,
+    pub sequence: u64,
+    /// Lines of scrollback above the active screen.
+    pub scrollback: usize,
+    pub alt_screen: bool,
+    pub cols: u16,
+    pub rows: u16,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+    /// The cursor's row on the active screen.
+    pub cursor_row: u16,
+    /// The newest `history` scrollback lines (or fewer), oldest first.
+    pub history: Vec<String>,
+    /// The active screen's rows.
+    pub screen: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveStats {
     pub pane: PaneKey,
@@ -257,6 +278,13 @@ pub enum WorkerMsg {
         pane: TmuxPaneId,
         history: usize,
         reply: oneshot::Sender<Option<Result<ReadResult, String>>>,
+    },
+    Tail {
+        pane: TmuxPaneId,
+        history: usize,
+        /// Answer `Ok(None)` when the mirror is still at this sequence.
+        after: Option<u64>,
+        reply: oneshot::Sender<Option<Result<Option<TailResult>, String>>>,
     },
     Stats {
         reply: oneshot::Sender<Vec<LiveStats>>,
@@ -437,6 +465,27 @@ impl Mirror {
             }
             Err(e) => self.error = Some(e.to_string()),
         }
+    }
+
+    fn tail(&self, history: usize) -> Result<TailResult, String> {
+        let r = self.read(history)?;
+        let view = self.engine.view_state().map_err(|e| e.to_string())?;
+        let scrollback = self.engine.scrollback_rows().map_err(|e| e.to_string())?;
+        let mut lines = r.lines;
+        let screen = lines.split_off(r.history);
+        Ok(TailResult {
+            generation: self.generation,
+            sequence: self.sequence,
+            scrollback,
+            alt_screen: view.alt_screen,
+            cols: r.cols,
+            rows: r.rows,
+            title: self.title.clone(),
+            cwd: self.cwd.clone(),
+            cursor_row: r.cursor.1,
+            history: lines,
+            screen,
+        })
     }
 
     fn read(&self, history: usize) -> Result<ReadResult, String> {
@@ -703,6 +752,20 @@ pub fn spawn(
                         reply,
                     } => {
                         let _ = reply.send(mirrors.get(&pane).map(|m| m.read(history)));
+                    }
+                    WorkerMsg::Tail {
+                        pane,
+                        history,
+                        after,
+                        reply,
+                    } => {
+                        let _ = reply.send(mirrors.get(&pane).map(|m| {
+                            if after == Some(m.sequence) {
+                                Ok(None)
+                            } else {
+                                m.tail(history).map(Some)
+                            }
+                        }));
                     }
                     WorkerMsg::Stats { reply } => {
                         let now = Instant::now();

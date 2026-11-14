@@ -26,6 +26,7 @@ response, can widen a grant. Only the daemon assigns one.
 | Request | Needs |
 | --- | --- |
 | `terminal.read`, `terminal.subscribe`, `terminal.input`, `terminal.set_tier` | The named pane in scope |
+| `taps.subscribe` | The listed panes in scope; `every_pane` needs `all_panes` (see [taps.md](taps.md)) |
 | `actions.submit` on a pane (split, resize, select, zoom, input, keys, kill) | That pane in scope |
 | `actions.submit` on a window or session (select, rename, kill, new window) | `all_panes` |
 | `terminal.mirrors`, `daemon.shutdown`, every `hosts.*` method | `all_panes` |

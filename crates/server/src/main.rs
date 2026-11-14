@@ -23,6 +23,7 @@ mod log;
 mod messages;
 mod scripts;
 mod service;
+mod taps;
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek as _, Write as _};

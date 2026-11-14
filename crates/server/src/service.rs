@@ -937,6 +937,14 @@ impl api::Service for DaemonService {
         Err(for_a_connection("messages.unsubscribe"))
     }
 
+    async fn taps_subscribe(&self, _: api::TapSubscribe) -> Result<api::TapSubscription, RpcError> {
+        Err(for_a_connection("taps.subscribe"))
+    }
+
+    async fn taps_unsubscribe(&self, _: api::Unsubscribe) -> Result<api::Empty, RpcError> {
+        Err(for_a_connection("taps.unsubscribe"))
+    }
+
     async fn scripts_validate(&self, p: api::ScriptSource) -> Result<api::ScriptCheck, RpcError> {
         Ok(match script_runtime::check(&p.name, &p.source) {
             Ok(()) => api::ScriptCheck {
