@@ -45,10 +45,14 @@ params = { action = { kind = { rename_window = { window = "${selected.window}", 
   `refresh_ms` (at least 200), and when an event of the listed kinds is
   recorded ([events.md](events.md)).
 - **Views:** `table` shows `columns`; `list` and `log` show one `field` per
-  row (a log follows its newest row); `text` shows one value. The status
-  line shows the connection, the keys, and the last outcome.
-- **Commands** call a method when their key is pressed. Their `params` may
-  use `${selected.<field>}`: a string that is exactly one placeholder
+  row (a log follows its newest row); `text` shows one value; `gauge`
+  shows one numeric `field` (0 to 1, or a percentage) as a bar with an
+  optional `label` field; `chart` draws a numeric `field` across the rows
+  as a sparkline; `form` is described below. The status line shows the
+  connection, the keys, and the last outcome.
+- **Commands** call a `method`, or a module `handler`, when their key is
+  pressed. Their `params` may use `${selected.<field>}` and, in a form,
+  `${form.<field>}`: a string that is exactly one placeholder
   becomes the selected row's value with its type, and a placeholder inside
   a longer string becomes its text. A missing field stops the command; it
   is never replaced by nothing. There is no other expression language, no
@@ -61,6 +65,56 @@ params = { action = { kind = { rename_window = { window = "${selected.window}", 
 Validation is strict: unknown keys, unknown methods, mutations as data
 sources, malformed placeholders, and duplicate or reserved keys are errors,
 each reported with where it is.
+
+## Modules
+
+A package may name a Luau module beside its manifest (`module =
+"app.luau"`). It runs in the same sandbox as daemon scripts
+([scripts.md](scripts.md)): no files, processes, or network, with budgets,
+and its `dreamer.*` calls go over the app's own connection with the app's
+grant. It may define:
+
+- `transform(rows)`: called with the fetched rows, returns the rows to
+  show; use it for computed columns or to filter rows.
+- Command handlers: a command with `handler = "name"` calls the module's
+  function `name` with `{ selected = <row>, form = <values> }`; a string it
+  returns is shown in the status line.
+
+The module's top level runs when the package loads. Keep it to defining
+functions: it may run while the app is not yet connected.
+
+## Forms
+
+A `form` view lists typed fields and names the command Enter runs:
+
+```toml
+[view]
+type = "form"
+source = "none"              # any data source; forms show no rows
+submit = "send"
+fields = [
+  { name = "name", label = "Name", kind = "text", required = true },
+  { name = "count", kind = "number" },
+  { name = "loud", kind = "toggle" },
+]
+```
+
+Tab and the arrows move between fields; letters and digits type, so `q`
+is a letter here (Esc or Ctrl-C quits); Space flips a toggle; Enter
+submits. The values reach the command as `${form.<name>}` or, for a
+handler, as `form`, typed: text as strings, numbers as numbers, toggles
+as booleans. A required field left empty, or a number field that is not a
+number, stops the submit and says so.
+
+## Reloading
+
+The runtime looks at the manifest and the module twice a second. When
+either changed, it validates the manifest, compiles the module, and runs
+its top level. Only when all of that succeeds does it swap to the new
+version: the selection stays on its row, form values stay by field name,
+and the title says how many reloads there were. A version that fails at
+any step is not applied; the running one keeps going and the status line
+says why.
 
 ## Connection
 

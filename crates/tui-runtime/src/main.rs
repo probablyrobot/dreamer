@@ -7,6 +7,11 @@
 //! dreamer-termapp --check FILE   validate only
 //! ```
 //!
+//! A package may have a Luau module beside its manifest (sandboxed, with
+//! the app's own grant) for `transform(rows)` and command handlers. The
+//! manifest and module are reloaded when they change: a version that does
+//! not validate or load leaves the running one in place, and says why.
+//!
 //! It talks to its host's daemon. Launched by `dream app run`, it first
 //! registers with its single-use ticket and then holds that narrow grant.
 //! When the daemon goes away it keeps showing the last data, marked
@@ -17,7 +22,10 @@
 mod manifest;
 mod view;
 
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,7 +57,7 @@ fn main() -> ExitCode {
             println!("{}", version_line());
             ExitCode::SUCCESS
         }
-        ["--check", path] => match load(path) {
+        ["--check", path] => match load(path).and_then(|m| check_module(path, &m).map(|()| m)) {
             Ok(m) => {
                 println!("ok: {} {} ({})", m.id, m.version, m.title);
                 ExitCode::SUCCESS
@@ -59,8 +67,8 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        [path] => match load(path) {
-            Ok(m) => match run(m) {
+        [path] => match load(path).and_then(|m| check_module(path, &m).map(|()| m)) {
+            Ok(_) => match run(PathBuf::from(path)) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("dreamer-termapp: {e}");
@@ -90,6 +98,81 @@ fn load(path: &str) -> Result<Manifest, String> {
     })
 }
 
+fn module_path(manifest: &Path, m: &Manifest) -> Option<PathBuf> {
+    m.module
+        .as_ref()
+        .map(|f| manifest.parent().unwrap_or(Path::new(".")).join(f))
+}
+
+/// The module compiles (it is not run here).
+fn check_module(path: &str, m: &Manifest) -> Result<(), String> {
+    let Some(p) = module_path(Path::new(path), m) else {
+        return Ok(());
+    };
+    let source = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    script_runtime::check(&p.display().to_string(), &source)
+}
+
+/// A module's `dreamer.*` calls go over the app's current connection.
+type Current = Rc<RefCell<Option<Arc<client::Client>>>>;
+
+struct ClientHost(Current);
+
+impl script_runtime::Host for ClientHost {
+    fn call(&self, method: String, params: Value) -> script_runtime::HostFuture {
+        let c = self.0.borrow().clone();
+        Box::pin(async move {
+            let Some(c) = c else {
+                return Err(script_runtime::HostError {
+                    code: api::code::UNAVAILABLE,
+                    message: "disconnected from the daemon".into(),
+                });
+            };
+            call(&c, &method, params)
+                .await
+                .map_err(|(_, message)| script_runtime::HostError {
+                    code: api::code::UNAVAILABLE,
+                    message,
+                })
+        })
+    }
+}
+
+/// A manifest with its module loaded and run.
+struct Package {
+    manifest: Manifest,
+    script: Option<script_runtime::Script>,
+}
+
+async fn load_package(path: &Path, current: &Current) -> Result<Package, String> {
+    let manifest = load(&path.display().to_string())?;
+    let script = match module_path(path, &manifest) {
+        None => None,
+        Some(p) => {
+            let source =
+                std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let s = script_runtime::Script::with_host(
+                script_runtime::Limits::default(),
+                Rc::new(ClientHost(current.clone())),
+            )
+            .map_err(|e| e.to_string())?;
+            s.run(&p.display().to_string(), &source)
+                .await
+                .map_err(|e| format!("{}: {e}", p.display()))?;
+            Some(s)
+        }
+    };
+    Ok(Package { manifest, script })
+}
+
+/// When the package's files last changed.
+fn stamps(path: &Path, m: &Manifest) -> Vec<Option<std::time::SystemTime>> {
+    std::iter::once(path.to_path_buf())
+        .chain(module_path(path, m))
+        .map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+        .collect()
+}
+
 /// Puts the terminal back however the app ends.
 struct Screen;
 
@@ -117,7 +200,7 @@ impl Drop for Screen {
     }
 }
 
-fn run(manifest: Manifest) -> Result<(), String> {
+fn run(path: PathBuf) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -135,7 +218,7 @@ fn run(manifest: Manifest) -> Result<(), String> {
             }
         }
     });
-    let result = rt.block_on(event_loop(manifest, &mut terminal, &mut events));
+    let result = rt.block_on(event_loop(path, &mut terminal, &mut events));
     drop(screen);
     result
 }
@@ -200,7 +283,12 @@ async fn call(c: &client::Client, method: &str, params: Value) -> Result<Value, 
     }
 }
 
-async fn fetch(app: &mut App, c: &client::Client) -> Result<(), (bool, String)> {
+/// The view's rows, through the module's `transform` when it has one.
+async fn fetch(
+    app: &mut App,
+    c: &client::Client,
+    script: Option<&script_runtime::Script>,
+) -> Result<(), (bool, String)> {
     let name = app.manifest.view.source.clone();
     let Some(src) = app.manifest.data.get(&name).cloned() else {
         return Ok(());
@@ -221,6 +309,14 @@ async fn fetch(app: &mut App, c: &client::Client) -> Result<(), (bool, String)> 
         other => vec![other],
     };
     rows.truncate(src.limit);
+    if let Some(s) = script {
+        match s.handle("transform", &Value::Array(rows.clone())).await {
+            Ok(None) => {}
+            Ok(Some(Value::Array(t))) => rows = t,
+            Ok(Some(_)) => return Err((false, "transform must return a list of rows".into())),
+            Err(e) => return Err((false, format!("transform: {e}"))),
+        }
+    }
     app.set_rows(rows, now_ms());
     Ok(())
 }
@@ -248,21 +344,25 @@ fn key_name(k: &KeyEvent) -> Option<String> {
     })
 }
 
+fn source_events(m: &Manifest) -> (Vec<String>, Option<Duration>) {
+    let source = m.data.get(&m.view.source);
+    (
+        source.map(|s| s.events.clone()).unwrap_or_default(),
+        source.and_then(|s| s.refresh_ms).map(Duration::from_millis),
+    )
+}
+
 async fn event_loop<B: ratatui::backend::Backend>(
-    manifest: Manifest,
+    path: PathBuf,
     terminal: &mut ratatui::Terminal<B>,
     events: &mut tokio::sync::mpsc::UnboundedReceiver<Event>,
 ) -> Result<(), String> {
-    let source = manifest.data.get(&manifest.view.source).cloned();
-    let watch: Vec<String> = source
-        .as_ref()
-        .map(|s| s.events.clone())
-        .unwrap_or_default();
-    let refresh = source
-        .as_ref()
-        .and_then(|s| s.refresh_ms)
-        .map(Duration::from_millis);
-    let mut app = App::new(manifest);
+    let current: Current = Rc::default();
+    let mut pkg = load_package(&path, &current).await?;
+    let mut stamp = stamps(&path, &pkg.manifest);
+    let (mut watch, mut refresh) = source_events(&pkg.manifest);
+    let mut app = App::new(pkg.manifest.clone());
+    let mut ticks = 0u32;
     let mut conn: Option<Conn> = None;
     let mut registered = false;
     let mut gave_up = false;
@@ -293,8 +393,27 @@ async fn event_loop<B: ratatui::backend::Backend>(
                     continue;
                 }
                 let Some(name) = key_name(&k) else { continue };
+                let form = app.manifest.view.kind == manifest::ViewKind::Form;
+                if form && !matches!(name.as_str(), "Enter" | "Esc" | "Ctrl-c")
+                    && !name.starts_with('F')
+                {
+                    app.form_key(if name == " " { "Space" } else { &name });
+                    continue;
+                }
+                let name = if form && name == "Enter" {
+                    app.manifest
+                        .view
+                        .submit
+                        .as_ref()
+                        .and_then(|c| app.manifest.commands.get(c))
+                        .map_or(name, |c| c.key.clone())
+                } else {
+                    name
+                };
                 match name.as_str() {
-                    "q" | "Ctrl-c" => return Ok(()),
+                    "Ctrl-c" => return Ok(()),
+                    "q" if !form => return Ok(()),
+                    "Esc" if form => return Ok(()),
                     "Up" | "k" => app.move_by(-1),
                     "Down" | "j" => app.move_by(1),
                     "PageUp" => app.move_by(-10),
@@ -313,22 +432,47 @@ async fn event_loop<B: ratatui::backend::Backend>(
                             app.status = Some(format!("{label}: not sent (disconnected)"));
                             continue;
                         };
-                        let params = match fill(&cmd.params, app.selected_row()) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                app.status = Some(format!("{label}: {e}"));
-                                continue;
+                        let form_value = if form {
+                            match app.form_json() {
+                                Ok(v) => Some(v),
+                                Err(e) => {
+                                    app.status = Some(format!("{label}: {e}"));
+                                    continue;
+                                }
                             }
+                        } else {
+                            None
                         };
-                        match call(&c.client, &cmd.method, params).await {
-                            Ok(_) => {
-                                app.status = Some(format!("{label}: done"));
-                                refetch = true;
-                            }
-                            Err((gone, e)) => {
-                                app.status = Some(format!("{label}: {e}"));
-                                if gone {
-                                    lost = Some(e);
+                        if let Some(h) = &cmd.handler {
+                            let Some(script) = pkg.script.as_ref() else { continue };
+                            let arg = serde_json::json!({
+                                "selected": app.selected_row().cloned(),
+                                "form": form_value,
+                            });
+                            app.status = Some(match script.handle(h, &arg).await {
+                                Ok(Some(Value::String(said))) => format!("{label}: {said}"),
+                                Ok(_) => format!("{label}: done"),
+                                Err(e) => format!("{label}: {e}"),
+                            });
+                            refetch = true;
+                        } else if let Some(method) = cmd.method.clone() {
+                            let params = match fill(&cmd.params, app.selected_row(), form_value.as_ref()) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    app.status = Some(format!("{label}: {e}"));
+                                    continue;
+                                }
+                            };
+                            match call(&c.client, &method, params).await {
+                                Ok(_) => {
+                                    app.status = Some(format!("{label}: done"));
+                                    refetch = true;
+                                }
+                                Err((gone, e)) => {
+                                    app.status = Some(format!("{label}: {e}"));
+                                    if gone {
+                                        lost = Some(e);
+                                    }
                                 }
                             }
                         }
@@ -351,9 +495,51 @@ async fn event_loop<B: ratatui::backend::Backend>(
             },
             _ = tick.tick() => {
                 let now = tokio::time::Instant::now();
+                ticks += 1;
+                // Look for a new version of the package twice a second.
+                if ticks.is_multiple_of(3) {
+                    let now_stamp = stamps(&path, &pkg.manifest);
+                    if now_stamp != stamp {
+                        stamp = now_stamp;
+                        match load_package(&path, &current).await {
+                            Ok(new) => {
+                                let values = app.form_values();
+                                let (new_watch, new_refresh) = source_events(&new.manifest);
+                                if let Some(c) = conn.as_ref()
+                                    && new_watch != watch
+                                    && !new_watch.is_empty()
+                                {
+                                    let _ = c
+                                        .client
+                                        .call(api::Request::EventsSubscribe(api::EventSubscribe {
+                                            kinds: new_watch.clone(),
+                                            ..api::EventSubscribe::default()
+                                        }))
+                                        .await;
+                                }
+                                (watch, refresh) = (new_watch, new_refresh);
+                                app.manifest = new.manifest.clone();
+                                app.reset_form(&values);
+                                app.version += 1;
+                                pkg = new;
+                                stamp = stamps(&path, &pkg.manifest);
+                                app.status = Some(format!("reloaded (version {})", app.version));
+                                refetch = true;
+                            }
+                            Err(e) => {
+                                app.status = Some(format!(
+                                    "reload failed; version {} keeps running: {e}",
+                                    app.version
+                                ));
+                            }
+                        }
+                        dirty = true;
+                    }
+                }
                 if conn.is_none() && !gave_up && now >= retry {
                     match connect(&mut registered, &watch).await {
                         Ok(c) => {
+                            *current.borrow_mut() = Some(c.client.clone());
                             conn = Some(c);
                             app.link = Link::Live;
                             backoff = Duration::from_millis(500);
@@ -380,7 +566,7 @@ async fn event_loop<B: ratatui::backend::Backend>(
         }
         if refetch && let Some(c) = conn.as_ref() {
             let client = c.client.clone();
-            match fetch(&mut app, &client).await {
+            match fetch(&mut app, &client, pkg.script.as_ref()).await {
                 Ok(()) => {
                     if app
                         .status
@@ -398,6 +584,7 @@ async fn event_loop<B: ratatui::backend::Backend>(
         }
         if let Some(why) = lost {
             conn = None;
+            *current.borrow_mut() = None;
             app.link = Link::Stale(now_ms(), why);
             retry = tokio::time::Instant::now() + backoff;
             dirty = true;
