@@ -22,6 +22,7 @@ pub const PACKAGES: &[&str] = &[
     "dreamer-termapp",
     "domain",
     "matcher",
+    "procreg",
     "mirror",
     "platform",
     "replica",

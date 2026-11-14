@@ -219,6 +219,9 @@ impl Service for Fixed {
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn processes_list(&self, _: api::ProcessQuery) -> Result<api::ProcessList, RpcError> {
+        Ok(api::ProcessList::default())
+    }
     async fn jobs_start(&self, _: api::JobStart) -> Result<api::JobRecord, RpcError> {
         Ok(api::JobRecord::default())
     }

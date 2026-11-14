@@ -942,6 +942,98 @@ impl api::Service for DaemonService {
         Err(for_a_connection("messages.unsubscribe"))
     }
 
+    async fn processes_list(&self, p: api::ProcessQuery) -> Result<api::ProcessList, RpcError> {
+        // Pane programs, when tmux is connected; processes are listed
+        // either way.
+        let panes: Vec<procreg::Pane> = match self.0.endpoint().await {
+            Ok(guard) => guard
+                .as_ref()
+                .map(|ep| {
+                    workspace_host::topology(&ep.name, &ep.tracker)
+                        .panes
+                        .iter()
+                        .filter_map(|pn| pn.pid.map(|pid| procreg::Pane { id: pn.id, pid }))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        let taken = now_ms();
+        let procs = tokio::task::spawn_blocking(procreg::snapshot)
+            .await
+            .map_err(|e| RpcError::new(code::INTERNAL, e.to_string()))?
+            .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+        let want_provider = p.provider.clone();
+        let entries: Vec<procreg::Entry> = procreg::registry(&procs, &panes)
+            .into_iter()
+            .filter(|e| p.panes.is_empty() || e.pane.is_some_and(|(id, _)| p.panes.contains(&id)))
+            .filter(|e| !p.runs_only || e.run.is_some())
+            .filter(|e| {
+                want_provider
+                    .as_deref()
+                    .is_none_or(|w| e.run.is_some_and(|r| r.0.name() == w))
+            })
+            .collect();
+        // Working directories, for runs only (each costs a lookup).
+        let run_pids: Vec<u32> = entries
+            .iter()
+            .filter(|e| e.run.is_some())
+            .map(|e| e.proc.pid)
+            .take(32)
+            .collect();
+        let cwds: std::collections::HashMap<u32, String> = tokio::task::spawn_blocking(move || {
+            run_pids
+                .into_iter()
+                .filter_map(|pid| procreg::cwd(pid).map(|c| (pid, c)))
+                .collect()
+        })
+        .await
+        .unwrap_or_default();
+        let cut = |s: &str| {
+            let mut n = s.len().min(1024);
+            while !s.is_char_boundary(n) {
+                n -= 1;
+            }
+            s[..n].to_owned()
+        };
+        let processes = entries
+            .into_iter()
+            .map(|e| api::ProcessRecord {
+                pid: e.proc.pid,
+                started_unix_ms: e.proc.started_unix_s * 1000,
+                ppid: e.proc.ppid,
+                pgid: e.proc.pgid,
+                tty: e.proc.tty.clone(),
+                command: e.proc.command().to_owned(),
+                args: cut(&e.proc.args),
+                cwd: cwds.get(&e.proc.pid).cloned(),
+                pane: e.pane.map(|(id, _)| id),
+                pane_evidence: e.pane.map(|(_, ev)| {
+                    match ev {
+                        procreg::PaneEvidence::Ancestry => "ancestry",
+                        procreg::PaneEvidence::Terminal => "terminal",
+                    }
+                    .to_owned()
+                }),
+                provider: e.run.map(|r| r.0.name().to_owned()),
+                confidence: e.run.map(|r| {
+                    match r.1 {
+                        procreg::Confidence::High => "high",
+                        procreg::Confidence::Medium => "medium",
+                        procreg::Confidence::Low => "low",
+                    }
+                    .to_owned()
+                }),
+                evidence: e.run.map(|r| r.2.to_owned()),
+                helper_of: e.helper_of,
+            })
+            .collect();
+        Ok(api::ProcessList {
+            processes,
+            taken_unix_ms: taken,
+        })
+    }
+
     async fn jobs_start(&self, p: api::JobStart) -> Result<api::JobRecord, RpcError> {
         crate::jobs::start(&self.0, p).await
     }
