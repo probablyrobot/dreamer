@@ -29,6 +29,9 @@ fn targets(r: &Request) -> Targets {
         }
         Request::TerminalQuery(p) => Targets::Panes(p.panes.clone()),
         Request::DecorationsList(p) => Targets::Panes(vec![p.pane]),
+        // Command lines can hold anything: every process needs every pane.
+        Request::ProcessesList(p) if p.panes.is_empty() => Targets::Everything,
+        Request::ProcessesList(p) => Targets::Panes(p.panes.clone()),
         // A job gets a window of its own; cancelling signals a process.
         Request::JobsStart(_) | Request::JobsCancel(_) => Targets::Everything,
         Request::TapsSubscribe(p) if p.every_pane => Targets::Everything,

@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 30 }
+version: { major: 1, minor: 31 }
 package: dreamer.v1
 
 types:
@@ -1182,6 +1182,37 @@ types:
       - { n: 2, name: directory, type: string }
       - { n: 3, name: files, type: JobFile, repeated: true, doc: "At most 1000, sorted by path." }
 
+  # ---- processes ----------------------------------------------------------
+
+  - message: ProcessQuery
+    fields:
+      - { n: 1, name: panes, type: u32, repeated: true, doc: "Only processes in these panes; empty means every process of the user (needs all_panes)." }
+      - { n: 2, name: runs_only, type: bool, doc: "Only processes that are agent runs." }
+      - { n: 3, name: provider, type: string, optional: true, doc: "Only runs of this provider: claude or codex." }
+
+  - message: ProcessRecord
+    doc: "One process and what the registry can say about it, with the evidence. Absent fields are unknown, not zero."
+    fields:
+      - { n: 1, name: pid, type: u32 }
+      - { n: 2, name: started_unix_ms, type: u64, doc: "With pid, the process's identity: a reused pid has a different start." }
+      - { n: 3, name: ppid, type: u32 }
+      - { n: 4, name: pgid, type: u32 }
+      - { n: 5, name: tty, type: string, optional: true }
+      - { n: 6, name: command, type: string, doc: "The program's file name." }
+      - { n: 7, name: args, type: string, doc: "The command line (at most 1024 bytes)." }
+      - { n: 8, name: cwd, type: string, optional: true, doc: "Reported for runs only, when the system says." }
+      - { n: 9, name: pane, type: u32, optional: true }
+      - { n: 10, name: pane_evidence, type: string, optional: true, doc: "ancestry (it descends from the pane's program) or terminal (it only shares the pane's terminal)." }
+      - { n: 11, name: provider, type: string, optional: true, doc: "claude or codex, when this is the topmost process of an agent run." }
+      - { n: 12, name: confidence, type: string, optional: true, doc: "high, medium, or low, for a run." }
+      - { n: 13, name: evidence, type: string, optional: true, doc: "Why it is counted as a run." }
+      - { n: 14, name: helper_of, type: u32, optional: true, doc: "The run this process serves (a tool, a server); never itself a run." }
+
+  - message: ProcessList
+    fields:
+      - { n: 1, name: processes, type: ProcessRecord, repeated: true }
+      - { n: 2, name: taken_unix_ms, type: u64 }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -1236,6 +1267,7 @@ methods:
   - { method: jobs.list, params: Empty, result: JobList }
   - { method: jobs.cancel, params: JobRef, result: JobRecord, mutation: true, doc: "Send SIGTERM to the job's program; its record says killed once it ends." }
   - { method: jobs.artifacts, params: JobRef, result: JobArtifacts, doc: "The files the job left in its artifacts directory." }
+  - { method: processes.list, params: ProcessQuery, result: ProcessList, doc: "The user's processes on this host, with their panes and agent runs, by evidence." }
   - { method: taps.subscribe, params: TapSubscribe, result: TapSubscription, doc: "Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap." }
   - { method: taps.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }

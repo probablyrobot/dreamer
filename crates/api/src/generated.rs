@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 30;
+pub const PROTOCOL_MINOR: u32 = 31;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -3025,6 +3025,81 @@ pub struct JobArtifacts {
     pub files: Vec<JobFile>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProcessQuery {
+    /// Only processes in these panes; empty means every process of the user (needs all_panes).
+    #[prost(uint32, repeated, tag = "1")]
+    pub panes: Vec<u32>,
+    /// Only processes that are agent runs.
+    #[prost(bool, tag = "2")]
+    pub runs_only: bool,
+    /// Only runs of this provider: claude or codex.
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+/// One process and what the registry can say about it, with the evidence. Absent fields are unknown, not zero.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProcessRecord {
+    #[prost(uint32, tag = "1")]
+    pub pid: u32,
+    /// With pid, the process's identity: a reused pid has a different start.
+    #[prost(uint64, tag = "2")]
+    pub started_unix_ms: u64,
+    #[prost(uint32, tag = "3")]
+    pub ppid: u32,
+    #[prost(uint32, tag = "4")]
+    pub pgid: u32,
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tty: Option<String>,
+    /// The program's file name.
+    #[prost(string, tag = "6")]
+    pub command: String,
+    /// The command line (at most 1024 bytes).
+    #[prost(string, tag = "7")]
+    pub args: String,
+    /// Reported for runs only, when the system says.
+    #[prost(string, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[prost(uint32, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u32>,
+    /// ancestry (it descends from the pane's program) or terminal (it only shares the pane's terminal).
+    #[prost(string, optional, tag = "10")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane_evidence: Option<String>,
+    /// claude or codex, when this is the topmost process of an agent run.
+    #[prost(string, optional, tag = "11")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// high, medium, or low, for a run.
+    #[prost(string, optional, tag = "12")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
+    /// Why it is counted as a run.
+    #[prost(string, optional, tag = "13")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+    /// The run this process serves (a tool, a server); never itself a run.
+    #[prost(uint32, optional, tag = "14")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub helper_of: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProcessList {
+    #[prost(message, repeated, tag = "1")]
+    pub processes: Vec<ProcessRecord>,
+    #[prost(uint64, tag = "2")]
+    pub taken_unix_ms: u64,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -3080,6 +3155,7 @@ pub mod method {
     pub const JOBS_LIST: &str = "jobs.list";
     pub const JOBS_CANCEL: &str = "jobs.cancel";
     pub const JOBS_ARTIFACTS: &str = "jobs.artifacts";
+    pub const PROCESSES_LIST: &str = "processes.list";
     pub const TAPS_SUBSCRIBE: &str = "taps.subscribe";
     pub const TAPS_UNSUBSCRIBE: &str = "taps.unsubscribe";
     pub const APPS_REGISTER: &str = "apps.register";
@@ -3467,6 +3543,13 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "The files the job left in its artifacts directory.",
     },
     MethodInfo {
+        name: "processes.list",
+        params: "ProcessQuery",
+        result: "ProcessList",
+        mutation: false,
+        doc: "The user's processes on this host, with their panes and agent runs, by evidence.",
+    },
+    MethodInfo {
         name: "taps.subscribe",
         params: "TapSubscribe",
         result: "TapSubscription",
@@ -3545,6 +3628,7 @@ pub enum Request {
     JobsList(Empty),
     JobsCancel(JobRef),
     JobsArtifacts(JobRef),
+    ProcessesList(ProcessQuery),
     TapsSubscribe(TapSubscribe),
     TapsUnsubscribe(Unsubscribe),
     AppsRegister(RegisterApp),
@@ -3606,6 +3690,7 @@ impl Request {
             Self::JobsList(_) => "jobs.list",
             Self::JobsCancel(_) => "jobs.cancel",
             Self::JobsArtifacts(_) => "jobs.artifacts",
+            Self::ProcessesList(_) => "processes.list",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -3668,6 +3753,7 @@ impl Request {
             Self::JobsList(v) => ::prost::Message::encode_to_vec(v),
             Self::JobsCancel(v) => ::prost::Message::encode_to_vec(v),
             Self::JobsArtifacts(v) => ::prost::Message::encode_to_vec(v),
+            Self::ProcessesList(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -3733,6 +3819,7 @@ impl Request {
             "jobs.list" => Ok(Self::JobsList(::prost::Message::decode(bytes)?)),
             "jobs.cancel" => Ok(Self::JobsCancel(::prost::Message::decode(bytes)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(::prost::Message::decode(bytes)?)),
+            "processes.list" => Ok(Self::ProcessesList(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -3795,6 +3882,7 @@ impl Request {
             Self::JobsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::JobsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::JobsArtifacts(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ProcessesList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3856,6 +3944,7 @@ impl Request {
             "jobs.list" => Ok(Self::JobsList(serde_json::from_value(value)?)),
             "jobs.cancel" => Ok(Self::JobsCancel(serde_json::from_value(value)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(serde_json::from_value(value)?)),
+            "processes.list" => Ok(Self::ProcessesList(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -3920,6 +4009,7 @@ pub enum Response {
     JobsList(JobList),
     JobsCancel(JobRecord),
     JobsArtifacts(JobArtifacts),
+    ProcessesList(ProcessList),
     TapsSubscribe(TapSubscription),
     TapsUnsubscribe(Empty),
     AppsRegister(Registration),
@@ -3981,6 +4071,7 @@ impl Response {
             Self::JobsList(_) => "jobs.list",
             Self::JobsCancel(_) => "jobs.cancel",
             Self::JobsArtifacts(_) => "jobs.artifacts",
+            Self::ProcessesList(_) => "processes.list",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -4043,6 +4134,7 @@ impl Response {
             Self::JobsList(v) => ::prost::Message::encode_to_vec(v),
             Self::JobsCancel(v) => ::prost::Message::encode_to_vec(v),
             Self::JobsArtifacts(v) => ::prost::Message::encode_to_vec(v),
+            Self::ProcessesList(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -4108,6 +4200,7 @@ impl Response {
             "jobs.list" => Ok(Self::JobsList(::prost::Message::decode(bytes)?)),
             "jobs.cancel" => Ok(Self::JobsCancel(::prost::Message::decode(bytes)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(::prost::Message::decode(bytes)?)),
+            "processes.list" => Ok(Self::ProcessesList(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -4170,6 +4263,7 @@ impl Response {
             Self::JobsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::JobsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::JobsArtifacts(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ProcessesList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -4231,6 +4325,7 @@ impl Response {
             "jobs.list" => Ok(Self::JobsList(serde_json::from_value(value)?)),
             "jobs.cancel" => Ok(Self::JobsCancel(serde_json::from_value(value)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(serde_json::from_value(value)?)),
+            "processes.list" => Ok(Self::ProcessesList(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -4498,6 +4593,11 @@ pub trait Service: Sync {
         &self,
         params: JobRef,
     ) -> impl ::core::future::Future<Output = Result<JobArtifacts, RpcError>> + Send;
+    /// The user's processes on this host, with their panes and agent runs, by evidence.
+    fn processes_list(
+        &self,
+        params: ProcessQuery,
+    ) -> impl ::core::future::Future<Output = Result<ProcessList, RpcError>> + Send;
     /// Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap.
     fn taps_subscribe(
         &self,
@@ -4633,6 +4733,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::JobsList(p) => service.jobs_list(p).await.map(Response::JobsList),
         Request::JobsCancel(p) => service.jobs_cancel(p).await.map(Response::JobsCancel),
         Request::JobsArtifacts(p) => service.jobs_artifacts(p).await.map(Response::JobsArtifacts),
+        Request::ProcessesList(p) => service.processes_list(p).await.map(Response::ProcessesList),
         Request::TapsSubscribe(p) => service.taps_subscribe(p).await.map(Response::TapsSubscribe),
         Request::TapsUnsubscribe(p) => service
             .taps_unsubscribe(p)
