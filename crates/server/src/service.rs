@@ -86,6 +86,8 @@ pub struct State {
     pub events: Arc<crate::events::Events>,
     /// Structured messages between connections.
     pub broker: Arc<crate::messages::Broker>,
+    /// Supervised extensions.
+    pub extensions: crate::extensions::Extensions,
 }
 
 #[derive(Debug, Clone)]
@@ -931,6 +933,17 @@ impl api::Service for DaemonService {
 
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<api::Empty, RpcError> {
         Err(for_a_connection("messages.unsubscribe"))
+    }
+
+    async fn extensions_list(&self, _: api::Empty) -> Result<api::ExtensionList, RpcError> {
+        Ok(self.0.extensions.list())
+    }
+
+    async fn extensions_restart(
+        &self,
+        p: api::ExtensionRef,
+    ) -> Result<api::ExtensionStatus, RpcError> {
+        self.0.extensions.restart(&p.name)
     }
 
     async fn apps_register(&self, _: api::RegisterApp) -> Result<api::Registration, RpcError> {

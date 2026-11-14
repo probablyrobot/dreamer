@@ -52,7 +52,9 @@ impl Cli {
             .env("DREAMER_DAEMON", Self::daemon())
             .env("DREAMER_SSH", self.root.join("ssh"))
             .env("DREAMER_CONFIG_DIR", self.root.join("config"))
-            .env("DREAMER_TEST_BACKOFF_MS", "100");
+            .env("DREAMER_TEST_BACKOFF_MS", "100")
+            .env("DREAMER_TEST_EXTENSION_HEARTBEAT_MS", "300")
+            .env("DREAMER_TEST_EXTENSION_BACKOFF_MS", "100");
         c.output().expect("dream")
     }
 
@@ -1347,4 +1349,202 @@ fn a_pane_app_over_json_rpc_is_held_to_its_grant() {
         cli.run(&["status"]).status.success(),
         "the daemon still runs"
     );
+}
+
+impl Cli {
+    fn write_extensions(&self, yaml: &str) {
+        let dir = self.root.join("config");
+        std::fs::create_dir_all(&dir).expect("config dir");
+        std::fs::write(dir.join("extensions.yaml"), yaml).expect("extensions.yaml");
+    }
+
+    fn extensions(&self) -> serde_json::Value {
+        let out = self.ok(&["extensions", "--json"]);
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"))
+    }
+
+    /// The extension named `name` once `want` holds for it.
+    fn extension_until(
+        &self,
+        name: &str,
+        within: Duration,
+        mut want: impl FnMut(&serde_json::Value) -> bool,
+    ) -> serde_json::Value {
+        let deadline = Instant::now() + within;
+        loop {
+            let all = self.extensions();
+            let x = all["extensions"]
+                .as_array()
+                .and_then(|a| a.iter().find(|x| x["name"] == name).cloned())
+                .unwrap_or_else(|| panic!("no extension {name}: {all}"));
+            if want(&x) {
+                return x;
+            }
+            assert!(Instant::now() < deadline, "{name} never got there: {x}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn extension_log(&self, name: &str) -> String {
+        std::fs::read_to_string(self.root.join(format!("st/extensions/{name}.log")))
+            .unwrap_or_default()
+    }
+}
+
+#[test]
+fn a_crashing_extension_restarts_with_growing_delays_then_parks() {
+    let cli = Cli::new();
+    cli.write_extensions(&format!(
+        "extensions:\n  - name: crashy\n    argv: [{DREAM}, extension-probe, --crash-after, '0']\n"
+    ));
+    cli.ok(&["ensure-running"]);
+    // Watch each start; the gaps between them grow.
+    let mut starts: Vec<u64> = Vec::new();
+    let parked = cli.extension_until("crashy", Duration::from_secs(60), |x| {
+        if let Some(t) = x["started_unix_ms"].as_u64()
+            && starts.last() != Some(&t)
+        {
+            starts.push(t);
+        }
+        x["state"] == "failed"
+    });
+    assert_eq!(parked["failures"], 8, "{parked}");
+    assert_eq!(parked["restarts"], 7, "{parked}");
+    assert!(
+        parked["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exited"),
+        "{parked}"
+    );
+    let gaps: Vec<u64> = starts.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(gaps.len() >= 5, "saw starts {starts:?}");
+    assert!(gaps[gaps.len() - 1] > 2 * gaps[0], "delays grow: {gaps:?}");
+    // Parked until asked; then it starts again.
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(cli.extensions()["extensions"][0]["state"], "failed");
+    cli.ok(&["extensions", "restart", "crashy"]);
+    let again = cli.extension_until("crashy", Duration::from_secs(10), |x| {
+        x["restarts"].as_u64() > Some(7)
+    });
+    assert_ne!(again["state"], "failed", "{again}");
+    assert!(
+        cli.extension_log("crashy")
+            .contains("probe: crashing after 0 pings")
+    );
+}
+
+#[test]
+fn a_stalled_extension_is_restarted_and_terminals_keep_flowing() {
+    let cli = Cli::new();
+    cli.write_extensions(&format!(
+        "extensions:\n  - name: stally\n    argv: [{DREAM}, extension-probe, --stall-after, '1']\n"
+    ));
+    cli.ok(&["ensure-running"]);
+    cli.extension_until("stally", Duration::from_secs(10), |x| {
+        x["state"] == "running"
+    });
+    // While it stalls, terminal calls answer promptly.
+    for _ in 0..5 {
+        let t = Instant::now();
+        cli.ok(&["read", "%0"]);
+        cli.ok(&["ls"]);
+        assert!(
+            t.elapsed() < Duration::from_secs(2),
+            "terminal calls took {:?}",
+            t.elapsed()
+        );
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    let x = cli.extension_until("stally", Duration::from_secs(10), |x| {
+        x["restarts"].as_u64() >= Some(1)
+    });
+    assert!(
+        x["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("stalled"),
+        "{x}"
+    );
+    assert!(
+        cli.extension_log("stally")
+            .contains("probe: stalling after 1 pings")
+    );
+}
+
+#[test]
+fn an_extension_is_held_to_its_grant_and_messages_as_itself() {
+    let cli = Cli::new();
+    cli.write_extensions(&format!(
+        "extensions:\n  - name: nosy\n    argv: [{DREAM}, extension-probe, --try, daemon.shutdown, --try, grants.current, --publish, chat.ext]\n    grant:\n      methods: [grants.current, messages.*]\n"
+    ));
+    cli.ok(&["ensure-running"]);
+    cli.extension_until("nosy", Duration::from_secs(10), |x| x["state"] == "running");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let envelope = rt.block_on(async {
+        let mut c = client::Client::connect(&cli.root.join("rt/dreamerd.sock"), "test")
+            .await
+            .expect("connect");
+        let mut pushed = c.pushed().expect("pushed");
+        c.call(api::Request::MessagesSubscribe(api::MessageSubscribe {
+            topics: vec!["chat.*".into()],
+        }))
+        .await
+        .expect("subscribe");
+        // Start it again so it publishes while we listen.
+        c.call(api::Request::ExtensionsRestart(api::ExtensionRef {
+            name: "nosy".into(),
+        }))
+        .await
+        .expect("restart");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match tokio::time::timeout_at(deadline, pushed.recv()).await {
+                Ok(Some(client::Pushed::Event { topic, payload, .. }))
+                    if topic == "messages.deliver" =>
+                {
+                    let d = <api::MessageDelivery as prost::Message>::decode(payload.as_slice())
+                        .expect("delivery");
+                    break d.envelope.expect("envelope");
+                }
+                Ok(Some(_)) => {}
+                other => panic!("no message from the extension: {other:?}"),
+            }
+        }
+    });
+    let sender = envelope.sender.expect("stamped");
+    assert_eq!(sender.instance, "extension:nosy");
+    assert!(!sender.owner, "an extension is not the user");
+    assert_eq!(envelope.claimed_sender.as_deref(), Some("owner"));
+    let log = cli.extension_log("nosy");
+    let reply = |id: &str| {
+        log.lines()
+            .filter_map(|l| l.strip_prefix("probe: reply "))
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|v| v["id"] == id)
+            .unwrap_or_else(|| panic!("no reply {id} in:\n{log}"))
+    };
+    assert_eq!(reply("try-0")["error"]["code"], -32005, "{log}");
+    assert_eq!(reply("try-1")["result"]["owner"], false, "{log}");
+    assert!(
+        cli.run(&["status"]).status.success(),
+        "the daemon still runs"
+    );
+    // Stopping the daemon asks the extension to stop, and it is gone.
+    let pid = cli.extensions()["extensions"][0]["pid"]
+        .as_u64()
+        .expect("running pid") as u32;
+    assert!(cli.run(&["shutdown"]).status.success(), "shutdown");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while platform::process_alive(pid) {
+        assert!(
+            Instant::now() < deadline,
+            "extension {pid} outlived the daemon"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(cli.extension_log("nosy").contains("probe: shutdown"));
 }

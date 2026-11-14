@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 23;
+pub const PROTOCOL_MINOR: u32 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -571,6 +571,66 @@ mod event_gap_reason_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| EventGapReason::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ExtensionState {
+    Unspecified = 0,
+    /// Started; waiting for its answer to extension.hello.
+    Starting = 1,
+    Running = 2,
+    /// Crashed or stalled; starting again after a delay.
+    Restarting = 3,
+    /// Kept failing; parked until extensions.restart.
+    Failed = 4,
+    /// enabled: false in extensions.yaml.
+    Disabled = 5,
+    /// The daemon is stopping.
+    Stopped = 6,
+}
+
+impl ExtensionState {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Restarting => "restarting",
+            Self::Failed => "failed",
+            Self::Disabled => "disabled",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "starting" => Some(Self::Starting),
+            "running" => Some(Self::Running),
+            "restarting" => Some(Self::Restarting),
+            "failed" => Some(Self::Failed),
+            "disabled" => Some(Self::Disabled),
+            "stopped" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+}
+
+mod extension_state_json {
+    use super::ExtensionState;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match ExtensionState::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| ExtensionState::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -2097,6 +2157,62 @@ pub struct MessageDelivery {
     pub missed: u64,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExtensionStatus {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(enumeration = "ExtensionState", tag = "2")]
+    #[serde(with = "extension_state_json")]
+    pub state: i32,
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// Times it was started again since the daemon started.
+    #[prost(uint32, tag = "4")]
+    pub restarts: u32,
+    /// Consecutive failures; reset after a minute of running.
+    #[prost(uint32, tag = "5")]
+    pub failures: u32,
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[prost(uint64, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_unix_ms: Option<u64>,
+    #[prost(uint64, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_start_unix_ms: Option<u64>,
+    /// What it said in its extension.hello answer.
+    #[prost(string, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Its standard error, appended.
+    #[prost(string, tag = "10")]
+    pub log: String,
+    #[prost(message, optional, tag = "11")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<Grant>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExtensionList {
+    #[prost(message, repeated, tag = "1")]
+    pub extensions: Vec<ExtensionStatus>,
+    /// Why extensions.yaml could not be read; nothing was started from it.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_error: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExtensionRef {
+    #[prost(string, tag = "1")]
+    pub name: String,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -2133,6 +2249,8 @@ pub mod method {
     pub const MESSAGES_REPLY: &str = "messages.reply";
     pub const MESSAGES_SUBSCRIBE: &str = "messages.subscribe";
     pub const MESSAGES_UNSUBSCRIBE: &str = "messages.unsubscribe";
+    pub const EXTENSIONS_LIST: &str = "extensions.list";
+    pub const EXTENSIONS_RESTART: &str = "extensions.restart";
     pub const APPS_REGISTER: &str = "apps.register";
 }
 
@@ -2385,6 +2503,20 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "",
     },
     MethodInfo {
+        name: "extensions.list",
+        params: "Empty",
+        result: "ExtensionList",
+        mutation: false,
+        doc: "Supervised extensions and their state.",
+    },
+    MethodInfo {
+        name: "extensions.restart",
+        params: "ExtensionRef",
+        result: "ExtensionStatus",
+        mutation: true,
+        doc: "Stop an extension if it runs and start it now, also one parked as failed (owner only).",
+    },
+    MethodInfo {
         name: "apps.register",
         params: "RegisterApp",
         result: "Registration",
@@ -2430,6 +2562,8 @@ pub enum Request {
     MessagesReply(MessageReply),
     MessagesSubscribe(MessageSubscribe),
     MessagesUnsubscribe(Unsubscribe),
+    ExtensionsList(Empty),
+    ExtensionsRestart(ExtensionRef),
     AppsRegister(RegisterApp),
 }
 
@@ -2470,6 +2604,8 @@ impl Request {
             Self::MessagesReply(_) => "messages.reply",
             Self::MessagesSubscribe(_) => "messages.subscribe",
             Self::MessagesUnsubscribe(_) => "messages.unsubscribe",
+            Self::ExtensionsList(_) => "extensions.list",
+            Self::ExtensionsRestart(_) => "extensions.restart",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -2511,6 +2647,8 @@ impl Request {
             Self::MessagesReply(v) => ::prost::Message::encode_to_vec(v),
             Self::MessagesSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::MessagesUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::ExtensionsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::ExtensionsRestart(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2555,6 +2693,8 @@ impl Request {
             "messages.unsubscribe" => {
                 Ok(Self::MessagesUnsubscribe(::prost::Message::decode(bytes)?))
             }
+            "extensions.list" => Ok(Self::ExtensionsList(::prost::Message::decode(bytes)?)),
+            "extensions.restart" => Ok(Self::ExtensionsRestart(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2596,6 +2736,8 @@ impl Request {
             Self::MessagesReply(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MessagesSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MessagesUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ExtensionsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ExtensionsRestart(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2636,6 +2778,8 @@ impl Request {
             "messages.reply" => Ok(Self::MessagesReply(serde_json::from_value(value)?)),
             "messages.subscribe" => Ok(Self::MessagesSubscribe(serde_json::from_value(value)?)),
             "messages.unsubscribe" => Ok(Self::MessagesUnsubscribe(serde_json::from_value(value)?)),
+            "extensions.list" => Ok(Self::ExtensionsList(serde_json::from_value(value)?)),
+            "extensions.restart" => Ok(Self::ExtensionsRestart(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2679,6 +2823,8 @@ pub enum Response {
     MessagesReply(MessageSent),
     MessagesSubscribe(MessageSubscription),
     MessagesUnsubscribe(Empty),
+    ExtensionsList(ExtensionList),
+    ExtensionsRestart(ExtensionStatus),
     AppsRegister(Registration),
 }
 
@@ -2719,6 +2865,8 @@ impl Response {
             Self::MessagesReply(_) => "messages.reply",
             Self::MessagesSubscribe(_) => "messages.subscribe",
             Self::MessagesUnsubscribe(_) => "messages.unsubscribe",
+            Self::ExtensionsList(_) => "extensions.list",
+            Self::ExtensionsRestart(_) => "extensions.restart",
             Self::AppsRegister(_) => "apps.register",
         }
     }
@@ -2760,6 +2908,8 @@ impl Response {
             Self::MessagesReply(v) => ::prost::Message::encode_to_vec(v),
             Self::MessagesSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::MessagesUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::ExtensionsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::ExtensionsRestart(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -2804,6 +2954,8 @@ impl Response {
             "messages.unsubscribe" => {
                 Ok(Self::MessagesUnsubscribe(::prost::Message::decode(bytes)?))
             }
+            "extensions.list" => Ok(Self::ExtensionsList(::prost::Message::decode(bytes)?)),
+            "extensions.restart" => Ok(Self::ExtensionsRestart(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -2845,6 +2997,8 @@ impl Response {
             Self::MessagesReply(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MessagesSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MessagesUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ExtensionsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ExtensionsRestart(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -2885,6 +3039,8 @@ impl Response {
             "messages.reply" => Ok(Self::MessagesReply(serde_json::from_value(value)?)),
             "messages.subscribe" => Ok(Self::MessagesSubscribe(serde_json::from_value(value)?)),
             "messages.unsubscribe" => Ok(Self::MessagesUnsubscribe(serde_json::from_value(value)?)),
+            "extensions.list" => Ok(Self::ExtensionsList(serde_json::from_value(value)?)),
+            "extensions.restart" => Ok(Self::ExtensionsRestart(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -3059,6 +3215,16 @@ pub trait Service: Sync {
         &self,
         params: Unsubscribe,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Supervised extensions and their state.
+    fn extensions_list(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<ExtensionList, RpcError>> + Send;
+    /// Stop an extension if it runs and start it now, also one parked as failed (owner only).
+    fn extensions_restart(
+        &self,
+        params: ExtensionRef,
+    ) -> impl ::core::future::Future<Output = Result<ExtensionStatus, RpcError>> + Send;
     /// Trade a launch ticket for the app's narrow grant on this connection.
     fn apps_register(
         &self,
@@ -3151,6 +3317,14 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .messages_unsubscribe(p)
             .await
             .map(Response::MessagesUnsubscribe),
+        Request::ExtensionsList(p) => service
+            .extensions_list(p)
+            .await
+            .map(Response::ExtensionsList),
+        Request::ExtensionsRestart(p) => service
+            .extensions_restart(p)
+            .await
+            .map(Response::ExtensionsRestart),
         Request::AppsRegister(p) => service.apps_register(p).await.map(Response::AppsRegister),
     }
 }

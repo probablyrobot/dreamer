@@ -37,6 +37,7 @@
 mod app;
 mod bridge;
 mod daemon;
+mod extprobe;
 mod hosts;
 mod remote;
 mod service;
@@ -70,6 +71,7 @@ const USAGE: &str = "usage:
   dream tier %PANE hot|warm
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream rpc [-L socket | --tmux-socket-path PATH] [--tmux PATH]
+  dream extensions [--json] | dream extensions restart NAME
   dream hosts connect|list|call|disconnect ... (see `dream hosts`)
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
@@ -132,6 +134,12 @@ fn main() -> ExitCode {
         }
         ["app", "run", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| app::run(&d, &extra))
+        }
+        ["extensions", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::extensions(&d, &extra))
+        }
+        ["extension-probe", rest @ ..] => {
+            extprobe::run(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
         }
         ["app", "probe", rest @ ..] => {
             app::probe(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
