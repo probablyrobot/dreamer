@@ -75,6 +75,19 @@ Both are pinned exactly and already in `Cargo.lock` through GPUI's graph.
 They have no native code, and headless crates may use `png`; `resvg` is
 used only by the build tool.
 
+## Scripts, matching, and pane apps
+
+| Crate | Version | Used by | License |
+| --- | --- | --- | --- |
+| `mlua` (features `luau`, `vendored`, `async`) | `0.12.2`, with its vendored Luau | `script-runtime`: sandboxed scripts ([ADR 0001](adr/0001-luau-script-runtime.md)) | MIT (Luau: MIT) |
+| `regex` | `1.13.1` | `matcher`: the linear-time match stage of queries and filters | MIT OR Apache-2.0 |
+| `ratatui` (no default features; `crossterm`) | `=0.30.2` | `dreamer-termapp`: pane app views | MIT |
+| `crossterm` | `=0.29.0` | `dreamer-termapp`: raw mode, alternate screen, keys | MIT |
+
+All are pure Rust except Luau (C++, built by `mlua` from its vendored
+source). None pulls in a UI framework, windowing, GPU, or font crate, so
+headless crates may use them (`cargo xtask headless --check`).
+
 ## GPUI
 
 | Item | Value |

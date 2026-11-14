@@ -20,6 +20,11 @@ from `Cargo.lock` at packaging time.
 | image | 0.25.10 | MIT OR Apache-2.0 | `dreamer` desktop client |
 | serde | 1.0.229 | MIT OR Apache-2.0 | `dream`, workspace files |
 | serde_norway | 0.9.42 | MIT OR Apache-2.0 | `dream`, workspace files |
+| mlua | 0.12.2 | MIT | `dreamerd` (scripts) |
+| Luau (vendored by mlua) | as pinned by mlua 0.12.2 | MIT | `dreamerd` (scripts) |
+| regex | 1.13.1 | MIT OR Apache-2.0 | `dreamerd` (queries, filters) |
+| ratatui | 0.30.2 | MIT | `dreamer-termapp` |
+| crossterm | 0.29.0 | MIT | `dreamer-termapp` |
 
 ## Terminal color schemes
 
