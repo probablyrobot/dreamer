@@ -310,8 +310,16 @@ fn alternate_screen_is_restored_and_left_correctly() {
 
 #[test]
 fn incomplete_escape_and_utf8_continue_correctly() {
-    let script = "printf 'before \\033[3'; sleep 1.5; printf '1mred\\033[0m \\344'; sleep 0.3; printf '\\270\\226 DONE-7f3a'; sleep 60";
-    let (server, mut client, pane) = start(30, 4, script);
+    // The program stops in the middle of an escape until the test has
+    // bootstrapped (the go file), so the partial escape is pending then
+    // however slow the machine is.
+    let go = std::env::temp_dir().join(format!("dreamer-bootstrap-go-{}", std::process::id()));
+    let _ = std::fs::remove_file(&go);
+    let script = format!(
+        "printf 'before \\033[3'; while [ ! -e '{}' ]; do sleep 0.05; done; printf '1mred\\033[0m \\344'; sleep 0.3; printf '\\270\\226 DONE-7f3a'; sleep 60",
+        go.display()
+    );
+    let (server, mut client, pane) = start(30, 4, &script);
     wait_for("partial output", || {
         server
             .run_checked(&["capture-pane", "-p", "-t", "main"])
@@ -319,12 +327,14 @@ fn incomplete_escape_and_utf8_continue_correctly() {
     });
     let mut b = bootstrap(&mut client, pane);
     report("incomplete", &b);
+    std::fs::write(&go, b"").expect("go file");
     assert_eq!(b.captures.pending, b"\x1b[3");
     follow_until(&mut client, &mut b.engine, pane, DONE);
     assert_matches_tmux(&server, "main", &mut b.engine);
     let frame = b.engine.frame().expect("frame");
     assert_eq!(frame.rows[0].text(), "before red 世 DONE-7f3a");
     assert!(frame.style_dump().contains("Palette(1)"));
+    let _ = std::fs::remove_file(&go);
 }
 
 #[test]
