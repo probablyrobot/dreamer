@@ -737,6 +737,82 @@ fn print_script(s: &api::ScriptStatus) {
     }
 }
 
+/// `dream jobs ...`: list, start, cancel, and show artifacts of jobs.
+pub fn jobs(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage:
+  dream jobs [--json]
+  dream jobs start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...]
+  dream jobs cancel ID
+  dream jobs artifacts ID";
+    let request = match args {
+        [] => Request::JobsList(api::Empty {}),
+        [j] if j == "--json" => Request::JobsList(api::Empty {}),
+        [v, id] if v == "cancel" => Request::JobsCancel(api::JobRef { id: id.clone() }),
+        [v, id] if v == "artifacts" => Request::JobsArtifacts(api::JobRef { id: id.clone() }),
+        [v, rest @ ..] if v == "start" => {
+            let split = rest.iter().position(|a| a == "--").ok_or(USAGE)?;
+            let (opts, argv) = (&rest[..split], &rest[split + 1..]);
+            let mut start = api::JobStart {
+                argv: argv.to_vec(),
+                ..api::JobStart::default()
+            };
+            let mut it = opts.iter();
+            while let Some(a) = it.next() {
+                let value = it.next().cloned().ok_or(USAGE)?;
+                match a.as_str() {
+                    "--cwd" => start.cwd = Some(value),
+                    "--name" => start.name = Some(value),
+                    _ => return Err(USAGE.into()),
+                }
+            }
+            Request::JobsStart(start)
+        }
+        _ => return Err(USAGE.into()),
+    };
+    let json = args.first().is_some_and(|a| a == "--json");
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        match call(&mut c, request).await? {
+            Response::JobsList(l) if json => println!(
+                "{}",
+                serde_json::to_string_pretty(&l).map_err(|e| e.to_string())?
+            ),
+            Response::JobsList(l) => {
+                if l.jobs.is_empty() {
+                    println!("no jobs");
+                }
+                for j in &l.jobs {
+                    print_job(j);
+                }
+            }
+            Response::JobsStart(j) | Response::JobsCancel(j) => print_job(&j),
+            Response::JobsArtifacts(a) => {
+                println!("{}", a.directory);
+                for f in &a.files {
+                    println!("  {} ({} bytes)", f.path, f.bytes);
+                }
+            }
+            _ => return Err("unexpected reply".into()),
+        }
+        Ok(())
+    })
+}
+
+fn print_job(j: &api::JobRecord) {
+    let state = api::JobState::try_from(j.state).map_or("unknown", api::JobState::name);
+    let how = match (j.exit_code, j.signal) {
+        (Some(c), _) => format!(" (exit {c})"),
+        (None, Some(s)) => format!(" (signal {s})"),
+        _ => String::new(),
+    };
+    println!(
+        "{} {state}{how} pane %{}: {}",
+        j.id,
+        j.pane,
+        j.argv.join(" ")
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

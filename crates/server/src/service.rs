@@ -113,7 +113,7 @@ fn unavailable(msg: String) -> RpcError {
 
 impl State {
     /// The endpoint, connecting on first use and after its link dropped.
-    async fn endpoint(
+    pub(crate) async fn endpoint(
         self: &Arc<Self>,
     ) -> Result<tokio::sync::MutexGuard<'_, Option<Endpoint>>, RpcError> {
         let mut guard = self.endpoint.lock().await;
@@ -867,6 +867,7 @@ impl api::Service for DaemonService {
                 argv: p.argv.clone(),
                 cwd: p.cwd.clone(),
                 env,
+                background: false,
             };
             let name = p.name.clone().unwrap_or_else(|| p.app_id.clone());
             tmux_backend::ops::new_window(
@@ -939,6 +940,26 @@ impl api::Service for DaemonService {
 
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<api::Empty, RpcError> {
         Err(for_a_connection("messages.unsubscribe"))
+    }
+
+    async fn jobs_start(&self, p: api::JobStart) -> Result<api::JobRecord, RpcError> {
+        crate::jobs::start(&self.0, p).await
+    }
+
+    async fn jobs_get(&self, p: api::JobRef) -> Result<api::JobRecord, RpcError> {
+        crate::jobs::get(&p.id)
+    }
+
+    async fn jobs_list(&self, _: api::Empty) -> Result<api::JobList, RpcError> {
+        Ok(crate::jobs::list())
+    }
+
+    async fn jobs_cancel(&self, p: api::JobRef) -> Result<api::JobRecord, RpcError> {
+        crate::jobs::cancel(&p.id)
+    }
+
+    async fn jobs_artifacts(&self, p: api::JobRef) -> Result<api::JobArtifacts, RpcError> {
+        crate::jobs::artifacts(&p.id)
     }
 
     async fn decorations_list(

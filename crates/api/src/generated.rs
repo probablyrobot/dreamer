@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 29;
+pub const PROTOCOL_MINOR: u32 = 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -830,6 +830,62 @@ mod filter_state_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| FilterState::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum JobState {
+    Unspecified = 0,
+    Running = 1,
+    /// Exited with status 0.
+    Succeeded = 2,
+    /// Exited with another status.
+    Failed = 3,
+    /// Ended by a signal (including a cancel).
+    Killed = 4,
+    /// Its pane is gone and it left no exit status.
+    Lost = 5,
+}
+
+impl JobState {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+            Self::Lost => "lost",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "running" => Some(Self::Running),
+            "succeeded" => Some(Self::Succeeded),
+            "failed" => Some(Self::Failed),
+            "killed" => Some(Self::Killed),
+            "lost" => Some(Self::Lost),
+            _ => None,
+        }
+    }
+}
+
+mod job_state_json {
+    use super::JobState;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match JobState::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| JobState::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -2864,6 +2920,111 @@ pub struct FilterList {
     pub filters: Vec<FilterStatus>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnvVar {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub value: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobStart {
+    /// The exact program and arguments; no shell.
+    #[prost(string, repeated, tag = "1")]
+    pub argv: Vec<String>,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Added to the job's environment; names are [A-Z_][A-Z0-9_]*.
+    #[prost(message, repeated, tag = "3")]
+    pub env: Vec<EnvVar>,
+    /// The tmux window name; default the program's name.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The session for its window; default the first session.
+    #[prost(uint32, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobRecord {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(string, repeated, tag = "2")]
+    pub argv: Vec<String>,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Its tmux pane: read its output with terminal.read while the pane remains.
+    #[prost(uint32, tag = "4")]
+    pub pane: u32,
+    #[prost(enumeration = "JobState", tag = "5")]
+    #[serde(with = "job_state_json")]
+    pub state: i32,
+    #[prost(int32, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[prost(int32, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    #[prost(uint64, tag = "8")]
+    pub started_unix_ms: u64,
+    #[prost(uint64, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_unix_ms: Option<u64>,
+    /// The directory the job was given as DREAMER_JOB_ARTIFACTS.
+    #[prost(string, tag = "10")]
+    pub artifacts: String,
+    /// jobs.cancel was asked.
+    #[prost(bool, tag = "11")]
+    pub cancelled: bool,
+    #[prost(uint32, optional, tag = "12")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobRef {
+    #[prost(string, tag = "1")]
+    pub id: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobList {
+    #[prost(message, repeated, tag = "1")]
+    pub jobs: Vec<JobRecord>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobFile {
+    /// Relative to the artifacts directory.
+    #[prost(string, tag = "1")]
+    pub path: String,
+    #[prost(uint64, tag = "2")]
+    pub bytes: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobArtifacts {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(string, tag = "2")]
+    pub directory: String,
+    /// At most 1000, sorted by path.
+    #[prost(message, repeated, tag = "3")]
+    pub files: Vec<JobFile>,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -2914,6 +3075,11 @@ pub mod method {
     pub const FILTERS_PAUSE: &str = "filters.pause";
     pub const FILTERS_RESUME: &str = "filters.resume";
     pub const FILTERS_REMOVE: &str = "filters.remove";
+    pub const JOBS_START: &str = "jobs.start";
+    pub const JOBS_GET: &str = "jobs.get";
+    pub const JOBS_LIST: &str = "jobs.list";
+    pub const JOBS_CANCEL: &str = "jobs.cancel";
+    pub const JOBS_ARTIFACTS: &str = "jobs.artifacts";
     pub const TAPS_SUBSCRIBE: &str = "taps.subscribe";
     pub const TAPS_UNSUBSCRIBE: &str = "taps.unsubscribe";
     pub const APPS_REGISTER: &str = "apps.register";
@@ -3266,6 +3432,41 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "(owner only)",
     },
     MethodInfo {
+        name: "jobs.start",
+        params: "JobStart",
+        result: "JobRecord",
+        mutation: true,
+        doc: "Run an exact program in its own tmux window through the job wrapper; it keeps running if the daemon stops.",
+    },
+    MethodInfo {
+        name: "jobs.get",
+        params: "JobRef",
+        result: "JobRecord",
+        mutation: false,
+        doc: "",
+    },
+    MethodInfo {
+        name: "jobs.list",
+        params: "Empty",
+        result: "JobList",
+        mutation: false,
+        doc: "",
+    },
+    MethodInfo {
+        name: "jobs.cancel",
+        params: "JobRef",
+        result: "JobRecord",
+        mutation: true,
+        doc: "Send SIGTERM to the job's program; its record says killed once it ends.",
+    },
+    MethodInfo {
+        name: "jobs.artifacts",
+        params: "JobRef",
+        result: "JobArtifacts",
+        mutation: false,
+        doc: "The files the job left in its artifacts directory.",
+    },
+    MethodInfo {
         name: "taps.subscribe",
         params: "TapSubscribe",
         result: "TapSubscription",
@@ -3339,6 +3540,11 @@ pub enum Request {
     FiltersPause(FilterRef),
     FiltersResume(FilterRef),
     FiltersRemove(FilterRef),
+    JobsStart(JobStart),
+    JobsGet(JobRef),
+    JobsList(Empty),
+    JobsCancel(JobRef),
+    JobsArtifacts(JobRef),
     TapsSubscribe(TapSubscribe),
     TapsUnsubscribe(Unsubscribe),
     AppsRegister(RegisterApp),
@@ -3395,6 +3601,11 @@ impl Request {
             Self::FiltersPause(_) => "filters.pause",
             Self::FiltersResume(_) => "filters.resume",
             Self::FiltersRemove(_) => "filters.remove",
+            Self::JobsStart(_) => "jobs.start",
+            Self::JobsGet(_) => "jobs.get",
+            Self::JobsList(_) => "jobs.list",
+            Self::JobsCancel(_) => "jobs.cancel",
+            Self::JobsArtifacts(_) => "jobs.artifacts",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -3452,6 +3663,11 @@ impl Request {
             Self::FiltersPause(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersResume(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersRemove(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsStart(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsGet(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsCancel(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsArtifacts(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -3512,6 +3728,11 @@ impl Request {
             "filters.pause" => Ok(Self::FiltersPause(::prost::Message::decode(bytes)?)),
             "filters.resume" => Ok(Self::FiltersResume(::prost::Message::decode(bytes)?)),
             "filters.remove" => Ok(Self::FiltersRemove(::prost::Message::decode(bytes)?)),
+            "jobs.start" => Ok(Self::JobsStart(::prost::Message::decode(bytes)?)),
+            "jobs.get" => Ok(Self::JobsGet(::prost::Message::decode(bytes)?)),
+            "jobs.list" => Ok(Self::JobsList(::prost::Message::decode(bytes)?)),
+            "jobs.cancel" => Ok(Self::JobsCancel(::prost::Message::decode(bytes)?)),
+            "jobs.artifacts" => Ok(Self::JobsArtifacts(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -3569,6 +3790,11 @@ impl Request {
             Self::FiltersPause(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersResume(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersRemove(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsStart(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsGet(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsArtifacts(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3625,6 +3851,11 @@ impl Request {
             "filters.pause" => Ok(Self::FiltersPause(serde_json::from_value(value)?)),
             "filters.resume" => Ok(Self::FiltersResume(serde_json::from_value(value)?)),
             "filters.remove" => Ok(Self::FiltersRemove(serde_json::from_value(value)?)),
+            "jobs.start" => Ok(Self::JobsStart(serde_json::from_value(value)?)),
+            "jobs.get" => Ok(Self::JobsGet(serde_json::from_value(value)?)),
+            "jobs.list" => Ok(Self::JobsList(serde_json::from_value(value)?)),
+            "jobs.cancel" => Ok(Self::JobsCancel(serde_json::from_value(value)?)),
+            "jobs.artifacts" => Ok(Self::JobsArtifacts(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -3684,6 +3915,11 @@ pub enum Response {
     FiltersPause(FilterStatus),
     FiltersResume(FilterStatus),
     FiltersRemove(FilterStatus),
+    JobsStart(JobRecord),
+    JobsGet(JobRecord),
+    JobsList(JobList),
+    JobsCancel(JobRecord),
+    JobsArtifacts(JobArtifacts),
     TapsSubscribe(TapSubscription),
     TapsUnsubscribe(Empty),
     AppsRegister(Registration),
@@ -3740,6 +3976,11 @@ impl Response {
             Self::FiltersPause(_) => "filters.pause",
             Self::FiltersResume(_) => "filters.resume",
             Self::FiltersRemove(_) => "filters.remove",
+            Self::JobsStart(_) => "jobs.start",
+            Self::JobsGet(_) => "jobs.get",
+            Self::JobsList(_) => "jobs.list",
+            Self::JobsCancel(_) => "jobs.cancel",
+            Self::JobsArtifacts(_) => "jobs.artifacts",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
@@ -3797,6 +4038,11 @@ impl Response {
             Self::FiltersPause(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersResume(v) => ::prost::Message::encode_to_vec(v),
             Self::FiltersRemove(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsStart(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsGet(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsCancel(v) => ::prost::Message::encode_to_vec(v),
+            Self::JobsArtifacts(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
@@ -3857,6 +4103,11 @@ impl Response {
             "filters.pause" => Ok(Self::FiltersPause(::prost::Message::decode(bytes)?)),
             "filters.resume" => Ok(Self::FiltersResume(::prost::Message::decode(bytes)?)),
             "filters.remove" => Ok(Self::FiltersRemove(::prost::Message::decode(bytes)?)),
+            "jobs.start" => Ok(Self::JobsStart(::prost::Message::decode(bytes)?)),
+            "jobs.get" => Ok(Self::JobsGet(::prost::Message::decode(bytes)?)),
+            "jobs.list" => Ok(Self::JobsList(::prost::Message::decode(bytes)?)),
+            "jobs.cancel" => Ok(Self::JobsCancel(::prost::Message::decode(bytes)?)),
+            "jobs.artifacts" => Ok(Self::JobsArtifacts(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
@@ -3914,6 +4165,11 @@ impl Response {
             Self::FiltersPause(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersResume(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::FiltersRemove(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsStart(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsGet(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::JobsArtifacts(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -3970,6 +4226,11 @@ impl Response {
             "filters.pause" => Ok(Self::FiltersPause(serde_json::from_value(value)?)),
             "filters.resume" => Ok(Self::FiltersResume(serde_json::from_value(value)?)),
             "filters.remove" => Ok(Self::FiltersRemove(serde_json::from_value(value)?)),
+            "jobs.start" => Ok(Self::JobsStart(serde_json::from_value(value)?)),
+            "jobs.get" => Ok(Self::JobsGet(serde_json::from_value(value)?)),
+            "jobs.list" => Ok(Self::JobsList(serde_json::from_value(value)?)),
+            "jobs.cancel" => Ok(Self::JobsCancel(serde_json::from_value(value)?)),
+            "jobs.artifacts" => Ok(Self::JobsArtifacts(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
@@ -4214,6 +4475,29 @@ pub trait Service: Sync {
         &self,
         params: FilterRef,
     ) -> impl ::core::future::Future<Output = Result<FilterStatus, RpcError>> + Send;
+    /// Run an exact program in its own tmux window through the job wrapper; it keeps running if the daemon stops.
+    fn jobs_start(
+        &self,
+        params: JobStart,
+    ) -> impl ::core::future::Future<Output = Result<JobRecord, RpcError>> + Send;
+    fn jobs_get(
+        &self,
+        params: JobRef,
+    ) -> impl ::core::future::Future<Output = Result<JobRecord, RpcError>> + Send;
+    fn jobs_list(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<JobList, RpcError>> + Send;
+    /// Send SIGTERM to the job's program; its record says killed once it ends.
+    fn jobs_cancel(
+        &self,
+        params: JobRef,
+    ) -> impl ::core::future::Future<Output = Result<JobRecord, RpcError>> + Send;
+    /// The files the job left in its artifacts directory.
+    fn jobs_artifacts(
+        &self,
+        params: JobRef,
+    ) -> impl ::core::future::Future<Output = Result<JobArtifacts, RpcError>> + Send;
     /// Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap.
     fn taps_subscribe(
         &self,
@@ -4344,6 +4628,11 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::FiltersPause(p) => service.filters_pause(p).await.map(Response::FiltersPause),
         Request::FiltersResume(p) => service.filters_resume(p).await.map(Response::FiltersResume),
         Request::FiltersRemove(p) => service.filters_remove(p).await.map(Response::FiltersRemove),
+        Request::JobsStart(p) => service.jobs_start(p).await.map(Response::JobsStart),
+        Request::JobsGet(p) => service.jobs_get(p).await.map(Response::JobsGet),
+        Request::JobsList(p) => service.jobs_list(p).await.map(Response::JobsList),
+        Request::JobsCancel(p) => service.jobs_cancel(p).await.map(Response::JobsCancel),
+        Request::JobsArtifacts(p) => service.jobs_artifacts(p).await.map(Response::JobsArtifacts),
         Request::TapsSubscribe(p) => service.taps_subscribe(p).await.map(Response::TapsSubscribe),
         Request::TapsUnsubscribe(p) => service
             .taps_unsubscribe(p)

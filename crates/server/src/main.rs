@@ -20,6 +20,7 @@ mod filters;
 mod grants;
 mod hosts;
 mod install;
+mod jobs;
 mod jsonrpc;
 mod log;
 mod messages;
@@ -269,6 +270,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             args.background
         ));
         extensions::start_all(&state).await;
+        tokio::spawn(jobs::watch(state.clone()));
         let r = serve(listener, rpc, state.clone()).await;
         state.filters.remove_all();
         state.scripts.stop_all().await;

@@ -219,6 +219,21 @@ impl Service for Fixed {
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn jobs_start(&self, _: api::JobStart) -> Result<api::JobRecord, RpcError> {
+        Ok(api::JobRecord::default())
+    }
+    async fn jobs_get(&self, _: api::JobRef) -> Result<api::JobRecord, RpcError> {
+        Ok(api::JobRecord::default())
+    }
+    async fn jobs_list(&self, _: Empty) -> Result<api::JobList, RpcError> {
+        Ok(api::JobList::default())
+    }
+    async fn jobs_cancel(&self, _: api::JobRef) -> Result<api::JobRecord, RpcError> {
+        Ok(api::JobRecord::default())
+    }
+    async fn jobs_artifacts(&self, _: api::JobRef) -> Result<api::JobArtifacts, RpcError> {
+        Ok(api::JobArtifacts::default())
+    }
     async fn decorations_list(
         &self,
         _: api::DecorationQuery,

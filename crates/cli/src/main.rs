@@ -39,6 +39,7 @@ mod bridge;
 mod daemon;
 mod extprobe;
 mod hosts;
+mod jobrun;
 mod remote;
 mod service;
 
@@ -72,6 +73,7 @@ const USAGE: &str = "usage:
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream rpc [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream extensions [--json] | dream extensions restart NAME
+  dream jobs [--json] | start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...] | cancel ID | artifacts ID
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME
   dream hosts connect|list|call|disconnect ... (see `dream hosts`)
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
@@ -136,11 +138,23 @@ fn main() -> ExitCode {
         ["app", "run", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| app::run(&d, &extra))
         }
+        ["jobs", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::jobs(&d, &extra))
+        }
         ["scripts", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::scripts(&d, &extra))
         }
         ["extensions", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::extensions(&d, &extra))
+        }
+        ["job-run", rest @ ..] => {
+            return match jobrun::run(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>()) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("dream: {e}");
+                    ExitCode::FAILURE
+                }
+            };
         }
         ["extension-probe", rest @ ..] => {
             extprobe::run(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())

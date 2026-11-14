@@ -29,6 +29,9 @@ pub struct Launch {
     pub cwd: Option<String>,
     /// Environment for the new pane's program (`-e NAME=VALUE`).
     pub env: Vec<(String, String)>,
+    /// Create a window without making it current (`-d`), so attached
+    /// clients keep what they are looking at.
+    pub background: bool,
 }
 
 fn pane(p: TmuxPaneId) -> String {
@@ -137,8 +140,11 @@ pub async fn new_window(
     name: Option<&str>,
     launch: &Launch,
 ) -> Result<TmuxPaneId, CommandError> {
-    let mut cmd = TmuxCommand::new("new-window")
-        .flag("-P")
+    let mut cmd = TmuxCommand::new("new-window").flag("-P");
+    if launch.background {
+        cmd = cmd.flag("-d");
+    }
+    let mut cmd = cmd
         .opt_format("-F", "#{pane_id}")
         .opt("-t", format!("{}:", session(target)));
     if let Some(n) = name {
@@ -235,6 +241,20 @@ pub async fn set_ignore_size(conn: &Connection, ignore: bool) -> Result<(), Comm
     conn.execute(TmuxCommand::new("refresh-client").opt("-f", flag))
         .await
         .map(drop)
+}
+
+/// Keep the pane, with its last output, when its program exits
+/// (`remain-on-exit`), so a finished job can still be read.
+pub async fn keep_on_exit(conn: &Connection, target: TmuxPaneId) -> Result<(), CommandError> {
+    conn.execute(
+        TmuxCommand::new("set-option")
+            .flag("-p")
+            .opt("-t", pane(target))
+            .arg("remain-on-exit")
+            .arg("on"),
+    )
+    .await
+    .map(drop)
 }
 
 /// Toggle zoom of the pane's window onto this pane.

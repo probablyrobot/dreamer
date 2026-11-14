@@ -49,6 +49,9 @@ pub mod kind {
     pub const FILTER_TRIPPED: &str = "filters.tripped";
     /// A pane's decorations changed; `pane`. List them again.
     pub const DECORATIONS: &str = "decorations.changed";
+    /// A job started or ended; `subject` is its id, `state` its state
+    /// (`running`, `succeeded`, `failed`, `killed`, `lost`), `pane`.
+    pub const JOB: &str = "jobs.state";
 }
 
 struct Ring {
@@ -202,6 +205,16 @@ impl Events {
             kind: kind::FILTER_TRIPPED.into(),
             subject: Some(name.to_owned()),
             state: Some(why.to_owned()),
+            ..DaemonEvent::default()
+        });
+    }
+
+    pub fn job(&self, id: &str, state: &str, pane: Option<u32>) {
+        self.push(DaemonEvent {
+            kind: kind::JOB.into(),
+            subject: Some(id.to_owned()),
+            state: Some(state.to_owned()),
+            pane,
             ..DaemonEvent::default()
         });
     }
