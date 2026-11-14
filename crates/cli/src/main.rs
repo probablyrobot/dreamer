@@ -34,6 +34,7 @@
 //! dream --version
 //! ```
 
+mod agents;
 mod app;
 mod bridge;
 mod daemon;
@@ -73,6 +74,7 @@ const USAGE: &str = "usage:
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream rpc [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream extensions [--json] | dream extensions restart NAME
+  dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
   dream jobs [--json] | start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...] | cancel ID | artifacts ID
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME
   dream hosts connect|list|call|disconnect ... (see `dream hosts`)
@@ -146,6 +148,12 @@ fn main() -> ExitCode {
         }
         ["extensions", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::extensions(&d, &extra))
+        }
+        ["hook", rest @ ..] => {
+            return agents::hook(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        }
+        ["agents", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| agents::run(&d, &extra))
         }
         ["job-run", rest @ ..] => {
             return match jobrun::run(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>()) {

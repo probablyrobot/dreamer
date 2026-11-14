@@ -109,6 +109,14 @@ remote host through `ssh -T`; you do not normally run it yourself.
 `extensions.yaml` and their state; `dream extensions restart NAME` starts
 one again now. See [extensions.md](extensions.md).
 
+## Agent runs
+
+`dream agents runs [--host NAME]... [--json]` lists Claude Code and Codex
+runs here and on connected hosts. `dream agents hooks [--write FILE]`
+prints, or adds to a settings file, the Claude Code hooks that report run
+state. `dream hook claude` is the hook itself. See
+[processes.md](processes.md).
+
 ## Jobs
 
 `dream jobs` lists jobs; `dream jobs start [--cwd DIR] [--name NAME] --

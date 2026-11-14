@@ -54,7 +54,8 @@ impl Cli {
             .env("DREAMER_CONFIG_DIR", self.root.join("config"))
             .env("DREAMER_TEST_BACKOFF_MS", "100")
             .env("DREAMER_TEST_EXTENSION_HEARTBEAT_MS", "300")
-            .env("DREAMER_TEST_EXTENSION_BACKOFF_MS", "100");
+            .env("DREAMER_TEST_EXTENSION_BACKOFF_MS", "100")
+            .env("DREAMER_TEST_AGENT_STALE_MS", "4000");
         c.output().expect("dream")
     }
 
@@ -1873,4 +1874,155 @@ exec /bin/sh -c "exec $3"
             assert!(r.rss_kib > 0 && r.age_ms < 60_000, "{r:?}");
         }
     });
+}
+
+#[test]
+fn the_hook_helper_returns_at_once_without_a_daemon() {
+    let cli = Cli::new();
+    for input in [
+        r#"{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash"}"#,
+        "not json at all",
+        "",
+    ] {
+        let started = Instant::now();
+        let mut child = Command::new(DREAM)
+            .args(["hook", "claude"])
+            .env("DREAMER_RUNTIME_DIR", cli.root.join("nobody-here"))
+            .env("DREAMER_STATE_DIR", cli.root.join("st"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("hook");
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(input.as_bytes())
+            .expect("write");
+        let out = child.wait_with_output().expect("wait");
+        assert!(out.status.success(), "{input:?}: {out:?}");
+        assert!(out.stdout.is_empty(), "nothing on stdout: {out:?}");
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+    assert!(
+        !cli.root.join("nobody-here/dreamerd.sock").exists(),
+        "it never starts a daemon"
+    );
+}
+
+#[test]
+fn hook_reports_drive_a_runs_state_until_they_stop() {
+    let cli = Cli::new();
+    cli.ok(&["ensure-running"]);
+    // A program named claude that reports like Claude Code's hooks would.
+    let bin = cli.root.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    std::os::unix::fs::symlink("/bin/bash", bin.join("claude")).expect("claude");
+    let report = |event: &str, extra: &str| {
+        format!(
+            "printf '%s' '{{\"session_id\":\"s1\",\"hook_event_name\":\"{event}\",\"cwd\":\"/work\"{extra}}}' | {DREAM} hook claude\n"
+        )
+    };
+    let script = cli.root.join("session.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "export DREAMER_RUNTIME_DIR='{}'\n{}{}{}sleep 300\n",
+            cli.root.join("rt").display(),
+            report("SessionStart", ""),
+            report("UserPromptSubmit", ""),
+            report(
+                "Notification",
+                ",\"notification_type\":\"permission_prompt\""
+            ),
+        ),
+    )
+    .expect("script");
+    cli.tmux
+        .run_checked(&[
+            "send-keys",
+            "-t",
+            "main",
+            &format!("{} {}", bin.join("claude").display(), script.display()),
+            "Enter",
+        ])
+        .expect("run");
+    let runs = || -> serde_json::Value {
+        let out = cli.ok(&["agents", "runs", "--json"]);
+        serde_json::from_str(&out).expect("json")
+    };
+    let mut seen = serde_json::Value::Null;
+    wait_until("the run reports waiting for permission", 15, || {
+        seen = runs();
+        seen["runs"]
+            .as_array()
+            .and_then(|r| {
+                r.iter()
+                    .find(|r| r["provider"] == "claude" && !r["pane"].is_null())
+                    .cloned()
+            })
+            .is_some_and(|r| r["state"] == "waiting_for_permission")
+    });
+    let run = seen["runs"]
+        .as_array()
+        .and_then(|r| {
+            r.iter()
+                .find(|r| r["provider"] == "claude" && !r["pane"].is_null())
+                .cloned()
+        })
+        .expect("run");
+    assert_eq!(
+        (run["instrumentation"].as_str(), run["session_id"].as_str()),
+        (Some("hooks"), Some("s1")),
+        "{run}"
+    );
+    // No reports for a while: stale, not still waiting.
+    wait_until("the run goes stale", 15, || {
+        runs()["runs"]
+            .as_array()
+            .and_then(|r| {
+                r.iter()
+                    .find(|r| r["provider"] == "claude" && !r["pane"].is_null())
+                    .cloned()
+            })
+            .is_some_and(|r| r["state"] == "stale")
+    });
+}
+
+#[test]
+fn hooks_are_written_only_when_asked_with_a_backup_and_once() {
+    let cli = Cli::new();
+    let printed = cli.run(&["agents", "hooks"]);
+    let snippet: serde_json::Value = serde_json::from_slice(&printed.stdout).expect("snippet");
+    assert!(
+        snippet["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .is_some_and(|c| c.ends_with("hook claude"))
+    );
+    let file = cli.root.join("settings.json");
+    std::fs::write(
+        &file,
+        r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine"}]}]}}"#,
+    )
+    .expect("settings");
+    let w = cli.run(&["agents", "hooks", "--write", &file.display().to_string()]);
+    assert!(w.status.success(), "{w:?}");
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+    assert_eq!(after["model"], "opus");
+    assert_eq!(
+        after["hooks"]["Stop"].as_array().map(Vec::len),
+        Some(2),
+        "{after}"
+    );
+    assert!(cli.root.join("settings.json.bak").exists());
+    let again = cli.run(&["agents", "hooks", "--write", &file.display().to_string()]);
+    assert!(String::from_utf8_lossy(&again.stdout).contains("already there"));
 }

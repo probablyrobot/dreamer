@@ -11,6 +11,7 @@
 //! logs to standard error. Nothing is ever written to standard output after
 //! startup, and nothing but protocol frames to the socket.
 
+mod agents;
 mod apps;
 mod conn;
 mod decorations;
@@ -257,6 +258,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             scripts: scripts::Scripts::default(),
             filters: filters::Filters::default(),
             decorations: decorations::Decorations::default(),
+            agents: agents::Agents::default(),
             apps: apps::Apps::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.

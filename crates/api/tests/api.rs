@@ -219,6 +219,9 @@ impl Service for Fixed {
     async fn messages_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn agents_event(&self, _: api::AgentEvent) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
     async fn agents_runs(&self, _: api::AgentRunQuery) -> Result<api::AgentRunList, RpcError> {
         Ok(api::AgentRunList::default())
     }

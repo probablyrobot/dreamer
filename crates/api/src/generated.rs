@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 32;
+pub const PROTOCOL_MINOR: u32 = 33;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -3140,15 +3140,47 @@ pub struct AgentRun {
     pub confidence: String,
     #[prost(string, tag = "11")]
     pub evidence: String,
-    /// passive: found from its process only.
+    /// passive (found from its process only) or hooks (its provider's hooks report to the daemon).
     #[prost(string, tag = "12")]
     pub instrumentation: String,
-    /// running while its process lives; unknown otherwise.
+    /// passive: running. hooks: active, working, waiting_for_permission, idle (a turn ended), ended, or stale (no report for a while).
     #[prost(string, tag = "13")]
     pub state: String,
     /// Processes serving it (tools, servers), not counted as runs.
     #[prost(uint32, tag = "14")]
     pub helpers: u32,
+    /// The provider's session, when its hooks report it.
+    #[prost(string, optional, tag = "15")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// When its hooks last reported.
+    #[prost(uint64, optional, tag = "16")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_event_unix_ms: Option<u64>,
+}
+
+/// One provider hook report, as dream hook sends it.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentEvent {
+    /// claude
+    #[prost(string, tag = "1")]
+    pub provider: String,
+    /// The provider's event name, such as SessionStart or Notification.
+    #[prost(string, tag = "2")]
+    pub event: String,
+    #[prost(string, tag = "3")]
+    pub session_id: String,
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The notification type, or why a session ended.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The reporting hook process; its ancestry finds the run. It is never the run itself.
+    #[prost(uint32, tag = "6")]
+    pub hook_pid: u32,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -3226,6 +3258,7 @@ pub mod method {
     pub const JOBS_CANCEL: &str = "jobs.cancel";
     pub const JOBS_ARTIFACTS: &str = "jobs.artifacts";
     pub const PROCESSES_LIST: &str = "processes.list";
+    pub const AGENTS_EVENT: &str = "agents.event";
     pub const AGENTS_RUNS: &str = "agents.runs";
     pub const TAPS_SUBSCRIBE: &str = "taps.subscribe";
     pub const TAPS_UNSUBSCRIBE: &str = "taps.unsubscribe";
@@ -3621,6 +3654,13 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "The user's processes on this host, with their panes and agent runs, by evidence.",
     },
     MethodInfo {
+        name: "agents.event",
+        params: "AgentEvent",
+        result: "Empty",
+        mutation: true,
+        doc: "A provider hook's report about its session (sent by dream hook).",
+    },
+    MethodInfo {
         name: "agents.runs",
         params: "AgentRunQuery",
         result: "AgentRunList",
@@ -3707,6 +3747,7 @@ pub enum Request {
     JobsCancel(JobRef),
     JobsArtifacts(JobRef),
     ProcessesList(ProcessQuery),
+    AgentsEvent(AgentEvent),
     AgentsRuns(AgentRunQuery),
     TapsSubscribe(TapSubscribe),
     TapsUnsubscribe(Unsubscribe),
@@ -3770,6 +3811,7 @@ impl Request {
             Self::JobsCancel(_) => "jobs.cancel",
             Self::JobsArtifacts(_) => "jobs.artifacts",
             Self::ProcessesList(_) => "processes.list",
+            Self::AgentsEvent(_) => "agents.event",
             Self::AgentsRuns(_) => "agents.runs",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
@@ -3834,6 +3876,7 @@ impl Request {
             Self::JobsCancel(v) => ::prost::Message::encode_to_vec(v),
             Self::JobsArtifacts(v) => ::prost::Message::encode_to_vec(v),
             Self::ProcessesList(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentsEvent(v) => ::prost::Message::encode_to_vec(v),
             Self::AgentsRuns(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
@@ -3901,6 +3944,7 @@ impl Request {
             "jobs.cancel" => Ok(Self::JobsCancel(::prost::Message::decode(bytes)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(::prost::Message::decode(bytes)?)),
             "processes.list" => Ok(Self::ProcessesList(::prost::Message::decode(bytes)?)),
+            "agents.event" => Ok(Self::AgentsEvent(::prost::Message::decode(bytes)?)),
             "agents.runs" => Ok(Self::AgentsRuns(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
@@ -3965,6 +4009,7 @@ impl Request {
             Self::JobsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::JobsArtifacts(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ProcessesList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentsEvent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AgentsRuns(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -4028,6 +4073,7 @@ impl Request {
             "jobs.cancel" => Ok(Self::JobsCancel(serde_json::from_value(value)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(serde_json::from_value(value)?)),
             "processes.list" => Ok(Self::ProcessesList(serde_json::from_value(value)?)),
+            "agents.event" => Ok(Self::AgentsEvent(serde_json::from_value(value)?)),
             "agents.runs" => Ok(Self::AgentsRuns(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
@@ -4094,6 +4140,7 @@ pub enum Response {
     JobsCancel(JobRecord),
     JobsArtifacts(JobArtifacts),
     ProcessesList(ProcessList),
+    AgentsEvent(Empty),
     AgentsRuns(AgentRunList),
     TapsSubscribe(TapSubscription),
     TapsUnsubscribe(Empty),
@@ -4157,6 +4204,7 @@ impl Response {
             Self::JobsCancel(_) => "jobs.cancel",
             Self::JobsArtifacts(_) => "jobs.artifacts",
             Self::ProcessesList(_) => "processes.list",
+            Self::AgentsEvent(_) => "agents.event",
             Self::AgentsRuns(_) => "agents.runs",
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
@@ -4221,6 +4269,7 @@ impl Response {
             Self::JobsCancel(v) => ::prost::Message::encode_to_vec(v),
             Self::JobsArtifacts(v) => ::prost::Message::encode_to_vec(v),
             Self::ProcessesList(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentsEvent(v) => ::prost::Message::encode_to_vec(v),
             Self::AgentsRuns(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
@@ -4288,6 +4337,7 @@ impl Response {
             "jobs.cancel" => Ok(Self::JobsCancel(::prost::Message::decode(bytes)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(::prost::Message::decode(bytes)?)),
             "processes.list" => Ok(Self::ProcessesList(::prost::Message::decode(bytes)?)),
+            "agents.event" => Ok(Self::AgentsEvent(::prost::Message::decode(bytes)?)),
             "agents.runs" => Ok(Self::AgentsRuns(::prost::Message::decode(bytes)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
@@ -4352,6 +4402,7 @@ impl Response {
             Self::JobsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::JobsArtifacts(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ProcessesList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentsEvent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AgentsRuns(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -4415,6 +4466,7 @@ impl Response {
             "jobs.cancel" => Ok(Self::JobsCancel(serde_json::from_value(value)?)),
             "jobs.artifacts" => Ok(Self::JobsArtifacts(serde_json::from_value(value)?)),
             "processes.list" => Ok(Self::ProcessesList(serde_json::from_value(value)?)),
+            "agents.event" => Ok(Self::AgentsEvent(serde_json::from_value(value)?)),
             "agents.runs" => Ok(Self::AgentsRuns(serde_json::from_value(value)?)),
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
@@ -4688,6 +4740,11 @@ pub trait Service: Sync {
         &self,
         params: ProcessQuery,
     ) -> impl ::core::future::Future<Output = Result<ProcessList, RpcError>> + Send;
+    /// A provider hook's report about its session (sent by dream hook).
+    fn agents_event(
+        &self,
+        params: AgentEvent,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
     /// Agent runs (Claude Code, Codex) here and on connected hosts, from the process registry.
     fn agents_runs(
         &self,
@@ -4829,6 +4886,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::JobsCancel(p) => service.jobs_cancel(p).await.map(Response::JobsCancel),
         Request::JobsArtifacts(p) => service.jobs_artifacts(p).await.map(Response::JobsArtifacts),
         Request::ProcessesList(p) => service.processes_list(p).await.map(Response::ProcessesList),
+        Request::AgentsEvent(p) => service.agents_event(p).await.map(Response::AgentsEvent),
         Request::AgentsRuns(p) => service.agents_runs(p).await.map(Response::AgentsRuns),
         Request::TapsSubscribe(p) => service.taps_subscribe(p).await.map(Response::TapsSubscribe),
         Request::TapsUnsubscribe(p) => service

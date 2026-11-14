@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 32 }
+version: { major: 1, minor: 33 }
 package: dreamer.v1
 
 types:
@@ -1229,9 +1229,21 @@ types:
       - { n: 9, name: rss_kib, type: u64 }
       - { n: 10, name: confidence, type: string }
       - { n: 11, name: evidence, type: string }
-      - { n: 12, name: instrumentation, type: string, doc: "passive: found from its process only." }
-      - { n: 13, name: state, type: string, doc: "running while its process lives; unknown otherwise." }
+      - { n: 12, name: instrumentation, type: string, doc: "passive (found from its process only) or hooks (its provider's hooks report to the daemon)." }
+      - { n: 13, name: state, type: string, doc: "passive: running. hooks: active, working, waiting_for_permission, idle (a turn ended), ended, or stale (no report for a while)." }
       - { n: 14, name: helpers, type: u32, doc: "Processes serving it (tools, servers), not counted as runs." }
+      - { n: 15, name: session_id, type: string, optional: true, doc: "The provider's session, when its hooks report it." }
+      - { n: 16, name: last_event_unix_ms, type: u64, optional: true, doc: "When its hooks last reported." }
+
+  - message: AgentEvent
+    doc: "One provider hook report, as dream hook sends it."
+    fields:
+      - { n: 1, name: provider, type: string, doc: "claude" }
+      - { n: 2, name: event, type: string, doc: "The provider's event name, such as SessionStart or Notification." }
+      - { n: 3, name: session_id, type: string }
+      - { n: 4, name: cwd, type: string, optional: true }
+      - { n: 5, name: detail, type: string, optional: true, doc: "The notification type, or why a session ended." }
+      - { n: 6, name: hook_pid, type: u32, doc: "The reporting hook process; its ancestry finds the run. It is never the run itself." }
 
   - message: AgentRunList
     fields:
@@ -1298,6 +1310,7 @@ methods:
   - { method: jobs.cancel, params: JobRef, result: JobRecord, mutation: true, doc: "Send SIGTERM to the job's program; its record says killed once it ends." }
   - { method: jobs.artifacts, params: JobRef, result: JobArtifacts, doc: "The files the job left in its artifacts directory." }
   - { method: processes.list, params: ProcessQuery, result: ProcessList, doc: "The user's processes on this host, with their panes and agent runs, by evidence." }
+  - { method: agents.event, params: AgentEvent, result: Empty, mutation: true, doc: "A provider hook's report about its session (sent by dream hook)." }
   - { method: agents.runs, params: AgentRunQuery, result: AgentRunList, doc: "Agent runs (Claude Code, Codex) here and on connected hosts, from the process registry." }
   - { method: taps.subscribe, params: TapSubscribe, result: TapSubscription, doc: "Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap." }
   - { method: taps.unsubscribe, params: Unsubscribe, result: Empty }
