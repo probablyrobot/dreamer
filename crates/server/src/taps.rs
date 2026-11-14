@@ -35,6 +35,9 @@ pub struct TextState {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TextStep {
     pub lines: Vec<String>,
+    /// Each line's row, counted from the top of the pane's history at this
+    /// look (for decorations).
+    pub rows: Vec<u64>,
     pub screen: Vec<(u32, String)>,
     /// (reason, lines missed if known)
     pub gap: Option<(&'static str, Option<u64>)>,
@@ -114,7 +117,10 @@ impl TextState {
                 }
             };
             match line {
-                Some(l) => out.lines.push(l.clone()),
+                Some(l) => {
+                    out.lines.push(l.clone());
+                    out.rows.push((t.scrollback as i64 + row).max(0) as u64);
+                }
                 None => missed += 1,
             }
         }
@@ -383,6 +389,8 @@ async fn look<D: Deliver>(
                         continue;
                     }
                     d.lines = step.lines;
+                    d.rows = step.rows;
+                    d.cols = u32::from(t.cols);
                     d.screen = step
                         .screen
                         .into_iter()

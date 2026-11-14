@@ -47,6 +47,8 @@ pub mod kind {
     /// A filter's circuit breaker tripped; `subject` is the filter, `state`
     /// why.
     pub const FILTER_TRIPPED: &str = "filters.tripped";
+    /// A pane's decorations changed; `pane`. List them again.
+    pub const DECORATIONS: &str = "decorations.changed";
 }
 
 struct Ring {
@@ -200,6 +202,14 @@ impl Events {
             kind: kind::FILTER_TRIPPED.into(),
             subject: Some(name.to_owned()),
             state: Some(why.to_owned()),
+            ..DaemonEvent::default()
+        });
+    }
+
+    pub fn decorations_changed(&self, pane: u32) {
+        self.push(DaemonEvent {
+            kind: kind::DECORATIONS.into(),
+            pane: Some(pane),
             ..DaemonEvent::default()
         });
     }

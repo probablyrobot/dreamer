@@ -22,6 +22,7 @@ text, size-limited) plus outputs.
 | `recipient` | Send each matched line to this instance |
 | `event` | Record each match as a `filters.matched` event; [scripts](scripts.md) receive these with `on_event` |
 | `input` | Type this fixed text into this pane on each match. The matched text is never typed |
+| `decorate`, `badge` | Mark each matched line (`highlight`, `dim`, `fold`, or `badge` with its text); see [Decorations](#decorations) |
 | `grant` | What the filter itself may do: `taps.subscribe` for its panes, `messages.publish` for `topic`/`recipient`, `terminal.input` and the pane for `input` |
 | `per_second` | Matches acted on per second (default 20); more are counted as `dropped` |
 | `breaker` | Triggers allowed in any 10 s (default 50); see below |
@@ -47,3 +48,24 @@ things stop that:
 
 Messages a filter sends also carry the broker's causal depth limit
 ([messages.md](messages.md#loops-and-limits)).
+
+## Decorations
+
+A filter with `decorate` marks the lines it matches. A decoration is data
+for clients to draw over the terminal, never part of the terminal stream:
+what the program wrote and what tmux shows stay unchanged, and hiding or
+folding a line is a local presentation choice.
+
+`decorations.list` returns a pane's marks. Each names its line by `row`,
+counted from the top of the pane's history, with the line's `text`, the
+pane `generation`, and its width (`cols`), plus the style, badge, and
+filter. A mark is valid only while all of these still hold:
+
+- a respawn (new generation) or a resize (the text reflows) drops all of a
+  pane's marks;
+- a line that left the history, or moved because the history is at its
+  limit, is dropped when the marks are next listed.
+
+Each pane keeps at most 500 marks; the oldest go first. A
+`decorations.changed` event (with the `pane`) says when to list again.
+Listing a pane needs it in the grant.

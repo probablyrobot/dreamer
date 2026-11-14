@@ -319,7 +319,7 @@ async fn run(
             }
             continue;
         }
-        for line in &d.lines {
+        for (index, line) in d.lines.iter().enumerate() {
             let now = Instant::now();
             own.retain(|(_, _, at)| now.duration_since(*at) < OWN_INPUT);
             if own.iter().any(|(pane, text, _)| {
@@ -332,6 +332,22 @@ async fn run(
                 continue;
             };
             f.update(|s| s.matched += 1);
+            if f.spec.decorate != api::DecorationStyle::Unspecified as i32
+                && let Some(&row) = d.rows.get(index)
+            {
+                state.decorations.add(api::Decoration {
+                    pane: d.pane,
+                    generation: d.generation,
+                    row,
+                    text: line.clone(),
+                    style: f.spec.decorate,
+                    badge: f.spec.badge.clone(),
+                    filter: f.spec.name.clone(),
+                    cols: d.cols,
+                    ..api::Decoration::default()
+                });
+                state.events.decorations_changed(d.pane);
+            }
             tokens = (tokens + now.duration_since(refilled).as_secs_f64() * f64::from(per_second))
                 .min(f64::from(per_second));
             refilled = now;

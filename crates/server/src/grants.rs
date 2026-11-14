@@ -28,6 +28,7 @@ fn targets(r: &Request) -> Targets {
             Targets::Everything
         }
         Request::TerminalQuery(p) => Targets::Panes(p.panes.clone()),
+        Request::DecorationsList(p) => Targets::Panes(vec![p.pane]),
         Request::TapsSubscribe(p) if p.every_pane => Targets::Everything,
         Request::TapsSubscribe(p) => Targets::Panes(p.panes.clone()),
         Request::ActionsSubmit(s) => match s.action.as_ref().and_then(|a| a.kind.as_ref()) {
