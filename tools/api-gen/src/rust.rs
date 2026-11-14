@@ -106,7 +106,72 @@ pub fn generate(s: &Schema) -> String {
     }
 
     methods(&mut o, s);
+    notifications(&mut o, s);
     o
+}
+
+fn notifications(o: &mut String, s: &Schema) {
+    o.push_str("\n/// Topics of what the daemon pushes.\npub mod topic {\n");
+    for n in &s.notifications {
+        doc(o, "    ", n.doc.as_deref());
+        let _ = writeln!(
+            o,
+            "    pub const {}: &str = \"{}\";",
+            n.topic.replace('.', "_").to_ascii_uppercase(),
+            n.topic
+        );
+    }
+    o.push_str("}\n\n");
+    o.push_str(
+        "/// Something the daemon pushed, typed by its topic.\n#[derive(Debug, Clone, PartialEq)]\npub enum Notification {\n",
+    );
+    for n in &s.notifications {
+        let _ = writeln!(o, "    {}({}),", camel(&n.topic), n.payload);
+    }
+    o.push_str("}\n\nimpl Notification {\n    pub fn topic(&self) -> &'static str {\n        match self {\n");
+    for n in &s.notifications {
+        let _ = writeln!(
+            o,
+            "            Self::{}(_) => \"{}\",",
+            camel(&n.topic),
+            n.topic
+        );
+    }
+    o.push_str("        }\n    }\n\n    pub fn encode(&self) -> Vec<u8> {\n        match self {\n");
+    for n in &s.notifications {
+        let _ = writeln!(
+            o,
+            "            Self::{}(v) => ::prost::Message::encode_to_vec(v),",
+            camel(&n.topic)
+        );
+    }
+    o.push_str("        }\n    }\n\n    pub fn decode(topic: &str, bytes: &[u8]) -> Result<Self, crate::CallError> {\n        match topic {\n");
+    for n in &s.notifications {
+        let _ = writeln!(
+            o,
+            "            \"{}\" => Ok(Self::{}(::prost::Message::decode(bytes)?)),",
+            n.topic,
+            camel(&n.topic)
+        );
+    }
+    o.push_str("            other => Err(crate::CallError::UnknownMethod(other.to_owned())),\n        }\n    }\n\n    pub fn to_json(&self) -> serde_json::Value {\n        match self {\n");
+    for n in &s.notifications {
+        let _ = writeln!(
+            o,
+            "            Self::{}(v) => serde_json::to_value(v).unwrap_or_default(),",
+            camel(&n.topic)
+        );
+    }
+    o.push_str("        }\n    }\n\n    pub fn from_json(topic: &str, value: serde_json::Value) -> Result<Self, crate::CallError> {\n        match topic {\n");
+    for n in &s.notifications {
+        let _ = writeln!(
+            o,
+            "            \"{}\" => Ok(Self::{}(serde_json::from_value(value)?)),",
+            n.topic,
+            camel(&n.topic)
+        );
+    }
+    o.push_str("            other => Err(crate::CallError::UnknownMethod(other.to_owned())),\n        }\n    }\n}\n");
 }
 
 fn field(o: &mut String, s: &Schema, f: &Field) {

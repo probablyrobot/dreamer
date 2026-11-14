@@ -47,6 +47,11 @@ pub fn socket_path() -> PathBuf {
     runtime_dir().join("dreamerd.sock")
 }
 
+/// The JSON-RPC endpoint, beside the native socket.
+pub fn rpc_socket_path() -> PathBuf {
+    runtime_dir().join("dreamerd.rpc.sock")
+}
+
 pub fn lock_path() -> PathBuf {
     runtime_dir().join("dreamerd.lock")
 }

@@ -59,6 +59,46 @@ field is absent.
   unavailable, `-32005` forbidden by the connection's grant, and `-32006`
   limited (a rate, or a message chain's depth).
 
+## JSON-RPC endpoint
+
+The daemon serves JSON-RPC 2.0 on its own socket, `dreamerd.rpc.sock`,
+beside the native `dreamerd.sock` in the runtime directory (owner-only,
+like it). The endpoint decides the protocol; nothing is guessed from the
+bytes. `dream rpc` connects standard input and output to it.
+
+- **Framing:** one JSON object (or batch array) per line, UTF-8, at most
+  1 MiB. A longer line is answered with `-32600` and skipped.
+- **Same service:** a JSON-RPC connection is an ordinary connection to
+  the daemon. It starts with the same owner grant as a native client,
+  `apps.register` narrows it the same way, and refusals, subscriptions,
+  events, and messages behave identically. Its broker identity is its own
+  `owner:<n>` or registered instance.
+- **Requests:** `params` must be an object (by name) or absent. Unknown
+  methods are `-32601`; params that do not fit the method's record are
+  `-32602`; unparsable lines are `-32700`. None of these end the
+  connection.
+- **Notifications from the client** (no `id`) are not run: a notification
+  gets no reply, so it could never confirm anything. Use a request.
+- **Batches** run their calls in order and reply with an array, without
+  entries for notifications.
+- **Notifications from the daemon:** everything pushed on the native wire
+  arrives as a notification whose `method` is its topic and whose `params`
+  is the topic's record:
+
+| Topic | Params |
+| --- | --- |
+| `terminal.records` | `RecordBatch` |
+| `terminal.checkpoint` | `CheckpointData` (a bulk stream on the native wire) |
+| `terminal.end` | `SubscriptionEnd` |
+| `tmux.topology` | `TopologyUpdate` |
+| `events.batch` | `EventBatch` |
+| `messages.deliver` | `MessageDelivery` |
+
+The topic table is part of the schema (`notifications:` in `api.yaml`), so
+the Rust SDK (`api::Notification`), OpenRPC (`x-notifications`), and the
+Luau types (`Notification`) are generated from it, and the compatibility
+lock refuses removing or retyping a topic within a major version.
+
 ## Luau
 
 `api::LUAU_MODULE` evaluates to a function. The host calls it with its own

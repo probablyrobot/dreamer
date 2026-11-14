@@ -15,6 +15,8 @@ pub struct Contract {
     pub enums: BTreeMap<String, BTreeMap<i32, String>>,
     /// method -> "params -> result kind"
     pub methods: BTreeMap<String, String>,
+    /// topic -> payload type
+    pub notifications: BTreeMap<String, String>,
 }
 
 impl Contract {
@@ -59,6 +61,9 @@ impl Contract {
                 ),
             );
         }
+        for n in &s.notifications {
+            c.notifications.insert(n.topic.clone(), n.payload.clone());
+        }
         c
     }
 
@@ -85,6 +90,9 @@ impl Contract {
         }
         for (name, m) in &self.methods {
             o.push_str(&format!("method {name} {m}\n"));
+        }
+        for (topic, payload) in &self.notifications {
+            o.push_str(&format!("notification {topic} {payload}\n"));
         }
         o
     }
@@ -143,6 +151,11 @@ impl Contract {
                 "method" => {
                     let (name, m) = rest.split_once(' ').ok_or_else(bad)?;
                     c.methods.insert(name.to_owned(), m.to_owned());
+                    cur = Cur::None;
+                }
+                "notification" => {
+                    let (topic, payload) = rest.split_once(' ').ok_or_else(bad)?;
+                    c.notifications.insert(topic.to_owned(), payload.to_owned());
                     cur = Cur::None;
                 }
                 _ => return Err(bad()),
@@ -221,6 +234,22 @@ pub fn diff(old: &Contract, new: &Contract) -> Diff {
     }
     for name in new.methods.keys().filter(|n| !old.methods.contains_key(*n)) {
         d.additive.push(format!("method {name} added"));
+    }
+    for (topic, payload) in &old.notifications {
+        match new.notifications.get(topic) {
+            None => d.breaking.push(format!("notification {topic} removed")),
+            Some(p) if p != payload => d.breaking.push(format!(
+                "notification {topic} changed from `{payload}` to `{p}`"
+            )),
+            _ => {}
+        }
+    }
+    for topic in new
+        .notifications
+        .keys()
+        .filter(|t| !old.notifications.contains_key(*t))
+    {
+        d.additive.push(format!("notification {topic} added"));
     }
     d
 }
@@ -301,6 +330,24 @@ mod tests {
         assert!(!check(&old, &no_method).is_empty());
         let mutation = contract(&BASE.replace("query", "mutation"));
         assert!(!check(&old, &mutation).is_empty());
+    }
+
+    #[test]
+    fn notifications_are_part_of_the_contract() {
+        let with = format!("{BASE}notification s.pushed A\n");
+        let old = contract(&with);
+        assert_eq!(Contract::parse(&old.render()).expect("parse"), old);
+        let removed = check(&old, &contract(BASE));
+        assert!(removed.iter().any(|p| p.contains("removed")), "{removed:?}");
+        let retyped = check(&old, &contract(&with.replace("s.pushed A", "s.pushed B")));
+        assert!(retyped.iter().any(|p| p.contains("changed")), "{retyped:?}");
+        let added = format!("{with}notification s.more A\n");
+        assert!(
+            !check(&old, &contract(&added)).is_empty(),
+            "needs a minor bump"
+        );
+        let bumped = added.replace("version 1 0", "version 1 1");
+        assert!(check(&old, &contract(&bumped)).is_empty());
     }
 
     #[test]

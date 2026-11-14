@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 22;
+pub const PROTOCOL_MINOR: u32 = 23;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -3152,5 +3152,91 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .await
             .map(Response::MessagesUnsubscribe),
         Request::AppsRegister(p) => service.apps_register(p).await.map(Response::AppsRegister),
+    }
+}
+
+/// Topics of what the daemon pushes.
+pub mod topic {
+    /// Records of a terminal or host subscription, in order.
+    pub const TERMINAL_RECORDS: &str = "terminal.records";
+    /// A subscription's starting snapshot (a bulk stream on the native wire).
+    pub const TERMINAL_CHECKPOINT: &str = "terminal.checkpoint";
+    /// A subscription ended; nothing more follows for it.
+    pub const TERMINAL_END: &str = "terminal.end";
+    /// The watched topology changed.
+    pub const TMUX_TOPOLOGY: &str = "tmux.topology";
+    /// Events of an events.subscribe subscription, after its gap if any.
+    pub const EVENTS_BATCH: &str = "events.batch";
+    /// A message for a messages.subscribe subscription.
+    pub const MESSAGES_DELIVER: &str = "messages.deliver";
+}
+
+/// Something the daemon pushed, typed by its topic.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Notification {
+    TerminalRecords(RecordBatch),
+    TerminalCheckpoint(CheckpointData),
+    TerminalEnd(SubscriptionEnd),
+    TmuxTopology(TopologyUpdate),
+    EventsBatch(EventBatch),
+    MessagesDeliver(MessageDelivery),
+}
+
+impl Notification {
+    pub fn topic(&self) -> &'static str {
+        match self {
+            Self::TerminalRecords(_) => "terminal.records",
+            Self::TerminalCheckpoint(_) => "terminal.checkpoint",
+            Self::TerminalEnd(_) => "terminal.end",
+            Self::TmuxTopology(_) => "tmux.topology",
+            Self::EventsBatch(_) => "events.batch",
+            Self::MessagesDeliver(_) => "messages.deliver",
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::TerminalRecords(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalCheckpoint(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalEnd(v) => ::prost::Message::encode_to_vec(v),
+            Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
+            Self::EventsBatch(v) => ::prost::Message::encode_to_vec(v),
+            Self::MessagesDeliver(v) => ::prost::Message::encode_to_vec(v),
+        }
+    }
+
+    pub fn decode(topic: &str, bytes: &[u8]) -> Result<Self, crate::CallError> {
+        match topic {
+            "terminal.records" => Ok(Self::TerminalRecords(::prost::Message::decode(bytes)?)),
+            "terminal.checkpoint" => Ok(Self::TerminalCheckpoint(::prost::Message::decode(bytes)?)),
+            "terminal.end" => Ok(Self::TerminalEnd(::prost::Message::decode(bytes)?)),
+            "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
+            "events.batch" => Ok(Self::EventsBatch(::prost::Message::decode(bytes)?)),
+            "messages.deliver" => Ok(Self::MessagesDeliver(::prost::Message::decode(bytes)?)),
+            other => Err(crate::CallError::UnknownMethod(other.to_owned())),
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::TerminalRecords(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalCheckpoint(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalEnd(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::EventsBatch(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MessagesDeliver(v) => serde_json::to_value(v).unwrap_or_default(),
+        }
+    }
+
+    pub fn from_json(topic: &str, value: serde_json::Value) -> Result<Self, crate::CallError> {
+        match topic {
+            "terminal.records" => Ok(Self::TerminalRecords(serde_json::from_value(value)?)),
+            "terminal.checkpoint" => Ok(Self::TerminalCheckpoint(serde_json::from_value(value)?)),
+            "terminal.end" => Ok(Self::TerminalEnd(serde_json::from_value(value)?)),
+            "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
+            "events.batch" => Ok(Self::EventsBatch(serde_json::from_value(value)?)),
+            "messages.deliver" => Ok(Self::MessagesDeliver(serde_json::from_value(value)?)),
+            other => Err(crate::CallError::UnknownMethod(other.to_owned())),
+        }
     }
 }

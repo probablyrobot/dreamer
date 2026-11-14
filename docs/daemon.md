@@ -31,7 +31,8 @@ after the link drops.
 
 | File | Location | Notes |
 | --- | --- | --- |
-| Socket `dreamerd.sock` | runtime directory | Mode 0600 |
+| Socket `dreamerd.sock` | runtime directory | Mode 0600; the native protocol ([wire.md](wire.md)) |
+| Socket `dreamerd.rpc.sock` | runtime directory | Mode 0600; JSON-RPC 2.0 ([api.md](api.md#json-rpc-endpoint)) |
 | Startup lock `dreamerd.lock` | runtime directory | Holds the daemon's pid; locked for its lifetime |
 | Log `dreamerd.log` | state directory | Written in background mode; mode 0600 |
 | Action ledger `actions.jsonl` | state directory | See [actions.md](actions.md) |
