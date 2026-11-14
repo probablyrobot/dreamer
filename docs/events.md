@@ -13,6 +13,7 @@ output; read that with `terminal.read` or `terminal.subscribe`.
 | `actions.outcome` | An action submitted to this daemon finished | `subject`: the action id; `state`: its outcome (`completed`, `failed`, `outcome_unknown`, …); `pane`: the pane it acted on, if one |
 | `hosts.state` | A remote host's connection changed state | `host`; `state`: `connecting`, `live`, `closed`, or `failed` |
 | `apps.registered` | A launched pane app registered | `subject`: the launch id; `pane` |
+| `scripts.failed` | A script instance was terminated (a budget overrun, or its connection ended) | `subject`: the script; `state`: why |
 
 Every event also has a `sequence` and `time_unix_ms`. Sequences start at 1
 when the daemon starts and increase by one per event.

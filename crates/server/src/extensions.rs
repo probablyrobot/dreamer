@@ -58,7 +58,12 @@ fn backoff_base() -> Duration {
 }
 
 fn backoff(failures: u32) -> Duration {
-    let base = backoff_base();
+    backoff_from(backoff_base(), failures)
+}
+
+/// `base` doubled per failure after the first, at most a minute, with
+/// ±20% jitter so things failing together do not restart together.
+pub fn backoff_from(base: Duration, failures: u32) -> Duration {
     let d = base.saturating_mul(1 << failures.saturating_sub(1).min(16));
     let d = d.min(Duration::from_secs(60));
     // ±20% jitter, so extensions failing together do not restart together.

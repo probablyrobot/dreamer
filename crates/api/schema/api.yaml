@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 24 }
+version: { major: 1, minor: 25 }
 package: dreamer.v1
 
 types:
@@ -891,6 +891,68 @@ types:
     fields:
       - { n: 1, name: name, type: string }
 
+  # ---- scripts ------------------------------------------------------------
+
+  - enum: ScriptState
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: running }
+      - { n: 2, name: restarting, doc: "Over a budget; starting again from its last-good source after a delay." }
+      - { n: 3, name: failed, doc: "Kept failing; parked until scripts.reload." }
+      - { n: 4, name: stopped }
+
+  - message: ScriptGrant
+    fields:
+      - { n: 1, name: methods, type: string, repeated: true, doc: "Exact names or service.*." }
+      - { n: 2, name: panes, type: u32, repeated: true }
+      - { n: 3, name: all_panes, type: bool }
+
+  - message: ScriptLimits
+    doc: "Absent fields take the defaults (16 MiB, 50 ms, 5 s)."
+    fields:
+      - { n: 1, name: memory_bytes, type: u64, optional: true }
+      - { n: 2, name: call_ms, type: u32, optional: true, doc: "Running time per call into the script." }
+      - { n: 3, name: host_call_ms, type: u32, optional: true, doc: "Deadline of each dreamer.* call." }
+
+  - message: ScriptLoad
+    fields:
+      - { n: 1, name: name, type: string, doc: "Unique among loaded scripts; its sender identity is script:<name>." }
+      - { n: 2, name: source, type: string, doc: "Luau source; it runs once on load, then its handlers are called." }
+      - { n: 3, name: grant, type: ScriptGrant }
+      - { n: 4, name: events, type: string, repeated: true, doc: "Event kinds (prefixes) passed to the script's on_event; needs events.subscribe in the grant." }
+      - { n: 5, name: limits, type: ScriptLimits }
+
+  - message: ScriptSource
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: source, type: string }
+
+  - message: ScriptCheck
+    fields:
+      - { n: 1, name: ok, type: bool }
+      - { n: 2, name: error, type: string, optional: true }
+
+  - message: ScriptRef
+    fields:
+      - { n: 1, name: name, type: string }
+
+  - message: ScriptStatus
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: state, type: ScriptState }
+      - { n: 3, name: revision, type: u32, doc: "The source revision running: 1 on load, +1 per successful reload." }
+      - { n: 4, name: restarts, type: u32 }
+      - { n: 5, name: failures, type: u32, doc: "Budget overruns in a row." }
+      - { n: 6, name: last_error, type: string, optional: true }
+      - { n: 7, name: handled, type: u64, doc: "Events passed to on_event." }
+      - { n: 8, name: errors, type: u64, doc: "Handler errors (not budget overruns); the instance keeps running." }
+      - { n: 9, name: grant, type: Grant }
+      - { n: 10, name: events, type: string, repeated: true }
+
+  - message: ScriptList
+    fields:
+      - { n: 1, name: scripts, type: ScriptStatus, repeated: true }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -928,6 +990,11 @@ methods:
   - { method: messages.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: extensions.list, params: Empty, result: ExtensionList, doc: "Supervised extensions and their state." }
   - { method: extensions.restart, params: ExtensionRef, result: ExtensionStatus, mutation: true, doc: "Stop an extension if it runs and start it now, also one parked as failed (owner only)." }
+  - { method: scripts.validate, params: ScriptSource, result: ScriptCheck, doc: "Compile a script without running it." }
+  - { method: scripts.load, params: ScriptLoad, result: ScriptStatus, mutation: true, doc: "Run a script in its own sandboxed VM with the given grant until it is stopped or the daemon stops (owner only)." }
+  - { method: scripts.reload, params: ScriptSource, result: ScriptStatus, mutation: true, doc: "Replace a script's source atomically; an update that does not load leaves the last-good version running (owner only)." }
+  - { method: scripts.stop, params: ScriptRef, result: ScriptStatus, mutation: true, doc: "Stop and unload a script (owner only)." }
+  - { method: scripts.list, params: Empty, result: ScriptList }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive

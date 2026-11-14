@@ -1288,6 +1288,7 @@ dependencies = [
  "platform",
  "prost",
  "replica",
+ "script-runtime",
  "serde_json",
  "terminal-core",
  "terminal-ghostty",

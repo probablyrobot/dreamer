@@ -72,6 +72,7 @@ const USAGE: &str = "usage:
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream rpc [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream extensions [--json] | dream extensions restart NAME
+  dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME
   dream hosts connect|list|call|disconnect ... (see `dream hosts`)
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
@@ -134,6 +135,9 @@ fn main() -> ExitCode {
         }
         ["app", "run", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| app::run(&d, &extra))
+        }
+        ["scripts", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::scripts(&d, &extra))
         }
         ["extensions", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::extensions(&d, &extra))

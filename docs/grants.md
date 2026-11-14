@@ -30,7 +30,7 @@ response, can widen a grant. Only the daemon assigns one.
 | `actions.submit` on a window or session (select, rename, kill, new window) | `all_panes` |
 | `terminal.mirrors`, `daemon.shutdown`, every `hosts.*` method | `all_panes` |
 | Metadata and the caller's own state (`tmux.topology`, `tmux.watch`, `daemon.version`, `actions.get`, `terminal.unsubscribe`, …) | Only the method |
-| `extensions.restart`, `apps.launch` | The owner grant: no app or extension, whatever its grant lists |
+| `extensions.restart`, `apps.launch`, `scripts.load`, `scripts.reload`, `scripts.stop` | The owner grant: no app, extension, or script, whatever its grant lists |
 | `messages.*` | Only the method; messages never reach a pane (see [messages.md](messages.md)) |
 | `events.subscribe` | Only the method; it then delivers only events about panes in scope, and events about no pane only with `all_panes` (see [events.md](events.md)) |
 
