@@ -53,6 +53,51 @@ The extension also gets the environment variable `DREAMER_EXTENSION` (its
 name). As a sender of messages it is `extension:<name>`, stamped by the
 daemon (see [messages.md](messages.md)).
 
+## Writing one in Rust
+
+The `dreamer-sdk` crate (`crates/sdk`) speaks the protocol for you. It
+answers `extension.hello`, `$/ping`, and `extension.shutdown` on its own
+task, so heartbeats are answered while your code is busy. Your code makes
+typed calls and reads typed notifications:
+
+```rust
+let mut session = dreamer_sdk::start("my-extension 0.1").await?;
+let mut notifications = session.notifications().expect("taken once");
+session
+    .call(api::Request::EventsSubscribe(api::EventSubscribe::default()))
+    .await?;
+loop {
+    tokio::select! {
+        Some(api::Notification::EventsBatch(b)) = notifications.recv() => {
+            session.publish("my.topic", format!("{} events", b.events.len()).into_bytes()).await?;
+        }
+        () = session.stopped() => return Ok(()),
+    }
+}
+```
+
+- `session.hello` holds the extension's name and the daemon's API
+  version.
+- `session.call` takes any `api::Request` and returns the matching
+  `api::Response`, or `Error::Rpc` with the daemon's code and message
+  (for example `-32005` outside the grant).
+- `session.notifications()` yields `api::Notification` values: events,
+  messages, terminal records, topology. If the extension does not read
+  them, newer ones are dropped and counted by `session.dropped()`; the
+  heartbeat never waits on them.
+- `session.stopped()` resolves when the daemon asks the extension to stop
+  or its input ends.
+- Write logs to standard error. Standard output belongs to the protocol.
+
+A complete example, `crates/sdk/examples/event-summary.rs`, follows the
+event log and publishes a summary on `summary.events` after each batch.
+Build it with `cargo build -p dreamer-sdk --example event-summary`; it
+needs `events.subscribe` and `messages.publish`, and `all_panes` to see
+events about no pane.
+
+In other languages, implement the three daemon requests above and speak
+JSON-RPC by the conventions in [api.md](api.md#json-rpc-endpoint).
+
 ## Supervision
 
 - **Starting.** Each enabled extension starts with the daemon, in its own
