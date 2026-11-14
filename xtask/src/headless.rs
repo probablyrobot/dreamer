@@ -18,6 +18,7 @@ pub const PACKAGES: &[&str] = &[
     "client",
     "dreamer-server",
     "dreamer-cli",
+    "dreamer-sdk",
     "dreamer-termapp",
     "domain",
     "mirror",
@@ -39,6 +40,7 @@ pub const PACKAGES: &[&str] = &[
 /// only their unit tests run.
 pub const NEEDS_TMUX: &[&str] = &[
     "dreamer-cli",
+    "dreamer-sdk",
     "dreamer-server",
     "mirror",
     "tmux-backend",
