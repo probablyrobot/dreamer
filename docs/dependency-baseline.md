@@ -83,6 +83,7 @@ used only by the build tool.
 | `regex` | `1.13.1` | `matcher`: the linear-time match stage of queries and filters | MIT OR Apache-2.0 |
 | `ratatui` (no default features; `crossterm`) | `=0.30.2` | `dreamer-termapp`: pane app views | MIT |
 | `crossterm` | `=0.29.0` | `dreamer-termapp`: raw mode, alternate screen, keys | MIT |
+| `rmcp` (features `server`, `macros`, `transport-io`) | `=3.10.0` | `dream mcp`: the official MCP Rust SDK, MCP up to 2026-07-28 | Apache-2.0 |
 
 All are pure Rust except Luau (C++, built by `mlua` from its vendored
 source). None pulls in a UI framework, windowing, GPU, or font crate, so

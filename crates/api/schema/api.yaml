@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 33 }
+version: { major: 1, minor: 34 }
 package: dreamer.v1
 
 types:
@@ -1281,6 +1281,7 @@ methods:
   - { method: hosts.install, params: InstallParams, result: InstallResult, mutation: true, doc: "Install the reviewed plan: stream the archive, verify its SHA-256 on the host, unpack into a versioned directory, switch atomically." }
   - { method: hosts.upgrade, params: UpgradeParams, result: UpgradeResult, mutation: true, doc: "Install the reviewed plan, restart the host's daemon on it (tmux keeps running), and reconnect." }
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }
+  - { method: grants.narrow, params: Grant, result: Grant, mutation: true, doc: "Give up authority on this connection: the new grant must be within the current one. Nothing widens a grant." }
   - { method: grants.current, params: Empty, result: Grant, doc: "The calling connection's own grant." }
   - { method: apps.launch, params: LaunchApp, result: LaunchedApp, mutation: true, doc: "Start a program in a new tmux window with a single-use registration ticket (owner only)." }
   - { method: events.subscribe, params: EventSubscribe, result: EventSubscription, doc: "Follow the daemon's event log: `events.batch` events follow, with a gap whenever events were skipped." }

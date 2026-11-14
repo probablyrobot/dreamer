@@ -297,6 +297,9 @@ impl Service for Fixed {
     ) -> Result<api::ExtensionStatus, RpcError> {
         Ok(api::ExtensionStatus::default())
     }
+    async fn grants_narrow(&self, g: api::Grant) -> Result<api::Grant, RpcError> {
+        Ok(g)
+    }
     async fn grants_current(&self, _: Empty) -> Result<api::Grant, RpcError> {
         Ok(api::Grant::default())
     }

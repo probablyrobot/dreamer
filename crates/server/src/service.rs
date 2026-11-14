@@ -1277,6 +1277,10 @@ impl api::Service for DaemonService {
         self.0.extensions.restart(&p.name)
     }
 
+    async fn grants_narrow(&self, _: api::Grant) -> Result<api::Grant, RpcError> {
+        Err(for_a_connection("grants.narrow"))
+    }
+
     async fn apps_register(&self, _: api::RegisterApp) -> Result<api::Registration, RpcError> {
         Err(RpcError::new(
             code::INVALID_REQUEST,

@@ -63,6 +63,41 @@ fn targets(r: &Request) -> Targets {
     }
 }
 
+/// Whether `wanted` is within `current`: a connection may give up
+/// authority, never gain it. The reason when it is not.
+pub fn within(current: &api::Grant, wanted: &api::Grant) -> Result<(), String> {
+    if current.owner {
+        return Ok(());
+    }
+    if wanted.owner {
+        return Err("the owner grant is not within this connection's grant".into());
+    }
+    let have = Grant(current.clone());
+    if let Some(m) = wanted.methods.iter().find(|m| {
+        // `service.*` is within only if the current grant has the whole
+        // service too.
+        !have.0.methods.contains(m)
+            && !(m.ends_with(".*") && have.0.methods.contains(m))
+            && !(!m.ends_with(".*") && have.method_allowed(m))
+    }) {
+        return Err(format!("`{m}` is not in this connection's grant"));
+    }
+    if wanted.all_panes && !current.all_panes {
+        return Err("every pane is not in this connection's grant".into());
+    }
+    if !current.all_panes
+        && let Some(p) = wanted.panes.iter().find(|p| !current.panes.contains(p))
+    {
+        return Err(format!("pane %{p} is outside this connection's grant"));
+    }
+    if let Some(t) = current.expires_unix_ms
+        && wanted.expires_unix_ms.is_none_or(|w| w > t)
+    {
+        return Err("the grant cannot outlast the current one".into());
+    }
+    Ok(())
+}
+
 /// The one pane a request is about, if it names exactly one.
 pub fn single_pane(r: &Request) -> Option<u32> {
     match targets(r) {
@@ -223,6 +258,28 @@ mod tests {
         let mut all = g.clone();
         all.0.all_panes = true;
         assert!(all.check("actions.submit", &kill_window).is_ok());
+    }
+
+    #[test]
+    fn a_grant_narrows_but_never_widens() {
+        let owner = Grant::owner().0;
+        let read3 = narrow(&["terminal.read", "tmux.*"], &[3]).0;
+        assert!(within(&owner, &read3).is_ok());
+        assert!(within(&read3, &narrow(&["terminal.read"], &[3]).0).is_ok());
+        assert!(within(&read3, &narrow(&["tmux.topology"], &[]).0).is_ok());
+        assert!(within(&read3, &narrow(&["terminal.input"], &[3]).0).is_err());
+        assert!(within(&read3, &narrow(&["terminal.*"], &[3]).0).is_err());
+        assert!(within(&read3, &narrow(&["terminal.read"], &[4]).0).is_err());
+        let mut all = narrow(&["terminal.read"], &[]).0;
+        all.all_panes = true;
+        assert!(within(&read3, &all).is_err());
+        assert!(within(&read3, &owner).is_err());
+        let mut expiring = read3.clone();
+        expiring.expires_unix_ms = Some(10);
+        assert!(within(&expiring, &read3).is_err(), "cannot outlast");
+        let mut sooner = read3.clone();
+        sooner.expires_unix_ms = Some(5);
+        assert!(within(&expiring, &sooner).is_ok());
     }
 
     #[test]
