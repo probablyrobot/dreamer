@@ -34,6 +34,9 @@ pub fn run(args: &[String]) -> Result<std::process::ExitCode, String> {
         return Err(usage.into());
     }
     let dir = Path::new(dir);
+    // This wrapper's own pid: while it lives, a job whose program has
+    // exited is still writing its status, not lost.
+    write(dir, "wrapper", &format!("{}\n", std::process::id()));
     let child = std::process::Command::new(&argv[0])
         .args(&argv[1..])
         .spawn();

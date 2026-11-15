@@ -82,9 +82,14 @@ fn read_json(path: &Path) -> Option<Value> {
 pub fn record(dir: &Path) -> Option<JobRecord> {
     let job = read_json(&dir.join("job.json"))?;
     let status = read_json(&dir.join("status.json"));
-    let pid = std::fs::read_to_string(dir.join("pid"))
-        .ok()
-        .and_then(|p| p.trim().parse::<u32>().ok());
+    let read_pid = |name: &str| {
+        std::fs::read_to_string(dir.join(name))
+            .ok()
+            .and_then(|p| p.trim().parse::<u32>().ok())
+    };
+    let pid = read_pid("pid");
+    // The wrapper writes the status just after its program exits.
+    let finishing = read_pid("wrapper").is_some_and(platform::process_alive);
     let int = |v: &Value, k: &str| v.get(k).and_then(Value::as_i64);
     let (state, exit_code, signal, ended) = match &status {
         Some(s) => {
@@ -103,10 +108,13 @@ pub fn record(dir: &Path) -> Option<JobRecord> {
                 s.get("ended_unix_ms").and_then(Value::as_u64),
             )
         }
-        // No status yet: running while its program is, or right after
-        // start before the wrapper wrote the pid.
+        // No status yet: running while its program is, right after start
+        // before the wrapper wrote the pid, or while the wrapper writes the
+        // exit status. Lost only when both are gone with no status.
         None => match pid {
-            Some(p) if !platform::process_alive(p) => (JobState::Lost, None, None, None),
+            Some(p) if !platform::process_alive(p) && !finishing => {
+                (JobState::Lost, None, None, None)
+            }
             _ => (JobState::Running, None, None, None),
         },
     };
@@ -320,5 +328,33 @@ pub async fn watch(state: Arc<State>) {
                 state.events.job(&j.id, name, Some(j.pane));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A job whose program has exited is still finishing while its wrapper
+    /// writes the status, not lost: polling at that moment must not report
+    /// a job that merely ended as lost.
+    #[test]
+    fn a_job_is_lost_only_when_program_and_wrapper_are_gone_without_a_status() {
+        let dir = std::env::temp_dir().join(format!("drm-job-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("job.json"), r#"{"id":"j1","argv":["sh"]}"#).expect("job");
+        let mut gone = std::process::Command::new("true").spawn().expect("spawn");
+        let dead = gone.id();
+        gone.wait().expect("wait");
+        std::fs::write(dir.join("pid"), format!("{dead}\n")).expect("pid");
+        std::fs::write(dir.join("wrapper"), format!("{}\n", std::process::id())).expect("wrapper");
+        let state = |d: &Path| record(d).expect("record").state;
+        assert_eq!(state(&dir), JobState::Running as i32, "finishing");
+        std::fs::write(dir.join("wrapper"), format!("{dead}\n")).expect("wrapper");
+        assert_eq!(state(&dir), JobState::Lost as i32);
+        std::fs::write(dir.join("status.json"), r#"{"exit_code":3}"#).expect("status");
+        assert_eq!(state(&dir), JobState::Failed as i32);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
