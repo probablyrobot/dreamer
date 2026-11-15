@@ -1897,6 +1897,15 @@ async fn idle_check(feed: Arc<Feed>, cx: &mut gpui::AsyncApp) {
     );
     let mut code = if wakes == 0 && paints <= IDLE_STRAY_PAINTS {
         0
+    } else if wakes == 0 {
+        // Repaints the pane never asked for: the OS redrew the window
+        // (activation, the pointer, another app moving over it). That says
+        // nothing about the pane, so the check could not run; a view
+        // wakeup is what would mean the idle pane did work.
+        println!(
+            "smoke: {paints} repaints with no view wakeup came from outside the pane (desktop activity); idle check not run"
+        );
+        INCONCLUSIVE
     } else {
         3
     };

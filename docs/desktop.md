@@ -361,10 +361,11 @@ as evidence when nothing could have painted.
 `dreamer --smoke --expect TEXT --attach %PANE …` waits for a frame
 containing TEXT. It then waits for the pane to settle (no new frame for
 0.5 s), watches 4.5 s of idle pane, and exits with status 3 if any frame
-woke the window or it painted more than once. One stray paint is allowed:
-macOS has GPUI repaint a background window now and then for activity
-elsewhere on the desktop, which the pane did not cause; a repaint loop
-paints more often. A passing count is then checked by requesting one
+woke the window. Repaints the pane did not ask for are not the pane's
+work: macOS has GPUI repaint a window now and then for activity elsewhere
+on the desktop. One is allowed. More, with no view wakeup, means the
+desktop was busy (someone using the Mac), so the result is status 5, not
+run. A repaint loop in the pane would show as view wakeups. A passing count is then checked by requesting one
 repaint as a control: if the window does not paint (occluded, or the
 display asleep), the result is status 5, not a pass. The `live` step runs
 this against an isolated tmux server and private daemon directories.
