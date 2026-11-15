@@ -227,19 +227,34 @@ fn without_a_provider_an_inspector_searches_instead() {
     });
     assert!(head.contains("claude: not installed"), "{head}");
     // The new pane's mirror may still be starting: search until it is in.
-    let want = format!("{other} NEEDLE-41");
+    // A result line names the pane it came from; the line itself may carry
+    // the shell's prompt (`$ NEEDLE-41`), depending on the shell.
+    let from_other = |t: &str| {
+        t.lines()
+            .any(|l| l.contains(&format!("{other} ")) && l.contains("NEEDLE-41"))
+    };
     let deadline = Instant::now() + Duration::from_secs(15);
-    let mut asked = 0;
-    loop {
+    let found = loop {
         s.type_line(&pane, "NEEDLE-41");
-        asked += 1;
-        let found = s.wait(&pane, "answered the search", |t| {
-            t.matches("matching lines").count() >= asked
-        });
-        if found.contains(&want) {
-            break;
+        let tried = Instant::now();
+        let screen = loop {
+            let t = s.screen(&pane);
+            if from_other(&t) || tried.elapsed() > Duration::from_secs(2) {
+                break t;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        if from_other(&screen) {
+            break screen;
         }
-        assert!(Instant::now() < deadline, "never found {want}:\n{found}");
-        std::thread::sleep(Duration::from_millis(300));
-    }
+        assert!(
+            Instant::now() < deadline,
+            "never found NEEDLE-41 in {other}:\n{screen}"
+        );
+    };
+    // Never its own pane: earlier results there would match again.
+    assert!(
+        !found.contains(&format!("{pane} ")),
+        "searched itself:\n{found}"
+    );
 }
