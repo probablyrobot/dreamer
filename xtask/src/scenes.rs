@@ -168,7 +168,14 @@ fn launch(root: &Path, scene: &Scene, skin: &str, extra: &str) -> Result<Running
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
     let id = format!("{}-{skin}-{}", scene.name, std::process::id());
     let socket = format!("dreamer-scene-{id}");
-    let dir = std::env::temp_dir().join(format!("dreamer-scene-{id}"));
+    // Short, under /tmp: the daemon's sockets go in here, and a socket
+    // path is limited to 104 bytes on macOS (the per-user temp directory
+    // alone takes about 50).
+    let dir = std::path::PathBuf::from(format!(
+        "/tmp/drm-scene-{}-{}",
+        &skin[..1],
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let config = dir.join("config");
     std::fs::create_dir_all(&config).map_err(|e| format!("{}: {e}", config.display()))?;
