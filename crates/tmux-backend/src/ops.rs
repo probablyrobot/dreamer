@@ -341,6 +341,42 @@ pub async fn send_keys(
     conn.execute(cmd).await.map(drop)
 }
 
+/// Move a pane into window `target`, beside that window's active pane.
+/// Focus stays where it was. A window left with no panes closes.
+pub async fn join_pane(
+    conn: &Connection,
+    source: TmuxPaneId,
+    target: TmuxWindowId,
+) -> Result<(), CommandError> {
+    conn.execute(
+        TmuxCommand::new("join-pane")
+            .flag("-d")
+            .opt("-s", pane(source))
+            .opt("-t", window(target)),
+    )
+    .await
+    .map(drop)
+}
+
+/// Move a pane into a new window of its own in the same session, named
+/// `name`. Focus stays where it was. A pane already alone in its window
+/// keeps that window, renamed (tmux prints nothing then, so the caller
+/// reads the result back rather than parsing it).
+pub async fn break_pane(
+    conn: &Connection,
+    source: TmuxPaneId,
+    name: &str,
+) -> Result<(), CommandError> {
+    conn.execute(
+        TmuxCommand::new("break-pane")
+            .flag("-d")
+            .opt("-s", pane(source))
+            .opt("-n", name.to_owned()),
+    )
+    .await
+    .map(drop)
+}
+
 pub async fn kill_pane(conn: &Connection, target: TmuxPaneId) -> Result<(), CommandError> {
     conn.execute(TmuxCommand::new("kill-pane").opt("-t", pane(target)))
         .await

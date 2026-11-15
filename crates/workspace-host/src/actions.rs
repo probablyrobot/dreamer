@@ -300,6 +300,27 @@ fn validate(ep: &Endpoint, kind: &Kind) -> Result<(), String> {
             has_pane(ep, a.pane)?;
             generation_holds(ep, a.pane, a.generation)
         }
+        Kind::MovePane(a) => {
+            has_pane(ep, a.pane)?;
+            match (a.window, a.new_window.as_deref()) {
+                (Some(w), None) => {
+                    has_window(ep, w)?;
+                    let inv = ep.tracker.inventory();
+                    if inv.panes.get(&TmuxPaneId(a.pane)).map(|p| p.window) == Some(TmuxWindowId(w))
+                    {
+                        return Err(format!("pane %{} is already in window @{w}", a.pane));
+                    }
+                    Ok(())
+                }
+                (None, Some(name)) => {
+                    if name.is_empty() {
+                        return Err("a window name cannot be empty".into());
+                    }
+                    Ok(())
+                }
+                _ => Err("a move needs either a target window or a new window name".into()),
+            }
+        }
         Kind::SendKeys(a) => {
             has_pane(ep, a.pane)?;
             if a.keys.is_empty()
@@ -364,6 +385,15 @@ async fn dispatch(conn: &Connection, kind: &Kind) -> Result<Option<u32>, Command
         Kind::KillWindow(a) => ops::kill_window(conn, TmuxWindowId(a.window))
             .await
             .map(|()| None),
+        Kind::MovePane(a) => match (a.window, a.new_window.as_deref()) {
+            (Some(w), _) => ops::join_pane(conn, TmuxPaneId(a.pane), TmuxWindowId(w))
+                .await
+                .map(|()| None),
+            (None, Some(name)) => ops::break_pane(conn, TmuxPaneId(a.pane), name)
+                .await
+                .map(|()| None),
+            (None, None) => Ok(None),
+        },
         Kind::NewWindow(a) => {
             let launch = Launch {
                 argv: a.argv.clone(),
@@ -484,6 +514,26 @@ async fn observe(ep: &mut Endpoint, kind: &Kind, new_pane: Option<u32>) -> Outco
                 not_seen(format!("pane %{} still exists", a.pane))
             } else {
                 done(format!("pane %{} is gone", a.pane))
+            }
+        }
+        Kind::MovePane(a) => {
+            let Some(w) = inv.panes.get(&TmuxPaneId(a.pane)).map(|p| p.window) else {
+                return not_seen(format!("pane %{} is gone", a.pane));
+            };
+            let name = inv
+                .windows
+                .get(&w)
+                .map(|w| w.name.clone())
+                .unwrap_or_default();
+            let arrived = match (a.window, a.new_window.as_deref()) {
+                (Some(want), _) => w == TmuxWindowId(want),
+                (None, Some(want)) => name == want,
+                (None, None) => false,
+            };
+            if arrived {
+                done(format!("pane %{} is in window @{} ({name:?})", a.pane, w.0))
+            } else {
+                not_seen(format!("pane %{} is in window @{} ({name:?})", a.pane, w.0))
             }
         }
         Kind::KillWindow(a) => {

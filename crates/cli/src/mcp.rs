@@ -78,6 +78,29 @@ struct ListRuns {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+struct MovePanes {
+    /// The panes to move, in order.
+    panes: Vec<u32>,
+    /// The window to gather them in: an existing window with this name in
+    /// the first pane's session, else a new one.
+    window: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct FindLines {
+    /// Plain text to find (case-insensitive), unless `regex` is set.
+    text: String,
+    /// Treat `text` as a regular expression.
+    #[serde(default)]
+    regex: bool,
+    /// The panes to search; empty searches every pane the grant allows.
+    #[serde(default)]
+    panes: Vec<u32>,
+    /// How many of each pane's newest lines to search (default 200).
+    lines: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 struct Nothing {}
 
 fn text(v: Value) -> CallToolResult {
@@ -86,7 +109,38 @@ fn text(v: Value) -> CallToolResult {
     r
 }
 
+fn failed(why: String) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(why)])
+}
+
 impl Dreamer {
+    async fn topology(&self) -> Result<api::Topology, String> {
+        match self
+            .client
+            .call(api::Request::TmuxTopology(api::TopologyParams::default()))
+            .await
+        {
+            Ok(api::Response::TmuxTopology(t)) => Ok(t),
+            Ok(_) => Err("tmux.topology: unexpected answer".into()),
+            Err(e) => Err(format!("tmux.topology: {e}")),
+        }
+    }
+
+    async fn submit(&self, kind: api::action::Kind) -> Result<api::ActionRecord, String> {
+        match self
+            .client
+            .call(api::Request::ActionsSubmit(api::SubmitAction {
+                action: Some(api::Action { kind: Some(kind) }),
+                ..api::SubmitAction::default()
+            }))
+            .await
+        {
+            Ok(api::Response::ActionsSubmit(r)) => Ok(r),
+            Ok(_) => Err("actions.submit: unexpected answer".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// One typed call; its result as JSON, or a tool error saying why.
     async fn call(&self, request: api::Request) -> Result<CallToolResult, ErrorData> {
         Ok(match self.client.call(request).await {
@@ -191,6 +245,94 @@ impl Dreamer {
                 text: p.text,
             })),
             ..api::TerminalInput::default()
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "Move panes, with their programs, into one window with the given name: an existing window of that name in the first pane's session, else a new one. Returns each pane's action record; it stops at the first move that does not complete."
+    )]
+    async fn move_panes(
+        &self,
+        Parameters(p): Parameters<MovePanes>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use api::action::Kind;
+        if p.panes.is_empty() || p.window.trim().is_empty() {
+            return Ok(failed("move_panes needs panes and a window name".into()));
+        }
+        let top = match self.topology().await {
+            Ok(t) => t,
+            Err(e) => return Ok(failed(e)),
+        };
+        let Some(first) = top.panes.iter().find(|x| x.id == p.panes[0]) else {
+            return Ok(failed(format!("pane %{} does not exist", p.panes[0])));
+        };
+        let session = top
+            .windows
+            .iter()
+            .find(|w| w.id == first.window)
+            .and_then(|w| w.sessions.first().copied());
+        let mut target = top
+            .windows
+            .iter()
+            .find(|w| w.name == p.window && session.is_some_and(|s| w.sessions.contains(&s)))
+            .map(|w| w.id);
+        let mut records = Vec::new();
+        for &pane in &p.panes {
+            let here = top.panes.iter().find(|x| x.id == pane).map(|x| x.window);
+            if target.is_some() && here == target {
+                continue;
+            }
+            let kind = Kind::MovePane(api::MovePane {
+                pane,
+                window: target,
+                new_window: target.is_none().then(|| p.window.clone()),
+            });
+            let r = match self.submit(kind).await {
+                Ok(r) => r,
+                Err(e) => {
+                    records.push(serde_json::json!({ "pane": pane, "error": e }));
+                    break;
+                }
+            };
+            let ok = r.state == api::ActionState::Completed as i32;
+            records.push(serde_json::to_value(&r).unwrap_or_default());
+            if !ok {
+                break;
+            }
+            if target.is_none() {
+                target = match self.topology().await {
+                    Ok(t) => t.panes.iter().find(|x| x.id == pane).map(|x| x.window),
+                    Err(e) => return Ok(failed(e)),
+                };
+            }
+        }
+        // Stopping early always leaves a failed or unfinished record last.
+        let failed_move = records
+            .iter()
+            .any(|r| r.get("error").is_some() || r["state"] != "completed");
+        let mut r = text(serde_json::json!({ "window": target, "moves": records }));
+        if failed_move {
+            r.is_error = Some(true);
+        }
+        Ok(r)
+    }
+
+    #[tool(
+        description = "Find lines in panes' recent output: which panes show this text, and the matching lines. Bounded; a cut-short answer says so."
+    )]
+    async fn find_lines(
+        &self,
+        Parameters(p): Parameters<FindLines>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::TerminalQuery(api::TerminalQuery {
+            pattern: p.text,
+            literal: !p.regex,
+            ignore_case: true,
+            panes: p.panes,
+            lines: p.lines,
+            max_matches: Some(100),
+            ..api::TerminalQuery::default()
         }))
         .await
     }
