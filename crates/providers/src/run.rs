@@ -68,8 +68,7 @@ pub fn start_program(kind: Kind, program: &Path, req: &Request) -> Result<Run, F
     for v in kind.scrubbed() {
         cmd.env_remove(v);
     }
-    let mut child = cmd
-        .spawn()
+    let mut child = crate::spawn(&mut cmd)
         .map_err(|e| Failure::Failed(format!("{}: {e}", program.display())))?;
     let pgid = child.id().unwrap_or_default();
     let (tx, events) = mpsc::unbounded_channel();
