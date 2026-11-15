@@ -1169,23 +1169,25 @@ impl api::Service for DaemonService {
         // Every line, from the top of history, to check each mark against.
         // A respawn or reflow (exactly when marks change) can rebuild the
         // mirror briefly: wait for it as taps.subscribe does.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-        let r = loop {
+        // A fresh mark whose line the mirror does not show yet waits for it
+        // (the filter reads output a moment before the mirror applies it).
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(3).max(crate::decorations::SETTLE);
+        let checked = loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if host.wait_live(&[id], remaining).await
                 && let Some(r) = host.read(id, usize::MAX / 2).await
             {
                 let r = r.map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
-                // A mark made from a line the mirror has not applied yet:
-                // give the mirror a moment to catch up.
-                if !self.0.decorations.ahead(
+                let checked = self.0.decorations.check(
                     p.pane,
                     r.generation.0,
                     u32::from(r.cols),
-                    r.lines.len(),
-                ) || tokio::time::Instant::now() >= deadline
-                {
-                    break r;
+                    &r.lines,
+                    usize::from(r.rows),
+                );
+                if !checked.pending || tokio::time::Instant::now() >= deadline {
+                    break checked;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 continue;
@@ -1199,13 +1201,10 @@ impl api::Service for DaemonService {
             // Live a moment ago but gone by the read: look again shortly.
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
-        let (decorations, dropped) =
-            self.0
-                .decorations
-                .valid(p.pane, r.generation.0, u32::from(r.cols), &r.lines);
-        if dropped {
+        if checked.dropped {
             self.0.events.decorations_changed(p.pane);
         }
+        let decorations = checked.listed;
         Ok(api::DecorationList {
             pane: p.pane,
             decorations,
