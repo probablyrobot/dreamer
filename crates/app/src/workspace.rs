@@ -70,6 +70,10 @@ pub(crate) struct Workspace {
     /// A save is running, and the arrangement changed since it began.
     saving: bool,
     save_dirty: bool,
+    /// Filters' marks for the panes shown (local panes only), and the
+    /// panes whose marks are switched off in this view.
+    decorations: Option<Arc<replica::decorations::DecorationsFeed>>,
+    pub(crate) undecorated: std::collections::HashSet<u32>,
 }
 
 /// A divider being dragged: the size the pointer asks for, the last size
@@ -123,6 +127,51 @@ impl Workspace {
             _bounds: None,
             saving: false,
             save_dirty: false,
+            decorations: None,
+            undecorated: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Follow the marks of the panes shown, starting the feed the first
+    /// time. A host's panes have none here: its events are not relayed.
+    fn follow_decorations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.via != replica::Via::Local {
+            return;
+        }
+        if self.decorations.is_none() {
+            let Ok(feed) = replica::decorations::DecorationsFeed::start(self.socket.clone()) else {
+                return;
+            };
+            let feed = Arc::new(feed);
+            self.decorations = Some(feed.clone());
+            let any = window.window_handle();
+            cx.spawn(async move |this, cx| {
+                while feed.wake.recv().await.is_ok() {
+                    let alive = cx.update_window(any, |_, _, cx| {
+                        this.update(cx, |ws, cx| ws.apply_decorations(cx)).is_ok()
+                    });
+                    if !matches!(alive, Ok(true)) {
+                        return;
+                    }
+                }
+            })
+            .detach();
+        }
+        if let Some(feed) = &self.decorations {
+            feed.watch(self.panes.keys().copied());
+        }
+        self.apply_decorations(cx);
+    }
+
+    /// Hand each pane its current marks.
+    fn apply_decorations(&mut self, cx: &mut Context<Self>) {
+        let Some(feed) = self.decorations.clone() else {
+            return;
+        };
+        for (id, view) in &self.panes {
+            let shown = !self.undecorated.contains(id);
+            let marks = feed.marks(*id);
+            view.shell.update(cx, |s, cx| s.set_marks(marks, shown, cx));
         }
     }
 
@@ -564,6 +613,15 @@ impl Workspace {
                 if let (Some(name), Some(h)) = (name, self.hosts_feed()) {
                     h.disconnect(&name);
                 }
+                None
+            }
+            C::ToggleDecorations => {
+                if let Some(pane) = pane
+                    && !self.undecorated.remove(&pane)
+                {
+                    self.undecorated.insert(pane);
+                }
+                self.apply_decorations(cx);
                 None
             }
         };
@@ -1057,6 +1115,7 @@ impl Workspace {
                 self.panes.insert(p.id, view);
             }
         }
+        self.follow_decorations(window, cx);
         if first_save {
             // Record the server incarnation the session id now belongs to.
             self.save_state(cx);
@@ -2136,6 +2195,9 @@ mod smoke {
         palette_commands(any, &ws, cx).await;
 
         let painted = click_and_type(any, &ws, cx).await;
+        if painted {
+            decorations(any, &ws, &daemon, cx).await;
+        }
 
         // Selecting a tab switches the tmux window, seen in the topology.
         let second = read(any, &ws, cx, |w, _| {
@@ -2201,6 +2263,103 @@ mod smoke {
             "smoke: the sidebar switched the window to session `other`, and the arrangement was saved"
         );
         std::process::exit(if painted { 0 } else { crate::INCONCLUSIVE });
+    }
+
+    /// A filter marks a line of the focused pane: the mark is drawn over
+    /// the grid, hidden when switched off from the palette, and shown
+    /// again, while tmux's copy of the line stays as the program wrote it.
+    async fn decorations(
+        any: AnyWindowHandle,
+        ws: &WeakEntity<Workspace>,
+        daemon: &[String],
+        cx: &mut AsyncApp,
+    ) {
+        let (socket, pane) = read(any, ws, cx, |w, _| Some((w.socket.clone(), w.focused?)))
+            .flatten()
+            .unwrap_or_else(|| fail("no focused pane for the decoration check"));
+        let spec = api::FilterSpec {
+            name: "smoke-marks".into(),
+            panes: vec![pane],
+            pattern: "^MARKED-LINE".into(),
+            decorate: api::DecorationStyle::Highlight as i32,
+            grant: Some(api::ScriptGrant {
+                methods: vec!["taps.subscribe".into()],
+                panes: vec![pane],
+                all_panes: false,
+            }),
+            ..api::FilterSpec::default()
+        };
+        let installed = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            rt.block_on(async {
+                let c = client::Client::connect(&socket, "smoke")
+                    .await
+                    .map_err(|e| e.to_string())?;
+                c.call(api::Request::FiltersInstall(spec))
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .join()
+        .unwrap_or_else(|_| Err("the install thread panicked".into()));
+        if let Err(e) = installed {
+            fail(&format!("could not install a decorating filter: {e}"));
+        }
+        let target = format!("%{pane}");
+        tmux(
+            daemon,
+            &[
+                "send-keys",
+                "-t",
+                &target,
+                "printf 'MARKED-LINE %s\\n' here",
+                "Enter",
+            ],
+        );
+        let drawn =
+            move |w: &Workspace, cx: &gpui::App| w.pane_shell(pane).map(|s| s.read(cx).marks_drawn);
+        wait_for(
+            any,
+            ws,
+            cx,
+            "the marked line drawn highlighted",
+            move |w, cx| drawn(w, cx) == Some(1),
+        )
+        .await;
+        palette(any, ws, cx, "decorations in this pane");
+        wait_for(
+            any,
+            ws,
+            cx,
+            "the mark hidden after switching it off",
+            move |w, cx| w.undecorated.contains(&pane) && drawn(w, cx) == Some(0),
+        )
+        .await;
+        palette(any, ws, cx, "decorations in this pane");
+        wait_for(
+            any,
+            ws,
+            cx,
+            "the mark drawn again after switching it on",
+            move |w, cx| !w.undecorated.contains(&pane) && drawn(w, cx) == Some(1),
+        )
+        .await;
+        let tmux_sees = tmux_output(daemon, &["capture-pane", "-p", "-t", &target]);
+        if !tmux_sees
+            .lines()
+            .any(|l| l.trim_end() == "MARKED-LINE here")
+        {
+            fail(&format!(
+                "tmux's copy of the marked line changed: {tmux_sees:?}"
+            ));
+        }
+        println!(
+            "smoke: a filter's mark was drawn over pane %{pane}, hidden from the palette, and drawn again; tmux's copy of the line was unchanged"
+        );
     }
 
     /// The second run, against a new tmux server: the saved session comes

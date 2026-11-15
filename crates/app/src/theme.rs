@@ -41,6 +41,8 @@ pub(crate) struct Theme {
     pub warning_text: u32,
     /// The visual bell's wash: RGBA.
     pub flash: u32,
+    /// A highlighted line's wash (a filter's decoration): RGBA.
+    pub mark: u32,
 }
 
 pub(crate) const DARK: Theme = Theme {
@@ -62,6 +64,7 @@ pub(crate) const DARK: Theme = Theme {
     warning_surface: 0x3a2f1c,
     warning_text: 0xf0dcb0,
     flash: 0xffffff22,
+    mark: 0x8ab4f833,
 };
 
 /// Warm neutrals rather than an inverted dark: paper-like background,
@@ -85,6 +88,7 @@ pub(crate) const LIGHT: Theme = Theme {
     warning_surface: 0xfbefd2,
     warning_text: 0x4d3600,
     flash: 0x0000001a,
+    mark: 0x2f6fde2e,
 };
 
 /// Which skin the window uses: `appearance` from the settings (`system`

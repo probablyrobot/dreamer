@@ -225,6 +225,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             && again.status.success()
             && stdout.contains(&format!("smoke: backend {expected}"))
             && stdout.contains("smoke: dragging a divider resized pane")
+            && stdout.contains("smoke: a filter's mark was drawn")
             && stdout.contains("smoke: the saved arrangement came back");
         // Exit 5: the window never got new frames, so the click, keyboard,
         // sizing, and drag checks could not run. That is missing evidence,

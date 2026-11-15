@@ -25,9 +25,10 @@ pub(crate) enum Command {
     AddHost,
     EditHost,
     RemoveHost,
+    ToggleDecorations,
 }
 
-pub(crate) const ALL: [Command; 20] = [
+pub(crate) const ALL: [Command; 21] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -48,6 +49,7 @@ pub(crate) const ALL: [Command; 20] = [
     Command::AddHost,
     Command::EditHost,
     Command::RemoveHost,
+    Command::ToggleDecorations,
 ];
 
 impl Command {
@@ -73,6 +75,7 @@ impl Command {
             Command::InstallOnHost => "Install or update the server on a host…",
             Command::VerifyHost => "Verify host in a terminal (host key, passphrase)…",
             Command::DisconnectHost => "Disconnect host… (its programs keep running)",
+            Command::ToggleDecorations => "Show or hide decorations in this pane (filter marks)",
         }
     }
 

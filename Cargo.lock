@@ -1379,6 +1379,7 @@ dependencies = [
  "replica",
  "terminal-ghostty",
  "terminal-render",
+ "tokio",
  "workspace-config",
 ]
 
