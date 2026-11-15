@@ -405,10 +405,16 @@ pub async fn run(
                         crate::agent::Key::Cancel => {
                             if let Some(r) = &agent_run {
                                 r.cancel();
+                                // What the operator started stops with it.
+                                if let Some(c) = conn.as_ref() {
+                                    let client = c.client.clone();
+                                    crate::agent::cancel_jobs(&mut app, &client).await;
+                                }
                             }
                         }
                         crate::agent::Key::Submit(prompt) => {
                             app.agent.say(crate::model::Said::You, &prompt);
+                            app.agent.plan = None;
                             let spec = app.manifest.agent.clone();
                             match (spec, app.agent.provider.clone()) {
                                 (Some(spec), Some(p)) => {
@@ -537,6 +543,17 @@ pub async fn run(
             _ = tick.tick() => {
                 let now = tokio::time::Instant::now();
                 ticks += 1;
+                // An operator's actions and jobs, read again until they
+                // settle, once a second.
+                if ticks.is_multiple_of(5)
+                    && app.agent.taken.iter().any(|t| t.open)
+                    && let Some(c) = conn.as_ref()
+                {
+                    let client = c.client.clone();
+                    if crate::agent::refresh(&mut app, &client).await {
+                        dirty = true;
+                    }
+                }
                 // Look for a new version of the package twice a second.
                 if ticks.is_multiple_of(3) {
                     let now_stamp = stamps(&path, &pkg.manifest);

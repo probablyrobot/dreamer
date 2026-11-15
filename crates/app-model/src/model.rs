@@ -72,6 +72,42 @@ pub struct AgentState {
     pub mode: String,
     /// What the agent may do, as shown in the header.
     pub grant: String,
+    /// An operator's plan for the current request: what it said before its
+    /// first action.
+    pub plan: Option<String>,
+    /// What an operator did, newest last, with each action's or job's
+    /// state as last read.
+    pub taken: Vec<Taken>,
+    /// Tool calls of the current run awaiting their results: (id, name,
+    /// input).
+    pub calls: Vec<(String, String, Value)>,
+}
+
+/// One thing an operator did: an action or job it started, or a tool call
+/// that failed, with its target and its state as last read (spec 13.2:
+/// errors name the action and its actual target).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Taken {
+    /// The tool, as the model called it (`create_pane`).
+    pub tool: String,
+    /// What it was aimed at, from the call: panes, a window, a program.
+    pub target: String,
+    /// The host it ran on, if not this one.
+    pub host: Option<String>,
+    pub record: Record,
+    /// The state as last read, with what was observed or why it failed.
+    pub state: String,
+    /// Still in progress: read again until it settles.
+    pub open: bool,
+    pub ok: bool,
+}
+
+/// What a taken step can be followed by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Record {
+    Action(String),
+    Job(String),
+    None,
 }
 
 impl AgentState {

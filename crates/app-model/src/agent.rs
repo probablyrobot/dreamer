@@ -16,7 +16,7 @@ use providers::{Event, Kind, Request, State, Tools};
 use serde_json::{Value, json};
 
 use crate::manifest::{AgentKind, AgentSpec};
-use crate::model::{App, Said};
+use crate::model::{App, Record, Said, Taken};
 
 /// What a key did in an agent view.
 pub(crate) enum Key {
@@ -90,7 +90,13 @@ pub(crate) fn grant_text(spec: &AgentSpec) -> String {
     } else {
         ""
     };
-    format!("{ro}{methods}; {panes}")
+    // The limits a run stops at.
+    let turns = spec
+        .max_turns
+        .map(|n| format!("; at most {n} turns"))
+        .unwrap_or_default();
+    let secs = spec.timeout_s.unwrap_or(300);
+    format!("{ro}{methods}; {panes}{turns}; stops after {secs} s")
 }
 
 /// A key typed into an agent view: the prompt line, Enter to run, Esc to
@@ -183,6 +189,11 @@ pub(crate) fn request(spec: &AgentSpec, prompt: &str, socket: &Path) -> Request 
 
 /// Apply a run's event; `true` when the run has ended.
 pub(crate) fn apply(app: &mut App, e: Event) -> bool {
+    let operator = app
+        .manifest
+        .agent
+        .as_ref()
+        .is_some_and(|s| s.kind == AgentKind::Operator);
     let a = &mut app.agent;
     match e {
         Event::Started { model, .. } => {
@@ -197,12 +208,36 @@ pub(crate) fn apply(app: &mut App, e: Event) -> bool {
             a.say(Said::Agent, &t);
             false
         }
-        Event::ToolCall { name, input, .. } => {
-            let name = name.strip_prefix("mcp__dreamer__").unwrap_or(&name);
+        Event::ToolCall { id, name, input } => {
+            let name = name
+                .strip_prefix("mcp__dreamer__")
+                .unwrap_or(&name)
+                .to_owned();
+            // The plan: what the model said before its first action.
+            if a.plan.is_none() {
+                let said: Vec<&str> = a
+                    .transcript
+                    .iter()
+                    .rev()
+                    .take_while(|e| e.who != Said::You)
+                    .filter(|e| e.who == Said::Agent)
+                    .map(|e| e.text.trim())
+                    .collect();
+                if !said.is_empty() {
+                    a.plan = Some(said.into_iter().rev().collect::<Vec<_>>().join(" "));
+                }
+            }
             a.say(Said::Tool, &format!("{name} {input}"));
+            a.calls.push((id, name, input));
             false
         }
-        Event::ToolResult { ok, text, .. } => {
+        Event::ToolResult { id, ok, text } => {
+            if let Some(i) = a.calls.iter().position(|(c, _, _)| *c == id) {
+                let (_, name, input) = a.calls.remove(i);
+                if operator {
+                    a.taken.extend(taken(&name, &input, ok, &text));
+                }
+            }
             let first: String = text
                 .lines()
                 .next()
@@ -241,13 +276,198 @@ pub(crate) fn apply(app: &mut App, e: Event) -> bool {
                 a.say(Said::Agent, &answer);
             }
             a.running = false;
+            a.calls.clear();
             true
         }
         Event::Failed(why) => {
             a.say(Said::Failed, &why.to_string());
             a.running = false;
+            a.calls.clear();
             true
         }
+    }
+}
+
+/// What a call aimed at, in a few words: its panes, window, program, or
+/// id. The host is shown apart.
+fn target(input: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(p) = input["pane"].as_u64() {
+        parts.push(format!("%{p}"));
+    }
+    if let Some(ps) = input["panes"].as_array() {
+        let ps: Vec<String> = ps
+            .iter()
+            .filter_map(Value::as_u64)
+            .map(|p| format!("%{p}"))
+            .collect();
+        if !ps.is_empty() {
+            parts.push(ps.join(" "));
+        }
+    }
+    if let Some(w) = input["window"].as_str() {
+        parts.push(format!("window {w:?}"));
+    }
+    if let Some(argv) = input["argv"].as_array() {
+        let argv: Vec<String> = argv.iter().map(crate::model::text).collect();
+        parts.push(argv.join(" "));
+    }
+    if let Some(id) = input["id"].as_str() {
+        parts.push(id.to_owned());
+    }
+    parts.join(" ")
+}
+
+/// An action record's state as one line: the state and what was observed,
+/// or why it failed; and whether it is still in progress.
+fn action_state(r: &Value) -> (String, bool, bool) {
+    let state = crate::model::text(&r["state"]);
+    let detail = [&r["observed"], &r["reason"]]
+        .into_iter()
+        .map(crate::model::text)
+        .find(|s| !s.is_empty())
+        .map(|d| format!(": {d}"))
+        .unwrap_or_default();
+    let open = matches!(state.as_str(), "accepted" | "prepared" | "dispatching");
+    let ok = !matches!(state.as_str(), "failed" | "cancelled" | "outcome_unknown");
+    (format!("{state}{detail}"), open, ok)
+}
+
+/// A job record's state as one line, and whether it is still running.
+fn job_state(r: &Value) -> (String, bool, bool) {
+    let state = crate::model::text(&r["state"]);
+    let code = r["exit_code"]
+        .as_i64()
+        .map(|c| format!(" (exit {c})"))
+        .unwrap_or_default();
+    (
+        format!("{state}{code}"),
+        state == "running",
+        !matches!(state.as_str(), "failed" | "killed" | "lost"),
+    )
+}
+
+/// What one tool result says the operator did. A failure names the tool
+/// and its target; an action or job is kept with its id, to be read again
+/// until it settles.
+pub(crate) fn taken(tool: &str, input: &Value, ok: bool, text: &str) -> Vec<Taken> {
+    let host = input["host"].as_str().map(str::to_owned);
+    let step = |record, (state, open, ok): (String, bool, bool)| Taken {
+        tool: tool.to_owned(),
+        target: target(input),
+        host: host.clone(),
+        record,
+        state,
+        open,
+        ok,
+    };
+    if !ok {
+        let why = text.lines().next().unwrap_or("failed").to_owned();
+        return vec![step(Record::None, (format!("failed: {why}"), false, false))];
+    }
+    let Ok(v) = serde_json::from_str::<Value>(text) else {
+        // A read or a search: not an action to follow.
+        return Vec::new();
+    };
+    if let Some(moves) = v["moves"].as_array() {
+        return moves
+            .iter()
+            .map(|m| match m["id"].as_str() {
+                Some(id) => step(Record::Action(id.to_owned()), action_state(m)),
+                None => step(
+                    Record::None,
+                    (
+                        format!("failed: {}", crate::model::text(&m["error"])),
+                        false,
+                        false,
+                    ),
+                ),
+            })
+            .collect();
+    }
+    let id = v["id"].as_str().map(str::to_owned);
+    match id {
+        Some(id) if v.get("argv").is_some() => vec![step(Record::Job(id), job_state(&v))],
+        Some(id) if v.get("action").is_some() || v.get("observed").is_some() => {
+            vec![step(Record::Action(id), action_state(&v))]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// `method` with `params` here, or on the step's host through `hosts.call`.
+async fn call_for(
+    c: &client::Client,
+    host: Option<&str>,
+    method: &str,
+    params: Value,
+) -> Option<Value> {
+    match host {
+        None => crate::run::call(c, method, params).await.ok(),
+        Some(h) => {
+            let req = api::Request::from_json(method, params).ok()?;
+            let r = crate::run::call(
+                c,
+                "hosts.call",
+                json!({ "name": h, "method": method, "payload": req.encode() }),
+            )
+            .await
+            .ok()?;
+            let bytes: Vec<u8> = serde_json::from_value(r["payload"].clone()).ok()?;
+            api::Response::decode(method, &bytes)
+                .ok()
+                .map(|r| r.to_json())
+        }
+    }
+}
+
+/// Read every open step again: an action until it completes or fails, a
+/// job until it ends. True when something changed.
+pub(crate) async fn refresh(app: &mut App, c: &client::Client) -> bool {
+    let mut changed = false;
+    for t in app.agent.taken.iter_mut().filter(|t| t.open) {
+        let (method, id) = match &t.record {
+            Record::Action(id) => ("actions.get", id.clone()),
+            Record::Job(id) => ("jobs.get", id.clone()),
+            Record::None => continue,
+        };
+        let Some(r) = call_for(c, t.host.as_deref(), method, json!({ "id": id })).await else {
+            continue;
+        };
+        let (state, open, ok) = if method == "jobs.get" {
+            job_state(&r)
+        } else {
+            action_state(&r)
+        };
+        if state != t.state || open != t.open {
+            (t.state, t.open, t.ok) = (state, open, ok);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Esc during a run: stop the jobs the operator started that still run.
+pub(crate) async fn cancel_jobs(app: &mut App, c: &client::Client) {
+    let running: Vec<(String, Option<String>)> = app
+        .agent
+        .taken
+        .iter()
+        .filter(|t| t.open)
+        .filter_map(|t| match &t.record {
+            Record::Job(id) => Some((id.clone(), t.host.clone())),
+            _ => None,
+        })
+        .collect();
+    for (id, host) in running {
+        let done = call_for(c, host.as_deref(), "jobs.cancel", json!({ "id": id })).await;
+        app.agent.say(
+            Said::Note,
+            &match done {
+                Some(_) => format!("cancelled job {id}"),
+                None => format!("could not cancel job {id}"),
+            },
+        );
     }
 }
 
