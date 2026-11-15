@@ -258,3 +258,92 @@ fn without_a_provider_an_inspector_searches_instead() {
         "searched itself:\n{found}"
     );
 }
+
+const OPERATOR: &str = r#"
+schema_version = 1
+id = "test.operator"
+version = "0.1.0"
+title = "Operator"
+capabilities = ["actions.submit", "jobs.start", "hosts.call", "tmux.topology"]
+
+[view]
+type = "agent"
+
+[agent]
+kind = "operator"
+provider = "claude"
+tools = { methods = ["actions.submit", "jobs.start", "hosts.call", "tmux.topology"], all_panes = true }
+max_turns = 6
+timeout_s = 120
+"#;
+
+/// A stand-in `claude` that plays `events` (stream-json lines) for a run.
+fn scripted_claude(dir: &Path, events: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join("claude");
+    let play = dir.join("events.jsonl");
+    std::fs::write(&play, events).expect("events");
+    std::fs::write(
+        &p,
+        format!(
+            r#"#!/bin/sh
+case "$1" in
+--version) echo '2.1.325 (Claude Code)'; exit 0 ;;
+auth) echo '{{"loggedIn": true, "authMethod": "claude.ai"}}'; exit 0 ;;
+esac
+cat '{play}'
+"#,
+            play = play.display()
+        ),
+    )
+    .expect("write");
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    p
+}
+
+/// Spec 13.2: an operator's intent, actions, and outcomes are inspectable.
+/// Its plan (what it said before acting) and every step it took, with the
+/// step's target and state, stay above the transcript; a failed step names
+/// the tool and its actual target.
+#[test]
+fn an_operator_shows_its_plan_and_every_step_with_its_target_and_state() {
+    let s = Setup::new("oper");
+    let manifest = s.root.join("app.toml");
+    std::fs::write(&manifest, OPERATOR).expect("manifest");
+    let events = [
+        r#"{"type":"system","subtype":"init","session_id":"s","model":"standin-model","apiKeySource":"none"}"#,
+        r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"I will split %0 to the right, then run the check on devbox."}}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"mcp__dreamer__create_pane","input":{"pane":0,"direction":"horizontal"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"{\"id\":\"act-1\",\"action\":{},\"state\":\"completed\",\"observed\":\"created pane %9\"}"}]}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"mcp__dreamer__start_job","input":{"argv":["make","check"],"host":"devbox"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":"devbox: jobs.start: host devbox is not connected"}]}}"#,
+        r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Split done; devbox is not connected."}}}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"Split done; devbox is not connected.","usage":{"input_tokens":9,"output_tokens":5}}"#,
+    ]
+    .join("\n");
+    let claude = scripted_claude(&s.root, &events);
+    let pane = s.app(&manifest, &claude);
+    let head = s.wait(&pane, "showed its limits", |t| {
+        t.contains("claude ready") && t.contains("[live]")
+    });
+    assert!(
+        head.contains("at most 6 turns; stops after 120 s"),
+        "{head}"
+    );
+    s.type_line(&pane, "split and check");
+    let done = s.wait(&pane, "showed its steps", |t| {
+        t.contains("Split done") && t.contains("✗ start_job")
+    });
+    assert!(
+        done.contains("plan: I will split %0 to the right, then run the check on devbox."),
+        "{done}"
+    );
+    assert!(
+        done.contains("✓ create_pane %0 → completed: created pane %9"),
+        "{done}"
+    );
+    assert!(
+        done.contains("✗ start_job make check @devbox → failed: devbox: jobs.start: host devbox is not connected"),
+        "{done}"
+    );
+}

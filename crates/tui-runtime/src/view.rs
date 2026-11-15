@@ -140,18 +140,74 @@ pub fn draw(app: &App, f: &mut Frame) {
 
 /// An agentic pane: who it is and what it may do, the transcript (newest
 /// at the bottom), and the prompt.
+/// An operator's plan and steps, one line each: what it said it would do,
+/// then every action or job with its target and its state as last read.
+fn operator_lines(app: &App) -> Vec<Line<'static>> {
+    use ratatui::style::Color;
+    let a = &app.agent;
+    let mut out = Vec::new();
+    if let Some(plan) = &a.plan {
+        out.push(
+            Line::from(format!("plan: {plan}"))
+                .style(Style::default().add_modifier(Modifier::ITALIC)),
+        );
+    }
+    for t in &a.taken {
+        let (mark, style) = match (t.ok, t.open) {
+            (false, _) => ("✗", Style::default().fg(Color::Red)),
+            (true, true) => ("…", Style::default().fg(Color::Yellow)),
+            (true, false) => ("✓", Style::default().fg(Color::Green)),
+        };
+        let host = t
+            .host
+            .as_deref()
+            .map(|h| format!(" @{h}"))
+            .unwrap_or_default();
+        out.push(
+            Line::from(format!(
+                "{mark} {} {}{host} → {}",
+                t.tool, t.target, t.state
+            ))
+            .style(style),
+        );
+    }
+    out
+}
+
 fn draw_agent(app: &App, f: &mut Frame, area: ratatui::layout::Rect, block: Block) {
     use app_model::Said;
     use ratatui::style::Color;
     let a = &app.agent;
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let [head, body, prompt] = Layout::vertical([
+    // An operator shows its plan and what it did above the transcript.
+    let steps = operator_lines(app);
+    let steps_h = if steps.is_empty() {
+        0
+    } else {
+        u16::try_from(steps.len())
+            .unwrap_or(u16::MAX)
+            .min(inner.height / 3)
+            + 1
+    };
+    let [head, done, body, prompt] = Layout::vertical([
         Constraint::Length(2),
+        Constraint::Length(steps_h),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
     .areas(inner);
+    if !steps.is_empty() {
+        // The newest steps when they do not all fit.
+        let skip = steps
+            .len()
+            .saturating_sub(usize::from(done.height.saturating_sub(1)));
+        f.render_widget(
+            Paragraph::new(steps.into_iter().skip(skip).collect::<Vec<_>>())
+                .block(Block::default().borders(ratatui::widgets::Borders::BOTTOM)),
+            done,
+        );
+    }
     let kind = app
         .manifest
         .agent

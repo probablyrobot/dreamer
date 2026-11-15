@@ -302,6 +302,29 @@ fn body(app: &App, t: &theme::Theme) -> gpui::AnyElement {
                         .text_color(c(t.faint))
                         .child(SharedString::from(format!("grant: {}", a.grant))),
                 )
+                // An operator's plan and every step it took, with its state.
+                .children(a.plan.as_ref().map(|plan| {
+                    div()
+                        .italic()
+                        .text_color(c(t.muted))
+                        .child(SharedString::from(format!("plan: {plan}")))
+                }))
+                .children(a.taken.iter().map(|s| {
+                    let (mark, color) = match (s.ok, s.open) {
+                        (false, _) => ("✗", t.danger),
+                        (true, true) => ("…", t.warning),
+                        (true, false) => ("✓", t.accent),
+                    };
+                    let host = s
+                        .host
+                        .as_deref()
+                        .map(|h| format!(" @{h}"))
+                        .unwrap_or_default();
+                    div().text_color(c(color)).child(SharedString::from(format!(
+                        "{mark} {} {}{host} → {}",
+                        s.tool, s.target, s.state
+                    )))
+                }))
                 .child(
                     div()
                         .flex_1()

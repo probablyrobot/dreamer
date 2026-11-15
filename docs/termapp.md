@@ -188,8 +188,30 @@ timeout_s = 300                   # a run is stopped after this (default 300)
   - A monitor keeps showing its data source, which needs no model.
   - An operator says that it needs a provider.
 
-Operator panes run actions only through the typed API and the narrowed
-MCP grant. Plans, leases, and asking for more scope are not built yet.
+### Operator panes
+
+An operator acts, through the typed API and its narrowed MCP grant only.
+What it did stays inspectable above the transcript:
+- **Plan.** What the model said before its first action, for each request
+  (it is asked to say what it will do, and to which panes or windows,
+  before acting).
+- **Steps.** Every action or job it started, one line each: `✓`, `…`, or
+  `✗`, then the tool, its target (panes, window, program, or id), its host
+  (`@devbox`), and its state with what was observed (`completed: created
+  pane %9`, `succeeded (exit 0)`). Open actions and running jobs are read
+  again every second until they settle (`actions.get`, `jobs.get`, through
+  `hosts.call` on a host).
+- **Failures** name the tool and its actual target, with the daemon's
+  reason, never only an optimistic summary.
+- **Cancel.** Esc stops the run and cancels the jobs it started that
+  still run.
+- **Limits.** `max_turns` and `timeout_s` from the manifest, shown in the
+  header (`at most 6 turns; stops after 120 s`).
+- Typing into panes goes through an interaction lease ([input.md](input.md)):
+  once a person types into a pane, the operator stops typing there.
+
+Asking for more scope at run time is not built yet; an operator has the
+grant its manifest declares.
 
 ## Contributions
 
