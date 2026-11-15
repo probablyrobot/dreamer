@@ -76,6 +76,12 @@ pub(crate) struct Workspace {
     pub(crate) undecorated: std::collections::HashSet<u32>,
     /// An app package drawn as a native panel beside the panes.
     pub(crate) panel: Option<Entity<crate::panel::AppPanel>>,
+    /// Installed packages' contributions (local windows only), and the
+    /// latest of them drawn.
+    contrib: Option<Arc<crate::contrib::Contributions>>,
+    pub(crate) contributed: crate::contrib::Snapshot,
+    /// The palette's contributed entries, as (package index, command index).
+    palette_contributed: Vec<(usize, usize)>,
 }
 
 /// A divider being dragged: the size the pointer asks for, the last size
@@ -132,6 +138,102 @@ impl Workspace {
             decorations: None,
             undecorated: std::collections::HashSet::new(),
             panel: None,
+            contrib: None,
+            contributed: crate::contrib::Snapshot::default(),
+            palette_contributed: Vec::new(),
+        }
+    }
+
+    /// Follow installed packages' contributions from `<config dir>/apps`.
+    pub(crate) fn follow_contributions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.via != replica::Via::Local || self.contrib.is_some() {
+            return;
+        }
+        let apps = workspace_config::config_dir().map(|d| app_model::installed::apps_dir(&d));
+        let taken = crate::keymap::SHORTCUTS
+            .iter()
+            .filter_map(crate::keymap::Shortcut::keys)
+            .collect();
+        let feed = Arc::new(crate::contrib::Contributions::start(
+            apps,
+            self.socket.clone(),
+            taken,
+        ));
+        self.contrib = Some(feed.clone());
+        let any = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            while feed.wake.recv().await.is_ok() {
+                let snapshot = feed.snapshot();
+                let alive = cx.update_window(any, |_, _, cx| {
+                    this.update(cx, |ws, cx| {
+                        ws.contributed = snapshot;
+                        cx.notify();
+                    })
+                    .is_ok()
+                });
+                if !matches!(alive, Ok(true)) {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Run the contributed command at (package, command): its package's
+    /// command through the daemon, or open the package as a panel.
+    fn run_contributed(&mut self, at: (usize, usize), window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pkg) = self.contributed.packages.get(at.0) else {
+            return;
+        };
+        let Some(c) = pkg.manifest.contributes.commands.get(at.1) else {
+            return;
+        };
+        match (&c.run, &self.contrib) {
+            (Some(run), Some(feed)) => feed.run(&pkg.manifest.id, run, &c.title),
+            _ => {
+                let path = pkg.manifest_path.display().to_string();
+                self.open_panel(&path, window, cx);
+            }
+        }
+    }
+
+    /// A key press that is a contributed command's binding runs it, before
+    /// the focused pane sees it.
+    fn contributed_key(
+        &mut self,
+        ev: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.contributed.packages.is_empty() {
+            return;
+        }
+        let k = &ev.keystroke;
+        let m = &k.modifiers;
+        let mut parts: Vec<&str> = Vec::new();
+        if m.platform {
+            parts.push("cmd");
+        }
+        if m.control {
+            parts.push("ctrl");
+        }
+        if m.alt {
+            parts.push("alt");
+        }
+        if m.shift {
+            parts.push("shift");
+        }
+        parts.push(k.key.as_str());
+        let pressed = app_model::installed::normal_binding(&parts.join("-"));
+        let found = self.contributed.commands().into_iter().find(|&(p, c)| {
+            self.contributed.packages[p].manifest.contributes.commands[c]
+                .key
+                .as_deref()
+                .is_some_and(|b| app_model::installed::normal_binding(b) == pressed)
+        });
+        if let Some(at) = found {
+            self.run_contributed(at, window, cx);
+            cx.stop_propagation();
         }
     }
 
@@ -333,7 +435,20 @@ impl Workspace {
     }
 
     pub(crate) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.palette = Some(crate::palette::Palette::new());
+        self.palette_contributed = self.contributed.commands();
+        let labels = self
+            .palette_contributed
+            .iter()
+            .map(|&(p, c)| {
+                let m = &self.contributed.packages[p].manifest;
+                let cmd = &m.contributes.commands[c];
+                match &cmd.key {
+                    Some(k) => format!("{}: {} ({k})", m.title, cmd.title),
+                    None => format!("{}: {}", m.title, cmd.title),
+                }
+            })
+            .collect();
+        self.palette = Some(crate::palette::Palette::new().with_contributed(labels));
         window.focus(&self.palette_focus, cx);
         cx.notify();
     }
@@ -662,6 +777,12 @@ impl Workspace {
                 self.close_panel(window, cx);
                 None
             }
+            C::Contributed(i) => {
+                if let Some(&at) = self.palette_contributed.get(usize::from(i)) {
+                    self.run_contributed(at, window, cx);
+                }
+                None
+            }
         };
         if let Some(kind) = action {
             self.topology.act(kind);
@@ -899,6 +1020,62 @@ impl Workspace {
 
     /// The sidebar's hosts: each with its state; a click opens a window on
     /// it (connecting first). Nothing when the daemon knows no hosts.
+    /// Installed packages' sidebar entries, and what was refused.
+    fn apps_section(
+        &self,
+        t: crate::theme::Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        let snap = &self.contributed;
+        let entries: Vec<(String, String, String)> = snap
+            .packages
+            .iter()
+            .flat_map(|p| {
+                p.manifest.contributes.sidebar.iter().map(|e| {
+                    (
+                        format!("{}.{}", p.manifest.id, e.id),
+                        e.title.clone(),
+                        p.manifest_path.display().to_string(),
+                    )
+                })
+            })
+            .collect();
+        if entries.is_empty() && snap.problems.is_empty() {
+            return Vec::new();
+        }
+        let mut out = vec![
+            div()
+                .pt_2()
+                .text_color(c(t.faint))
+                .child("Apps")
+                .into_any_element(),
+        ];
+        for (i, (_, title, path)) in entries.into_iter().enumerate() {
+            out.push(
+                div()
+                    .id(("app-entry", i))
+                    .px_2()
+                    .rounded_sm()
+                    .text_color(c(t.muted))
+                    .child(title)
+                    .on_click(
+                        cx.listener(move |ws, _, window, cx| ws.open_panel(&path, window, cx)),
+                    )
+                    .into_any_element(),
+            );
+        }
+        for p in &snap.problems {
+            out.push(
+                div()
+                    .px_2()
+                    .text_color(c(t.danger))
+                    .child(p.clone())
+                    .into_any_element(),
+            );
+        }
+        out
+    }
+
     fn hosts_section(
         &self,
         t: crate::theme::Theme,
@@ -1154,6 +1331,7 @@ impl Workspace {
             }
         }
         self.follow_decorations(window, cx);
+        self.follow_contributions(window, cx);
         if first_save {
             // Record the server incarnation the session id now belongs to.
             self.save_state(cx);
@@ -1325,6 +1503,19 @@ impl Render for Workspace {
                     .on_click(cx.listener(move |ws, _, _, cx| ws.click_tab(id, cx)))
             }))
             .child(div().flex_1())
+            .children(
+                self.contributed
+                    .outcome
+                    .clone()
+                    .map(|o| div().px_2().text_color(c(t.faint)).child(o)),
+            )
+            .children(self.contributed.status.values().map(|v| {
+                div()
+                    .px_2()
+                    .rounded_sm()
+                    .text_color(c(t.muted))
+                    .child(v.clone())
+            }))
             .children(status.map(|s| div().px_2().text_color(c(t.warning)).child(s)));
 
         // The sidebar, on demand: sessions, the shown one highlighted.
@@ -1360,6 +1551,7 @@ impl Render for Workspace {
                         )
                 }))
                 .children(self.hosts_section(t, cx))
+                .children(self.apps_section(t, cx))
         });
 
         // Panes at their tmux cell rectangles, in canonical cells scaled to
@@ -1498,7 +1690,7 @@ impl Render for Workspace {
                     p.shown()
                         .iter()
                         .enumerate()
-                        .map(|(i, c)| (c.label().to_owned(), i == p.selected))
+                        .map(|(i, c)| (p.label_of(*c), i == p.selected))
                         .collect(),
                 ),
                 Stage::Confirm(c) => (
@@ -1590,6 +1782,7 @@ impl Render for Workspace {
             .flex_col()
             .bg(c(t.background))
             .track_focus(&self.focus)
+            .capture_key_down(cx.listener(Self::contributed_key))
             .on_action(cx.listener(|ws, _: &crate::keymap::ZoomPane, _, cx| ws.toggle_zoom(cx)))
             .on_action(
                 cx.listener(|ws, _: &crate::keymap::CommandPalette, window, cx| {
@@ -2232,6 +2425,7 @@ mod smoke {
         .await;
         println!("smoke: zoom showed the focused pane alone, and unzoom brought all four back");
         palette_commands(any, &ws, cx).await;
+        contributions(any, &ws, &daemon, cx).await;
 
         let painted = click_and_type(any, &ws, cx).await;
         if painted {
@@ -2532,6 +2726,185 @@ columns = ["id", "name"]
         let _ = std::fs::remove_dir_all(&dir);
         println!(
             "smoke: one app package showed the same rows {in_panel:?} as a pane app and as a native panel; a key moved the panel's selection"
+        );
+    }
+
+    /// Installed app packages' contributions: a package's palette command
+    /// runs its typed action, its keybinding opens it as a panel, its
+    /// sidebar entry and status item are there, and a package with a taken
+    /// id and an invalid one are refused with reasons while the first
+    /// loads.
+    async fn contributions(
+        any: AnyWindowHandle,
+        ws: &WeakEntity<Workspace>,
+        daemon: &[String],
+        cx: &mut AsyncApp,
+    ) {
+        let Some(config) = std::env::var_os("DREAMER_CONFIG_DIR").map(std::path::PathBuf::from)
+        else {
+            fail("the contributions check needs a private DREAMER_CONFIG_DIR");
+        };
+        let apps = app_model::installed::apps_dir(&config);
+        let first = tmux_output(
+            daemon,
+            &["display-message", "-p", "-t", "main:0", "#{window_id}"],
+        );
+        let Some(window) = first
+            .trim()
+            .strip_prefix('@')
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            fail(&format!("no id for window main:0: {first:?}"));
+        };
+        let package = format!(
+            r#"schema_version = 1
+id = "smoke.contrib"
+version = "0.1.0"
+title = "Contrib"
+capabilities = ["tmux.topology", "actions.submit"]
+
+[data.windows]
+method = "tmux.topology"
+path = "windows"
+
+[view]
+type = "table"
+source = "windows"
+columns = ["id", "name"]
+
+[commands.rename]
+key = "r"
+method = "actions.submit"
+params = {{ action = {{ kind = {{ rename_window = {{ window = {window}, name = "by-contribution" }} }} }} }}
+
+[[contributes.commands]]
+id = "rename-first"
+title = "Rename the first window"
+run = "rename"
+
+[[contributes.commands]]
+id = "show"
+title = "Show windows"
+opens = "panel"
+key = "ctrl-alt-o"
+
+[[contributes.sidebar]]
+id = "windows"
+title = "Contrib windows"
+
+[[contributes.status]]
+id = "count"
+label = "windows"
+source = "windows"
+"#
+        );
+        let put = |dir: &str, text: &str| {
+            let d = apps.join(dir);
+            std::fs::create_dir_all(&d).and_then(|()| std::fs::write(d.join("app.toml"), text))
+        };
+        let written = put("a-contrib", &package)
+            .and_then(|()| put("b-same-id", &package))
+            .and_then(|()| put("c-invalid", "schema_version = 1\nid = \"Not Valid\"\n"));
+        if let Err(e) = written {
+            fail(&format!("could not install the packages: {e}"));
+        }
+        wait_for(
+            any,
+            ws,
+            cx,
+            "one package loaded, two refused, and its status item",
+            |w, _| {
+                let c = &w.contributed;
+                c.packages.len() == 1
+                    && c.problems.len() == 2
+                    && c.status
+                        .get("smoke.contrib.count")
+                        .is_some_and(|v| v.starts_with("windows "))
+            },
+        )
+        .await;
+        let (problems, status) = read(any, ws, cx, |w, _| {
+            (
+                w.contributed.problems.clone(),
+                w.contributed.status.values().cloned().collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default();
+        if !problems.iter().any(|p| p.contains("already installed"))
+            || !problems.iter().any(|p| p.contains("c-invalid"))
+        {
+            fail(&format!("the refusals do not say why: {problems:?}"));
+        }
+        let sidebar = read(any, ws, cx, |w, _| {
+            w.contributed
+                .packages
+                .iter()
+                .flat_map(|p| {
+                    p.manifest
+                        .contributes
+                        .sidebar
+                        .iter()
+                        .map(|e| e.title.clone())
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+        if sidebar != ["Contrib windows"] {
+            fail(&format!("the sidebar entries are {sidebar:?}"));
+        }
+
+        // The palette command runs the package's typed action.
+        palette(any, ws, cx, "rename the first window");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let name = tmux_output(
+                daemon,
+                &[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &format!("@{window}"),
+                    "#{window_name}",
+                ],
+            );
+            if name.trim() == "by-contribution" {
+                break;
+            }
+            if Instant::now() > deadline {
+                let said = read(any, ws, cx, |w, _| w.contributed.outcome.clone()).flatten();
+                fail(&format!(
+                    "the contributed command never renamed the window: {said:?}"
+                ));
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+        }
+        wait_for(any, ws, cx, "the command's outcome", |w, _| {
+            w.contributed.outcome.as_deref() == Some("Rename the first window: done")
+        })
+        .await;
+
+        // Its keybinding opens the package as a panel.
+        let _ = cx.update_window(any, |_, window, cx| {
+            if let Ok(ks) = gpui::Keystroke::parse("ctrl-alt-o") {
+                window.dispatch_keystroke(ks, cx);
+            }
+        });
+        wait_for(
+            any,
+            ws,
+            cx,
+            "the panel opened by a contributed key",
+            |w, _| w.panel.is_some(),
+        )
+        .await;
+        palette(any, ws, cx, "close the app panel");
+        wait_for(any, ws, cx, "the panel closed", |w, _| w.panel.is_none()).await;
+        let _ = std::fs::remove_dir_all(&apps);
+        println!(
+            "smoke: an installed package's palette command ran its action, its key opened its panel, its sidebar entry and status item ({}) were there, and a taken id and an invalid package were refused with reasons",
+            status.join(", ")
         );
     }
 

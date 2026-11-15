@@ -470,7 +470,15 @@ pub fn workspace_smoke_output(
         ],
         &["--smoke-workspace"],
         env_remove,
-        &[("DREAMER_DESKTOP_STATE_DIR", &state.to_string_lossy())],
+        &[
+            ("DREAMER_DESKTOP_STATE_DIR", &state.to_string_lossy()),
+            // Installed app packages for the contributions check; never
+            // the user's configuration.
+            (
+                "DREAMER_CONFIG_DIR",
+                &state.join("config").to_string_lossy(),
+            ),
+        ],
     )
 }
 
