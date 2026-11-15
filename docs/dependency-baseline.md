@@ -144,6 +144,16 @@ The dependency cache is `~/Library/Caches/dreamer/deps` on macOS and
 Set `DREAMER_DEPS_DIR` to move it. `crates/ghostty-sys/build.rs` only reads
 the cache; it never downloads or builds.
 
+## Agent CLIs
+
+Runtime dependencies on the user's machine, not bundled. See
+[providers.md](providers.md#versions).
+
+| CLI | Tested | Read by the adapter |
+| --- | --- | --- |
+| Claude Code (`claude`) | 2.1.325 | Major version 2 |
+| Codex (`codex`) | Not run yet | Documented `exec --json` events |
+
 ## Pending pins
 
 | Item | Pinned by |

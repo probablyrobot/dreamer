@@ -132,8 +132,17 @@ pub fn merge(existing: &mut Value, ours: &Value) -> Result<usize, String> {
 
 /// `dream agents hooks [--write FILE]` and `dream agents runs [--host H]... [--json]`.
 pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
-    let usage = "usage:\n  dream agents runs [--host NAME]... [--json]\n  dream agents hooks [--write SETTINGS_FILE]";
+    let usage = "usage:\n  dream agents runs [--host NAME]... [--json]\n  dream agents hooks [--write SETTINGS_FILE]\n  dream agents providers [--json]\n  dream agents ask [options] -- PROMPT";
     match args.first().map(String::as_str) {
+        Some("providers") => crate::ask::providers(&args[1..]),
+        Some("ask") => {
+            let code = crate::ask::ask(d, &args[1..])?;
+            if code == std::process::ExitCode::SUCCESS {
+                Ok(())
+            } else {
+                std::process::exit(1)
+            }
+        }
         Some("hooks") => {
             let dream = std::env::current_exe()
                 .map(|p| p.display().to_string())

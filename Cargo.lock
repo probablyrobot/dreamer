@@ -1391,6 +1391,7 @@ dependencies = [
  "client",
  "platform",
  "prost",
+ "providers",
  "rmcp",
  "serde",
  "serde_json",
@@ -4347,6 +4348,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "providers"
+version = "0.1.0"
+dependencies = [
+ "platform",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

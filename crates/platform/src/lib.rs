@@ -125,6 +125,17 @@ pub fn terminate(pid: u32) -> Result<(), String> {
         .map_err(|e| format!("kill {pid}: {e}"))
 }
 
+/// Signal a whole process group: SIGTERM, or SIGKILL with `force`.
+pub fn terminate_group(pgid: u32, force: bool) -> Result<(), String> {
+    let p = rustix::process::Pid::from_raw(pgid as i32).ok_or("invalid process group")?;
+    let signal = if force {
+        rustix::process::Signal::KILL
+    } else {
+        rustix::process::Signal::TERM
+    };
+    rustix::process::kill_process_group(p, signal).map_err(|e| format!("kill -{pgid}: {e}"))
+}
+
 /// The pid recorded in the daemon's startup lock, if any.
 pub fn lock_holder() -> Option<u32> {
     std::fs::read_to_string(lock_path())

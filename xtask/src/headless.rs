@@ -23,6 +23,7 @@ pub const PACKAGES: &[&str] = &[
     "domain",
     "matcher",
     "procreg",
+    "providers",
     "mirror",
     "platform",
     "replica",
