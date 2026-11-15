@@ -3,9 +3,9 @@
 use std::time::Duration;
 
 use api::{
-    Action, ActionRecord, ActionState, KillPane, KillWindow, RenameSession, RenameWindow,
-    ResizePane, SelectPane, SelectWindow, SendInput, SendKeys, SplitDirection, SplitPane,
-    SubmitAction, ZoomPane, action::Kind,
+    Action, ActionRecord, ActionState, KillPane, KillWindow, MovePane, NewWindow, RenameSession,
+    RenameWindow, ResizePane, SelectPane, SelectWindow, SendInput, SendKeys, SplitDirection,
+    SplitPane, SubmitAction, ZoomPane, action::Kind,
 };
 use domain::ServerKey;
 use tmux_backend::server::tmux_program;
@@ -565,4 +565,103 @@ fn a_torn_last_line_is_dropped_but_corruption_elsewhere_is_an_error() {
     std::fs::write(&path, format!("not json\n{good}\n")).expect("write");
     assert!(Ledger::open(&path).is_err());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Spec 13.2: "move these three panes into a named window". Three panes in
+/// three windows end up in one window with that name, keeping their ids
+/// and their programs; the windows they left close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn panes_from_three_windows_gather_in_a_named_window() {
+    let mut h = start("move").await;
+    let mut actions = h.actions(Hooks::default());
+    let session = *h
+        .ep
+        .tracker
+        .inventory()
+        .sessions
+        .keys()
+        .next()
+        .expect("session");
+    let mut panes = vec![h.first_pane()];
+    for i in 0..2 {
+        let r = actions
+            .submit(
+                &mut h.ep,
+                submit(Kind::NewWindow(NewWindow {
+                    session: session.0,
+                    argv: vec![
+                        "sh".into(),
+                        "-c".into(),
+                        format!("echo moved-{i}; exec cat"),
+                    ],
+                    ..NewWindow::default()
+                })),
+            )
+            .await
+            .expect("new window");
+        completed(&r);
+        panes.push(r.new_pane.expect("new pane"));
+    }
+    let window_of =
+        |h: &Harness, p: u32| h.ep.tracker.inventory().panes[&domain::TmuxPaneId(p)].window;
+    assert_eq!(h.ep.tracker.inventory().windows.len(), 3);
+
+    let r = actions
+        .submit(
+            &mut h.ep,
+            submit(Kind::MovePane(MovePane {
+                pane: panes[1],
+                new_window: Some("build".into()),
+                ..MovePane::default()
+            })),
+        )
+        .await
+        .expect("break");
+    let target = window_of(&h, panes[1]);
+    assert_eq!(
+        completed(&r),
+        format!("pane %{} is in window @{} (\"build\")", panes[1], target.0)
+    );
+    for &p in [panes[0], panes[2]].iter() {
+        let r = actions
+            .submit(
+                &mut h.ep,
+                submit(Kind::MovePane(MovePane {
+                    pane: p,
+                    window: Some(target.0),
+                    ..MovePane::default()
+                })),
+            )
+            .await
+            .expect("join");
+        assert_eq!(
+            completed(&r),
+            format!("pane %{p} is in window @{} (\"build\")", target.0)
+        );
+    }
+    let inv = h.ep.tracker.inventory();
+    assert_eq!(inv.windows.len(), 1, "the emptied windows closed");
+    assert!(panes.iter().all(|p| window_of(&h, *p) == target));
+    h.wait_for_text(panes[2], "moved-1").await;
+
+    // Moving a pane into the window it is in, or with no destination, is
+    // refused before anything reaches tmux.
+    for bad in [
+        MovePane {
+            pane: panes[0],
+            window: Some(target.0),
+            ..MovePane::default()
+        },
+        MovePane {
+            pane: panes[0],
+            ..MovePane::default()
+        },
+    ] {
+        let r = actions
+            .submit(&mut h.ep, submit(Kind::MovePane(bad)))
+            .await
+            .expect("submit");
+        assert_eq!(r.state, ActionState::Failed as i32, "{r:?}");
+    }
+    drop(h.server);
 }

@@ -2140,8 +2140,10 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             "cancel_job",
             "check_action",
             "create_pane",
+            "find_lines",
             "list_panes",
             "list_runs",
+            "move_panes",
             "read_pane",
             "send_input",
             "start_job"
@@ -2160,6 +2162,28 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
     );
     assert_ne!(typed["isError"], true, "{typed}");
     cli.wait_pane("%0", "via-mcp");
+    let found = m.call("find_lines", serde_json::json!({ "text": "VIA-MCP" }));
+    assert_ne!(found["isError"], true, "{found}");
+    assert_eq!(
+        found["structuredContent"]["matches"][0]["pane"], 0,
+        "{found}"
+    );
+    let moved = m.call(
+        "move_panes",
+        serde_json::json!({ "panes": [1], "window": "gathered" }),
+    );
+    assert_ne!(moved["isError"], true, "{moved}");
+    assert_eq!(
+        moved["structuredContent"]["moves"][0]["state"], "completed",
+        "{moved}"
+    );
+    assert_eq!(
+        cli.tmux
+            .run_checked(&["display-message", "-p", "-t", "%1", "#{window_name}"])
+            .expect("window name")
+            .trim(),
+        "gathered"
+    );
     drop(m);
 
     // A server narrowed to reading pane 0.

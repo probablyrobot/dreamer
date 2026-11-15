@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 34;
+pub const PROTOCOL_MINOR: u32 = 35;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1267,10 +1267,27 @@ pub struct KillWindow {
     pub window: u32,
 }
 
+/// Move a pane, with its process, into another window: an existing one (`window`), or a new window of its own named `new_window` in the pane's session. Exactly one of the two. The pane keeps its id.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MovePane {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(uint32, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_window: Option<String>,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Action {
-    #[prost(oneof = "action::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(
+        oneof = "action::Kind",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+    )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<action::Kind>,
 }
@@ -1305,6 +1322,8 @@ pub mod action {
         KillWindow(super::KillWindow),
         #[prost(message, tag = "12")]
         NewWindow(super::NewWindow),
+        #[prost(message, tag = "13")]
+        MovePane(super::MovePane),
     }
 }
 

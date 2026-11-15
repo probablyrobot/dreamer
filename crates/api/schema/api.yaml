@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 34 }
+version: { major: 1, minor: 35 }
 package: dreamer.v1
 
 types:
@@ -228,6 +228,16 @@ types:
     fields:
       - { n: 1, name: window, type: u32 }
 
+  - message: MovePane
+    doc: >-
+      Move a pane, with its process, into another window: an existing one
+      (`window`), or a new window of its own named `new_window` in the
+      pane's session. Exactly one of the two. The pane keeps its id.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: window, type: u32, optional: true }
+      - { n: 3, name: new_window, type: string, optional: true }
+
   - message: Action
     oneof:
       name: kind
@@ -244,6 +254,7 @@ types:
         - { n: 10, name: kill_pane, type: KillPane }
         - { n: 11, name: kill_window, type: KillWindow }
         - { n: 12, name: new_window, type: NewWindow }
+        - { n: 13, name: move_pane, type: MovePane }
 
   - message: SubmitAction
     fields:
