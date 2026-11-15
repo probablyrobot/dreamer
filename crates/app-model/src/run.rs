@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::manifest::{Manifest, ViewKind, field, fill, to_json};
+use crate::manifest::{Manifest, Source, ViewKind, field, fill, to_json};
 use crate::model::{App, Link};
 
 /// What the presentation sends.
@@ -243,6 +243,22 @@ async fn fetch(
     let Some(src) = app.manifest.data.get(&name).cloned() else {
         return Ok(());
     };
+    let mut rows = rows_of(c, &src).await?;
+    if let Some(s) = script {
+        match s.handle("transform", &Value::Array(rows.clone())).await {
+            Ok(None) => {}
+            Ok(Some(Value::Array(t))) => rows = t,
+            Ok(Some(_)) => return Err((false, "transform must return a list of rows".into())),
+            Err(e) => return Err((false, format!("transform: {e}"))),
+        }
+    }
+    app.set_rows(rows, now_ms());
+    Ok(())
+}
+
+/// A data source's rows: its method's result at its path, at most its
+/// limit.
+async fn rows_of(c: &client::Client, src: &Source) -> Result<Vec<Value>, (bool, String)> {
     let result = call(
         c,
         &src.method,
@@ -259,16 +275,51 @@ async fn fetch(
         other => vec![other],
     };
     rows.truncate(src.limit);
-    if let Some(s) = script {
-        match s.handle("transform", &Value::Array(rows.clone())).await {
-            Ok(None) => {}
-            Ok(Some(Value::Array(t))) => rows = t,
-            Ok(Some(_)) => return Err((false, "transform must return a list of rows".into())),
-            Err(e) => return Err((false, format!("transform: {e}"))),
-        }
+    Ok(rows)
+}
+
+/// One connection for a package's contributions (spec 12.2.1): its
+/// commands and data sources, without a view. Narrowed like a panel's
+/// when the endpoint says so.
+#[derive(Debug)]
+pub struct Session {
+    client: client::Client,
+}
+
+impl Session {
+    pub async fn open(endpoint: &Endpoint, manifest: &Manifest) -> Result<Session, String> {
+        let conn = connect(endpoint, &mut false, &[], &manifest.capabilities).await?;
+        let client = Arc::try_unwrap(conn.client).map_err(|_| "connection shared".to_owned())?;
+        Ok(Session { client })
     }
-    app.set_rows(rows, now_ms());
-    Ok(())
+
+    /// Run the package's command `name` (a method with fixed parameters).
+    /// `Err(true, ..)` means the connection is gone.
+    pub async fn command(&self, manifest: &Manifest, name: &str) -> Result<(), (bool, String)> {
+        let cmd = manifest
+            .commands
+            .get(name)
+            .ok_or_else(|| (false, format!("no command `{name}`")))?;
+        let method = cmd
+            .method
+            .as_deref()
+            .ok_or_else(|| (false, format!("`{name}` has no method")))?;
+        let params = fill(&cmd.params, None, None).map_err(|e| (false, e))?;
+        call(&self.client, method, params).await.map(|_| ())
+    }
+
+    /// The rows of the package's data source `source`.
+    pub async fn source(
+        &self,
+        manifest: &Manifest,
+        source: &str,
+    ) -> Result<Vec<Value>, (bool, String)> {
+        let src = manifest
+            .data
+            .get(source)
+            .ok_or_else(|| (false, format!("no data source `{source}`")))?;
+        rows_of(&self.client, src).await
+    }
 }
 
 fn source_events(m: &Manifest) -> (Vec<String>, Option<Duration>) {

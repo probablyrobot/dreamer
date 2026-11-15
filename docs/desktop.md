@@ -237,6 +237,17 @@ Nothing from the package runs on the UI thread or while drawing. `q`
 (or Esc in a form) ends the app; "Close the app panel" removes it. One
 panel is shown at a time.
 
+### Contributions
+
+Installed app packages can add palette commands (with keybindings),
+sidebar entries, and status items; see
+[termapp.md](termapp.md#contributions). Contributed commands follow the
+built-in ones in the palette, labelled `<package title>: <command>`.
+Sidebar entries and refused packages are listed under Apps in the
+sidebar. Status items show at the right of the tab strip, followed by
+the last contributed command's outcome. Contributions apply to local
+windows only.
+
 ## Command palette
 
 Cmd-Shift-P on macOS, or Ctrl-Shift-P on Linux, opens the command palette;
@@ -270,6 +281,11 @@ step, and `gate linux-desktop` runs it on each backend. It checks that:
   attach command's target resolves (`tmux display-message`) to exactly
   that session and window;
 - a split made with the plain `tmux` command appears;
+- installed packages (in a private `DREAMER_CONFIG_DIR`): one package's
+  palette command renames a window through its typed action, its
+  keybinding opens it as a panel, and its sidebar entry and status item
+  are there; a second package with the same id and an invalid one are
+  refused with reasons;
 - clicking a pane focuses it, and typed text reaches only that pane;
 - with a refreshing display, a filter's mark on a line of the focused
   pane is drawn, hidden from the palette, and drawn again, while

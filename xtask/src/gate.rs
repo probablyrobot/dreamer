@@ -470,7 +470,15 @@ pub fn workspace_smoke_output(
         ],
         &["--smoke-workspace"],
         env_remove,
-        &[("DREAMER_DESKTOP_STATE_DIR", &state.to_string_lossy())],
+        &[
+            ("DREAMER_DESKTOP_STATE_DIR", &state.to_string_lossy()),
+            // Installed app packages for the contributions check; never
+            // the user's configuration.
+            (
+                "DREAMER_CONFIG_DIR",
+                &state.join("config").to_string_lossy(),
+            ),
+        ],
     )
 }
 
@@ -703,14 +711,22 @@ fn workspace_smoke(dir: &Path) -> Result<Done, String> {
     for line in String::from_utf8_lossy(&again.stdout).lines() {
         println!("gate:   {line}");
     }
-    if !again.status.success() {
-        return Err(format!(
+    match again.status.code() {
+        Some(0) => Ok(first),
+        // The same display that did not refresh for the first launch: not
+        // run, like it, rather than failed.
+        Some(5) => {
+            println!(
+                "gate: the display did not refresh; the workspace restore check recorded as not run"
+            );
+            Ok(Done::NotRun)
+        }
+        _ => Err(format!(
             "workspace restore smoke failed ({}): {}",
             again.status,
             String::from_utf8_lossy(&again.stderr).trim()
-        ));
+        )),
     }
-    Ok(first)
 }
 
 /// Like [`isolated_app_run`], returning the app's output; `env_remove`

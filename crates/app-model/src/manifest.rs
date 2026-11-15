@@ -33,6 +33,9 @@ pub struct Manifest {
     /// grant, with `view.type = "agent"`.
     #[serde(default)]
     pub agent: Option<AgentSpec>,
+    /// What the package adds to the desktop when installed (spec 12.2.1).
+    #[serde(default)]
+    pub contributes: Contributes,
 }
 
 /// What an agentic pane is for, and so how much it may do.
@@ -94,6 +97,114 @@ pub struct AgentSpec {
     /// A run is stopped after this many seconds (default 300).
     #[serde(default)]
     pub timeout_s: Option<u64>,
+}
+
+/// The contribution schema this runtime reads.
+pub const CONTRIBUTES_VERSION: u32 = 1;
+
+/// Declarative additions to the desktop: data, placed and drawn by the
+/// host. Each is named `<package id>.<id>`, so packages cannot collide;
+/// every action is one of the package's own commands, run through the
+/// typed API under the package's capabilities.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Contributes {
+    #[serde(default = "contributes_version")]
+    pub version: u32,
+    /// Palette commands, optionally with a keybinding.
+    #[serde(default)]
+    pub commands: Vec<ContributedCommand>,
+    /// Sidebar entries; clicking one opens the package as a panel.
+    #[serde(default)]
+    pub sidebar: Vec<SidebarEntry>,
+    /// Compact status items in the tab strip.
+    #[serde(default)]
+    pub status: Vec<StatusItem>,
+}
+
+fn contributes_version() -> u32 {
+    CONTRIBUTES_VERSION
+}
+
+impl Default for Contributes {
+    fn default() -> Contributes {
+        Contributes {
+            version: CONTRIBUTES_VERSION,
+            commands: Vec::new(),
+            sidebar: Vec::new(),
+            status: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContributedCommand {
+    pub id: String,
+    /// The palette label.
+    pub title: String,
+    /// One of the package's `[commands]` with a method and no
+    /// `${selected...}` or `${form...}` placeholders, or
+    #[serde(default)]
+    pub run: Option<String>,
+    /// `"panel"`: open the package as a panel.
+    #[serde(default)]
+    pub opens: Option<String>,
+    /// A desktop keybinding such as `cmd-alt-r` or `ctrl-alt-r`.
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SidebarEntry {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusItem {
+    pub id: String,
+    /// Shown before the value.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// One of the package's data sources.
+    pub source: String,
+    /// The first row's field shown; without one, the number of rows.
+    #[serde(default)]
+    pub field: Option<String>,
+}
+
+/// Whether `id` is a contribution id: lowercase letters, digits, `-`.
+fn contribution_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Whether a desktop keybinding is well formed and holds a modifier that
+/// keeps it away from typing: `cmd`, `ctrl`, or `alt`, plus one key.
+pub fn binding_ok(k: &str) -> bool {
+    let parts: Vec<&str> = k.split('-').collect();
+    let Some((key, mods)) = parts.split_last() else {
+        return false;
+    };
+    let mods_ok = mods
+        .iter()
+        .all(|m| matches!(*m, "cmd" | "ctrl" | "alt" | "shift"));
+    let unique = mods.iter().collect::<std::collections::BTreeSet<_>>().len() == mods.len();
+    let guarded = mods.iter().any(|m| matches!(*m, "cmd" | "ctrl" | "alt"));
+    let key_ok = (key.len() == 1
+        && key
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()))
+        || key
+            .strip_prefix('f')
+            .and_then(|n| n.parse::<u8>().ok())
+            .is_some_and(|n| (1..=12).contains(&n));
+    mods_ok && unique && guarded && key_ok
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -431,7 +542,92 @@ impl Manifest {
                 &mut errors,
             );
         }
+        self.validate_contributions(&mut errors);
         errors
+    }
+
+    fn validate_contributions(&self, errors: &mut Vec<String>) {
+        let c = &self.contributes;
+        if c.version != CONTRIBUTES_VERSION {
+            errors.push(format!(
+                "contributes.version: {} is not supported (this runtime reads {CONTRIBUTES_VERSION})",
+                c.version
+            ));
+        }
+        let ids = |kind: &str, list: Vec<&str>, errors: &mut Vec<String>| {
+            let mut seen = std::collections::BTreeSet::new();
+            for id in list {
+                if !contribution_id_ok(id) {
+                    errors.push(format!(
+                        "contributes.{kind}: `{id}` is not lowercase letters, digits, and -"
+                    ));
+                } else if !seen.insert(id) {
+                    errors.push(format!("contributes.{kind}: `{id}` is given twice"));
+                }
+            }
+        };
+        ids(
+            "commands",
+            c.commands.iter().map(|x| x.id.as_str()).collect(),
+            errors,
+        );
+        ids(
+            "sidebar",
+            c.sidebar.iter().map(|x| x.id.as_str()).collect(),
+            errors,
+        );
+        ids(
+            "status",
+            c.status.iter().map(|x| x.id.as_str()).collect(),
+            errors,
+        );
+        let mut keys = BTreeMap::new();
+        for x in &c.commands {
+            let at = format!("contributes.commands.{}", x.id);
+            match (&x.run, x.opens.as_deref()) {
+                (Some(name), None) => match self.commands.get(name) {
+                    None => errors.push(format!("{at}.run: no command `{name}`")),
+                    Some(cmd) if cmd.method.is_none() => errors.push(format!(
+                        "{at}.run: `{name}` has a handler; a contributed command runs a method"
+                    )),
+                    Some(cmd) => {
+                        if toml::Value::Table(cmd.params.clone())
+                            .to_string()
+                            .contains("${")
+                        {
+                            errors.push(format!(
+                                "{at}.run: `{name}` uses placeholders, and the desktop has no selection or form to fill them"
+                            ));
+                        }
+                    }
+                },
+                (None, Some("panel")) => {}
+                (None, Some(other)) => {
+                    errors.push(format!("{at}.opens: `{other}` is not `panel`"));
+                }
+                _ => errors.push(format!("{at}: give `run` or `opens`, not both")),
+            }
+            if let Some(k) = &x.key {
+                if !binding_ok(k) {
+                    errors.push(format!(
+                        "{at}.key: `{k}` is not a binding with cmd, ctrl, or alt and one key"
+                    ));
+                } else if let Some(other) = keys.insert(k.clone(), x.id.clone()) {
+                    errors.push(format!("{at}.key: `{k}` is also {other}'s"));
+                }
+            }
+        }
+        for x in &c.status {
+            let at = format!("contributes.status.{}", x.id);
+            if !self.data.contains_key(&x.source) {
+                errors.push(format!("{at}.source: no data source `{}`", x.source));
+            }
+            if let Some(f) = &x.field
+                && !path_ok(f)
+            {
+                errors.push(format!("{at}.field: `{f}` is not a dotted field name"));
+            }
+        }
     }
 }
 
@@ -674,5 +870,71 @@ params = { action = { rename_window = { window = "${selected.window}", name = "w
                 .any(|e| e.contains("a monitor watches a data source")),
             "{errors:?}"
         );
+    }
+
+    const CONTRIBUTING: &str = r#"
+[commands.first]
+key = "f"
+method = "actions.submit"
+params = { action = { kind = { rename_window = { window = 1, name = "first" } } } }
+
+[[contributes.commands]]
+id = "rename-first"
+title = "Rename the first window"
+run = "first"
+key = "cmd-alt-r"
+
+[[contributes.commands]]
+id = "open"
+title = "Open panes"
+opens = "panel"
+
+[[contributes.sidebar]]
+id = "panes"
+title = "Panes"
+
+[[contributes.status]]
+id = "count"
+label = "panes"
+source = "panes"
+"#;
+
+    #[test]
+    fn contributions_name_the_package_s_own_commands_and_sources() {
+        let m = Manifest::parse(&format!("{GOOD}{CONTRIBUTING}")).expect("valid");
+        assert_eq!(m.contributes.commands.len(), 2);
+        assert_eq!(m.contributes.status[0].source, "panes");
+
+        let bad = format!("{GOOD}{CONTRIBUTING}")
+            .replace("run = \"first\"", "run = \"rename\"")
+            .replace("key = \"cmd-alt-r\"", "key = \"r\"")
+            .replace("opens = \"panel\"", "opens = \"window\"")
+            .replace("source = \"panes\"\n\"#", "source = \"nothing\"\n\"#")
+            .replace("id = \"panes\"", "id = \"Panes\"");
+        let errors = Manifest::parse(&bad).expect_err("invalid");
+        let has = |s: &str| errors.iter().any(|e| e.contains(s));
+        assert!(
+            has("contributes.commands.rename-first.run: `rename` uses placeholders"),
+            "{errors:?}"
+        );
+        assert!(
+            has("contributes.commands.rename-first.key: `r` is not a binding"),
+            "{errors:?}"
+        );
+        assert!(
+            has("contributes.commands.open.opens: `window`"),
+            "{errors:?}"
+        );
+        assert!(has("contributes.sidebar: `Panes`"), "{errors:?}");
+    }
+
+    #[test]
+    fn bindings_need_a_modifier_that_keeps_them_from_typing() {
+        assert!(binding_ok("cmd-alt-r"));
+        assert!(binding_ok("ctrl-shift-f5"));
+        assert!(!binding_ok("shift-r"));
+        assert!(!binding_ok("r"));
+        assert!(!binding_ok("cmd-cmd-r"));
+        assert!(!binding_ok("hyper-r"));
     }
 }

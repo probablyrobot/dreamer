@@ -20,6 +20,7 @@
 //! checks that a settled idle pane causes no view wakeups and at most one
 //! stray paint in 4.5 s (see `idle_check`).
 
+mod contrib;
 mod fallback;
 mod fonts;
 mod input;

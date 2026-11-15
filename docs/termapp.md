@@ -190,3 +190,55 @@ timeout_s = 300                   # a run is stopped after this (default 300)
 
 Operator panes run actions only through the typed API and the narrowed
 MCP grant. Plans, leases, and asking for more scope are not built yet.
+
+## Contributions
+
+A package installed in `<config dir>/apps/<name>/app.toml` (see
+`dream config-dir`) can add to the desktop. Its `[contributes]` block
+declares what. The desktop decides where each item goes and how it is
+drawn, and the package never draws it.
+
+```toml
+[contributes]
+version = 1                       # the contribution schema; 1 is the default
+
+[[contributes.commands]]          # a palette command
+id = "rename-first"               # lowercase letters, digits, -; named <package id>.<id>
+title = "Rename the first window"
+run = "rename"                    # one of this package's [commands], with a method and fixed params
+key = "ctrl-alt-r"                # optional; needs cmd, ctrl, or alt
+
+[[contributes.commands]]
+id = "show"
+title = "Show windows"
+opens = "panel"                   # open this package as a panel instead
+
+[[contributes.sidebar]]           # an entry in the sidebar's Apps section; opens the package as a panel
+id = "windows"
+title = "Windows"
+
+[[contributes.status]]            # a compact item in the tab strip, read every 2 s
+id = "count"
+label = "windows"                 # shown before the value
+source = "windows"                # one of this package's data sources
+field = "name"                    # the first row's field; without one, the number of rows
+```
+
+- **Validation:** contributions are validated with the rest of the
+  manifest. A contributed command runs one of the package's own commands.
+  That command must call a method, and its parameters must have no
+  `${selected...}` or `${form...}` placeholders, because the desktop has
+  no selection or form to fill them.
+- **Grant:** the desktop runs commands and reads status sources over one
+  connection per package. That connection keeps only the package's
+  `capabilities` (see [grants.md](grants.md)), so a contribution can do
+  no more than its package declares.
+- **Refused packages:** a package that does not validate is refused, and
+  so is one whose `id` an earlier package (by directory name) already
+  has. The rest still load.
+- **Taken keys:** a keybinding the desktop or an earlier package already
+  uses is dropped. Its command stays in the palette without it.
+- **Problems:** each one is listed in the sidebar's Apps section and
+  printed on the desktop's standard error.
+- **Changes:** the desktop reads the directory again when a manifest
+  changes.

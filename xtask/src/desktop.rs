@@ -236,12 +236,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
             && stdout.contains("smoke: dragging a divider resized pane")
             && stdout.contains("smoke: a filter's mark was drawn")
             && stdout.contains("smoke: one app package showed the same rows")
+            && stdout.contains("smoke: an installed package's palette command ran its action")
             && stdout.contains("smoke: the saved arrangement came back");
         // Exit 5: the window never got new frames, so the click, keyboard,
         // sizing, and drag checks could not run. That is missing evidence,
         // not a failure; on Wayland it means the output is off (DPMS) or
         // the session locked.
-        let not_run = !passed && out.status.code() == Some(5) && again.status.success();
+        let not_run =
+            !passed && out.status.code() == Some(5) && matches!(again.status.code(), Some(0 | 5));
         println!(
             "linux-desktop: {backend:<7} {:<18} {}",
             "workspace",

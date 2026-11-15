@@ -4,9 +4,10 @@
 //! (`dreamer-termapp`, Ratatui) and the desktop's native panel.
 
 mod agent;
+pub mod installed;
 pub mod manifest;
 mod model;
 mod run;
 
 pub use model::{AgentState, App, Entry, Link, Said, TRANSCRIPT, text};
-pub use run::{Endpoint, Input, check_module, load, run};
+pub use run::{Endpoint, Input, Session, check_module, load, run};

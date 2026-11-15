@@ -28,6 +28,9 @@ pub(crate) enum Command {
     ToggleDecorations,
     OpenPanel,
     ClosePanel,
+    /// An installed package's contributed command, by its place in the
+    /// palette's `contributed` labels.
+    Contributed(u16),
 }
 
 pub(crate) const ALL: [Command; 23] = [
@@ -82,6 +85,7 @@ impl Command {
             Command::ToggleDecorations => "Show or hide decorations in this pane (filter marks)",
             Command::OpenPanel => "Open an app package as a panel… (its manifest's path)",
             Command::ClosePanel => "Close the app panel",
+            Command::Contributed(_) => "",
         }
     }
 
@@ -186,6 +190,8 @@ pub(crate) struct Palette {
     pub filter: String,
     pub selected: usize,
     pub stage: Stage,
+    /// Labels of installed packages' commands, after the built-in ones.
+    pub contributed: Vec<String>,
 }
 
 impl Palette {
@@ -194,13 +200,36 @@ impl Palette {
             filter: String::new(),
             selected: 0,
             stage: Stage::Choose,
+            contributed: Vec::new(),
         }
     }
 
-    /// The commands the filter leaves, in order.
+    /// With installed packages' commands, labelled as shown.
+    pub(crate) fn with_contributed(mut self, labels: Vec<String>) -> Palette {
+        self.contributed = labels;
+        self
+    }
+
+    /// A command's label as shown.
+    pub(crate) fn label_of(&self, c: Command) -> String {
+        match c {
+            Command::Contributed(i) => self
+                .contributed
+                .get(usize::from(i))
+                .cloned()
+                .unwrap_or_default(),
+            c => c.label().to_owned(),
+        }
+    }
+
+    /// The commands the filter leaves, in order: built-in ones first.
     pub(crate) fn shown(&self) -> Vec<Command> {
+        let contributed = (0..self.contributed.len())
+            .filter_map(|i| u16::try_from(i).ok())
+            .map(Command::Contributed);
         ALL.into_iter()
-            .filter(|c| matches(&self.filter, c.label()))
+            .chain(contributed)
+            .filter(|c| matches(&self.filter, &self.label_of(*c)))
             .collect()
     }
 
@@ -318,6 +347,27 @@ mod tests {
             p.type_char(c);
         }
         assert_eq!(p.shown(), vec![Command::KillPane, Command::KillWindow]);
+    }
+
+    #[test]
+    fn contributed_commands_follow_the_built_in_ones() {
+        let mut p = Palette::new().with_contributed(vec![
+            "Windows: rename the first".into(),
+            "Kill nothing (a package's)".into(),
+        ]);
+        "kill".chars().for_each(|c| p.type_char(c));
+        assert_eq!(
+            p.shown(),
+            vec![
+                Command::KillPane,
+                Command::KillWindow,
+                Command::Contributed(1)
+            ]
+        );
+        assert_eq!(
+            p.label_of(Command::Contributed(1)),
+            "Kill nothing (a package's)"
+        );
     }
 
     #[test]
