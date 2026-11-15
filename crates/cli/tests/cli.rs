@@ -1614,10 +1614,15 @@ exec /bin/sh -c "exec $3"
                 else {
                     panic!("query")
                 };
-                if !r.matches.is_empty() {
+                // The local pane's mirror may still be starting: wait for
+                // both hosts' panes, not just the first match.
+                if !r.matches.is_empty() && r.panes_searched >= 2 {
                     break r;
                 }
-                assert!(Instant::now() < deadline, "never found on the host: {r:?}");
+                assert!(
+                    Instant::now() < deadline,
+                    "never searched local and remote panes: {r:?}"
+                );
                 tokio::time::sleep(Duration::from_millis(200)).await;
             };
             assert_eq!(r.matches.len(), 1, "{r:?}");
