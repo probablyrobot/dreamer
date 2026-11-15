@@ -11,6 +11,7 @@ publish = false
 api = { path = "../api" }
 client = { path = "../client" }
 platform = { path = "../platform" }
+providers = { path = "../providers" }
 script-runtime = { path = "../script-runtime" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"

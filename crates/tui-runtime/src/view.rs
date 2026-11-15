@@ -23,6 +23,7 @@ pub fn draw(app: &App, f: &mut Frame) {
     let v = &app.manifest.view;
     let highlight = Style::default().add_modifier(Modifier::REVERSED);
     match v.kind {
+        ViewKind::Agent => draw_agent(app, f, main, block),
         ViewKind::Table => {
             let header =
                 Row::new(v.columns.clone()).style(Style::default().add_modifier(Modifier::BOLD));
@@ -135,6 +136,82 @@ pub fn draw(app: &App, f: &mut Frame) {
         }
     }
     f.render_widget(Paragraph::new(Line::from(app.status_text())), status);
+}
+
+/// An agentic pane: who it is and what it may do, the transcript (newest
+/// at the bottom), and the prompt.
+fn draw_agent(app: &App, f: &mut Frame, area: ratatui::layout::Rect, block: Block) {
+    use app_model::Said;
+    use ratatui::style::Color;
+    let a = &app.agent;
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let [head, body, prompt] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let kind = app
+        .manifest
+        .agent
+        .as_ref()
+        .map_or("agent", |s| s.kind.name());
+    let activity = if a.running {
+        "working (Esc cancels)"
+    } else {
+        "idle"
+    };
+    let mut watching = String::new();
+    if !app.manifest.view.source.is_empty() {
+        watching = format!(
+            "  watching {}: {} rows",
+            app.manifest.view.source,
+            app.rows.len()
+        );
+    }
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(format!("{kind} · {} · {activity}{watching}", a.mode)),
+            Line::from(format!("grant: {}", a.grant))
+                .style(Style::default().add_modifier(Modifier::DIM)),
+        ]),
+        head,
+    );
+    let lines: Vec<Line> = a
+        .transcript
+        .iter()
+        .flat_map(|e| {
+            let (mark, style) = match e.who {
+                Said::You => ("> ", Style::default().add_modifier(Modifier::BOLD)),
+                Said::Agent => ("", Style::default()),
+                Said::Tool => ("→ ", Style::default().fg(Color::Cyan)),
+                Said::Result { ok: true } => ("← ", Style::default().add_modifier(Modifier::DIM)),
+                Said::Result { ok: false } => ("← failed: ", Style::default().fg(Color::Red)),
+                Said::Note => ("· ", Style::default().add_modifier(Modifier::DIM)),
+                Said::Failed => ("✗ ", Style::default().fg(Color::Red)),
+            };
+            e.text
+                .lines()
+                .enumerate()
+                .map(move |(i, l)| {
+                    let lead = if i == 0 { mark } else { "  " };
+                    Line::from(format!("{lead}{l}")).style(style)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    // Follow the newest lines, counting wrapped ones.
+    let width = body.width.max(1) as usize;
+    let rows: usize = lines.iter().map(|l| l.width().max(1).div_ceil(width)).sum();
+    let scroll = rows.saturating_sub(body.height as usize);
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
+        body,
+    );
+    f.render_widget(Paragraph::new(format!("> {}▏", a.input)), prompt);
 }
 
 #[cfg(test)]

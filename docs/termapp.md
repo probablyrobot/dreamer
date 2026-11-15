@@ -137,3 +137,56 @@ daemon is back it shows `live` and fetches again.
 An app that registered with a ticket cannot register again after its
 daemon restarted (the ticket is used up), and it does not reconnect with
 more authority than it was granted. It stays stale and says to relaunch it.
+
+## Agentic panes
+
+An agentic pane is an app package bound to an agent provider and a grant
+(spec 13.4). It is a pane app like any other, so it keeps running
+without the desktop and works through a plain `tmux attach`.
+
+```toml
+schema_version = 1
+id = "local.inspector"
+version = "0.1.0"
+title = "Inspector"
+capabilities = ["tmux.topology", "terminal.query"]
+
+[view]
+type = "agent"
+# source = "runs"                 # a monitor shows the data source it watches
+
+[agent]
+kind = "inspector"                # inspector, monitor, or operator
+provider = "claude"               # claude or codex; default: the first ready CLI
+instructions = "Reply in one short line."
+tools = { methods = ["tmux.topology", "terminal.query"], all_panes = true }   # or panes = [3, 4]
+max_turns = 4
+timeout_s = 300                   # a run is stopped after this (default 300)
+```
+
+- **Use:** type a prompt and press Enter. Esc cancels a run in progress,
+  and Ctrl-c quits. `q` is just a letter here.
+- **Header:** the kind, the provider (and model), the activity, and the
+  grant.
+- **Transcript:** what happened, newest at the bottom: the prompt, the
+  model's text, every tool call with its input, each result, usage, and
+  any failure with its reason.
+- **Tools:** the model reaches Dreamer only through
+  [`dream mcp`](mcp.md), narrowed to `[agent.tools]`: those methods and
+  those panes. Every method there must be among the package's
+  `capabilities`. With no methods the model gets no tools at all. Claude
+  Code also gets none of its own tools (see [providers.md](providers.md)).
+- **Bounded context:** context is retrieved by those tool calls, bounded
+  by the tools themselves. Nothing streams other terminals to a model.
+- **Read-only kinds:** an inspector or monitor may not list a method that
+  changes things, nor `terminal.input`. Such a manifest does not validate.
+  An operator may list actions.
+- **No model:** with no provider ready, the header says why.
+  - An inspector then answers in a scripted mode: the prompt is searched
+    as plain text in the newest lines of the panes it may read
+    (`terminal.query`), and the matching lines are listed.
+  - A monitor keeps showing its data source, which needs no model.
+  - An operator says that it needs a provider.
+
+Operator panes run actions only through the typed API and the narrowed
+MCP grant. Plans, leases, and asking for more scope are not built yet.

@@ -29,6 +29,71 @@ pub struct Manifest {
     pub view: View,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
+    /// An agentic pane (spec 13.4): the package bound to a provider and a
+    /// grant, with `view.type = "agent"`.
+    #[serde(default)]
+    pub agent: Option<AgentSpec>,
+}
+
+/// What an agentic pane is for, and so how much it may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentKind {
+    /// Answers questions about other terminals from bounded context.
+    /// Read-only.
+    Inspector,
+    /// Watches its data source (no model calls while idle) and explains
+    /// on request. Read-only.
+    Monitor,
+    /// Plans and performs layout, job, and input actions.
+    Operator,
+}
+
+impl AgentKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            AgentKind::Inspector => "inspector",
+            AgentKind::Monitor => "monitor",
+            AgentKind::Operator => "operator",
+        }
+    }
+
+    /// Inspectors and monitors only read.
+    pub fn read_only(self) -> bool {
+        !matches!(self, AgentKind::Operator)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTools {
+    /// Dreamer methods the model may call through `dream mcp`; each must be
+    /// among the package's capabilities.
+    #[serde(default)]
+    pub methods: Vec<String>,
+    #[serde(default)]
+    pub panes: Vec<u32>,
+    #[serde(default)]
+    pub all_panes: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSpec {
+    pub kind: AgentKind,
+    /// `claude` or `codex`; without one, the first ready CLI.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Added to the provider's instructions.
+    #[serde(default)]
+    pub instructions: Option<String>,
+    #[serde(default)]
+    pub tools: AgentTools,
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+    /// A run is stopped after this many seconds (default 300).
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,6 +134,8 @@ pub enum ViewKind {
     Chart,
     /// Typed fields and a submit command.
     Form,
+    /// An agentic pane: a prompt, and what the agent did (needs `[agent]`).
+    Agent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -95,6 +162,9 @@ pub struct FormField {
 pub struct View {
     #[serde(rename = "type")]
     pub kind: ViewKind,
+    /// The data source shown (a monitor's watched source); an agent view
+    /// may have none.
+    #[serde(default)]
     pub source: String,
     /// The field that identifies a row, so the selection survives updates.
     #[serde(default)]
@@ -280,7 +350,10 @@ impl Manifest {
                 errors.push(format!("{at}.params: placeholders belong to commands"));
             }
         }
-        if self.view.kind != ViewKind::Form && !self.data.contains_key(&self.view.source) {
+        self.validate_agent(&mut errors);
+        let sourceless = matches!(self.view.kind, ViewKind::Form)
+            || (self.view.kind == ViewKind::Agent && self.view.source.is_empty());
+        if !sourceless && !self.data.contains_key(&self.view.source) {
             errors.push(format!(
                 "view.source: no data source `{}`",
                 self.view.source
@@ -359,6 +432,53 @@ impl Manifest {
             );
         }
         errors
+    }
+}
+
+impl Manifest {
+    fn validate_agent(&self, errors: &mut Vec<String>) {
+        let Some(a) = &self.agent else {
+            if self.view.kind == ViewKind::Agent {
+                errors.push("view: an agent view needs an [agent] section".into());
+            }
+            return;
+        };
+        if self.view.kind != ViewKind::Agent {
+            errors.push("agent: needs `view.type = \"agent\"`".into());
+        }
+        if let Some(p) = &a.provider
+            && !matches!(p.as_str(), "claude" | "codex")
+        {
+            errors.push(format!("agent.provider: `{p}` is not claude or codex"));
+        }
+        if a.kind == AgentKind::Monitor && self.view.source.is_empty() {
+            errors.push("view.source: a monitor watches a data source".into());
+        }
+        for m in &a.tools.methods {
+            let Some(info) = method_info(m) else {
+                errors.push(format!("agent.tools.methods: no method `{m}`"));
+                continue;
+            };
+            let declared = self.capabilities.iter().any(|c| {
+                c == m
+                    || c.strip_suffix(".*")
+                        .is_some_and(|svc| m.starts_with(&format!("{svc}.")))
+            });
+            if !declared {
+                errors.push(format!(
+                    "agent.tools.methods: `{m}` is not among the package's capabilities"
+                ));
+            }
+            if a.kind.read_only() && (info.mutation || m == "terminal.input") {
+                errors.push(format!(
+                    "agent.tools.methods: `{m}` changes things, and {} panes only read",
+                    a.kind.name()
+                ));
+            }
+        }
+        if a.timeout_s == Some(0) || a.max_turns == Some(0) {
+            errors.push("agent: timeout_s and max_turns are at least 1".into());
+        }
     }
 }
 
@@ -513,5 +633,46 @@ params = { action = { rename_window = { window = "${selected.window}", name = "w
         assert!(has("is not `${selected.<field>}`"), "{errors:?}");
         let typo = GOOD.replace("row_key", "rowkey");
         assert!(Manifest::parse(&typo).is_err(), "unknown keys are errors");
+    }
+
+    #[test]
+    fn an_inspector_or_monitor_only_reads() {
+        let agent = |kind: &str, methods: &str| {
+            format!(
+                "schema_version = 1\nid = \"t.a\"\nversion = \"1\"\ntitle = \"A\"\n\
+                 capabilities = [\"tmux.*\", \"actions.submit\", \"terminal.input\"]\n\
+                 [view]\ntype = \"agent\"\n[agent]\nkind = \"{kind}\"\ntools = {{ methods = [{methods}] }}\n"
+            )
+        };
+        assert!(Manifest::parse(&agent("inspector", "\"tmux.topology\"")).is_ok());
+        assert!(Manifest::parse(&agent("operator", "\"actions.submit\"")).is_ok());
+        let errors = Manifest::parse(&agent(
+            "inspector",
+            "\"actions.submit\", \"terminal.input\"",
+        ))
+        .expect_err("an inspector that acts");
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|e| e.contains("changes things, and inspector panes only read"))
+                .count(),
+            2,
+            "{errors:?}"
+        );
+        let errors = Manifest::parse(&agent("operator", "\"jobs.start\"")).expect_err("undeclared");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("not among the package's capabilities")),
+            "{errors:?}"
+        );
+        let errors =
+            Manifest::parse(&agent("monitor", "")).expect_err("a monitor without a source");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("a monitor watches a data source")),
+            "{errors:?}"
+        );
     }
 }

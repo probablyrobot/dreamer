@@ -862,6 +862,18 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
         cargo xtask deps prepare --locked; \
         export DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1); \
         cargo test --locked $(cargo xtask headless --cargo-args)";
+    // One target directory per checkout: every checkout is mounted at the
+    // same /src, and cargo judges freshness by file times, so a build from
+    // another checkout's newer files could otherwise pass for this one's.
+    let target = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        dir.hash(&mut h);
+        format!(
+            "CARGO_TARGET_DIR=/root/.cache/dreamer-target-{:016x}",
+            h.finish()
+        )
+    };
     let mut docker = Command::new("docker");
     docker
         .args(["run", "--rm", "--platform", "linux/arm64"])
@@ -875,7 +887,7 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
             "-v",
             "dreamer-arm64-cache:/root/.cache",
             "-e",
-            "CARGO_TARGET_DIR=/root/.cache/dreamer-target",
+            &target,
             "-w",
             "/src",
             "ubuntu:24.04",

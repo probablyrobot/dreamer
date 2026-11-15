@@ -219,7 +219,11 @@ async fn connect(
 
 /// Call `method` with `params`; the result as JSON. `Err(true)` means the
 /// connection is gone.
-async fn call(c: &client::Client, method: &str, params: Value) -> Result<Value, (bool, String)> {
+pub(crate) async fn call(
+    c: &client::Client,
+    method: &str,
+    params: Value,
+) -> Result<Value, (bool, String)> {
     let req = api::Request::from_json(method, params).map_err(|e| (false, e.to_string()))?;
     match tokio::time::timeout(Duration::from_secs(5), c.call(req)).await {
         Err(_) => Err((true, "no answer within 5 s".into())),
@@ -300,6 +304,9 @@ pub async fn run(
     let mut next_fetch: Option<tokio::time::Instant> = None;
     let mut tick = tokio::time::interval(Duration::from_millis(200));
     let mut dirty = true;
+    // An agentic pane's provider, chosen once; and its run in progress.
+    crate::agent::setup(&mut app).await;
+    let mut agent_run: Option<providers::Run> = None;
     loop {
         if dirty {
             publish(&app)?;
@@ -311,9 +318,28 @@ pub async fn run(
                 None => std::future::pending().await,
             }
         };
+        let agent_events = async {
+            match agent_run.as_mut() {
+                Some(r) => r.events.recv().await,
+                None => std::future::pending().await,
+            }
+        };
         let mut lost: Option<String> = None;
         let mut refetch = false;
         tokio::select! {
+            e = agent_events => {
+                dirty = true;
+                let ended = match e {
+                    Some(e) => crate::agent::apply(&mut app, e),
+                    None => {
+                        app.agent.running = false;
+                        true
+                    }
+                };
+                if ended {
+                    agent_run = None;
+                }
+            }
             ev = inputs.recv() => {
                 dirty = true;
                 let name = match ev {
@@ -321,6 +347,42 @@ pub async fn run(
                     Some(Input::Redraw) => continue,
                     Some(Input::Key(name)) => name,
                 };
+                if app.manifest.view.kind == ViewKind::Agent {
+                    match crate::agent::key(&mut app, &name) {
+                        crate::agent::Key::Handled => {}
+                        crate::agent::Key::Quit => return Ok(()),
+                        crate::agent::Key::Cancel => {
+                            if let Some(r) = &agent_run {
+                                r.cancel();
+                            }
+                        }
+                        crate::agent::Key::Submit(prompt) => {
+                            app.agent.say(crate::model::Said::You, &prompt);
+                            let spec = app.manifest.agent.clone();
+                            match (spec, app.agent.provider.clone()) {
+                                (Some(spec), Some(p)) => {
+                                    let kind = providers::Kind::parse(&p).unwrap_or(providers::Kind::ClaudeCli);
+                                    let req = crate::agent::request(&spec, &prompt, &endpoint.socket);
+                                    match providers::start(kind, &req) {
+                                        Ok(r) => {
+                                            app.agent.running = true;
+                                            agent_run = Some(r);
+                                        }
+                                        Err(e) => app.agent.say(crate::model::Said::Failed, &e.to_string()),
+                                    }
+                                }
+                                _ => match conn.as_ref() {
+                                    Some(c) => {
+                                        let client = c.client.clone();
+                                        crate::agent::scripted(&mut app, &client, &prompt).await;
+                                    }
+                                    None => app.agent.say(crate::model::Said::Failed, "not connected to the daemon"),
+                                },
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let form = app.manifest.view.kind == ViewKind::Form;
                 if form && !matches!(name.as_str(), "Enter" | "Esc" | "Ctrl-c")
                     && !name.starts_with('F')
