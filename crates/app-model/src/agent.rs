@@ -278,7 +278,18 @@ pub(crate) async fn scripted(app: &mut App, c: &client::Client, prompt: &str) {
     match crate::run::call(c, "terminal.query", params).await {
         Err((_, e)) => app.agent.say(Said::Failed, &format!("terminal.query: {e}")),
         Ok(r) => {
-            let matches = r["matches"].as_array().cloned().unwrap_or_default();
+            // Never the inspector's own pane: its transcript holds earlier
+            // results, which would match again and snowball.
+            let own = std::env::var("TMUX_PANE")
+                .ok()
+                .and_then(|p| p.trim_start_matches('%').parse::<u64>().ok());
+            let matches: Vec<Value> = r["matches"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| own.is_none_or(|own| m["pane"].as_u64() != Some(own)))
+                .collect();
             for m in &matches {
                 app.agent.say(
                     Said::Result { ok: true },
