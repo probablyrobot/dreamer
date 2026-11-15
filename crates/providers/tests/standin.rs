@@ -32,6 +32,30 @@ async fn all(run: &mut providers::Run) -> Vec<Event> {
     out
 }
 
+/// Whether `pid` still runs, within a moment for a signal to land. An
+/// orphan that exited but was not reaped (a container's first process may
+/// not reap) is a zombie, which has ended.
+async fn running(pid: u32) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let zombie = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| {
+                s.rsplit(')')
+                    .next()
+                    .map(|r| r.trim_start().starts_with('Z'))
+            })
+            .unwrap_or(false);
+        if !platform::process_alive(pid) || zombie {
+            return false;
+        }
+        if Instant::now() > deadline {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 const INIT: &str =
     r#"{"type":"system","subtype":"init","session_id":"s","model":"m","apiKeySource":"none"}"#;
 
@@ -104,14 +128,8 @@ wait"#,
     run.cancel();
     let e = all(&mut run).await;
     assert_eq!(e, vec![Event::Failed(Failure::Cancelled)]);
-    assert!(
-        !platform::process_alive(run.pgid),
-        "the CLI is still running"
-    );
-    assert!(
-        !platform::process_alive(sleeper),
-        "its child is still running"
-    );
+    assert!(!running(run.pgid).await, "the CLI is still running");
+    assert!(!running(sleeper).await, "its child is still running");
     let _ = std::fs::remove_dir_all(&d);
 }
 
