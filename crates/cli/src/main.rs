@@ -229,9 +229,12 @@ fn themes() -> Result<(), String> {
     use std::io::IsTerminal as _;
     let configured = workspace_config::load_settings()
         .map(|s| s.scheme().name)
-        .unwrap_or(terminal_core::schemes::DEFAULT.name);
+        .unwrap_or(terminal_core::schemes::default().name);
     let color = std::io::stdout().is_terminal();
-    for s in terminal_core::schemes::all() {
+    let dir = workspace_config::themes::themes_dir();
+    let (listed, problems) = workspace_config::themes::all(dir.as_deref());
+    for l in &listed {
+        let s = l.scheme;
         let mark = if s.name == configured { "*" } else { " " };
         let kind = match s.appearance {
             terminal_core::schemes::Appearance::Dark => "dark ",
@@ -249,14 +252,21 @@ fn themes() -> Result<(), String> {
         } else {
             String::new()
         };
-        println!("{mark} {:<22} {kind} {swatch} {}", s.name, s.title);
+        let mine = if l.file.is_some() { "  (yours)" } else { "" };
+        println!("{mark} {:<22} {kind} {swatch} {}{mine}", s.name, s.title);
+    }
+    for p in &problems {
+        eprintln!("dream: theme {p}");
     }
     println!(
         "\nSet one with `terminal: {{theme: NAME}}` in {}; it applies when dreamerd starts \
-         (`dream shutdown` restarts it on next use; tmux keeps running).",
+         (`dream shutdown` restarts it on next use; tmux keeps running).\n\
+         Add your own: an alacritty-theme .toml or a Ghostty theme file in {}.",
         workspace_config::settings_path()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "dreamer.yaml".into())
+            .unwrap_or_else(|| "dreamer.yaml".into()),
+        dir.map(|d| d.display().to_string())
+            .unwrap_or_else(|| "<config dir>/themes".into())
     );
     Ok(())
 }

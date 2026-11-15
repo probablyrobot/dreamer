@@ -101,7 +101,7 @@ pub(crate) static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new()
 
 /// The window's skin.
 pub(crate) fn for_window(_window: &Window) -> &'static Theme {
-    THEME.get_or_init(|| for_scheme(terminal_core::schemes::DEFAULT))
+    THEME.get_or_init(|| for_scheme(terminal_core::schemes::default()))
 }
 
 fn hex(c: terminal_core::Rgb) -> u32 {
@@ -153,6 +153,39 @@ fn readable(fg: u32, bg: u32, t: f64, grounds: &[u32]) -> u32 {
 /// The skin for `scheme`: Dreamer's own pair as designed, any other scheme
 /// derived from its colors.
 pub(crate) fn for_scheme(scheme: &Scheme) -> Theme {
+    let mut t = derived(scheme);
+    // What the scheme's file sets itself wins over what is derived.
+    for &(token, c) in scheme.chrome {
+        let c = hex(c);
+        match token {
+            "background" => t.background = c,
+            "surface" => t.surface = c,
+            "raised" => t.raised = c,
+            "divider" => t.divider = c,
+            "selected" => t.selected = c,
+            "text" => t.text = c,
+            "muted" => t.muted = c,
+            "faint" => t.faint = c,
+            "accent" => {
+                t.accent = c;
+                t.mark = (c << 8) | (t.mark & 0xff);
+            }
+            "focus" => t.focus = c,
+            "danger" => t.danger = c,
+            "danger_surface" => t.danger_surface = c,
+            "danger_text" => t.danger_text = c,
+            "warning" => t.warning = c,
+            "warning_surface" => t.warning_surface = c,
+            "warning_text" => t.warning_text = c,
+            _ => {}
+        }
+    }
+    t
+}
+
+/// The chrome drawn from a scheme's own colors (Dreamer's two schemes come
+/// with theirs).
+fn derived(scheme: &Scheme) -> Theme {
     match scheme.name {
         "dreamer-dark" => return DARK,
         "dreamer-light" => return LIGHT,
@@ -274,5 +307,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_schemes_own_chrome_colors_win_over_derived_ones() {
+        let mut s = *terminal_core::schemes::find("nord").expect("nord");
+        let derived = for_scheme(&s);
+        const ORANGE: [(&str, terminal_core::Rgb); 1] =
+            [("accent", terminal_core::schemes::rgb(0xff8800))];
+        s.chrome = &ORANGE;
+        let t = for_scheme(&s);
+        assert_eq!(t.accent, 0xff8800);
+        assert_eq!(
+            t.mark >> 8,
+            0xff8800,
+            "the decoration wash follows the accent"
+        );
+        assert_eq!(t.surface, derived.surface, "the rest stays derived");
     }
 }

@@ -7,8 +7,13 @@ licensed under the Apache License 2.0 (`LICENSE-alacritty-theme`).
 
 Each scheme was chosen because its original project is under a permissive
 license (MIT, or Apache-2.0 for Nord); the copyright lines are in
-`THIRD_PARTY_NOTICES.md`. `cargo xtask schemes` turns these files into
-`src/schemes_data.rs`; Dreamer reads only that table at run time.
+`THIRD_PARTY_NOTICES.md`. `dreamer-dark.toml` and `dreamer-light.toml`
+are Dreamer's own, in the same format.
+
+`cargo xtask schemes` checks every file and lists them in
+`src/schemes_data.rs`, which compiles the files themselves into the
+program (`include_str!`): they always ship with it, and are read at run
+time by the same parser as users' theme files.
 
 | File | Scheme | Original project | License |
 | --- | --- | --- | --- |

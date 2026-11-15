@@ -1,0 +1,32 @@
+# Dreamer Dark: Dreamer's own dark scheme, designed with its chrome.
+# Same format as the other files here (alacritty-theme TOML).
+
+[colors.primary]
+background = '#14161a'
+foreground = '#e6e6e6'
+
+[colors.cursor]
+cursor = '#8ab4f8'
+
+[colors.selection]
+background = '#2f3b52'
+
+[colors.normal]
+black   = '#2a2f38'
+red     = '#f28b82'
+green   = '#81c995'
+yellow  = '#fdd663'
+blue    = '#8ab4f8'
+magenta = '#d7aefb'
+cyan    = '#78d9ec'
+white   = '#c4c7c5'
+
+[colors.bright]
+black   = '#5f6368'
+red     = '#f6aea9'
+green   = '#a8dab5'
+yellow  = '#fde293'
+blue    = '#aecbfa'
+magenta = '#e9d2fd'
+cyan    = '#a1e4f2'
+white   = '#f1f3f4'
