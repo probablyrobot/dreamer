@@ -2,6 +2,10 @@
 //!
 //! - No workflow may run on a hosted macOS runner (macOS is verified locally).
 //! - Every third-party action is pinned to a full commit SHA.
+//! - Product code opens no network sockets: remote hosts are reached only
+//!   through system OpenSSH, and the daemon listens only on owner-only Unix
+//!   sockets. Test code (a crate's `tests/`, `#[cfg(test)]` modules) and
+//!   xtask may, for example to run a local sshd.
 
 use crate::util::repo_root;
 
@@ -32,8 +36,21 @@ pub fn run(args: &[String]) -> Result<(), String> {
             checked += 1;
         }
     }
+    let sources = rust_sources(&repo_root().join("crates"))?;
+    for path in &sources {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let name = path
+            .strip_prefix(repo_root())
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        violations.extend(check_source(&name, &text));
+    }
     if violations.is_empty() {
-        println!("policy: ok ({checked} workflow file(s))");
+        println!(
+            "policy: ok ({checked} workflow file(s), {} source file(s))",
+            sources.len()
+        );
         Ok(())
     } else {
         for v in &violations {
@@ -58,6 +75,64 @@ fn check_workflow(name: &str, text: &str) -> Vec<String> {
         {
             out.push(format!(
                 "{name}:{lineno}: action `{target}` must be pinned to a full commit SHA"
+            ));
+        }
+    }
+    out
+}
+
+/// Network APIs product code must not use: SSH is the only way between
+/// hosts.
+const NETWORK: [&str; 6] = [
+    "TcpListener",
+    "TcpStream",
+    "UdpSocket",
+    "tokio::net::Tcp",
+    "tokio::net::Udp",
+    "std::net::",
+];
+
+/// Every `.rs` file under each crate's `src/` (not `tests/`, `benches/`,
+/// or `examples/`), sorted.
+fn rust_sources(crates: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+        for e in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+            let p = e.map_err(|e| e.to_string())?.path();
+            if p.is_dir() {
+                walk(&p, out)?;
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(crates).map_err(|e| format!("{}: {e}", crates.display()))? {
+        let src = e.map_err(|e| e.to_string())?.path().join("src");
+        if src.is_dir() {
+            walk(&src, &mut out)?;
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Network API uses in product code, ignoring comments and everything from
+/// a `#[cfg(test)]` line on (test modules sit at a file's end).
+fn check_source(name: &str, text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim_start();
+        if line.starts_with("#[cfg(test)]") {
+            break;
+        }
+        if line.starts_with("//") {
+            continue;
+        }
+        if let Some(api) = NETWORK.iter().find(|n| line.contains(**n)) {
+            out.push(format!(
+                "{name}:{}: `{api}`: product code opens no network sockets; remote hosts are reached only through SSH",
+                i + 1
             ));
         }
     }
@@ -118,5 +193,13 @@ mod tests {
         );
         assert_eq!(check_workflow("w", "        uses: owner/repo\n").len(), 1);
         assert!(check_workflow("w", "      - uses: ./.github/actions/local\n").is_empty());
+    }
+
+    #[test]
+    fn product_code_opens_no_network_sockets() {
+        let bad = "use std::net::TcpListener;\nfn f() { let _ = tokio::net::TcpStream::connect(\"x\"); }\n";
+        assert_eq!(check_source("f.rs", bad).len(), 2);
+        let ok = "use tokio::net::UnixStream;\n// a TcpStream in a comment\n#[cfg(test)]\nmod tests { use std::net::TcpListener; }\n";
+        assert!(check_source("f.rs", ok).is_empty());
     }
 }
