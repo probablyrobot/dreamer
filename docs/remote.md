@@ -5,6 +5,12 @@ There is no listener on either side: `ssh -T` runs `dream bridge --stdio`
 on the remote host, and the protocol travels over that SSH session's
 standard streams ([cli.md](cli.md#bridge), [wire.md](wire.md)).
 
+SSH is the only way between hosts. Dreamer opens no network sockets of its
+own, so every byte between the main terminal and a host is SSH's
+encrypted, authenticated channel, under your own SSH configuration and
+keys. `cargo xtask policy` (the gate's first stage) fails if product code
+uses a TCP or UDP socket.
+
 ## The coordinator
 
 The local daemon is the coordinator: it owns outbound connections and
