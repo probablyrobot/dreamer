@@ -141,6 +141,26 @@ pub const SCHEMA: &[Key] = &[
     },
 ];
 
+/// What the live configuration files look like now: `dreamer.yaml` and
+/// every file in `themes/`, each with its length and modification time.
+/// Programs that apply the configuration live compare stamps to see a
+/// change (a few `stat` calls; cheap enough to take every second).
+pub fn stamp(dir: &Path) -> Vec<(PathBuf, u64, Option<std::time::SystemTime>)> {
+    let one = |p: PathBuf| {
+        let m = std::fs::metadata(&p).ok();
+        let len = m.as_ref().map_or(0, std::fs::Metadata::len);
+        let modified = m.and_then(|m| m.modified().ok());
+        (p, len, modified)
+    };
+    let mut out = vec![one(dir.join("dreamer.yaml"))];
+    if let Ok(entries) = std::fs::read_dir(dir.join("themes")) {
+        let mut themes: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        themes.sort();
+        out.extend(themes.into_iter().map(one));
+    }
+    out
+}
+
 /// One file's verdict.
 #[derive(Debug)]
 pub struct Checked {

@@ -253,6 +253,24 @@ impl MirrorHost {
         answer.await.unwrap_or(false)
     }
 
+    /// New terminal defaults for every mirror, now and from now on: each
+    /// view takes a fresh checkpoint with the new colors. Colors a program
+    /// set itself (OSC 4, 10, 11, 12) stay as it set them.
+    pub async fn set_terminal_defaults(&self, terminal: TerminalDefaults) {
+        let mut waits = Vec::new();
+        for w in &self.workers {
+            let (reply, answer) = oneshot::channel();
+            if w.urgent(worker::WorkerMsg::SetDefaults { terminal, reply })
+                .is_ok()
+            {
+                waits.push(answer);
+            }
+        }
+        for a in waits {
+            let _ = a.await;
+        }
+    }
+
     /// Mirror exactly these pane executions: attach new ones, re-attach a
     /// pane whose generation changed (respawned), and drop the rest.
     /// `tmux` identifies the server for the pane keys mirrors report.

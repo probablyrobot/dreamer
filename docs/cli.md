@@ -160,3 +160,16 @@ input open to receive notifications from subscriptions.
 
 `dream config-dir`, `dream workspace list | check | up` work on workspace
 files directly; see [workspaces.md](workspaces.md).
+
+## Configuration and agent skills
+
+| Command | What it does |
+| --- | --- |
+| `dream config check` | Validate every configuration file. Exits 1 on a problem, naming the file, key or line, and what is wrong |
+| `dream config schema [--json]` | Every key of `dreamer.yaml`: kind and range, default, meaning, example, and whether it applies live |
+| `dream themes` | Every theme, built in and yours, with a swatch and the one in force |
+| `dream skills` | The agent skills that ship with Dreamer |
+| `dream skills show NAME` | Print a skill |
+| `dream skills install [--claude] [--codex]` | Write the skills to `~/.claude/skills/` and `~/.codex/skills/` (both by default) |
+
+See [settings.md](settings.md#live-and-checked).

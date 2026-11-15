@@ -95,13 +95,9 @@ pub(crate) const LIGHT: Theme = Theme {
     mark: 0x2f6fde2e,
 };
 
-/// The skin for the configured scheme, chosen once at startup like the
-/// daemon's (see `main`).
-pub(crate) static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
-
-/// The window's skin.
-pub(crate) fn for_window(_window: &Window) -> &'static Theme {
-    THEME.get_or_init(|| for_scheme(terminal_core::schemes::default()))
+/// The window's skin: the one for the scheme in force (see `live`).
+pub(crate) fn for_window(_window: &Window) -> Theme {
+    crate::live::with(|l| l.theme).unwrap_or_else(|| for_scheme(terminal_core::schemes::default()))
 }
 
 fn hex(c: terminal_core::Rgb) -> u32 {

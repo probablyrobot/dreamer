@@ -107,6 +107,9 @@ fn main() -> ExitCode {
         ["workspace", "list"] => list(),
         ["themes"] => themes(),
         ["config", "check"] => config_check(),
+        ["skills"] | ["skills", "list"] => skills_list(),
+        ["skills", "show", name] => skills_show(name),
+        ["skills", "install", rest @ ..] => skills_install(rest),
         ["config", "schema"] => config_schema(false),
         ["config", "schema", "--json"] => config_schema(true),
         ["workspace", "check", target] => check(target),
@@ -228,6 +231,72 @@ fn main() -> ExitCode {
 
 /// Every built-in color scheme with a swatch of its colors, the configured
 /// one marked. Swatches use 24-bit color only on a terminal.
+/// Agent skills that ship with Dreamer: instructions an agent (Claude
+/// Code, Codex) reads to help with Dreamer, so people need not edit its
+/// files by hand.
+const SKILLS: &[(&str, &str)] = &[(
+    "dreamer-config",
+    include_str!("../skills/dreamer-config/SKILL.md"),
+)];
+
+fn skill_description(text: &str) -> &str {
+    text.lines()
+        .find_map(|l| l.strip_prefix("description: "))
+        .unwrap_or_default()
+}
+
+fn skills_list() -> Result<(), String> {
+    for (name, text) in SKILLS {
+        println!("{name}\n    {}", skill_description(text));
+    }
+    println!("\nInstall for your agents with `dream skills install` (Claude Code and Codex).");
+    Ok(())
+}
+
+fn skills_show(name: &str) -> Result<(), String> {
+    let (_, text) = SKILLS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .ok_or_else(|| format!("no skill `{name}`; see `dream skills`"))?;
+    print!("{text}");
+    Ok(())
+}
+
+/// `dream skills install [--claude] [--codex]`: write the skills where the
+/// agents look for them (`~/.claude/skills/NAME/SKILL.md`,
+/// `~/.codex/skills/NAME/SKILL.md`). Both by default. Only what Dreamer
+/// ships is written, each skill in its own directory.
+fn skills_install(args: &[&str]) -> Result<(), String> {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or("HOME is not set")?;
+    let mut targets = Vec::new();
+    for a in args {
+        match *a {
+            "--claude" => targets.push(home.join(".claude/skills")),
+            "--codex" => targets.push(home.join(".codex/skills")),
+            other => {
+                return Err(format!(
+                    "unknown option `{other}`; use --claude, --codex, or neither for both"
+                ));
+            }
+        }
+    }
+    if targets.is_empty() {
+        targets = vec![home.join(".claude/skills"), home.join(".codex/skills")];
+    }
+    for dir in targets {
+        for (name, text) in SKILLS {
+            let d = dir.join(name);
+            std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+            let f = d.join("SKILL.md");
+            std::fs::write(&f, text).map_err(|e| format!("{}: {e}", f.display()))?;
+            println!("installed {}", f.display());
+        }
+    }
+    Ok(())
+}
+
 /// `dream config check`: every configuration file, checked with the
 /// parsers the programs use. Exit status 1 if any has a problem.
 fn config_check() -> Result<(), String> {

@@ -6,6 +6,36 @@ or `DREAMER_CONFIG_DIR` when set. Every field is optional; without the file
 everything is a default. Remote host profiles live beside it in
 `hosts.yaml` ([remote.md](remote.md#profiles)).
 
+## Live, and checked
+
+The file is the one place to configure Dreamer, and changes apply live.
+- **Watching.** The daemon and every open window look at `dreamer.yaml`
+  and `themes/` once a second.
+- **Applying.** A valid change applies at once, with no restart:
+  - the terminal theme and cursor reach every running pane, in every
+    window, including on other machines;
+  - the font, chrome, appearance, links, clipboard, and fallback apply in
+    every window.
+- **Refusing.** A file that does not read changes nothing. Dreamer keeps
+  the settings in force, and the window's tab strip says
+  `dreamer.yaml not applied: …` with the reason until the file reads
+  again. The daemon logs it and publishes a `config.changed` event with
+  state `refused`.
+- **Not live.** Provider settings apply to the next agent run.
+
+Two commands help with edits:
+- `dream config schema` lists every key: its kind and range, default,
+  meaning, an example, and whether it applies live. `--json` gives the
+  same as data.
+- `dream config check` validates every file in the directory
+  (`dreamer.yaml` and the theme it names, every theme file, and
+  `hosts.yaml`) with the same parsers Dreamer uses. It exits 1 on any
+  problem, naming the file, the key or line, and what is wrong.
+
+Agents can make these changes for you. `dream skills install` gives Claude
+Code and Codex the `dreamer-config` skill. It describes this loop (look
+up, edit, check, and it applies) and what is safe to change.
+
 ```yaml
 font:
   family: JetBrainsMono Nerd Font Mono   # default
@@ -161,10 +191,7 @@ A terminal's colors are its state, not a view's (spec 14.2). The daemon
 applies the theme to every pane's canonical mirror, and every window,
 including one on another machine, gets the same colors through its
 checkpoint. A program can still change colors for itself (OSC 4, 10, 11,
-12) until it resets them. The theme takes effect when the daemon starts.
-To switch, edit the file and run `dream shutdown`: tmux and every program
-keep running, and the next window or `dream` command starts the daemon
-again with the new theme.
+12) until it resets them.
 
 Scrollback length follows tmux's own `history-limit`, which the mirrors
 copy.
