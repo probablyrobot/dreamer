@@ -19,7 +19,15 @@ use crate::theme::c;
 use crate::{Shell, Smoke, load_frame, term_font};
 
 /// Height of the tab strip.
-const TAB_STRIP: f32 = 24.0;
+/// The tab strip's height. On macOS it is the title bar too: the window's
+/// buttons sit at its left, vertically centred.
+const TAB_STRIP: f32 = if cfg!(target_os = "macos") {
+    34.0
+} else {
+    30.0
+};
+/// Room for the macOS window buttons at the strip's left.
+const TITLE_BUTTONS: f32 = if cfg!(target_os = "macos") { 78.0 } else { 0.0 };
 /// Space between the window's edges and the panes, so text never touches
 /// the window frame.
 const PANE_INSET: f32 = 6.0;
@@ -61,6 +69,9 @@ pub(crate) struct Workspace {
     /// The command palette while open, and where its keys go.
     pub(crate) palette: Option<crate::palette::Palette>,
     palette_focus: FocusHandle,
+    /// A press on the title bar's empty space: the next move drags the
+    /// window (macOS, where the tab strip is the title bar).
+    title_drag: bool,
     /// The sidebar (sessions) is open.
     pub(crate) sidebar: bool,
     /// Where the arrangement is saved, what was saved at startup, and
@@ -130,6 +141,7 @@ impl Workspace {
             resizes_sent: 0,
             palette: None,
             palette_focus: cx.focus_handle(),
+            title_drag: false,
             sidebar: false,
             state_path: None,
             saved: None,
@@ -1493,42 +1505,91 @@ impl Render for Workspace {
                 }
             }
         };
+        // The tab strip, in the terminal's own background so it reads as
+        // part of the same surface; on macOS it is the title bar.
         let strip = div()
+            .id("title-bar")
             .h(px(TAB_STRIP))
+            .flex_none()
             .flex()
             .flex_row()
+            .items_stretch()
             .gap_1()
-            .px_2()
-            .items_center()
-            .bg(c(t.surface))
+            .pl(px(TITLE_BUTTONS + 8.0))
+            .pr_2()
+            .bg(c(t.background))
+            .border_b_1()
+            .border_color(c(t.divider))
             .text_size(px(12.0))
+            .when(cfg!(target_os = "macos"), |d| {
+                d.window_control_area(gpui::WindowControlArea::Drag)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|ws, _: &MouseDownEvent, _, _| ws.title_drag = true),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|ws, _: &gpui::MouseUpEvent, _, _| ws.title_drag = false),
+                    )
+                    .on_mouse_move(cx.listener(|ws, _: &gpui::MouseMoveEvent, window, _| {
+                        if std::mem::take(&mut ws.title_drag) {
+                            window.start_window_move();
+                        }
+                    }))
+                    .on_click(|ev, window, _| {
+                        if ev.click_count() == 2 {
+                            window.titlebar_double_click();
+                        }
+                    })
+            })
             .children(tabs.into_iter().map(|w| {
                 let id = w.id;
                 let is_active = Some(id) == active;
+                // A plain label; the active one in full text color with
+                // an accent line under it, like the focused pane's edge.
                 div()
                     .id(("tab", id as usize))
+                    .flex()
+                    .items_center()
                     .px_2()
-                    .rounded_sm()
+                    .border_b_2()
+                    .border_color(if is_active {
+                        c(t.accent)
+                    } else {
+                        gpui::transparent_black().into()
+                    })
                     .text_color(if is_active { c(t.text) } else { c(t.muted) })
-                    .when(is_active, |d| d.bg(c(t.selected)))
-                    .child(format!("{} {}", w.index, w.name))
+                    .hover(|s| s.text_color(c(t.text)))
+                    .child(format!("{}:{}", w.index, w.name))
+                    // A tab press is not a window drag.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |ws, _, _, cx| ws.click_tab(id, cx)))
             }))
             .child(div().flex_1())
-            .children(
-                self.contributed
-                    .outcome
-                    .clone()
-                    .map(|o| div().px_2().text_color(c(t.faint)).child(o)),
-            )
+            .children(self.contributed.outcome.clone().map(|o| {
+                div()
+                    .flex()
+                    .items_center()
+                    .px_2()
+                    .text_color(c(t.faint))
+                    .child(o)
+            }))
             .children(self.contributed.status.values().map(|v| {
                 div()
+                    .flex()
+                    .items_center()
                     .px_2()
-                    .rounded_sm()
                     .text_color(c(t.muted))
                     .child(v.clone())
             }))
-            .children(status.map(|s| div().px_2().text_color(c(t.warning)).child(s)));
+            .children(status.map(|s| {
+                div()
+                    .flex()
+                    .items_center()
+                    .px_2()
+                    .text_color(c(t.warning))
+                    .child(s)
+            }));
 
         // The sidebar, on demand: sessions, the shown one highlighted.
         let sidebar = self.sidebar.then(|| {
@@ -1678,6 +1739,15 @@ impl Render for Workspace {
                     .top(m.height * top as f32)
                     .w(m.width * w as f32)
                     .h(m.height * h as f32)
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    // tmux's one-cell gap, drawn as a hairline down its
+                    // middle rather than a solid bar.
+                    .child(match d.axis {
+                        Axis::Cols => div().w(px(1.0)).h_full().bg(c(t.divider)),
+                        Axis::Rows => div().h(px(1.0)).w_full().bg(c(t.divider)),
+                    })
                     .when(d.axis == Axis::Cols, |x| x.cursor_col_resize())
                     .when(d.axis == Axis::Rows, |x| x.cursor_row_resize())
                     .on_mouse_down(
@@ -1802,6 +1872,10 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .bg(c(t.background))
+            // One type family for the whole window: the chrome uses the
+            // terminal's font at smaller sizes.
+            .font_family(term_font().family)
+            .text_color(c(t.text))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::contributed_key))
             .on_action(cx.listener(|ws, _: &crate::keymap::ZoomPane, _, cx| ws.toggle_zoom(cx)))
@@ -1822,14 +1896,14 @@ impl Render for Workspace {
                     .min_h_0()
                     .children(sidebar)
                     .child(
-                        // Inset from the window's edges; the inset takes the
-                        // dividers' color, so panes read as one surface.
+                        // Inset from the window's edges, in the terminal's
+                        // background, so panes and chrome are one surface.
                         div()
                             .flex()
                             .flex_1()
                             .min_w_0()
                             .p(px(PANE_INSET))
-                            .bg(c(t.divider))
+                            .bg(c(t.background))
                             .child(area),
                     )
                     .children(self.panel.clone()),
@@ -1857,8 +1931,9 @@ impl Workspace {
             .relative()
             .flex_1()
             .overflow_hidden()
-            // tmux leaves one cell between panes: the divider.
-            .bg(c(t.divider))
+            // tmux leaves one cell between panes; the divider handles draw
+            // a hairline in it.
+            .bg(c(t.background))
             .children(panes)
             .children(handles)
             .children(preview)
@@ -2002,6 +2077,14 @@ pub(crate) fn open_via(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 app_id: Some(crate::APP_ID.into()),
+                // macOS: no separate system title bar; the tab strip, in
+                // the theme's colors, is the title bar.
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some("Dreamer".into()),
+                    appears_transparent: cfg!(target_os = "macos"),
+                    traffic_light_position: cfg!(target_os = "macos")
+                        .then(|| gpui::point(px(12.0), px((TAB_STRIP - 14.0) / 2.0))),
+                }),
                 ..Default::default()
             },
             |window, cx| {

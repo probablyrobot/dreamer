@@ -4,44 +4,60 @@ The desktop's look follows spec 14.4. Content comes first: terminal text
 is the brightest, sharpest thing on screen. The chrome uses lower contrast
 and a single accent color.
 
-## Skins
+## One theme for the whole window
 
-There are two default skins, designed together. Neither is an inversion of
-the other (a test checks this). `appearance` in `dreamer.yaml` chooses
-between them: `system` (the default) follows the OS appearance live, and
-`dark` or `light` fixes it.
+The window is one surface: the title bar, tabs, sidebar, palette,
+banners, the gaps between panes, and the terminals share one color
+scheme and one type family.
+
+- **The scheme decides.** The terminals' scheme (`Settings::scheme`:
+  `terminal.theme`, or `dreamer-dark` / `dreamer-light` for
+  `appearance`) is set by the daemon on every pane, and the desktop draws
+  its chrome from the same scheme. The chrome follows the terminals, never
+  the other way: a terminal's colors are its canonical state (spec 14.2).
+- **Dreamer's two schemes** come with hand-tuned chrome (below). Any other
+  scheme gets chrome derived from its own colors: its background for the
+  window, surfaces a few steps toward its foreground, its cursor color (or
+  blue) as the accent, and its red and yellow for danger and warning.
+- **Readable everywhere.** `every_scheme_gets_chrome_drawn_from_its_own_colors`
+  checks every built-in scheme: chrome text on every surface is as
+  readable as the scheme's own text (up to 4.5:1). Derived surfaces step
+  back toward the background when a scheme's contrast is low (Solarized
+  Dark needed this).
 
 The tokens live in `crates/app/src/theme.rs`. Every chrome color comes
-from them, never from literals.
+from them, never from literals. Dreamer's own pair:
 
 | Token | Dark | Light | Used for |
 | --- | --- | --- | --- |
-| background | `#14161A` | `#F6F6F4` | The window behind everything |
-| surface | `#101216` | `#ECEBE7` | Tab strip, sidebar |
-| raised | `#1F232A` | `#FFFFFF` | Command palette |
-| divider | `#1F232A` | `#D9D7D1` | The gaps between panes |
-| selected | `#2A2F38` | `#DEDCD5` | Selected tab, session, palette row |
-| text | `#E6E6E6` | `#1F2328` | Primary chrome text |
+| background | `#14161A` | `#F6F6F4` | The window, the title bar, the gaps between panes: the terminals' own background |
+| surface | `#101216` | `#ECEBE7` | Sidebar |
+| raised | `#1F232A` | `#FFFFFF` | Command palette, the zoom chip |
+| divider | `#1F232A` | `#D9D7D1` | Hairlines: between panes, under the tab strip |
+| selected | `#2A2F38` | `#DEDCD5` | Selected session, palette row |
+| text | `#E6E6E6` | `#1F2328` | Primary chrome text, the active tab |
 | muted | `#B8BEC8` | `#454B56` | Inactive tabs, labels |
-| faint | `#9AA0AA` | `#585F6B` | Hints, the zoom control |
-| accent | `#8AB4F8` | `#2F6FDE` | Drag preview, links |
+| faint | `#9AA0AA` | `#585F6B` | Hints |
+| accent | `#8AB4F8` | `#2F6FDE` | The active tab's underline, drag preview, links |
 | focus | `#3D4A5C` | `#9DB4DC` | Focused pane hairline, palette border |
 | danger / surface / text | `#F28B82` / `#5A2A2A` / `#F0D0D0` | `#B3261E` / `#FBE3E0` / `#6E1A14` | Kill commands, refused links |
 | warning / surface / text | `#D7B46A` / `#3A2F1C` / `#F0DCB0` | `#7D5600` / `#FBEFD2` / `#4D3600` | Status, tmux-mode banners |
 
 `both_skins_keep_readable_text_on_every_surface` requires WCAG contrast of
-at least 4.5:1:
-- for text, muted, and faint on every surface they appear on;
-- for each danger and warning text on its surface.
+at least 4.5:1 for text, muted, and faint on every surface they appear
+on, and for each danger and warning text on its surface.
 
-It caught the earlier dark `faint` (`#8A909A`) at 4.18:1 on a selected
-row.
+## Layout
 
-**Terminal colors are not part of a skin.** A terminal's default colors
-and palette are canonical terminal state. They change only through an
-explicit, owner-authorized configuration (spec 14.2), which comes with
-skins in M7. Until then, the light skin restyles the chrome and the
-terminal keeps its own colors.
+- **Title bar.** On macOS the tab strip is the title bar: the window's
+  buttons sit at its left, it drags the window, and a double click zooms
+  it as the system setting says. On Linux it sits under the compositor's
+  title bar.
+- **Tabs.** Plain `index:name` labels. The active one is in full text
+  color with an accent line under it.
+- **Panes.** Inset 6 px from the window's edges, in the background color.
+  tmux's one-cell gaps between panes are drawn as hairlines down their
+  middle.
 
 ## Typography
 
@@ -49,7 +65,9 @@ terminal keeps its own colors.
   icons stay one cell wide), 13 pt, line height 1.2. It is bundled with the
   macOS app and is a dependency of the Arch package (OFL-1.1; see
   `THIRD_PARTY_NOTICES.md` and [settings.md](settings.md)).
-- **Chrome:** the system UI font, in a small fixed scale: 11, 12, and 13 pt.
+- **Chrome:** the same family as the terminal (the configured `font`), in
+  a small fixed scale: 11, 12, and 13 pt. One family keeps the chrome and
+  the terminals visibly of a piece.
 
 ## Review gate
 

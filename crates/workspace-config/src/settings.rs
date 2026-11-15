@@ -60,8 +60,9 @@ pub enum ApiKey {
 /// canonical mirror (spec 14.2): views get them through checkpoints.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminalSettings {
-    /// A built-in color scheme (`dream themes` lists them).
-    pub theme: &'static terminal_core::schemes::Scheme,
+    /// A built-in color scheme (`dream themes` lists them). Without one,
+    /// the scheme follows `appearance` (see [`Settings::scheme`]).
+    pub theme: Option<&'static terminal_core::schemes::Scheme>,
     /// The cursor until a program sets its own.
     pub cursor_style: CursorStyle,
     pub cursor_blink: bool,
@@ -70,7 +71,7 @@ pub struct TerminalSettings {
 impl Default for TerminalSettings {
     fn default() -> Self {
         TerminalSettings {
-            theme: terminal_core::schemes::DEFAULT,
+            theme: None,
             cursor_style: CursorStyle::Block,
             cursor_blink: false,
         }
@@ -105,6 +106,53 @@ pub enum Appearance {
     System,
     Dark,
     Light,
+}
+
+impl Settings {
+    /// The terminal color scheme, which the desktop's chrome is drawn
+    /// from too, so the whole window is one theme: `terminal.theme` if
+    /// set, else Dreamer's dark or light scheme for `appearance`. With
+    /// `system`, the OS's appearance when this is read.
+    pub fn scheme(&self) -> &'static terminal_core::schemes::Scheme {
+        use terminal_core::schemes::{DREAMER_DARK, DREAMER_LIGHT};
+        if let Some(s) = self.terminal.theme {
+            return s;
+        }
+        let light = match self.appearance {
+            Appearance::Dark => false,
+            Appearance::Light => true,
+            Appearance::System => os_prefers_light(),
+        };
+        if light { &DREAMER_LIGHT } else { &DREAMER_DARK }
+    }
+}
+
+/// Whether the OS is set to a light appearance. macOS: the global
+/// `AppleInterfaceStyle` (absent means light). Linux: the desktop portal's
+/// GNOME setting, where present. Anything unknown counts as dark.
+fn os_prefers_light() -> bool {
+    use std::process::{Command, Stdio};
+    let read = |program: &str, args: &[&str]| {
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+    };
+    if cfg!(target_os = "macos") {
+        return read("defaults", &["read", "-g", "AppleInterfaceStyle"]).is_some_and(|o| {
+            !String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .eq_ignore_ascii_case("dark")
+        });
+    }
+    read(
+        "gsettings",
+        &["get", "org.gnome.desktop.interface", "color-scheme"],
+    )
+    .filter(|o| o.status.success())
+    .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("light"))
 }
 
 /// How to open what Dreamer cannot draw (floating panes, tmux modes) in an
@@ -357,7 +405,7 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
         s.appearance = a;
     }
     if let Some(name) = file.terminal.theme {
-        s.terminal.theme = terminal_core::schemes::find(&name).ok_or_else(|| {
+        s.terminal.theme = Some(terminal_core::schemes::find(&name).ok_or_else(|| {
             let names: Vec<&str> = terminal_core::schemes::all().map(|s| s.name).collect();
             error(
                 origin,
@@ -367,7 +415,7 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
                     names.join(", ")
                 ),
             )
-        })?;
+        })?);
     }
     if let Some(style) = file.terminal.cursor.style {
         s.terminal.cursor_style = style;
@@ -503,10 +551,20 @@ mod tests {
             None,
         )
         .expect("terminal");
-        assert_eq!(s.terminal.theme.name, "catppuccin-mocha");
+        assert_eq!(s.scheme().name, "catppuccin-mocha");
         assert_eq!(s.terminal.cursor_style, CursorStyle::Bar);
         assert!(s.terminal.cursor_blink);
-        assert_eq!(Settings::default().terminal.theme.name, "dreamer-dark");
+        let dark = parse_settings("appearance: dark", None).expect("dark");
+        assert_eq!(dark.scheme().name, "dreamer-dark");
+        let light = parse_settings("appearance: light", None).expect("light");
+        assert_eq!(light.scheme().name, "dreamer-light");
+        // An explicit theme wins over the appearance.
+        let both = parse_settings(
+            "appearance: light\nterminal:\n  theme: dreamer-dark\n",
+            None,
+        )
+        .expect("both");
+        assert_eq!(both.scheme().name, "dreamer-dark");
         let e = parse_settings("terminal:\n  theme: nope\n", None).expect_err("unknown");
         assert_eq!(e.at, "terminal.theme");
         assert!(e.message.contains("dreamer-light"), "{e}");

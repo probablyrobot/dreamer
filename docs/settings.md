@@ -20,7 +20,7 @@ fallback:
   launch: [kitty, -e, "{command}"]       # optional; no default
 appearance: system                       # system (default), dark, or light
 terminal:
-  theme: dreamer-dark                    # default; `dream themes` lists all
+  theme: dreamer-dark                    # optional; default follows appearance; `dream themes` lists all
   cursor:
     style: block                         # block (default), bar, or underline
     blink: false                         # default
@@ -91,11 +91,16 @@ Without it, the workspace only offers the copyable command.
 
 ## Appearance
 
-`appearance` chooses the desktop's skin:
-- `system` (the default) follows the OS appearance live;
+`appearance` chooses dark or light for the whole window, terminals and
+chrome alike:
+- `system` (the default) follows the OS appearance at the time the daemon
+  and the desktop start (on macOS the system setting; on Linux the GNOME
+  `color-scheme`, else dark);
 - `dark` and `light` fix it.
 
-Both skins are described in [design.md](design.md).
+Without a `terminal.theme`, it picks `dreamer-dark` or `dreamer-light`.
+The chrome is always drawn from the terminals' scheme, so the window is
+one theme ([design.md](design.md)).
 
 ## Terminal
 
@@ -106,8 +111,9 @@ cursor a program gets until it sets its own (and after it resets it with
 - `theme` is one of the built-in schemes. `dream themes` lists them, with a
   swatch and the configured one marked. Names are case-insensitive, and
   `_` or a space counts as `-`.
-  - `dreamer-dark` (the default) and `dreamer-light` are designed with the
-    two chrome skins.
+  - Without one, the theme follows `appearance`: `dreamer-dark` or
+    `dreamer-light`, designed with their chrome.
+  - With one, the chrome is drawn from that scheme's own colors.
   - The others come from Catppuccin (Mocha, Macchiato, Frappé, Latte),
     Dracula, Nord, Gruvbox, Tokyo Night (night, storm, light), One Dark
     and One Light, Rosé Pine (main, moon, dawn), Everforest, Kanagawa,

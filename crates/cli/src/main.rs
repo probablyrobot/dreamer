@@ -228,7 +228,7 @@ fn main() -> ExitCode {
 fn themes() -> Result<(), String> {
     use std::io::IsTerminal as _;
     let configured = workspace_config::load_settings()
-        .map(|s| s.terminal.theme.name)
+        .map(|s| s.scheme().name)
         .unwrap_or(terminal_core::schemes::DEFAULT.name);
     let color = std::io::stdout().is_terminal();
     for s in terminal_core::schemes::all() {
