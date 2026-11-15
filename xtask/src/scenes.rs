@@ -316,6 +316,105 @@ pub fn screenshot(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Capture `scene` in `skin` (built from `root`) to `path`: the gate's
+/// pixel evidence (#89). The caller checks the display first.
+pub fn capture(root: &Path, scene: &str, skin: &str, path: &Path) -> Result<(), String> {
+    let scene = SCENES
+        .iter()
+        .find(|s| s.name == scene)
+        .ok_or_else(|| format!("no scene `{scene}`"))?;
+    build(root)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let running = launch(root, scene, skin, "")?;
+    let result = capture_window(running.app.id(), path, 3.0);
+    running.finish();
+    result
+}
+
+/// What a capture shows, checked against the scheme it was drawn in: the
+/// dominant color must be the scheme's background (the theme reached the
+/// terminals and the chrome alike), `ink` (a color the scene prints) must
+/// appear, and the image must not be flat. A one-line summary, or why not.
+pub fn check_capture(path: &Path, background: u32, ink: u32) -> Result<String, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut buf = vec![0; reader.output_buffer_size().unwrap_or(0)];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let channels = match info.color_type {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        other => {
+            return Err(format!(
+                "{}: unexpected color type {other:?}",
+                path.display()
+            ));
+        }
+    };
+    let rgb = |hex: u32| [(hex >> 16) as u8, (hex >> 8) as u8, hex as u8];
+    let near = |a: [u8; 3], b: [u8; 3], t: i32| {
+        a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| (i32::from(*x) - i32::from(*y)).abs() <= t)
+    };
+    let mut counts: std::collections::HashMap<[u8; 3], usize> = std::collections::HashMap::new();
+    let mut inked = 0usize;
+    let (bg, ink) = (rgb(background), rgb(ink));
+    for px in buf[..info.buffer_size()].chunks_exact(channels) {
+        let c = [px[0], px[1], px[2]];
+        *counts.entry(c).or_default() += 1;
+        // Thin glyphs are antialiased toward the background: on a light
+        // one the strongest pixels of green text sit about 30 per channel
+        // from the scheme's green, while every other color drawn is more
+        // than 80 away.
+        if near(c, ink, 40) {
+            inked += 1;
+        }
+    }
+    let (mode, _) = counts
+        .iter()
+        .max_by_key(|(_, n)| **n)
+        .ok_or_else(|| format!("{}: empty image", path.display()))?;
+    let hex = |c: [u8; 3]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+    if !near(*mode, bg, 3) {
+        return Err(format!(
+            "{}: the main color is {}, not the scheme's background {}",
+            path.display(),
+            hex(*mode),
+            hex(bg)
+        ));
+    }
+    if counts.len() < 16 {
+        return Err(format!(
+            "{}: only {} colors; nothing drawn",
+            path.display(),
+            counts.len()
+        ));
+    }
+    if inked == 0 {
+        return Err(format!(
+            "{}: no pixel near {}, the scheme's color the scene prints",
+            path.display(),
+            hex(ink)
+        ));
+    }
+    Ok(format!(
+        "{}x{}, background {}, {} colors, {inked} pixels of {}",
+        info.width,
+        info.height,
+        hex(*mode),
+        counts.len(),
+        hex(ink)
+    ))
+}
+
 /// The on-screen, normal-layer window owned by `pid`, if any.
 fn window_of(pid: u32) -> Option<u32> {
     let script = format!(

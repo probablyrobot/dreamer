@@ -227,6 +227,11 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         });
         stages.push(Stage {
+            name: "screens",
+            action: Builtin(screens),
+            when: When::Code,
+        });
+        stages.push(Stage {
             name: "remote",
             action: Builtin(remote_smoke),
             when: When::Code,
@@ -676,6 +681,40 @@ fn which(program: &str) -> Option<PathBuf> {
             .map(|d| d.join(program))
             .find(|p| p.is_file())
     })
+}
+
+/// Pixel evidence (#89): reference scenes captured in both of Dreamer's
+/// schemes and checked: the scheme's background is the main color (one
+/// theme across terminals and chrome) and its green, which the scene
+/// prints, is drawn. The images stay in `target/gate/screens/`. Not run on
+/// a locked screen, or without Screen Recording permission.
+fn screens(dir: &Path) -> Result<Done, String> {
+    if !cfg!(target_os = "macos") || !require_refreshing_display()? {
+        return Ok(Done::NotRun);
+    }
+    // Dreamer's two schemes (terminal-core's DREAMER_DARK and DREAMER_LIGHT):
+    // background, and green (ANSI 2), which single-pane prints.
+    let out = crate::util::repo_root().join("target/gate/screens");
+    for (skin, background, green) in [
+        ("dark", 0x14_16_1a, 0x81_c9_95),
+        ("light", 0xf6_f6_f4, 0x1e_7a_3c),
+    ] {
+        let path = out.join(format!("single-pane-{skin}.png"));
+        match crate::scenes::capture(dir, "single-pane", skin, &path) {
+            Ok(()) => {}
+            Err(e) if e.contains("could not capture window") => {
+                println!(
+                    "gate: screen capture is not allowed for this terminal (System Settings > \
+                     Privacy & Security > Screen & System Audio Recording); recorded as not run"
+                );
+                return Ok(Done::NotRun);
+            }
+            Err(e) => return Err(e),
+        }
+        let summary = crate::scenes::check_capture(&path, background, green)?;
+        println!("gate:   screen: {} ({summary})", path.display());
+    }
+    Ok(Done::Passed)
 }
 
 fn workspace_smoke(dir: &Path) -> Result<Done, String> {

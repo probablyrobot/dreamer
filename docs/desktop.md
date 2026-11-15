@@ -369,3 +369,18 @@ run. A repaint loop in the pane would show as view wakeups. A passing count is t
 repaint as a control: if the window does not paint (occluded, or the
 display asleep), the result is status 5, not a pass. The `live` step runs
 this against an isolated tmux server and private daemon directories.
+
+### Pixel evidence
+
+The macOS gate's `screens` step captures the `single-pane` reference
+scene in both of Dreamer's schemes (`cargo xtask screenshot` does the same
+by hand) and checks the pixels:
+- the main color is the scheme's background, so the theme reached the
+  terminals and the chrome alike;
+- the scheme's green, which the scene prints, is drawn;
+- the image is not flat.
+
+The captures stay in `target/gate/screens/`. The step is not run on a
+locked screen, or when the terminal running the gate lacks Screen
+Recording permission (System Settings > Privacy & Security > Screen &
+System Audio Recording).
