@@ -38,6 +38,12 @@ pub struct Endpoint {
     /// Register with the launch ticket from the environment, if one is
     /// there (a pane app started by `dream app run`).
     pub ticket: bool,
+    /// Give up the connection's grant down to the package's declared
+    /// `capabilities` (and following events), with every pane in scope.
+    /// Used where the connection would otherwise be the user's own (a
+    /// native panel), so a package can do no more than it declares. Read
+    /// when connecting: a reload cannot widen it.
+    pub narrow: bool,
 }
 
 impl Endpoint {
@@ -47,6 +53,7 @@ impl Endpoint {
             socket: platform::socket_path(),
             role: "termapp",
             ticket: true,
+            narrow: false,
         }
     }
 }
@@ -160,6 +167,7 @@ async fn connect(
     endpoint: &Endpoint,
     registered: &mut bool,
     events: &[String],
+    capabilities: &[String],
 ) -> Result<Conn, String> {
     let mut c = tokio::time::timeout(
         Duration::from_secs(2),
@@ -179,6 +187,20 @@ async fn connect(
         .await
         .map_err(|e| format!("could not register: {e}"))?;
         *registered = true;
+    }
+    if endpoint.narrow {
+        let mut methods = capabilities.to_vec();
+        if !events.is_empty() {
+            methods.extend(["events.subscribe".into(), "events.unsubscribe".into()]);
+        }
+        c.call(api::Request::GrantsNarrow(api::Grant {
+            owner: false,
+            methods,
+            all_panes: true,
+            ..api::Grant::default()
+        }))
+        .await
+        .map_err(|e| format!("could not narrow the grant: {e}"))?;
     }
     let pushed = c.pushed().ok_or("no event stream")?;
     if !events.is_empty() {
@@ -443,7 +465,7 @@ pub async fn run(
                     }
                 }
                 if conn.is_none() && !gave_up && now >= retry {
-                    match connect(&endpoint, &mut registered, &watch).await {
+                    match connect(&endpoint, &mut registered, &watch, &app.manifest.capabilities).await {
                         Ok(c) => {
                             *current.borrow_mut() = Some(c.client.clone());
                             conn = Some(c);

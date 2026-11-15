@@ -1387,10 +1387,13 @@ name = "dreamer-app"
 version = "0.1.0"
 dependencies = [
  "api",
+ "app-model",
+ "async-channel",
  "client",
  "gpui",
  "gpui_platform",
  "replica",
+ "serde_json",
  "terminal-ghostty",
  "terminal-render",
  "tokio",
@@ -1434,6 +1437,7 @@ name = "dreamer-server"
 version = "0.1.0"
 dependencies = [
  "api",
+ "app-model",
  "client",
  "domain",
  "matcher",

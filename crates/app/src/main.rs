@@ -25,6 +25,7 @@ mod fonts;
 mod input;
 mod keymap;
 mod palette;
+mod panel;
 mod theme;
 
 use theme::{c, ca};

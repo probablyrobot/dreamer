@@ -215,6 +215,28 @@ The `remote` gate stage (macOS) and the Linux desktop gate run
 `dreamer --smoke-remote --host devbox` against a second isolated tmux and
 daemon behind a stand-in `ssh`.
 
+## App panels
+
+An [app package](termapp.md) can be shown as a native panel beside the
+panes, as well as running as a pane app. "Open an app package as a
+panel…" in the palette asks for the manifest's path (`~/` works). The
+desktop draws the package's view itself (table, list, log, text, form,
+gauge, or chart) from the same model `dreamer-termapp` draws in a pane,
+the `app-model` crate. Keys typed while the panel has focus (click it)
+go to the app, with the same names and the same commands as in a pane.
+Cmd and Alt shortcuts stay with the desktop.
+
+The model runs on a thread of its own, with its own connection to the
+local daemon, and reloads the package when its files change. That
+connection gives up the user's grant at once and keeps only the
+package's `capabilities` (plus `events.subscribe` when a source follows
+events), with every pane in scope (see [grants.md](grants.md)). So a
+panel can do no more than its manifest declares, and a reload cannot
+widen that; reopen the panel after adding a capability.
+Nothing from the package runs on the UI thread or while drawing. `q`
+(or Esc in a form) ends the app; "Close the app panel" removes it. One
+panel is shown at a time.
+
 ## Command palette
 
 Cmd-Shift-P on macOS, or Ctrl-Shift-P on Linux, opens the command palette;
@@ -233,6 +255,7 @@ Escape closes.
 | Close view (programs keep running) | Closes this desktop window only; tmux and every program keep running |
 | Kill pane (ends its program)…, Kill window (ends its programs)… | Destructive. Shown in red; the first Enter only asks, a second Enter runs it, and Backspace backs out |
 | Show or hide decorations in this pane (filter marks) | Switches drawing [decorations](#decorations) for the focused pane, in this window |
+| Open an app package as a panel…, Close the app panel | Shows an [app panel](#app-panels), or removes it |
 
 No destructive action is hidden behind "close". Every command goes
 through the typed actions, and its result shows only in a newer topology.
@@ -251,6 +274,9 @@ step, and `gate linux-desktop` runs it on each backend. It checks that:
 - with a refreshing display, a filter's mark on a line of the focused
   pane is drawn, hidden from the palette, and drawn again, while
   `tmux capture-pane` still shows the line as written;
+- with a refreshing display, one app package runs as a pane app in a
+  tmux window and as a panel: both show the same rows, a key pressed in
+  the panel moves its selection, and the panel closes from the palette;
 - zoom shows the focused pane alone, and unzoom brings all four back;
 - tmux sizes the shown window to the workspace's area;
 - dragging the vertical divider 10 cells in 10 moves resizes the pane to

@@ -74,6 +74,8 @@ pub(crate) struct Workspace {
     /// panes whose marks are switched off in this view.
     decorations: Option<Arc<replica::decorations::DecorationsFeed>>,
     pub(crate) undecorated: std::collections::HashSet<u32>,
+    /// An app package drawn as a native panel beside the panes.
+    pub(crate) panel: Option<Entity<crate::panel::AppPanel>>,
 }
 
 /// A divider being dragged: the size the pointer asks for, the last size
@@ -129,6 +131,7 @@ impl Workspace {
             save_dirty: false,
             decorations: None,
             undecorated: std::collections::HashSet::new(),
+            panel: None,
         }
     }
 
@@ -172,6 +175,31 @@ impl Workspace {
             let shown = !self.undecorated.contains(id);
             let marks = feed.marks(*id);
             view.shell.update(cx, |s, cx| s.set_marks(marks, shown, cx));
+        }
+    }
+
+    /// Show the app package whose manifest is at `path` as a panel, in
+    /// place of any panel shown before, and give it the keyboard.
+    pub(crate) fn open_panel(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(rest),
+            None => PathBuf::from(path),
+        };
+        let socket = self.socket.clone();
+        let panel = cx.new(|cx| crate::panel::AppPanel::start(path, socket, cx));
+        let focus = panel.read(cx).focus.clone();
+        self.panel = Some(panel);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn close_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panel.take().is_some() {
+            window.focus(&self.focus, cx);
+            cx.notify();
         }
     }
 
@@ -622,6 +650,16 @@ impl Workspace {
                     self.undecorated.insert(pane);
                 }
                 self.apply_decorations(cx);
+                None
+            }
+            C::OpenPanel => {
+                if let Some(path) = name {
+                    self.open_panel(&path, window, cx);
+                }
+                None
+            }
+            C::ClosePanel => {
+                self.close_panel(window, cx);
                 None
             }
         };
@@ -1570,7 +1608,8 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .children(sidebar)
-                    .child(area),
+                    .child(area)
+                    .children(self.panel.clone()),
             )
     }
 }
@@ -2197,6 +2236,7 @@ mod smoke {
         let painted = click_and_type(any, &ws, cx).await;
         if painted {
             decorations(any, &ws, &daemon, cx).await;
+            panel(any, &ws, &daemon, cx).await;
         }
 
         // Selecting a tab switches the tmux window, seen in the topology.
@@ -2359,6 +2399,139 @@ mod smoke {
         }
         println!(
             "smoke: a filter's mark was drawn over pane %{pane}, hidden from the palette, and drawn again; tmux's copy of the line was unchanged"
+        );
+    }
+
+    /// One app package shown both ways: as a pane app (`dreamer-termapp`
+    /// in a tmux window) and as a native panel drawn from the same model.
+    /// Both show the same rows; a key pressed in the panel moves its
+    /// selection; closing the panel ends its model.
+    async fn panel(
+        any: AnyWindowHandle,
+        ws: &WeakEntity<Workspace>,
+        daemon: &[String],
+        cx: &mut AsyncApp,
+    ) {
+        const MANIFEST: &str = r#"schema_version = 1
+id = "smoke.windows"
+version = "0.1.0"
+title = "Windows of main"
+capabilities = ["tmux.topology"]
+
+[data.windows]
+method = "tmux.topology"
+path = "windows"
+events = ["tmux.topology"]
+
+[view]
+type = "table"
+source = "windows"
+row_key = "id"
+columns = ["id", "name"]
+"#;
+        let socket = read(any, ws, cx, |w, _| w.socket.clone())
+            .unwrap_or_else(|| fail("no workspace for the panel check"));
+        let dir = std::env::temp_dir().join(format!("dreamer-smoke-panel-{}", std::process::id()));
+        let manifest = dir.join("app.toml");
+        if let Err(e) =
+            std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&manifest, MANIFEST))
+        {
+            fail(&format!("could not write the app package: {e}"));
+        }
+        let termapp = std::env::current_exe()
+            .ok()
+            .and_then(|e| Some(e.parent()?.join("dreamer-termapp")))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| fail("no dreamer-termapp beside dreamer (build it first)"));
+        let runtime = socket
+            .parent()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        // The pane app, in a window of its own.
+        let command = format!("{} {}", termapp.display(), manifest.display());
+        tmux(
+            daemon,
+            &[
+                "new-window",
+                "-d",
+                "-n",
+                "app-pane",
+                "-t",
+                "main",
+                "-e",
+                &format!("DREAMER_RUNTIME_DIR={runtime}"),
+                &command,
+            ],
+        );
+        // The same package as a panel.
+        palette(any, ws, cx, "open an app package");
+        palette_more(any, ws, cx, &manifest.display().to_string());
+        let names = |w: &Workspace, cx: &gpui::App| -> Option<Vec<String>> {
+            let shown = w.panel.as_ref()?.read(cx).shown.clone()?;
+            (shown.link == app_model::Link::Live).then(|| {
+                shown
+                    .rows
+                    .iter()
+                    .map(|r| app_model::text(&r["name"]))
+                    .collect()
+            })
+        };
+        wait_for(
+            any,
+            ws,
+            cx,
+            "the panel drawing the windows, live",
+            move |w, cx| names(w, cx).is_some_and(|n| n.iter().any(|n| n == "app-pane")),
+        )
+        .await;
+        let in_panel = read(any, ws, cx, names).flatten().unwrap_or_default();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let in_pane = loop {
+            let text = tmux_output(daemon, &["capture-pane", "-p", "-t", "main:app-pane"]);
+            if text.contains("[live]") && in_panel.iter().all(|n| text.contains(n.as_str())) {
+                break text;
+            }
+            if Instant::now() > deadline {
+                fail(&format!(
+                    "the pane app never showed the panel's rows {in_panel:?}:\n{text}"
+                ));
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+        };
+        if !in_pane.contains("Windows of main") {
+            fail(&format!("the pane app is not the same package:\n{in_pane}"));
+        }
+        // A real key press, dispatched to the focused panel.
+        let selected = |w: &Workspace, cx: &gpui::App| {
+            w.panel
+                .as_ref()?
+                .read(cx)
+                .shown
+                .as_ref()
+                .map(|a| a.selected)
+        };
+        let before = read(any, ws, cx, selected).flatten();
+        let _ = cx.update_window(any, |_, window, cx| {
+            if let Ok(ks) = gpui::Keystroke::parse("down") {
+                window.dispatch_keystroke(ks, cx);
+            }
+        });
+        wait_for(
+            any,
+            ws,
+            cx,
+            "the panel's selection moved by a key",
+            move |w, cx| selected(w, cx).is_some_and(|s| Some(s) != before),
+        )
+        .await;
+        palette(any, ws, cx, "close the app panel");
+        wait_for(any, ws, cx, "the panel closed", |w, _| w.panel.is_none()).await;
+        tmux(daemon, &["kill-window", "-t", "main:app-pane"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        println!(
+            "smoke: one app package showed the same rows {in_panel:?} as a pane app and as a native panel; a key moved the panel's selection"
         );
     }
 
