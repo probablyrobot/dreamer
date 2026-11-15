@@ -17,8 +17,12 @@ scheme and one type family.
   the other way: a terminal's colors are its canonical state (spec 14.2).
 - **Dreamer's two schemes** come with hand-tuned chrome (below). Any other
   scheme gets chrome derived from its own colors: its background for the
-  window, surfaces a few steps toward its foreground, its cursor color (or
-  blue) as the accent, and its red and yellow for danger and warning.
+  window, surfaces a few steps toward its foreground, its blue as the
+  accent (a scheme's cursor color is often too pale for an accent line),
+  and its red and yellow for danger and warning.
+- **Always a visible cursor.** A scheme whose cursor barely shows on its
+  background (under 3:1) has its cursor drawn in the text color. This is a
+  view choice; the terminal's colors are unchanged.
 - **Readable everywhere.** `every_scheme_gets_chrome_drawn_from_its_own_colors`
   checks every built-in scheme: chrome text on every surface is as
   readable as the scheme's own text (up to 4.5:1). Derived surfaces step
@@ -57,7 +61,11 @@ on, and for each danger and warning text on its surface.
   color with an accent line under it.
 - **Panes.** Inset 6 px from the window's edges, in the background color.
   tmux's one-cell gaps between panes are drawn as hairlines down their
-  middle.
+  middle. The focused pane's hairline frame shows only when there is more
+  than one pane.
+- **Command palette.** A query line (a hint while empty), then at most
+  12 commands. The list scrolls with the selection and says how many more
+  there are. It floats on a soft shadow.
 
 ## Typography
 
