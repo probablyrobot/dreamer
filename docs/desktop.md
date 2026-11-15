@@ -82,6 +82,30 @@ Either way it is a normal tmux client with its own terminal, clearly apart
 from Dreamer's pane rendering. It does not count as Dreamer drawing these
 screens.
 
+## Decorations
+
+Lines that a [filter](filters.md#decorations) marks are drawn over the
+grid:
+
+| Style | Drawn as |
+| --- | --- |
+| `highlight` | A wash in the accent color across the line |
+| `dim` | The terminal's background over the line, partly see-through |
+| `fold` | The line covered, with `⋯`; the row stays, so nothing below moves |
+| `badge` | The badge text at the line's right edge (the filter's name if it has none) |
+
+A mark is drawn only while the line it names still holds the marked text
+at the width it was marked at. A view that has not caught up, a reflowed
+pane, or a line that has scrolled away draws nothing rather than marking
+the wrong line. "Show or hide decorations in this pane" in the palette
+switches them per pane, in this window only. Drawing never changes what
+the program wrote, the daemon's mirror, or what tmux shows; copying text
+copies the line as written.
+
+The workspace lists marks for the panes it shows when a
+`decorations.changed` event names them. Panes of a host opened through
+the coordinator show none: the host's events are not relayed.
+
 ## Sidebar, status, and the saved arrangement
 
 - **Sidebar.** Cmd-Shift-S on macOS, Ctrl-Shift-S on Linux, or "Toggle
@@ -208,6 +232,7 @@ Escape closes.
 | Zoom or unzoom pane | Toggles zoom |
 | Close view (programs keep running) | Closes this desktop window only; tmux and every program keep running |
 | Kill pane (ends its program)…, Kill window (ends its programs)… | Destructive. Shown in red; the first Enter only asks, a second Enter runs it, and Backspace backs out |
+| Show or hide decorations in this pane (filter marks) | Switches drawing [decorations](#decorations) for the focused pane, in this window |
 
 No destructive action is hidden behind "close". Every command goes
 through the typed actions, and its result shows only in a newer topology.
@@ -223,6 +248,9 @@ step, and `gate linux-desktop` runs it on each backend. It checks that:
   that session and window;
 - a split made with the plain `tmux` command appears;
 - clicking a pane focuses it, and typed text reaches only that pane;
+- with a refreshing display, a filter's mark on a line of the focused
+  pane is drawn, hidden from the palette, and drawn again, while
+  `tmux capture-pane` still shows the line as written;
 - zoom shows the focused pane alone, and unzoom brings all four back;
 - tmux sizes the shown window to the workspace's area;
 - dragging the vertical divider 10 cells in 10 moves resizes the pane to

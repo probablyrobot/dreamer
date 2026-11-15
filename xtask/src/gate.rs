@@ -683,7 +683,7 @@ fn workspace_smoke(dir: &Path) -> Result<Done, String> {
         Some(0) => Done::Passed,
         Some(5) => {
             println!(
-                "gate: the display did not refresh; workspace sizing, click, keyboard, and drag checks recorded as not run"
+                "gate: the display did not refresh; workspace sizing, click, keyboard, drag, and decoration checks recorded as not run"
             );
             Done::NotRun
         }

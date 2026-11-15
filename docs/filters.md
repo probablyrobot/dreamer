@@ -68,4 +68,6 @@ filter. A mark is valid only while all of these still hold:
 
 Each pane keeps at most 500 marks; the oldest go first. A
 `decorations.changed` event (with the `pane`) says when to list again.
-Listing a pane needs it in the grant.
+Listing a pane needs it in the grant. The desktop draws them over the
+grid and can switch them off per pane; see
+[desktop.md](desktop.md#decorations).

@@ -16,6 +16,7 @@
 //! [`Follower`] drives a replica over a daemon connection: subscribe,
 //! resume after a reconnect, and resnapshot with bounded retries.
 
+pub mod decorations;
 pub mod feed;
 mod follow;
 pub mod hosts;

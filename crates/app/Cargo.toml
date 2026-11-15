@@ -19,6 +19,7 @@ replica = { path = "../replica" }
 workspace-config = { path = "../workspace-config" }
 terminal-ghostty = { path = "../terminal-ghostty" }
 terminal-render = { path = "../terminal-render" }
+tokio = { version = "1.54.1", features = ["rt"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit"] }

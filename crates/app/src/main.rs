@@ -173,6 +173,12 @@ pub(crate) struct Shell {
     pub(crate) grid: Option<input::Grid>,
     /// Progress of the input smoke after typing.
     input_phase: u8,
+    /// Filters' marks on this pane's lines, and whether they are shown
+    /// (switched per pane from the palette). Drawn over the grid only.
+    marks: Vec<api::Decoration>,
+    marks_shown: bool,
+    /// Marks drawn in the last render (smoke evidence).
+    pub(crate) marks_drawn: usize,
 }
 
 impl Shell {
@@ -203,7 +209,45 @@ impl Shell {
             flash: None,
             grid: None,
             input_phase: 0,
+            marks: Vec::new(),
+            marks_shown: true,
+            marks_drawn: 0,
         }
+    }
+
+    /// A pane's current marks, and whether to draw them.
+    pub(crate) fn set_marks(
+        &mut self,
+        marks: Vec<api::Decoration>,
+        shown: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if marks != self.marks || shown != self.marks_shown {
+            self.marks = marks;
+            self.marks_shown = shown;
+            cx.notify();
+        }
+    }
+
+    /// The marks on rows in the viewport, by viewport row. A mark names its
+    /// line by row from the top of history; it is drawn only while that row
+    /// still holds the marked text at the same width, so a view that has
+    /// not caught up (or has moved on) draws nothing rather than the wrong
+    /// line.
+    fn visible_marks(&self) -> Vec<(usize, api::Decoration)> {
+        let f = &self.frame;
+        if !self.marks_shown || f.view.alt_screen {
+            return Vec::new();
+        }
+        self.marks
+            .iter()
+            .filter(|d| d.cols == u32::from(f.size.cols))
+            .filter_map(|d| {
+                let i = usize::try_from(d.row.checked_sub(f.view.offset)?).ok()?;
+                let row = f.rows.get(i)?;
+                (row.text().trim_end() == d.text.trim_end()).then(|| (i, d.clone()))
+            })
+            .collect()
     }
 
     /// Apply what a pane's feed delivered (workspace panes; the single-pane
@@ -783,6 +827,59 @@ impl Render for Shell {
                 .text_size(px(term.size * 0.85))
                 .child(format!("↑ {back} lines"))
         });
+        let marks = self.visible_marks();
+        self.marks_drawn = marks.len();
+        let marks: Vec<_> = if marks.is_empty() {
+            Vec::new()
+        } else {
+            let m = cell_metrics(
+                window,
+                &font(term.family.clone()),
+                px(term.size),
+                term.spacing(),
+            );
+            let bg = self.frame.colors.background;
+            // The terminal's own background, partly or almost opaque.
+            let veil = |alpha: u32| {
+                ca((u32::from(bg.r) << 24)
+                    | (u32::from(bg.g) << 16)
+                    | (u32::from(bg.b) << 8)
+                    | alpha)
+            };
+            marks
+                .into_iter()
+                .map(|(i, d)| {
+                    let line = div()
+                        .absolute()
+                        .left_0()
+                        .top(m.height * i as f32)
+                        .w_full()
+                        .h(m.height);
+                    match api::DecorationStyle::try_from(d.style) {
+                        Ok(api::DecorationStyle::Highlight) => line.bg(ca(t.mark)),
+                        Ok(api::DecorationStyle::Dim) => line.bg(veil(0x99)),
+                        // Folded away: covered, with a marker; the row stays
+                        // so nothing below moves.
+                        Ok(api::DecorationStyle::Fold) => line
+                            .bg(veil(0xf0))
+                            .text_color(c(t.faint))
+                            .font_family(term.family.clone())
+                            .text_size(px(term.size))
+                            .child("⋯"),
+                        _ => line.flex().justify_end().child(
+                            div()
+                                .px_1()
+                                .h(m.height)
+                                .bg(c(t.accent))
+                                .text_color(c(t.background))
+                                .font_family(term.family.clone())
+                                .text_size(px(term.size * 0.85))
+                                .child(d.badge.clone().unwrap_or_else(|| d.filter.clone())),
+                        ),
+                    }
+                })
+                .collect()
+        };
         div()
             .size_full()
             .bg(c(t.background))
@@ -806,6 +903,7 @@ impl Render for Shell {
                         font_size: px(term.size),
                         spacing: term.spacing(),
                     })
+                    .children(marks)
                     .children(preedit)
                     .children(scrolled)
                     .children(underline)

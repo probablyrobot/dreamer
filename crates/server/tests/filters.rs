@@ -387,3 +387,75 @@ async fn decorations_mark_matched_lines_until_a_reflow_or_respawn() {
     s.tmux(&["respawn-pane", "-k", "-t", &target, "/bin/sh"]);
     wait_marks(&c, pane, 0).await;
 }
+
+/// The desktop's path to a mark: the decorations feed lists a pane's marks
+/// when they change, and a mark's row names the same line in a view's own
+/// replica of the pane (built from its checkpoint), with history above it.
+#[tokio::test]
+async fn a_view_finds_a_mark_on_its_own_copy_of_the_line() {
+    let s = Setup::new();
+    let c = s.client().await;
+    let pane = pane0(&c).await;
+    let target = format!("%{pane}");
+    let socket = s.root.join("rt/dreamerd.sock");
+    // History above the line, so its row counts from well above the screen.
+    s.tmux(&["send-keys", "-t", &target, "seq 1 80", "Enter"]);
+    let marks = replica::decorations::DecorationsFeed::start(socket.clone()).expect("feed");
+    marks.watch([pane]);
+    call(
+        &c,
+        Request::FiltersInstall(api::FilterSpec {
+            name: "view-marks".into(),
+            panes: vec![pane],
+            pattern: "^MARKED ".into(),
+            decorate: api::DecorationStyle::Highlight as i32,
+            grant: grant(&["taps.subscribe"], &[pane]),
+            ..api::FilterSpec::default()
+        }),
+    )
+    .await
+    .expect("install");
+    s.tmux(&[
+        "send-keys",
+        "-t",
+        &target,
+        "printf 'MARKED %s\\n' here",
+        "Enter",
+    ]);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while marks.marks(pane).is_empty() {
+        tokio::time::timeout_at(deadline, marks.wake.recv())
+            .await
+            .expect("the feed never listed the mark")
+            .expect("feed alive");
+    }
+    let m = marks.marks(pane).remove(0);
+    assert_eq!(m.text, "MARKED here");
+
+    let feed = replica::feed::Feed::start(socket, Some(pane), None).expect("pane feed");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let frame = loop {
+        tokio::time::timeout_at(deadline, feed.wake.recv())
+            .await
+            .expect("no frame with the line")
+            .expect("feed alive");
+        if let Some(f) = feed.take()
+            && f.text_dump().contains("\nMARKED here")
+        {
+            break f;
+        }
+    };
+    assert!(frame.view.offset > 0, "no history above: {:?}", frame.view);
+    assert_eq!(m.cols, u32::from(frame.size.cols));
+    let i = usize::try_from(m.row - frame.view.offset).expect("row");
+    assert_eq!(frame.rows[i].text().trim_end(), "MARKED here", "{m:?}");
+
+    // A pane no longer watched keeps no marks.
+    marks.watch([]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !marks.marks(pane).is_empty() {
+        assert!(Instant::now() < deadline, "unwatched marks kept");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
