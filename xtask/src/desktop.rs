@@ -242,7 +242,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // sizing, and drag checks could not run. That is missing evidence,
         // not a failure; on Wayland it means the output is off (DPMS) or
         // the session locked.
-        let not_run = !passed && out.status.code() == Some(5) && again.status.success();
+        let not_run =
+            !passed && out.status.code() == Some(5) && matches!(again.status.code(), Some(0 | 5));
         println!(
             "linux-desktop: {backend:<7} {:<18} {}",
             "workspace",
