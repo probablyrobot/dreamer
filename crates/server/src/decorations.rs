@@ -7,7 +7,9 @@
 //! width. It stays valid while all of these hold: a respawn (new
 //! generation) or a resize (reflow) drops every decoration of the pane,
 //! and a line that scrolled out of history or moved (the history is at its
-//! limit) is dropped when the pane's decorations are next listed.
+//! limit) is dropped when the pane's decorations are next listed. A mark
+//! on a row the mirror has not reached yet is kept but not listed until
+//! the mirror catches up.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -60,6 +62,21 @@ impl Decorations {
         }
     }
 
+    /// Whether a mark of `pane` names a row at or past `rows`: the mirror
+    /// has not caught up with the line that made it.
+    /// Marks of another generation or width are never ahead: they go.
+    pub fn ahead(&self, pane: u32, generation: u64, cols: u32, rows: usize) -> bool {
+        self.panes.lock().is_ok_and(|panes| {
+            panes.get(&pane).is_some_and(|p| {
+                p.generation == generation
+                    && p.cols == cols
+                    && p.marks
+                        .iter()
+                        .any(|m| usize::try_from(m.row).map_or(true, |r| r >= rows))
+            })
+        })
+    }
+
     /// The pane's marks still valid against what the mirror shows now:
     /// `generation`, `cols`, and `history` (every history line, oldest
     /// first, then the screen). Invalid ones are dropped; the second value
@@ -78,18 +95,25 @@ impl Decorations {
             return (Vec::new(), false);
         };
         let before = p.marks.len();
+        // A row the mirror has not reached yet: the line that made the mark
+        // is still on its way into the mirror. Kept, but not listed.
+        let ahead = |m: &Decoration| usize::try_from(m.row).map_or(true, |r| r >= lines.len());
         if p.generation != generation || p.cols != cols {
             p.marks.clear();
         } else {
             p.marks.retain(|m| {
-                usize::try_from(m.row)
-                    .ok()
-                    .and_then(|r| lines.get(r))
-                    .is_some_and(|l| *l == m.text)
+                ahead(m)
+                    || usize::try_from(m.row)
+                        .ok()
+                        .and_then(|r| lines.get(r))
+                        .is_some_and(|l| *l == m.text)
             });
         }
         let dropped = p.marks.len() != before;
-        (p.marks.iter().cloned().collect(), dropped)
+        (
+            p.marks.iter().filter(|m| !ahead(m)).cloned().collect(),
+            dropped,
+        )
     }
 }
 
@@ -124,6 +148,17 @@ mod tests {
         // History at its limit shifted by one: both lines moved.
         let (v, dropped) = d.valid(1, 7, 80, &lines(&["ERR a", "y", "ERR b", "z"]));
         assert_eq!((v.len(), dropped), (0, true));
+    }
+
+    #[test]
+    fn a_mark_ahead_of_the_mirror_waits_for_it() {
+        let d = Decorations::default();
+        d.add(mark(2, "ERR c"));
+        // The mirror has not reached row 2 yet: kept, not listed.
+        let (v, dropped) = d.valid(1, 7, 80, &lines(&["x", "y"]));
+        assert_eq!((v.len(), dropped), (0, false));
+        let (v, dropped) = d.valid(1, 7, 80, &lines(&["x", "y", "ERR c"]));
+        assert_eq!((v.len(), dropped), (1, false));
     }
 
     #[test]

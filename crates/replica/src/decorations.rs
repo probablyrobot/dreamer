@@ -169,13 +169,23 @@ async fn list(
     latest: &Mutex<HashMap<u32, Vec<api::Decoration>>>,
     wake: &async_channel::Sender<()>,
 ) -> Result<(), ()> {
-    let marks = match c
-        .call(Request::DecorationsList(api::DecorationQuery { pane }))
-        .await
-    {
-        Ok(Response::DecorationsList(l)) => l.decorations,
-        Ok(_) | Err(client::ClientError::Rpc(_)) => Vec::new(),
-        Err(_) => return Err(()),
+    // A pane whose mirror is being rebuilt answers after a moment; one that
+    // does not exist (or never answers) has none.
+    let mut tries = 0;
+    let marks = loop {
+        match c
+            .call(Request::DecorationsList(api::DecorationQuery { pane }))
+            .await
+        {
+            Ok(Response::DecorationsList(l)) => break l.decorations,
+            Ok(_) => break Vec::new(),
+            Err(client::ClientError::Rpc(_)) if tries < 5 => {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            Err(client::ClientError::Rpc(_)) => break Vec::new(),
+            Err(_) => return Err(()),
+        }
     };
     let changed = latest.lock().is_ok_and(|mut l| {
         let old = l.get(&pane);
