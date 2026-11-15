@@ -37,6 +37,14 @@ pub enum Provider {
 }
 
 impl Provider {
+    /// Who pays for a run, as the user is told before every run.
+    pub fn billed_to(&self) -> &'static str {
+        match self {
+            Provider::Cli(k) => k.billed_to(),
+            Provider::Api(_) => "the configured API key (metered)",
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Provider::Cli(k) => k.name(),
@@ -91,6 +99,16 @@ fn locate_in_path(name: &str) -> Option<PathBuf> {
 pub enum Kind {
     ClaudeCli,
     CodexCli,
+}
+
+impl Kind {
+    /// Who pays for a run on this CLI: the user's own login, never Dreamer.
+    pub fn billed_to(self) -> &'static str {
+        match self {
+            Kind::ClaudeCli => "your own Claude Code login",
+            Kind::CodexCli => "your own Codex login",
+        }
+    }
 }
 
 /// The default order: Claude Code, then Codex.

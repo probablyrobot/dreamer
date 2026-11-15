@@ -241,9 +241,10 @@ pub fn ask(d: &DaemonArgs, args: &[String]) -> Result<std::process::ExitCode, St
             match e {
                 Event::Started { model, .. } => {
                     eprintln!(
-                        "[{}{}]",
+                        "[{}{}, billed to {}]",
                         kind.name(),
-                        model.map(|m| format!(" {m}")).unwrap_or_default()
+                        model.map(|m| format!(" {m}")).unwrap_or_default(),
+                        kind.billed_to()
                     );
                 }
                 Event::Text(t) => {

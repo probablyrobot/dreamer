@@ -1266,7 +1266,7 @@ mod tests {
 
     #[test]
     fn documentation_only_changes_skip_builds() {
-        assert_eq!(scope_for(["README.md", "docs/adr/0001-x.md"]), Scope::Docs);
+        assert_eq!(scope_for(["README.md", "docs/scripts.md"]), Scope::Docs);
         assert_eq!(scope_for(["LICENSE", "NOTICE"]), Scope::Docs);
     }
 

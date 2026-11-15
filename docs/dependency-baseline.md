@@ -79,7 +79,7 @@ used only by the build tool.
 
 | Crate | Version | Used by | License |
 | --- | --- | --- | --- |
-| `mlua` (features `luau`, `vendored`, `async`) | `0.12.2`, with its vendored Luau | `script-runtime`: sandboxed scripts ([ADR 0001](adr/0001-luau-script-runtime.md)) | MIT (Luau: MIT) |
+| `mlua` (features `luau`, `vendored`, `async`) | `0.12.2`, with its vendored Luau | `script-runtime`: sandboxed scripts | MIT (Luau: MIT) |
 | `regex` | `1.13.1` | `matcher`: the linear-time match stage of queries and filters | MIT OR Apache-2.0 |
 | `ratatui` (no default features; `crossterm`) | `=0.30.2` | `dreamer-termapp`: pane app views | MIT |
 | `crossterm` | `=0.29.0` | `dreamer-termapp`: raw mode, alternate screen, keys | MIT |

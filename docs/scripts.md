@@ -3,8 +3,7 @@
 Scripts are small programs in [Luau](https://luau.org) that run inside
 Dreamer: filters, triggers, commands, and the logic of small pane apps.
 They are the extension tier between declarative files and supervised
-processes ([extensions.md](extensions.md)). See
-[ADR 0001](adr/0001-luau-script-runtime.md) for why Luau.
+processes ([extensions.md](extensions.md)).
 
 ## The sandbox
 

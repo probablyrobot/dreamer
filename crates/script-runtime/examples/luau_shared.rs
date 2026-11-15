@@ -1,4 +1,4 @@
-//! Cost of many scripts sharing one sandboxed Luau VM (ADR 0001).
+//! Cost of many scripts sharing one sandboxed Luau VM.
 //!
 //! `cargo run --release -p script-runtime --example luau_shared`
 
