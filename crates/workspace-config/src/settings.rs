@@ -114,7 +114,6 @@ impl Settings {
     /// set, else Dreamer's dark or light scheme for `appearance`. With
     /// `system`, the OS's appearance when this is read.
     pub fn scheme(&self) -> &'static terminal_core::schemes::Scheme {
-        use terminal_core::schemes::{DREAMER_DARK, DREAMER_LIGHT};
         if let Some(s) = self.terminal.theme {
             return s;
         }
@@ -123,7 +122,11 @@ impl Settings {
             Appearance::Light => true,
             Appearance::System => os_prefers_light(),
         };
-        if light { &DREAMER_LIGHT } else { &DREAMER_DARK }
+        if light {
+            terminal_core::schemes::dreamer_light()
+        } else {
+            terminal_core::schemes::dreamer_dark()
+        }
     }
 }
 
@@ -405,13 +408,19 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
         s.appearance = a;
     }
     if let Some(name) = file.terminal.theme {
-        s.terminal.theme = Some(terminal_core::schemes::find(&name).ok_or_else(|| {
+        // The user's theme files sit beside this settings file.
+        let dir = origin.and_then(Path::parent).map(|d| d.join("themes"));
+        let found = crate::themes::find(&name, dir.as_deref())
+            .map_err(|e| error(origin, "terminal.theme", e))?;
+        s.terminal.theme = Some(found.ok_or_else(|| {
             let names: Vec<&str> = terminal_core::schemes::all().map(|s| s.name).collect();
             error(
                 origin,
                 "terminal.theme",
                 format!(
-                    "no built-in theme `{name}`; choose one of: {}",
+                    "no theme `{name}` in {} or built in; built-in ones: {}",
+                    dir.as_deref()
+                        .map_or_else(|| "themes/".to_owned(), |d| d.display().to_string()),
                     names.join(", ")
                 ),
             )

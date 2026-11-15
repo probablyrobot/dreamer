@@ -51,7 +51,7 @@ pub struct TerminalDefaults {
 impl Default for TerminalDefaults {
     fn default() -> Self {
         TerminalDefaults {
-            scheme: terminal_ghostty::core::schemes::DEFAULT,
+            scheme: terminal_ghostty::core::schemes::default(),
             cursor: terminal_ghostty::core::CursorShape::Block,
             blink: false,
         }

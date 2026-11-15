@@ -108,11 +108,26 @@ one theme ([design.md](design.md)).
 cursor a program gets until it sets its own (and after it resets it with
 `CSI 0 q`).
 
-- `theme` is one of the built-in schemes. `dream themes` lists them, with a
-  swatch and the configured one marked. Names are case-insensitive, and
-  `_` or a space counts as `-`.
+- `theme` names a color scheme file. `dream themes` lists them all, with
+  a swatch, the configured one marked, and yours labelled. Names are
+  case-insensitive, and `_` or a space counts as `-`.
+  - **Built in:** the scheme files that ship with Dreamer. They are
+    compiled into the program, so they are always there.
+  - **Yours:** files in `<config dir>/themes/` (see `dream config-dir`),
+    found by their name without the extension. Two formats are read:
+    - alacritty-theme TOML (`.toml`), the format of the built-in files,
+      and of the alacritty-theme collection;
+    - Ghostty theme files (no extension, or `.conf`), as the large
+      iTerm2-Color-Schemes collection publishes them.
+
+    Drop one in and name it. A file of yours with a built-in's name
+    replaces the built-in. A file that does not read (missing colors, a
+    bad value) is an error naming the file and line.
+  - Only the colors a terminal's defaults need are read: background,
+    foreground, the 16 ANSI colors, and optionally the cursor and
+    selection colors. Everything else in a file is ignored.
   - Without one, the theme follows `appearance`: `dreamer-dark` or
-    `dreamer-light`, designed with their chrome.
+    `dreamer-light`, Dreamer's own, designed with their chrome.
   - With one, the chrome is drawn from that scheme's own colors.
   - The others come from Catppuccin (Mocha, Macchiato, Frappé, Latte),
     Dracula, Nord, Gruvbox, Tokyo Night (night, storm, light), One Dark

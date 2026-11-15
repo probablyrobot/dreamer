@@ -101,7 +101,7 @@ pub(crate) static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new()
 
 /// The window's skin.
 pub(crate) fn for_window(_window: &Window) -> &'static Theme {
-    THEME.get_or_init(|| for_scheme(terminal_core::schemes::DEFAULT))
+    THEME.get_or_init(|| for_scheme(terminal_core::schemes::default()))
 }
 
 fn hex(c: terminal_core::Rgb) -> u32 {

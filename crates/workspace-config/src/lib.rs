@@ -16,6 +16,7 @@ pub mod hosts;
 mod plan;
 mod schema;
 pub mod settings;
+pub mod themes;
 
 pub use dirs::{config_dir, workspace_dir, workspace_path};
 pub use plan::{Arrange, PanePlan, PaneRef, Plan, SizeArg, SplitStep, Start, WindowPlan};

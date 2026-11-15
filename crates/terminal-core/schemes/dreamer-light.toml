@@ -1,0 +1,32 @@
+# Dreamer Light: Dreamer's own light scheme, designed with its chrome:
+# warm paper, deeper accents. Same format as the other files here.
+
+[colors.primary]
+background = '#f6f6f4'
+foreground = '#1f2328'
+
+[colors.cursor]
+cursor = '#2f6fde'
+
+[colors.selection]
+background = '#cfdcf3'
+
+[colors.normal]
+black   = '#1f2328'
+red     = '#b3261e'
+green   = '#1e7a3c'
+yellow  = '#7d5600'
+blue    = '#2f6fde'
+magenta = '#8a3ab9'
+cyan    = '#0b7285'
+white   = '#6e7781'
+
+[colors.bright]
+black   = '#57606a'
+red     = '#d1242f'
+green   = '#2a8f4f'
+yellow  = '#9a6700'
+blue    = '#4a86e8'
+magenta = '#a250d6'
+cyan    = '#138a9e'
+white   = '#8c959f'
