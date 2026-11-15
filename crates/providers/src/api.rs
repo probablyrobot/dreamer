@@ -279,23 +279,22 @@ async fn turn(
     tx: &mpsc::UnboundedSender<Event>,
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<Option<Turn>, Failure> {
-    let mut child = tokio::process::Command::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--no-buffer",
-            "--config",
-            "-",
-            "--write-out",
-            "\nDREAMER-HTTP %{http_code}\n",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| Failure::Failed(format!("curl: {e}")))?;
+    let mut cmd = tokio::process::Command::new("curl");
+    cmd.args([
+        "--silent",
+        "--show-error",
+        "--no-buffer",
+        "--config",
+        "-",
+        "--write-out",
+        "\nDREAMER-HTTP %{http_code}\n",
+    ])
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .process_group(0)
+    .kill_on_drop(true);
+    let mut child = crate::spawn(&mut cmd).map_err(|e| Failure::Failed(format!("curl: {e}")))?;
     let pgid = child.id().unwrap_or_default();
     if let Some(mut stdin) = child.stdin.take() {
         stdin

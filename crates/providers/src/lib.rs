@@ -427,6 +427,24 @@ fn clip(s: &str) -> String {
     format!("{}…", &s[..end])
 }
 
+/// Start `cmd`, retrying a few times if the program is busy being written
+/// (`ETXTBSY`): on Linux another thread's fork can briefly hold a just
+/// written executable open, so its first exec fails. Any other error is
+/// returned at once.
+pub(crate) fn spawn(cmd: &mut tokio::process::Command) -> std::io::Result<tokio::process::Child> {
+    const ETXTBSY: i32 = 26;
+    let mut tries = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) && tries < 5 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => return r,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

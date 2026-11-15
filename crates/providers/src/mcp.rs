@@ -27,16 +27,16 @@ pub(crate) struct Client {
 
 impl Client {
     pub(crate) async fn start(tools: &Tools, env: &[(String, String)]) -> Result<Client, String> {
-        let mut child = tokio::process::Command::new(&tools.program)
-            .args(&tools.args)
+        let mut cmd = tokio::process::Command::new(&tools.program);
+        cmd.args(&tools.args)
             .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .process_group(0)
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("{}: {e}", tools.program.display()))?;
+            .kill_on_drop(true);
+        let mut child =
+            crate::spawn(&mut cmd).map_err(|e| format!("{}: {e}", tools.program.display()))?;
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
         let mut c = Client {
