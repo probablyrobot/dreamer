@@ -41,7 +41,7 @@ pub(crate) async fn setup(app: &mut App) {
         let p = providers::probe(k).await;
         if p.state == State::Ready {
             app.agent.provider = Some(k.name().to_owned());
-            app.agent.mode = format!("{} ready", k.name());
+            app.agent.mode = format!("{} ready, billed to {}", k.name(), k.billed_to());
             break;
         }
         if why.is_empty() {
@@ -187,7 +187,9 @@ pub(crate) fn apply(app: &mut App, e: Event) -> bool {
     match e {
         Event::Started { model, .. } => {
             if let Some(m) = model {
-                a.mode = format!("{} ({m})", a.provider.clone().unwrap_or_default());
+                let name = a.provider.clone().unwrap_or_default();
+                let billed = Kind::parse(&name).map_or("", |k| k.billed_to());
+                a.mode = format!("{name} ({m}), billed to {billed}");
             }
             false
         }

@@ -93,5 +93,8 @@ A Claude Code with another major version shows as `incompatible`. The
 Codex adapter follows Codex's documented `exec --json` format and is
 tested against a stand-in only; no real Codex has been run with it yet.
 
-Before release, each vendor's terms for driving its subscription CLI from
-another application have to be checked and recorded in an ADR.
+Dreamer runs your own, unmodified CLI on your own login, for requests you
+make, and never handles its credentials. Every run says who is billed
+(`billed to your own Claude Code login`). Your plan's limits assume
+ordinary individual use: for heavy or unattended automation, configure an
+API adapter instead.

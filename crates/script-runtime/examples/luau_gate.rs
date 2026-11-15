@@ -1,4 +1,4 @@
-//! Measurements for the Luau feasibility gate (ADR 0001).
+//! Measurements for the Luau feasibility gate.
 //!
 //! `cargo run --release -p script-runtime --example luau_gate`
 //!
