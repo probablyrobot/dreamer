@@ -295,6 +295,7 @@ impl InputSender {
                             generation,
                             endpoint: None,
                             client: Some(self.target.client),
+                            lease: None,
                             event: Some(other),
                         }),
                     )

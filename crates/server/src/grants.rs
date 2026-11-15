@@ -24,6 +24,7 @@ fn targets(r: &Request) -> Targets {
         Request::TerminalSubscribe(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalInput(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalSetTier(p) => Targets::Panes(vec![p.pane]),
+        Request::LeasesAcquire(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalQuery(p) if p.panes.is_empty() || !p.hosts.is_empty() => {
             Targets::Everything
         }
@@ -131,6 +132,12 @@ impl Grant {
     }
 
     pub fn method_allowed(&self, method: &str) -> bool {
+        // A lease is how automation sends input: whoever may send input
+        // may hold one.
+        if method == api::method::LEASES_ACQUIRE || method == api::method::LEASES_RELEASE {
+            return self.method_allowed(api::method::TERMINAL_INPUT)
+                || self.method_allowed(api::method::ACTIONS_SUBMIT);
+        }
         self.0.owner
             || self.0.methods.iter().any(|m| {
                 m == method

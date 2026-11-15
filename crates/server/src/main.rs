@@ -23,6 +23,7 @@ mod hosts;
 mod install;
 mod jobs;
 mod jsonrpc;
+mod leases;
 mod log;
 mod messages;
 mod query;
@@ -251,6 +252,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             topology: tokio::sync::watch::channel(None).0,
             sizing: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             pastes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            leases: crate::leases::Leases::default(),
             hosts: hosts::Hosts::new(events.clone()),
             events,
             broker: Arc::default(),

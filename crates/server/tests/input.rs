@@ -141,6 +141,7 @@ async fn input(
             endpoint: None,
             client: None,
             event: Some(event),
+            lease: None,
         }))
         .await?
     {
@@ -330,4 +331,80 @@ async fn mouse_reaches_only_programs_that_track_it() {
         matches!(e, ClientError::Rpc(ref r) if r.code == api::code::INVALID_PARAMS),
         "{e}"
     );
+}
+
+async fn leased(c: &Client, lease: &str, text: &str) -> Result<api::InputResult, ClientError> {
+    match c
+        .call(Request::TerminalInput(api::TerminalInput {
+            pane: 0,
+            lease: Some(lease.into()),
+            event: Some(Event::Text(api::TextInput { text: text.into() })),
+            ..api::TerminalInput::default()
+        }))
+        .await?
+    {
+        Response::TerminalInput(r) => Ok(r),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Spec 12.4: automation types under a lease; a person typing into the
+/// pane takes it over, and the automation's later input is refused instead
+/// of landing in the middle of what the person is doing.
+#[tokio::test]
+async fn a_person_typing_takes_over_from_leased_automation() {
+    let s = Setup::new();
+    let agent = s.client().await;
+    let person = s.client().await;
+    s.type_line("echo R''EADY");
+    s.wait_mirror(&agent, "READY").await;
+
+    let Response::LeasesAcquire(lease) = agent
+        .call(Request::LeasesAcquire(api::LeaseAcquire {
+            pane: 0,
+            ttl_ms: None,
+        }))
+        .await
+        .expect("acquire")
+    else {
+        panic!("lease")
+    };
+    leased(&agent, &lease.id, "echo AUTO''MATED\r")
+        .await
+        .expect("leased input");
+    s.wait_line("AUTOMATED");
+
+    // Another connection cannot use or take the lease.
+    assert!(leased(&person, &lease.id, "x").await.is_err());
+    assert!(
+        person
+            .call(Request::LeasesAcquire(api::LeaseAcquire {
+                pane: 0,
+                ttl_ms: None,
+            }))
+            .await
+            .is_err()
+    );
+
+    // The person types; the agent's next input is refused.
+    input(
+        &person,
+        Event::Text(api::TextInput {
+            text: "echo PER''SON\r".into(),
+        }),
+        None,
+    )
+    .await
+    .expect("person");
+    s.wait_line("PERSON");
+    let e = leased(&agent, &lease.id, "echo must-not-run\r")
+        .await
+        .expect_err("revoked");
+    assert!(
+        matches!(e, ClientError::Rpc(ref r) if r.code == api::code::PRECONDITION
+            && r.message.contains("a person typed")),
+        "{e}"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!s.screen().contains("must-not-run"));
 }

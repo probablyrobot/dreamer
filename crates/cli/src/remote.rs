@@ -352,6 +352,7 @@ pub fn parse_act(args: &[String]) -> Result<(Kind, Option<String>, bool), String
                 pane: id(target, '%', "pane")?,
                 data,
                 generation,
+                lease: None,
             })
         }
         "keys" => {
@@ -370,6 +371,7 @@ pub fn parse_act(args: &[String]) -> Result<(Kind, Option<String>, bool), String
                 pane: id(target, '%', "pane")?,
                 keys,
                 generation,
+                lease: None,
             })
         }
         "kill" if target.starts_with('@') => Kind::KillWindow(api::KillWindow {
@@ -865,7 +867,8 @@ mod tests {
             Kind::SendInput(api::SendInput {
                 pane: 0,
                 data: b"ls -la\r".to_vec(),
-                generation: Some(2)
+                generation: Some(2),
+                lease: None,
             })
         );
         assert_eq!(
@@ -873,7 +876,8 @@ mod tests {
             Kind::SendKeys(api::SendKeys {
                 pane: 0,
                 keys: vec!["C-c".into(), "Enter".into()],
-                generation: Some(5)
+                generation: Some(5),
+                lease: None,
             })
         );
         let err =

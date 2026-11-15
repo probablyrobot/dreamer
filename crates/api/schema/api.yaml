@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 35 }
+version: { major: 1, minor: 36 }
 package: dreamer.v1
 
 types:
@@ -212,6 +212,7 @@ types:
       - { n: 1, name: pane, type: u32 }
       - { n: 2, name: data, type: bytes }
       - { n: 3, name: generation, type: u64, optional: true }
+      - { n: 4, name: lease, type: string, optional: true, doc: "Automation's interaction lease on this pane." }
 
   - message: SendKeys
     doc: Named keys (tmux key names such as Enter or C-c) to the pane.
@@ -219,6 +220,7 @@ types:
       - { n: 1, name: pane, type: u32 }
       - { n: 2, name: keys, type: string, repeated: true }
       - { n: 3, name: generation, type: u64, optional: true }
+      - { n: 4, name: lease, type: string, optional: true, doc: "Automation's interaction lease on this pane." }
 
   - message: KillPane
     fields:
@@ -536,6 +538,7 @@ types:
       - { n: 2, name: generation, type: u64, optional: true, doc: "Refuse the input if the pane's process was replaced." }
       - { n: 3, name: endpoint, type: string, optional: true }
       - { n: 4, name: client, type: u64, optional: true, doc: "The sending client's id (as in TerminalSubscribe); focus events make it the pane's focused client." }
+      - { n: 5, name: lease, type: string, optional: true, doc: "Automation's interaction lease on this pane (leases.acquire). Without one, typed input is a person's: it revokes any lease on the pane." }
     oneof:
       name: event
       variants:
@@ -549,6 +552,28 @@ types:
     fields:
       - { n: 1, name: bytes, type: u64, doc: Encoded bytes delivered to the pane. }
       - { n: 2, name: batches, type: u32, doc: tmux command batches used. }
+
+  # ---- interaction leases ---------------------------------------------------
+
+  - message: LeaseAcquire
+    doc: >-
+      Ask to type into a pane as automation. One connection holds a pane's
+      lease at a time; it expires unless used, and a person typing into the
+      pane revokes it.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: ttl_ms, type: u32, optional: true, doc: "Idle time before the lease expires: default 30000, at most 600000. Each use starts it again." }
+
+  - message: Lease
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: generation, type: u64, doc: "Increases with every lease on the pane; a revoked generation never comes back." }
+      - { n: 4, name: expires_unix_ms, type: u64 }
+
+  - message: LeaseRef
+    fields:
+      - { n: 1, name: id, type: string }
 
   # ---- remote hosts ---------------------------------------------------------
 
@@ -1274,6 +1299,8 @@ methods:
   - { method: tmux.size_window, params: SizeWindow, result: SizeResult, mutation: true, doc: "Size a tmux window for the client that owns its size (see SizeWindow)." }
   - { method: tmux.watch, params: TopologyParams, result: TopologyUpdate, doc: "The current topology; afterwards `tmux.topology` events follow every change." }
   - { method: actions.submit, params: SubmitAction, result: ActionRecord, mutation: true, doc: "Run a typed action and report its observed outcome." }
+  - { method: leases.acquire, params: LeaseAcquire, result: Lease, mutation: true, doc: "Hold a pane's interaction lease, so automated input to it is accepted until a person types there." }
+  - { method: leases.release, params: LeaseRef, result: Empty, mutation: true }
   - { method: actions.get, params: ActionQuery, result: ActionRecord }
   - { method: actions.list, params: ActionListParams, result: ActionList }
   - { method: terminal.read, params: ReadParams, result: TerminalText, doc: "Bounded text, cursor, and size from a pane's canonical mirror." }

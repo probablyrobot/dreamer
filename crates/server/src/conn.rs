@@ -320,7 +320,13 @@ pub async fn connection_as(
                     {
                         unsubscribe(&conn, req).await
                     } else {
-                        answer(&service, req).await
+                        let caller = crate::leases::Caller {
+                            conn: conn.id,
+                            owner: conn.grant.lock().is_ok_and(|g| g.0.owner),
+                        };
+                        crate::leases::CALLER
+                            .scope(caller, answer(&service, req))
+                            .await
                     };
                     let response = fit(response, conn.max_frame);
                     if watch && response.error_code.is_none() {
@@ -353,6 +359,7 @@ pub async fn connection_as(
     if let Some(task) = conn.watch.lock().await.take() {
         task.abort();
     }
+    state.leases.drop_conn(conn.id);
     let sizers: Vec<u64> = conn.sizers.lock().await.drain().collect();
     crate::service::release_sizing(&state, &sizers).await;
     drop(conn);

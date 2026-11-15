@@ -25,6 +25,16 @@ const MAX_LINES: u32 = 500;
 #[derive(Clone)]
 struct Dreamer {
     client: Arc<client::Client>,
+    /// Interaction leases this session holds, by pane.
+    leases: Arc<tokio::sync::Mutex<Leases>>,
+}
+
+#[derive(Default)]
+struct Leases {
+    held: std::collections::HashMap<u32, String>,
+    /// Panes a person typed into while this session held their lease: it
+    /// does not type there again.
+    taken_over: std::collections::HashSet<u32>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -239,14 +249,68 @@ impl Dreamer {
         &self,
         Parameters(p): Parameters<SendInput>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.call(api::Request::TerminalInput(api::TerminalInput {
-            pane: p.pane,
-            event: Some(api::terminal_input::Event::Text(api::TextInput {
-                text: p.text,
-            })),
-            ..api::TerminalInput::default()
-        }))
-        .await
+        // Typing as automation: under this session's lease on the pane,
+        // taken on first use. A person typing there revokes it, and this
+        // session then leaves the pane alone.
+        let mut leases = self.leases.lock().await;
+        if leases.taken_over.contains(&p.pane) {
+            return Ok(failed(format!(
+                "a person typed into pane %{} while this agent held it; ask the user before typing there again",
+                p.pane
+            )));
+        }
+        for attempt in 0..2 {
+            let lease = match leases.held.get(&p.pane) {
+                Some(id) => id.clone(),
+                None => match self
+                    .client
+                    .call(api::Request::LeasesAcquire(api::LeaseAcquire {
+                        pane: p.pane,
+                        ttl_ms: None,
+                    }))
+                    .await
+                {
+                    Ok(api::Response::LeasesAcquire(l)) => {
+                        leases.held.insert(p.pane, l.id.clone());
+                        l.id
+                    }
+                    Ok(_) => return Ok(failed("leases.acquire: unexpected answer".into())),
+                    Err(e) => return Ok(failed(format!("leases.acquire: {e}"))),
+                },
+            };
+            let r = self
+                .client
+                .call(api::Request::TerminalInput(api::TerminalInput {
+                    pane: p.pane,
+                    lease: Some(lease),
+                    event: Some(api::terminal_input::Event::Text(api::TextInput {
+                        text: p.text.clone(),
+                    })),
+                    ..api::TerminalInput::default()
+                }))
+                .await;
+            match r {
+                Ok(r) => return Ok(text(r.to_json())),
+                Err(e) => {
+                    let why = e.to_string();
+                    leases.held.remove(&p.pane);
+                    if why.contains("a person typed") {
+                        leases.taken_over.insert(p.pane);
+                        return Ok(failed(format!(
+                            "{why}. A person took over pane %{}; ask the user before typing there again",
+                            p.pane
+                        )));
+                    }
+                    // An expired lease is renewed once; anything else is
+                    // the agent's to read.
+                    if attempt == 0 && why.contains("expired") {
+                        continue;
+                    }
+                    return Ok(failed(why));
+                }
+            }
+        }
+        Ok(failed("send_input: the lease kept expiring".into()))
     }
 
     #[tool(
@@ -391,6 +455,7 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         }
         let server = Dreamer {
             client: Arc::new(c),
+            leases: Arc::default(),
         }
         .serve(rmcp::transport::stdio())
         .await

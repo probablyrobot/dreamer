@@ -58,6 +58,7 @@ fn json_spells_bytes_as_base64_and_accepts_enum_numbers() {
                 pane: 1,
                 data: b"ls\r\x1b[A".to_vec(),
                 generation: Some(2),
+                lease: None,
             })),
         }),
         ..SubmitAction::default()
@@ -299,6 +300,12 @@ impl Service for Fixed {
     }
     async fn grants_narrow(&self, g: api::Grant) -> Result<api::Grant, RpcError> {
         Ok(g)
+    }
+    async fn leases_acquire(&self, _: api::LeaseAcquire) -> Result<api::Lease, RpcError> {
+        Ok(api::Lease::default())
+    }
+    async fn leases_release(&self, _: api::LeaseRef) -> Result<Empty, RpcError> {
+        Ok(Empty::default())
     }
     async fn grants_current(&self, _: Empty) -> Result<api::Grant, RpcError> {
         Ok(api::Grant::default())
