@@ -5,6 +5,11 @@ data comes from, how to show it, and which keys run which actions. The app
 is the tmux pane's real program, so it looks and works the same in the
 desktop and through any plain `tmux attach`.
 
+The app's model (the manifest, its data and selection, a form's values,
+commands, the Luau module, and reloading) is the headless `app-model`
+crate. `dreamer-termapp` only turns keys into input for it and draws it
+with Ratatui, so other presentations can draw the same model.
+
 ```sh
 dreamer-termapp app.toml            # run it in this terminal
 dreamer-termapp --check app.toml    # validate only

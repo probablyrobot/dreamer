@@ -190,6 +190,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "app-model"
+version = "0.1.0"
+dependencies = [
+ "api",
+ "client",
+ "platform",
+ "script-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1441,17 +1455,12 @@ dependencies = [
 name = "dreamer-termapp"
 version = "0.1.0"
 dependencies = [
- "api",
- "client",
+ "app-model",
  "crossterm",
- "platform",
  "ratatui",
- "script-runtime",
- "serde",
  "serde_json",
  "tmux-backend",
  "tokio",
- "toml 0.8.23",
 ]
 
 [[package]]

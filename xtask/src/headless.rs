@@ -15,6 +15,7 @@ use crate::util::repo_root;
 /// Linux. Add each new UI-free crate here.
 pub const PACKAGES: &[&str] = &[
     "api",
+    "app-model",
     "client",
     "dreamer-server",
     "dreamer-cli",
