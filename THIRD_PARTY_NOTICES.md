@@ -25,6 +25,7 @@ from `Cargo.lock` at packaging time.
 | regex | 1.13.1 | MIT OR Apache-2.0 | `dreamerd` (queries, filters) |
 | ratatui | 0.30.2 | MIT | `dreamer-termapp` |
 | crossterm | 0.29.0 | MIT | `dreamer-termapp` |
+| rmcp | 3.10.0 | Apache-2.0 | `dream` (MCP) |
 
 ## Terminal color schemes
 

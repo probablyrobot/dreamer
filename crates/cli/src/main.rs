@@ -41,6 +41,7 @@ mod daemon;
 mod extprobe;
 mod hosts;
 mod jobrun;
+mod mcp;
 mod remote;
 mod service;
 
@@ -74,6 +75,7 @@ const USAGE: &str = "usage:
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream rpc [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream extensions [--json] | dream extensions restart NAME
+  dream mcp [--method M]... [--pane %N]... [--all-panes]
   dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
   dream jobs [--json] | start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...] | cancel ID | artifacts ID
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME
@@ -148,6 +150,9 @@ fn main() -> ExitCode {
         }
         ["extensions", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::extensions(&d, &extra))
+        }
+        ["mcp", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| mcp::run(&d, &extra))
         }
         ["hook", rest @ ..] => {
             return agents::hook(&rest.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());

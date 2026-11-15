@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 33;
+pub const PROTOCOL_MINOR: u32 = 34;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -3229,6 +3229,7 @@ pub mod method {
     pub const HOSTS_INSTALL: &str = "hosts.install";
     pub const HOSTS_UPGRADE: &str = "hosts.upgrade";
     pub const HOSTS_CALL: &str = "hosts.call";
+    pub const GRANTS_NARROW: &str = "grants.narrow";
     pub const GRANTS_CURRENT: &str = "grants.current";
     pub const APPS_LAUNCH: &str = "apps.launch";
     pub const EVENTS_SUBSCRIBE: &str = "events.subscribe";
@@ -3449,6 +3450,13 @@ pub const METHODS: &[MethodInfo] = &[
         result: "HostReply",
         mutation: true,
         doc: "Forward one typed call to a connected host's daemon.",
+    },
+    MethodInfo {
+        name: "grants.narrow",
+        params: "Grant",
+        result: "Grant",
+        mutation: true,
+        doc: "Give up authority on this connection: the new grant must be within the current one. Nothing widens a grant.",
     },
     MethodInfo {
         name: "grants.current",
@@ -3718,6 +3726,7 @@ pub enum Request {
     HostsInstall(InstallParams),
     HostsUpgrade(UpgradeParams),
     HostsCall(HostCall),
+    GrantsNarrow(Grant),
     GrantsCurrent(Empty),
     AppsLaunch(LaunchApp),
     EventsSubscribe(EventSubscribe),
@@ -3782,6 +3791,7 @@ impl Request {
             Self::HostsInstall(_) => "hosts.install",
             Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
+            Self::GrantsNarrow(_) => "grants.narrow",
             Self::GrantsCurrent(_) => "grants.current",
             Self::AppsLaunch(_) => "apps.launch",
             Self::EventsSubscribe(_) => "events.subscribe",
@@ -3847,6 +3857,7 @@ impl Request {
             Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
+            Self::GrantsNarrow(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
             Self::EventsSubscribe(v) => ::prost::Message::encode_to_vec(v),
@@ -3913,6 +3924,7 @@ impl Request {
             "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
+            "grants.narrow" => Ok(Self::GrantsNarrow(::prost::Message::decode(bytes)?)),
             "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
             "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
             "events.subscribe" => Ok(Self::EventsSubscribe(::prost::Message::decode(bytes)?)),
@@ -3980,6 +3992,7 @@ impl Request {
             Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::GrantsNarrow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::EventsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -4044,6 +4057,7 @@ impl Request {
             "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
+            "grants.narrow" => Ok(Self::GrantsNarrow(serde_json::from_value(value)?)),
             "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
             "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
             "events.subscribe" => Ok(Self::EventsSubscribe(serde_json::from_value(value)?)),
@@ -4111,6 +4125,7 @@ pub enum Response {
     HostsInstall(InstallResult),
     HostsUpgrade(UpgradeResult),
     HostsCall(HostReply),
+    GrantsNarrow(Grant),
     GrantsCurrent(Grant),
     AppsLaunch(LaunchedApp),
     EventsSubscribe(EventSubscription),
@@ -4175,6 +4190,7 @@ impl Response {
             Self::HostsInstall(_) => "hosts.install",
             Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
+            Self::GrantsNarrow(_) => "grants.narrow",
             Self::GrantsCurrent(_) => "grants.current",
             Self::AppsLaunch(_) => "apps.launch",
             Self::EventsSubscribe(_) => "events.subscribe",
@@ -4240,6 +4256,7 @@ impl Response {
             Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
+            Self::GrantsNarrow(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
             Self::EventsSubscribe(v) => ::prost::Message::encode_to_vec(v),
@@ -4306,6 +4323,7 @@ impl Response {
             "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
+            "grants.narrow" => Ok(Self::GrantsNarrow(::prost::Message::decode(bytes)?)),
             "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
             "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
             "events.subscribe" => Ok(Self::EventsSubscribe(::prost::Message::decode(bytes)?)),
@@ -4373,6 +4391,7 @@ impl Response {
             Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::GrantsNarrow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::EventsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -4437,6 +4456,7 @@ impl Response {
             "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
+            "grants.narrow" => Ok(Self::GrantsNarrow(serde_json::from_value(value)?)),
             "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
             "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
             "events.subscribe" => Ok(Self::EventsSubscribe(serde_json::from_value(value)?)),
@@ -4601,6 +4621,11 @@ pub trait Service: Sync {
         &self,
         params: HostCall,
     ) -> impl ::core::future::Future<Output = Result<HostReply, RpcError>> + Send;
+    /// Give up authority on this connection: the new grant must be within the current one. Nothing widens a grant.
+    fn grants_narrow(
+        &self,
+        params: Grant,
+    ) -> impl ::core::future::Future<Output = Result<Grant, RpcError>> + Send;
     /// The calling connection's own grant.
     fn grants_current(
         &self,
@@ -4824,6 +4849,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::HostsInstall(p) => service.hosts_install(p).await.map(Response::HostsInstall),
         Request::HostsUpgrade(p) => service.hosts_upgrade(p).await.map(Response::HostsUpgrade),
         Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
+        Request::GrantsNarrow(p) => service.grants_narrow(p).await.map(Response::GrantsNarrow),
         Request::GrantsCurrent(p) => service.grants_current(p).await.map(Response::GrantsCurrent),
         Request::AppsLaunch(p) => service.apps_launch(p).await.map(Response::AppsLaunch),
         Request::EventsSubscribe(p) => service

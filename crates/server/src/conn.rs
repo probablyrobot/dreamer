@@ -233,6 +233,33 @@ pub async fn connection_as(
                             .await;
                         return;
                     }
+                    if req.method == api::method::GRANTS_NARROW {
+                        let response = match api::Grant::decode(req.payload.as_slice()) {
+                            Err(e) => {
+                                failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string()))
+                            }
+                            Ok(wanted) => {
+                                let mut g = match conn.grant.lock() {
+                                    Ok(g) => g,
+                                    Err(_) => return,
+                                };
+                                match crate::grants::within(&g.0, &wanted) {
+                                    Ok(()) => {
+                                        *g = crate::grants::Grant(wanted.clone());
+                                        ok(req.id, wanted.encode_to_vec())
+                                    }
+                                    Err(why) => {
+                                        failure(req.id, RpcError::new(code::FORBIDDEN, why))
+                                    }
+                                }
+                            }
+                        };
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(Kind::Response, response.encode_to_vec()))
+                            .await;
+                        return;
+                    }
                     if req.method == api::method::GRANTS_CURRENT {
                         let g = conn.grant.lock().map(|g| g.0.clone()).unwrap_or_default();
                         let _ = conn

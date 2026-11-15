@@ -109,6 +109,12 @@ remote host through `ssh -T`; you do not normally run it yourself.
 `extensions.yaml` and their state; `dream extensions restart NAME` starts
 one again now. See [extensions.md](extensions.md).
 
+## MCP
+
+`dream mcp [--method M]... [--pane %N]... [--all-panes]` serves Dreamer's
+tools to an MCP client on standard input and output. See
+[mcp.md](mcp.md).
+
 ## Agent runs
 
 `dream agents runs [--host NAME]... [--json]` lists Claude Code and Codex

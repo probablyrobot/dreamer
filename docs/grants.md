@@ -20,6 +20,8 @@ response, can widen a grant. Only the daemon assigns one.
   - **an expiry:** after it, every request is refused.
 
 `grants.current` returns the calling connection's own grant.
+`grants.narrow` replaces it with one within it: a connection may give up
+authority (for example `dream mcp --pane %3`), never gain it.
 
 ## What the pane scope covers
 

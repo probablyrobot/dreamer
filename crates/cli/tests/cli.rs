@@ -2026,3 +2026,168 @@ fn hooks_are_written_only_when_asked_with_a_backup_and_once() {
     let again = cli.run(&["agents", "hooks", "--write", &file.display().to_string()]);
     assert!(String::from_utf8_lossy(&again.stdout).contains("already there"));
 }
+
+impl Cli {
+    /// `dream mcp <args>` on the isolated tmux server, with stdio piped.
+    fn mcp(&self, args: &[&str]) -> std::process::Child {
+        let program = tmux_program().display().to_string();
+        Command::new(DREAM)
+            .arg("mcp")
+            .args(args)
+            .args(["-L", self.tmux.socket(), "--tmux", program.as_str()])
+            .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
+            .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .env("DREAMER_DAEMON", Self::daemon())
+            .env("DREAMER_CONFIG_DIR", self.root.join("config"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("dream mcp")
+    }
+}
+
+/// A minimal MCP client over a child's stdio.
+struct Mcp {
+    child: std::process::Child,
+    lines: std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
+    next: u64,
+}
+
+impl Mcp {
+    fn start(mut child: std::process::Child) -> Mcp {
+        use std::io::BufRead;
+        let out = child.stdout.take().expect("stdout");
+        let mut m = Mcp {
+            child,
+            lines: std::io::BufReader::new(out).lines(),
+            next: 1,
+        };
+        let init = m.request(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "1" },
+            }),
+        );
+        assert!(
+            init["result"]["capabilities"]["tools"].is_object(),
+            "{init}"
+        );
+        m.send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        m
+    }
+
+    fn send(&mut self, v: serde_json::Value) {
+        use std::io::Write;
+        let stdin = self.child.stdin.as_mut().expect("stdin");
+        writeln!(stdin, "{v}").expect("write");
+        stdin.flush().expect("flush");
+    }
+
+    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.next;
+        self.next += 1;
+        self.send(
+            serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }),
+        );
+        loop {
+            let line = self.lines.next().expect("a reply").expect("read");
+            let v: serde_json::Value = serde_json::from_str(&line).expect("json");
+            if v["id"] == id {
+                return v;
+            }
+        }
+    }
+
+    fn call(&mut self, tool: &str, args: serde_json::Value) -> serde_json::Value {
+        let r = self.request(
+            "tools/call",
+            serde_json::json!({ "name": tool, "arguments": args }),
+        );
+        r["result"].clone()
+    }
+}
+
+impl Drop for Mcp {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
+    let cli = Cli::new();
+    cli.ok(&["ensure-running"]);
+    cli.tmux
+        .run_checked(&["split-window", "-t", "main", "/bin/sh"])
+        .expect("split");
+    let mut m = Mcp::start(cli.mcp(&[]));
+    let tools = m.request("tools/list", serde_json::json!({}));
+    let mut names: Vec<String> = tools["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "cancel_job",
+            "check_action",
+            "create_pane",
+            "list_panes",
+            "list_runs",
+            "read_pane",
+            "send_input",
+            "start_job"
+        ]
+    );
+    let panes = m.call("list_panes", serde_json::json!({}));
+    assert!(!panes["isError"].as_bool().unwrap_or(false), "{panes}");
+    assert_eq!(
+        panes["structuredContent"]["panes"].as_array().map(Vec::len),
+        Some(2),
+        "{panes}"
+    );
+    let typed = m.call(
+        "send_input",
+        serde_json::json!({ "pane": 0, "text": "echo via-mcp\n" }),
+    );
+    assert_ne!(typed["isError"], true, "{typed}");
+    cli.wait_pane("%0", "via-mcp");
+    drop(m);
+
+    // A server narrowed to reading pane 0.
+    let mut m = Mcp::start(cli.mcp(&["--method", "terminal.read", "--pane", "%0"]));
+    let read = m.call("read_pane", serde_json::json!({ "pane": 0, "lines": 10 }));
+    assert_ne!(read["isError"], true, "{read}");
+    assert!(
+        read["structuredContent"]["lines"]
+            .to_string()
+            .contains("via-mcp"),
+        "{read}"
+    );
+    let other = m.call("read_pane", serde_json::json!({ "pane": 1 }));
+    assert_eq!(other["isError"], true, "{other}");
+    assert!(
+        other["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("outside"),
+        "{other}"
+    );
+    let input = m.call("send_input", serde_json::json!({ "pane": 0, "text": "x" }));
+    assert_eq!(input["isError"], true, "{input}");
+    assert!(
+        input["content"][0]["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not in this connection's grant"),
+        "{input}"
+    );
+}
