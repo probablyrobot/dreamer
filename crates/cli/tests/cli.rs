@@ -2139,8 +2139,10 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
         [
             "cancel_job",
             "check_action",
+            "check_job",
             "create_pane",
             "find_lines",
+            "list_hosts",
             "list_panes",
             "list_runs",
             "move_panes",
@@ -2214,4 +2216,96 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             .contains("not in this connection's grant"),
         "{input}"
     );
+}
+
+/// Spec 13.2: "run this check on two connected hosts and show each result".
+/// Through `dream mcp`, a job starts on this host and on a connected one,
+/// and each result comes back separately, naming its host.
+#[test]
+fn an_mcp_client_runs_a_check_here_and_on_a_connected_host() {
+    let cli = Cli::new();
+    let far = TmuxServer::start(100, 30, "/bin/sh").expect("remote tmux");
+    let far_root = cli.root.join("far");
+    let _far_daemon = DaemonGuard(far_root.join("rt"));
+    let r = |name: &str| cli.root.join(name);
+    std::fs::write(
+        r("ssh"),
+        format!(
+            r#"#!/bin/sh
+[ "$1" = -T ] || exit 90
+while [ "$1" != -- ]; do shift; done
+export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
+export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
+exec /bin/sh -c "exec $3"
+"#,
+            rt = far_root.join("rt").display(),
+            st = far_root.join("st").display(),
+            daemon = Cli::daemon().display(),
+        ),
+    )
+    .expect("stand-in ssh");
+    std::fs::set_permissions(
+        r("ssh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+    std::fs::create_dir_all(r("config")).expect("config dir");
+    std::fs::write(
+        r("config/hosts.yaml"),
+        format!(
+            "hosts:\n  - name: devbox\n    destination: devbox\n    dream: '{}'\n    tmux: '{}'\n    tmux_socket: '{}'\n",
+            DREAM,
+            tmux_program().display(),
+            far.socket()
+        ),
+    )
+    .expect("hosts.yaml");
+    cli.ok(&["ensure-running"]);
+    cli.ok(&["hosts", "connect", "devbox"]);
+
+    let mut m = Mcp::start(cli.mcp(&[]));
+    let hosts = m.call("list_hosts", serde_json::json!({}));
+    assert_ne!(hosts["isError"], true, "{hosts}");
+    assert!(hosts.to_string().contains("devbox"), "{hosts}");
+
+    let mut ids = Vec::new();
+    for (host, code) in [(None, 0), (Some("devbox"), 3)] {
+        let started = m.call(
+            "start_job",
+            serde_json::json!({
+                "argv": ["sh", "-c", format!("exit {code}")],
+                "host": host,
+            }),
+        );
+        assert_ne!(started["isError"], true, "{started}");
+        let id = started["structuredContent"]["id"]
+            .as_str()
+            .expect("job id")
+            .to_owned();
+        ids.push((host, id, code));
+    }
+    for (host, id, code) in ids {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let job = loop {
+            let j = m.call("check_job", serde_json::json!({ "id": id, "host": host }));
+            assert_ne!(j["isError"], true, "{j}");
+            if j["structuredContent"]["state"] != "running" {
+                break j;
+            }
+            assert!(Instant::now() < deadline, "job never ended: {j}");
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let s = &job["structuredContent"];
+        assert_eq!(s["host"].as_str(), host, "{job}");
+        if code == 0 {
+            assert_eq!(s["state"], "succeeded", "{job}");
+        } else {
+            assert_eq!(s["state"], "failed", "{job}");
+            assert_eq!(s["exit_code"], code, "{job}");
+        }
+    }
+    // A host that is not connected is a tool error naming it.
+    let nowhere = m.call("list_panes", serde_json::json!({ "host": "nowhere" }));
+    assert_eq!(nowhere["isError"], true, "{nowhere}");
+    assert!(nowhere.to_string().contains("nowhere"), "{nowhere}");
 }
