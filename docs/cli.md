@@ -123,6 +123,11 @@ prints, or adds to a settings file, the Claude Code hooks that report run
 state. `dream hook claude` is the hook itself. See
 [processes.md](processes.md).
 
+`dream agents providers` shows whether Claude Code and Codex are ready
+to run on your own login, and `dream agents ask [options] -- PROMPT` runs
+a prompt on one of them with Dreamer's tools. See
+[providers.md](providers.md).
+
 ## Jobs
 
 `dream jobs` lists jobs; `dream jobs start [--cwd DIR] [--name NAME] --

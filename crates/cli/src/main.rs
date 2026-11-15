@@ -36,6 +36,7 @@
 
 mod agents;
 mod app;
+mod ask;
 mod bridge;
 mod daemon;
 mod extprobe;
@@ -77,6 +78,8 @@ const USAGE: &str = "usage:
   dream extensions [--json] | dream extensions restart NAME
   dream mcp [--method M]... [--pane %N]... [--all-panes]
   dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
+  dream agents providers [--json]
+  dream agents ask [--provider claude|codex] [--pane %N]... [--all-panes] [--no-tools] [--timeout S] -- PROMPT
   dream jobs [--json] | start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...] | cancel ID | artifacts ID
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME
   dream hosts connect|list|call|disconnect ... (see `dream hosts`)
