@@ -76,6 +76,8 @@ pub struct State {
     pub sizing: Mutex<std::collections::HashMap<u32, Sizing>>,
     /// Pastes arriving in parts, by (pane, paste id), until the last part.
     pub pastes: Mutex<std::collections::HashMap<(u32, u64), Vec<u8>>>,
+    /// Interaction leases for automated input.
+    pub leases: crate::leases::Leases,
     /// Connection epochs: each new control connection gets the next one.
     pub epochs: std::sync::atomic::AtomicU64,
     /// Outbound connections to other hosts' daemons (the coordinator role).
@@ -560,6 +562,21 @@ impl api::Service for DaemonService {
             .ok_or_else(|| unavailable("endpoint not connected".into()))?;
         let mut actions = self.0.actions.lock().await;
         let pane = crate::grants::single_pane(&api::Request::ActionsSubmit(p.clone()));
+        {
+            use api::action::Kind;
+            let input = match p.action.as_ref().and_then(|a| a.kind.as_ref()) {
+                Some(Kind::SendInput(a)) => Some((a.pane, a.lease.as_deref())),
+                Some(Kind::SendKeys(a)) => Some((a.pane, a.lease.as_deref())),
+                _ => None,
+            };
+            if let Some((target, lease)) = input {
+                let lane = Arc::clone(self.0.input.lock().await.entry(target).or_default());
+                let _serial = lane.lock().await;
+                self.0
+                    .leases
+                    .admit(target, lease, crate::leases::caller(), true)?;
+            }
+        }
         let r = actions.submit(ep, p).await?;
         self.0.events.action(&r, pane);
         log::info(format!(
@@ -729,6 +746,10 @@ impl api::Service for DaemonService {
         use api::terminal_input::Event;
         let host = self.mirror_host(p.endpoint.as_deref()).await?;
         let pane = domain::TmuxPaneId(p.pane);
+        let typed = matches!(
+            p.event,
+            Some(Event::Key(_) | Event::Text(_) | Event::Paste(_))
+        );
         let event = match p.event {
             Some(Event::Key(k)) => mirror::InputEvent::Key {
                 key: k.key,
@@ -808,6 +829,11 @@ impl api::Service for DaemonService {
         }
         let lane = Arc::clone(self.0.input.lock().await.entry(p.pane).or_default());
         let _serial = lane.lock().await;
+        // Decided here, in the pane's lane: input queued behind a person's
+        // keystroke finds its lease revoked.
+        self.0
+            .leases
+            .admit(p.pane, p.lease.as_deref(), crate::leases::caller(), typed)?;
         let bytes = host
             .encode(
                 pane,
@@ -1288,6 +1314,38 @@ impl api::Service for DaemonService {
         p: api::ExtensionRef,
     ) -> Result<api::ExtensionStatus, RpcError> {
         self.0.extensions.restart(&p.name)
+    }
+
+    async fn leases_acquire(&self, p: api::LeaseAcquire) -> Result<api::Lease, RpcError> {
+        let caller = crate::leases::caller().ok_or_else(|| {
+            RpcError::new(code::INVALID_REQUEST, "a lease is held by a connection")
+        })?;
+        {
+            let guard = self.0.endpoint().await?;
+            let ep = guard
+                .as_ref()
+                .ok_or_else(|| unavailable("endpoint not connected".into()))?;
+            if !ep
+                .tracker
+                .inventory()
+                .panes
+                .contains_key(&domain::TmuxPaneId(p.pane))
+            {
+                return Err(RpcError::new(
+                    code::NOT_FOUND,
+                    format!("pane %{} does not exist", p.pane),
+                ));
+            }
+        }
+        self.0.leases.acquire(p.pane, caller.conn, p.ttl_ms)
+    }
+
+    async fn leases_release(&self, p: api::LeaseRef) -> Result<api::Empty, RpcError> {
+        let caller = crate::leases::caller().ok_or_else(|| {
+            RpcError::new(code::INVALID_REQUEST, "a lease is held by a connection")
+        })?;
+        self.0.leases.release(&p.id, caller.conn)?;
+        Ok(api::Empty::default())
     }
 
     async fn grants_narrow(&self, _: api::Grant) -> Result<api::Grant, RpcError> {

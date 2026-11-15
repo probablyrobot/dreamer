@@ -22,7 +22,7 @@ Register it with an MCP client as a stdio server whose command is
 | `read_pane` | A pane's screen and up to 500 lines of history | `terminal.read` |
 | `create_pane` | Split a pane, optionally running an exact program | `actions.submit` |
 | `start_job` | Run an exact program as a job in its own window | `jobs.start` |
-| `send_input` | Type text into a pane, exactly as given | `terminal.input` |
+| `send_input` | Type text into a pane, exactly as given, under the session's interaction lease on it. Once a person types into that pane, the session refuses to type there again | `leases.acquire`, `terminal.input` |
 | `move_panes` | Gather panes into one window with a given name, existing or new; one action record per move | `tmux.topology`, `actions.submit` |
 | `find_lines` | Which panes' recent lines contain some text, with the lines | `terminal.query` |
 | `check_action` | An action's record and outcome | `actions.get` |

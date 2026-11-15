@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 35;
+pub const PROTOCOL_MINOR: u32 = 36;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1238,6 +1238,10 @@ pub struct SendInput {
     #[prost(uint64, optional, tag = "3")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
+    /// Automation's interaction lease on this pane.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease: Option<String>,
 }
 
 /// Named keys (tmux key names such as Enter or C-c) to the pane.
@@ -1251,6 +1255,10 @@ pub struct SendKeys {
     #[prost(uint64, optional, tag = "3")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
+    /// Automation's interaction lease on this pane.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease: Option<String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -1770,6 +1778,10 @@ pub struct TerminalInput {
     #[prost(uint64, optional, tag = "4")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<u64>,
+    /// Automation's interaction lease on this pane (leases.acquire). Without one, typed input is a person's: it revokes any lease on the pane.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease: Option<String>,
     #[prost(oneof = "terminal_input::Event", tags = "10, 11, 12, 13, 14")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<terminal_input::Event>,
@@ -1803,6 +1815,39 @@ pub struct InputResult {
     /// tmux command batches used.
     #[prost(uint32, tag = "2")]
     pub batches: u32,
+}
+
+/// Ask to type into a pane as automation. One connection holds a pane's lease at a time; it expires unless used, and a person typing into the pane revokes it.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LeaseAcquire {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// Idle time before the lease expires: default 30000, at most 600000. Each use starts it again.
+    #[prost(uint32, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lease {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    /// Increases with every lease on the pane; a revoked generation never comes back.
+    #[prost(uint64, tag = "3")]
+    pub generation: u64,
+    #[prost(uint64, tag = "4")]
+    pub expires_unix_ms: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LeaseRef {
+    #[prost(string, tag = "1")]
+    pub id: String,
 }
 
 /// Connect the local daemon (the coordinator) to the daemon on another host through system ssh, running `dream bridge --stdio` there. SSH configuration, keys, and host verification stay the user's.
@@ -3230,6 +3275,8 @@ pub mod method {
     pub const TMUX_SIZE_WINDOW: &str = "tmux.size_window";
     pub const TMUX_WATCH: &str = "tmux.watch";
     pub const ACTIONS_SUBMIT: &str = "actions.submit";
+    pub const LEASES_ACQUIRE: &str = "leases.acquire";
+    pub const LEASES_RELEASE: &str = "leases.release";
     pub const ACTIONS_GET: &str = "actions.get";
     pub const ACTIONS_LIST: &str = "actions.list";
     pub const TERMINAL_READ: &str = "terminal.read";
@@ -3343,6 +3390,20 @@ pub const METHODS: &[MethodInfo] = &[
         result: "ActionRecord",
         mutation: true,
         doc: "Run a typed action and report its observed outcome.",
+    },
+    MethodInfo {
+        name: "leases.acquire",
+        params: "LeaseAcquire",
+        result: "Lease",
+        mutation: true,
+        doc: "Hold a pane's interaction lease, so automated input to it is accepted until a person types there.",
+    },
+    MethodInfo {
+        name: "leases.release",
+        params: "LeaseRef",
+        result: "Empty",
+        mutation: true,
+        doc: "",
     },
     MethodInfo {
         name: "actions.get",
@@ -3727,6 +3788,8 @@ pub enum Request {
     TmuxSizeWindow(SizeWindow),
     TmuxWatch(TopologyParams),
     ActionsSubmit(SubmitAction),
+    LeasesAcquire(LeaseAcquire),
+    LeasesRelease(LeaseRef),
     ActionsGet(ActionQuery),
     ActionsList(ActionListParams),
     TerminalRead(ReadParams),
@@ -3792,6 +3855,8 @@ impl Request {
             Self::TmuxSizeWindow(_) => "tmux.size_window",
             Self::TmuxWatch(_) => "tmux.watch",
             Self::ActionsSubmit(_) => "actions.submit",
+            Self::LeasesAcquire(_) => "leases.acquire",
+            Self::LeasesRelease(_) => "leases.release",
             Self::ActionsGet(_) => "actions.get",
             Self::ActionsList(_) => "actions.list",
             Self::TerminalRead(_) => "terminal.read",
@@ -3858,6 +3923,8 @@ impl Request {
             Self::TmuxSizeWindow(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
+            Self::LeasesAcquire(v) => ::prost::Message::encode_to_vec(v),
+            Self::LeasesRelease(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsGet(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsList(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalRead(v) => ::prost::Message::encode_to_vec(v),
@@ -3923,6 +3990,8 @@ impl Request {
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(::prost::Message::decode(bytes)?)),
             "tmux.watch" => Ok(Self::TmuxWatch(::prost::Message::decode(bytes)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
+            "leases.acquire" => Ok(Self::LeasesAcquire(::prost::Message::decode(bytes)?)),
+            "leases.release" => Ok(Self::LeasesRelease(::prost::Message::decode(bytes)?)),
             "actions.get" => Ok(Self::ActionsGet(::prost::Message::decode(bytes)?)),
             "actions.list" => Ok(Self::ActionsList(::prost::Message::decode(bytes)?)),
             "terminal.read" => Ok(Self::TerminalRead(::prost::Message::decode(bytes)?)),
@@ -3993,6 +4062,8 @@ impl Request {
             Self::TmuxSizeWindow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::LeasesAcquire(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::LeasesRelease(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalRead(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -4058,6 +4129,8 @@ impl Request {
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(serde_json::from_value(value)?)),
             "tmux.watch" => Ok(Self::TmuxWatch(serde_json::from_value(value)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
+            "leases.acquire" => Ok(Self::LeasesAcquire(serde_json::from_value(value)?)),
+            "leases.release" => Ok(Self::LeasesRelease(serde_json::from_value(value)?)),
             "actions.get" => Ok(Self::ActionsGet(serde_json::from_value(value)?)),
             "actions.list" => Ok(Self::ActionsList(serde_json::from_value(value)?)),
             "terminal.read" => Ok(Self::TerminalRead(serde_json::from_value(value)?)),
@@ -4126,6 +4199,8 @@ pub enum Response {
     TmuxSizeWindow(SizeResult),
     TmuxWatch(TopologyUpdate),
     ActionsSubmit(ActionRecord),
+    LeasesAcquire(Lease),
+    LeasesRelease(Empty),
     ActionsGet(ActionRecord),
     ActionsList(ActionList),
     TerminalRead(TerminalText),
@@ -4191,6 +4266,8 @@ impl Response {
             Self::TmuxSizeWindow(_) => "tmux.size_window",
             Self::TmuxWatch(_) => "tmux.watch",
             Self::ActionsSubmit(_) => "actions.submit",
+            Self::LeasesAcquire(_) => "leases.acquire",
+            Self::LeasesRelease(_) => "leases.release",
             Self::ActionsGet(_) => "actions.get",
             Self::ActionsList(_) => "actions.list",
             Self::TerminalRead(_) => "terminal.read",
@@ -4257,6 +4334,8 @@ impl Response {
             Self::TmuxSizeWindow(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
+            Self::LeasesAcquire(v) => ::prost::Message::encode_to_vec(v),
+            Self::LeasesRelease(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsGet(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsList(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalRead(v) => ::prost::Message::encode_to_vec(v),
@@ -4322,6 +4401,8 @@ impl Response {
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(::prost::Message::decode(bytes)?)),
             "tmux.watch" => Ok(Self::TmuxWatch(::prost::Message::decode(bytes)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
+            "leases.acquire" => Ok(Self::LeasesAcquire(::prost::Message::decode(bytes)?)),
+            "leases.release" => Ok(Self::LeasesRelease(::prost::Message::decode(bytes)?)),
             "actions.get" => Ok(Self::ActionsGet(::prost::Message::decode(bytes)?)),
             "actions.list" => Ok(Self::ActionsList(::prost::Message::decode(bytes)?)),
             "terminal.read" => Ok(Self::TerminalRead(::prost::Message::decode(bytes)?)),
@@ -4392,6 +4473,8 @@ impl Response {
             Self::TmuxSizeWindow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::LeasesAcquire(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::LeasesRelease(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalRead(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -4457,6 +4540,8 @@ impl Response {
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(serde_json::from_value(value)?)),
             "tmux.watch" => Ok(Self::TmuxWatch(serde_json::from_value(value)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
+            "leases.acquire" => Ok(Self::LeasesAcquire(serde_json::from_value(value)?)),
+            "leases.release" => Ok(Self::LeasesRelease(serde_json::from_value(value)?)),
             "actions.get" => Ok(Self::ActionsGet(serde_json::from_value(value)?)),
             "actions.list" => Ok(Self::ActionsList(serde_json::from_value(value)?)),
             "terminal.read" => Ok(Self::TerminalRead(serde_json::from_value(value)?)),
@@ -4553,6 +4638,15 @@ pub trait Service: Sync {
         &self,
         params: SubmitAction,
     ) -> impl ::core::future::Future<Output = Result<ActionRecord, RpcError>> + Send;
+    /// Hold a pane's interaction lease, so automated input to it is accepted until a person types there.
+    fn leases_acquire(
+        &self,
+        params: LeaseAcquire,
+    ) -> impl ::core::future::Future<Output = Result<Lease, RpcError>> + Send;
+    fn leases_release(
+        &self,
+        params: LeaseRef,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
     fn actions_get(
         &self,
         params: ActionQuery,
@@ -4826,6 +4920,8 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .map(Response::TmuxSizeWindow),
         Request::TmuxWatch(p) => service.tmux_watch(p).await.map(Response::TmuxWatch),
         Request::ActionsSubmit(p) => service.actions_submit(p).await.map(Response::ActionsSubmit),
+        Request::LeasesAcquire(p) => service.leases_acquire(p).await.map(Response::LeasesAcquire),
+        Request::LeasesRelease(p) => service.leases_release(p).await.map(Response::LeasesRelease),
         Request::ActionsGet(p) => service.actions_get(p).await.map(Response::ActionsGet),
         Request::ActionsList(p) => service.actions_list(p).await.map(Response::ActionsList),
         Request::TerminalRead(p) => service.terminal_read(p).await.map(Response::TerminalRead),

@@ -166,3 +166,26 @@ The daemon reassembles it, at most 64 MiB, and encodes it once.
 With `generation` set, input is refused (`-32002`) if the pane's process
 was replaced since the client read that generation. Typed text can never
 reach a respawned program by accident.
+
+## Automation and interaction leases
+
+Automation that types into a pane (an agent, a script acting for one)
+holds the pane's interaction lease and sends every input with it:
+- `leases.acquire {pane, ttl_ms}` returns a lease (`id`, `generation`,
+  expiry). One connection holds a pane's lease at a time. It expires after
+  `ttl_ms` without use (default 30 s, at most 10 min), and each use starts
+  that time again. It ends with its connection, or with `leases.release`.
+- `terminal.input` and the `send_input` and `send_keys` actions take the
+  lease in `lease`. It is checked in the pane's input lane, right before
+  sending, so input queued behind a person's keystroke is refused, not sent
+  after it.
+- Typed input without a lease from the user's own clients is a person
+  typing: it revokes the pane's lease. The lease's later input fails
+  (`-32002`, "a person typed into the pane"), and a new lease has a new
+  generation. Focus and mouse events do not count as typing.
+- While a pane is leased, input without the lease from an app, extension,
+  or narrowed connection is refused.
+
+Bytes already sent cannot be taken back, and nothing is replayed. A
+connection that may send input to a pane (`terminal.input` or
+`actions.submit` in its grant) may lease it.

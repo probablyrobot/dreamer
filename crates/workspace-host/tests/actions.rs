@@ -255,6 +255,7 @@ async fn every_action_reports_what_tmux_shows_afterwards() {
                 pane: second,
                 data: b"bytes-\x01-ok\n".to_vec(),
                 generation: None,
+                lease: None,
             })),
         )
         .await
@@ -280,6 +281,7 @@ async fn every_action_reports_what_tmux_shows_afterwards() {
                     "Enter".into(),
                 ],
                 generation: None,
+                lease: None,
             })),
         )
         .await
@@ -398,6 +400,7 @@ async fn refused_actions_send_nothing() {
                 pane: first,
                 keys: vec!["two words".into()],
                 generation: None,
+                lease: None,
             }),
             "key names",
         ),
@@ -438,6 +441,7 @@ async fn input_for_a_replaced_process_is_refused() {
                 pane,
                 data: b"echo first\n".to_vec(),
                 generation: Some(before),
+                lease: None,
             })),
         )
         .await
@@ -454,6 +458,7 @@ async fn input_for_a_replaced_process_is_refused() {
                 pane,
                 data: b"echo must-not-run\n".to_vec(),
                 generation: Some(before),
+                lease: None,
             })),
         )
         .await
