@@ -128,3 +128,31 @@ again with the new theme.
 
 Scrollback length follows tmux's own `history-limit`, which the mirrors
 copy.
+
+## Agent providers
+
+The Claude Code and Codex CLIs need no settings. The API adapters are
+used only when configured here, and only when chosen: by name
+(`--provider claude-api`), or as `default`. They are never a fallback.
+See [providers.md](providers.md).
+
+```yaml
+providers:
+  default: claude              # claude, codex, claude-api, or openai-api; default: the first ready CLI
+  claude_api:                  # the Claude Messages API (metered)
+    model: <model id>          # required: there is no built-in model
+    key: env                   # env (ANTHROPIC_API_KEY), env:NAME, or keychain
+    max_tokens: 4096           # 1 to 200000
+  openai_api:                  # the OpenAI Chat Completions API (metered)
+    model: <model id>
+    key: keychain              # env (OPENAI_API_KEY), env:NAME, or keychain
+    base_url: https://api.openai.com/v1   # https, or http on this machine
+```
+
+A key never goes in this file: `key` only says where to read it. With
+`keychain`, the key is read from the OS keychain under service `dreamer`
+and account `claude-api` or `openai-api`. Store it there yourself, for
+example `security add-generic-password -s dreamer -a claude-api -w` on
+macOS, or `secret-tool store --label dreamer service dreamer account
+claude-api` on Linux.
+

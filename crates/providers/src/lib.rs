@@ -16,14 +16,75 @@
 //!   cancelled (its whole process group), and has a [`Capabilities`]
 //!   record. Callers never branch on the provider.
 
+mod api;
 mod claude;
 mod codex;
+mod mcp;
 mod run;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub use api::{Api, ApiConfig, KeySource, start_api};
 pub use run::{Run, start, start_program};
+
+/// Any provider: a CLI on the user's login, or an API adapter that the
+/// user configured. Callers start either the same way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Provider {
+    Cli(Kind),
+    Api(ApiConfig),
+}
+
+impl Provider {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Provider::Cli(k) => k.name(),
+            Provider::Api(c) => c.api.name(),
+        }
+    }
+
+    /// Start `req` on this provider. Must be called inside a Tokio runtime.
+    pub fn start(&self, req: &Request) -> Result<Run, Failure> {
+        match self {
+            Provider::Cli(k) => start(*k, req),
+            Provider::Api(c) => Ok(start_api(c, req)),
+        }
+    }
+
+    pub fn capabilities(&self) -> Capabilities {
+        match self {
+            Provider::Cli(k) => k.capabilities(),
+            Provider::Api(_) => Capabilities {
+                streams_text: true,
+                tools: true,
+                cancel: true,
+                usage: true,
+                cost: false,
+            },
+        }
+    }
+}
+
+/// Whether a configured API adapter can run: its key is there (it is read,
+/// never shown) and `curl` is installed.
+pub async fn probe_api(cfg: &ApiConfig) -> State {
+    if locate_in_path("curl").is_none() {
+        return State::Unknown("curl is not installed".into());
+    }
+    match api::key(&cfg.key).await {
+        Ok(_) => State::Ready,
+        Err(why) => State::Unknown(format!("no API key: {why}")),
+    }
+}
+
+fn locate_in_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    })
+}
 
 /// Which CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -229,11 +290,7 @@ pub fn locate(kind: Kind) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os(var).filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(p)).filter(|p| p.is_file());
     }
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|d| d.join(name))
-            .find(|p| p.is_file())
-    })
+    locate_in_path(name)
 }
 
 /// The first number of a version like `2.1.325 (Claude Code)` or

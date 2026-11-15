@@ -153,6 +153,7 @@ Runtime dependencies on the user's machine, not bundled. See
 | --- | --- | --- |
 | Claude Code (`claude`) | 2.1.325 | Major version 2 |
 | Codex (`codex`) | Not run yet | Documented `exec --json` events |
+| `curl` (API adapters only) | 8.x (macOS 8.7.1 here) | `--config -`, `--no-buffer`, `--write-out` |
 
 ## Pending pins
 
