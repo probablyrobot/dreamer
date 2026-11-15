@@ -36,7 +36,33 @@ pub struct Scheme {
     /// Black, red, green, yellow, blue, magenta, cyan, white; then the
     /// bright eight.
     pub ansi: [Rgb; 16],
+    /// Chrome colors the file sets itself, by token (see [`CHROME`]); the
+    /// rest are derived from the colors above.
+    pub chrome: &'static [(&'static str, Rgb)],
 }
+
+/// The desktop chrome's color tokens a scheme file may set: the window
+/// behind everything, tab strip and sidebar, floating layers, hairlines,
+/// selected rows, three levels of text, the accent, the focused pane's
+/// edge, and danger and warning with their surfaces and text.
+pub const CHROME: [&str; 16] = [
+    "background",
+    "surface",
+    "raised",
+    "divider",
+    "selected",
+    "text",
+    "muted",
+    "faint",
+    "accent",
+    "focus",
+    "danger",
+    "danger_surface",
+    "danger_text",
+    "warning",
+    "warning_surface",
+    "warning_text",
+];
 
 pub const fn rgb(hex: u32) -> Rgb {
     Rgb {
@@ -132,8 +158,10 @@ const ANSI_NAMES: [&str; 8] = [
 ];
 
 /// Read a scheme file called `name` (its file name without the
-/// extension): alacritty-theme TOML (`[colors.primary]` and the rest), or
-/// a Ghostty theme (`background = …`, `palette = 0=#…`). Only the colors a
+/// extension): alacritty-theme TOML (`[colors.primary]` and the rest), a
+/// Ghostty theme (`background = …`, `palette = 0=#…`), or a kitty theme
+/// (`background #…`, `color0 #…`). Any of them may also set chrome colors
+/// ([`CHROME`]). Only the colors a
 /// terminal's defaults need are read; other keys are ignored. Errors give
 /// the line.
 pub fn parse(name: &str, text: &str) -> Result<Scheme, String> {
@@ -142,6 +170,7 @@ pub fn parse(name: &str, text: &str) -> Result<Scheme, String> {
     let mut cursor = None;
     let mut selection = None;
     let mut ansi: [Option<Rgb>; 16] = [None; 16];
+    let mut chrome: Vec<(&'static str, Rgb)> = Vec::new();
     let mut section = String::new();
     for (n, raw) in text.lines().enumerate() {
         let at = n + 1;
@@ -153,8 +182,13 @@ pub fn parse(name: &str, text: &str) -> Result<Scheme, String> {
             section = line.trim_matches(['[', ']']).trim().to_owned();
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(format!("line {at}: not `key = value`"));
+        // kitty writes `key value`; the others `key = value`.
+        let (key, value) = match line.split_once('=') {
+            Some((k, v)) if !k.trim().contains(char::is_whitespace) => (k, v),
+            _ if section.is_empty() => line
+                .split_once(char::is_whitespace)
+                .ok_or_else(|| format!("line {at}: not `key = value` or `key value`"))?,
+            _ => return Err(format!("line {at}: not `key = value`")),
         };
         let key = key.trim().trim_matches(['\'', '"']);
         // A comment after the value: ` #` past its first character (the
@@ -166,7 +200,36 @@ pub fn parse(name: &str, text: &str) -> Result<Scheme, String> {
         };
         let need =
             |v: &str| color(v).ok_or_else(|| format!("line {at}: `{}` is not a color", v.trim()));
+        // Chrome colors: `[dreamer.chrome]` in TOML, `dreamer-chrome-TOKEN`
+        // (Ghostty) or `dreamer_chrome_TOKEN` (kitty) elsewhere.
+        let token = match section.as_str() {
+            "dreamer.chrome" => Some(key),
+            "" => key
+                .strip_prefix("dreamer-chrome-")
+                .or_else(|| key.strip_prefix("dreamer_chrome_")),
+            _ => None,
+        };
+        if let Some(token) = token {
+            let token = token.replace('-', "_");
+            let Some(known) = CHROME.iter().find(|t| **t == token) else {
+                return Err(format!(
+                    "line {at}: no chrome color `{token}`; there are: {}",
+                    CHROME.join(", ")
+                ));
+            };
+            chrome.push((*known, need(value)?));
+            continue;
+        }
         match (section.as_str(), key) {
+            // kitty
+            ("", k) if k.starts_with("color") && k[5..].parse::<usize>().is_ok() => {
+                let i: usize = k[5..].parse().unwrap_or(99);
+                if i < 16 {
+                    ansi[i] = Some(need(value)?);
+                }
+            }
+            ("", "cursor") => cursor = color(value),
+            ("", "selection_background") => selection = color(value),
             // Ghostty
             ("", "palette") => {
                 let (i, c) = value
@@ -223,6 +286,7 @@ pub fn parse(name: &str, text: &str) -> Result<Scheme, String> {
         cursor,
         selection,
         ansi: colors,
+        chrome: Box::leak(chrome.into_boxed_slice()),
     })
 }
 
@@ -363,5 +427,40 @@ mod tests {
         assert!(e.contains("foreground"), "{e}");
         let e = parse("x", "foreground = nope\n").expect_err("bad color");
         assert!(e.contains("line 1"), "{e}");
+    }
+
+    #[test]
+    fn a_kitty_theme_reads_and_any_format_may_set_chrome_colors() {
+        let mut k = String::from("# kitty\nbackground #202020\nforeground   #e0e0e0\n");
+        for i in 0..16 {
+            k.push_str(&format!("color{i} #{:02x}0000\n", i * 8));
+        }
+        k.push_str("dreamer_chrome_accent #ff8800\n");
+        let s = parse("kitty one", &k).expect("kitty");
+        assert_eq!(s.background, rgb(0x202020));
+        assert_eq!(s.ansi[2], rgb(0x100000));
+        assert_eq!(s.chrome, &[("accent", rgb(0xff8800))]);
+
+        let toml = "[colors.primary]\nbackground = '#000000'\nforeground = '#ffffff'\n\
+                    [dreamer.chrome]\nsurface = '#111111'\nwarning_text = '#eeeeee'\n";
+        let mut toml = toml.to_owned();
+        for (section, base) in [("normal", 0), ("bright", 8)] {
+            toml.push_str(&format!("[colors.{section}]\n"));
+            for (i, n) in ANSI_NAMES.iter().enumerate() {
+                toml.push_str(&format!("{n} = '#0000{:02x}'\n", base + i));
+            }
+        }
+        let s = parse("t", &toml).expect("toml");
+        assert_eq!(
+            s.chrome,
+            &[("surface", rgb(0x111111)), ("warning_text", rgb(0xeeeeee))]
+        );
+        // A chrome token that does not exist is an error, not ignored.
+        let e = parse(
+            "t",
+            &format!("{toml}[dreamer.chrome]\naccnet = '#000000'\n"),
+        )
+        .expect_err("typo");
+        assert!(e.contains("accnet"), "{e}");
     }
 }

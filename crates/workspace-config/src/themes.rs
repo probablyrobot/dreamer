@@ -1,9 +1,9 @@
 //! Color schemes from files: the built-in ones (compiled into the program,
 //! see `terminal_core::schemes`) and the user's own in
 //! `<config dir>/themes/`. A user file is found by its name without the
-//! extension (`.toml`, `.conf`, or none), in either format
-//! `terminal_core::schemes::parse` reads: alacritty-theme TOML or a
-//! Ghostty theme. A user theme with a built-in's name replaces it.
+//! extension (`.toml`, `.conf`, or none), in any format
+//! `terminal_core::schemes::parse` reads: alacritty-theme TOML, a Ghostty
+//! theme, or a kitty theme. A user theme with a built-in's name replaces it.
 
 use std::path::{Path, PathBuf};
 

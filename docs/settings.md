@@ -114,11 +114,14 @@ cursor a program gets until it sets its own (and after it resets it with
   - **Built in:** the scheme files that ship with Dreamer. They are
     compiled into the program, so they are always there.
   - **Yours:** files in `<config dir>/themes/` (see `dream config-dir`),
-    found by their name without the extension. Two formats are read:
+    found by their name without the extension. Three formats are read,
+    so the large published collections work unchanged:
     - alacritty-theme TOML (`.toml`), the format of the built-in files,
       and of the alacritty-theme collection;
-    - Ghostty theme files (no extension, or `.conf`), as the large
-      iTerm2-Color-Schemes collection publishes them.
+    - Ghostty theme files (no extension, or `.conf`), as the
+      iTerm2-Color-Schemes collection publishes them;
+    - kitty theme files (`.conf`), as the kitty-themes collection
+      publishes them.
 
     Drop one in and name it. A file of yours with a built-in's name
     replaces the built-in. A file that does not read (missing colors, a
@@ -126,6 +129,22 @@ cursor a program gets until it sets its own (and after it resets it with
   - Only the colors a terminal's defaults need are read: background,
     foreground, the 16 ANSI colors, and optionally the cursor and
     selection colors. Everything else in a file is ignored.
+  - **Chrome colors.** A theme file may also style the window around the
+    terminals. Anything it does not set is derived from its colors
+    ([design.md](design.md)). The tokens are `background`, `surface`,
+    `raised`, `divider`, `selected`, `text`, `muted`, `faint`, `accent`,
+    `focus`, `danger`, `danger_surface`, `danger_text`, `warning`,
+    `warning_surface`, and `warning_text`. An unknown token is an error.
+
+    ```toml
+    [dreamer.chrome]            # alacritty-theme TOML
+    accent = '#ff8800'
+    ```
+
+    ```
+    dreamer-chrome-accent = #ff8800   # Ghostty
+    dreamer_chrome_accent #ff8800     # kitty
+    ```
   - Without one, the theme follows `appearance`: `dreamer-dark` or
     `dreamer-light`, Dreamer's own, designed with their chrome.
   - With one, the chrome is drawn from that scheme's own colors.

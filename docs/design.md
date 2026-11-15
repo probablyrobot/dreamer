@@ -20,6 +20,9 @@ scheme and one type family.
   window, surfaces a few steps toward its foreground, its blue as the
   accent (a scheme's cursor color is often too pale for an accent line),
   and its red and yellow for danger and warning.
+- **A scheme's own chrome.** A theme file may set any chrome token itself
+  ([settings.md](settings.md)). What it sets wins over what is derived;
+  what it leaves out is derived as above.
 - **Always a visible cursor.** A scheme whose cursor barely shows on its
   background (under 3:1) has its cursor drawn in the text color. This is a
   view choice; the terminal's colors are unchanged.
