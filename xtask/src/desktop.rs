@@ -54,7 +54,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     for step in [
         vec!["xtask", "deps", "prepare", "--locked"],
-        vec!["build", "--locked", "--package", "dreamer-app"],
+        vec![
+            "build",
+            "--locked",
+            "--package",
+            "dreamer-app",
+            "--package",
+            "dreamer-server",
+            "--package",
+            "dreamer-termapp",
+        ],
     ] {
         let status = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
             .args(&step)
@@ -226,6 +235,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             && stdout.contains(&format!("smoke: backend {expected}"))
             && stdout.contains("smoke: dragging a divider resized pane")
             && stdout.contains("smoke: a filter's mark was drawn")
+            && stdout.contains("smoke: one app package showed the same rows")
             && stdout.contains("smoke: the saved arrangement came back");
         // Exit 5: the window never got new frames, so the click, keyboard,
         // sizing, and drag checks could not run. That is missing evidence,

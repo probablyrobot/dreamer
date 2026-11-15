@@ -8,7 +8,8 @@ desktop and through any plain `tmux attach`.
 The app's model (the manifest, its data and selection, a form's values,
 commands, the Luau module, and reloading) is the headless `app-model`
 crate. `dreamer-termapp` only turns keys into input for it and draws it
-with Ratatui, so other presentations can draw the same model.
+with Ratatui. The desktop draws the same model as a native panel; see
+[desktop.md](desktop.md#app-panels).
 
 ```sh
 dreamer-termapp app.toml            # run it in this terminal

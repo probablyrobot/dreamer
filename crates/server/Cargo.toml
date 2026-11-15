@@ -32,6 +32,7 @@ workspace-host = { path = "../workspace-host" }
 [dev-dependencies]
 terminal-ghostty = { path = "../terminal-ghostty" }
 replica = { path = "../replica" }
+app-model = { path = "../app-model" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]

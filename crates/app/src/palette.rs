@@ -26,9 +26,11 @@ pub(crate) enum Command {
     EditHost,
     RemoveHost,
     ToggleDecorations,
+    OpenPanel,
+    ClosePanel,
 }
 
-pub(crate) const ALL: [Command; 21] = [
+pub(crate) const ALL: [Command; 23] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -50,6 +52,8 @@ pub(crate) const ALL: [Command; 21] = [
     Command::EditHost,
     Command::RemoveHost,
     Command::ToggleDecorations,
+    Command::OpenPanel,
+    Command::ClosePanel,
 ];
 
 impl Command {
@@ -76,6 +80,8 @@ impl Command {
             Command::VerifyHost => "Verify host in a terminal (host key, passphrase)…",
             Command::DisconnectHost => "Disconnect host… (its programs keep running)",
             Command::ToggleDecorations => "Show or hide decorations in this pane (filter marks)",
+            Command::OpenPanel => "Open an app package as a panel… (its manifest's path)",
+            Command::ClosePanel => "Close the app panel",
         }
     }
 
@@ -96,6 +102,7 @@ impl Command {
                 | Command::DisconnectHost
                 | Command::EditHost
                 | Command::RemoveHost
+                | Command::OpenPanel
         )
     }
 }
