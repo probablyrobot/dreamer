@@ -31,6 +31,8 @@ const TITLE_BUTTONS: f32 = if cfg!(target_os = "macos") { 78.0 } else { 0.0 };
 /// Space between the window's edges and the panes, so text never touches
 /// the window frame.
 const PANE_INSET: f32 = 6.0;
+/// Command palette rows shown at once; the list scrolls with the selection.
+const PALETTE_ROWS: usize = 12;
 
 /// A visible pane: its view and the feed that keeps it current.
 struct PaneView {
@@ -1683,7 +1685,8 @@ impl Render for Workspace {
                         .top(m.height * top as f32)
                         .w(m.width * cols as f32)
                         .h(m.height * rows as f32)
-                        .when(Some(id) == focused && !zoomed, |d| {
+                        // Which pane has focus matters only among several.
+                        .when(Some(id) == focused && !zoomed && zoomable, |d| {
                             d.border_1().border_color(c(t.focus))
                         })
                         .group("pane")
@@ -1775,9 +1778,10 @@ impl Render for Workspace {
         });
         let palette = self.palette.clone().map(|p| {
             use crate::palette::Stage;
+            let choosing = matches!(p.stage, Stage::Choose);
             let (prompt, rows): (String, Vec<(String, bool)>) = match &p.stage {
                 Stage::Choose => (
-                    format!("> {}", p.filter),
+                    p.filter.clone(),
                     p.shown()
                         .iter()
                         .enumerate()
@@ -1821,20 +1825,62 @@ impl Render for Workspace {
                         .w(px(460.0))
                         .p_2()
                         .rounded_md()
+                        .shadow_lg()
                         .bg(c(t.raised))
                         .border_1()
                         .border_color(c(t.focus))
                         .text_size(px(13.0))
                         .text_color(c(t.text))
-                        .child(div().pb_1().child(prompt))
-                        .children(rows.into_iter().map(|(label, selected)| {
+                        .child(if choosing {
+                            // The query line: what was typed, or a hint.
                             div()
                                 .px_2()
-                                .rounded_sm()
-                                .when(selected, |d| d.bg(c(t.selected)))
-                                .when(label.starts_with("Kill"), |d| d.text_color(c(t.danger)))
-                                .child(label)
-                        })),
+                                .pb_2()
+                                .mb_1()
+                                .border_b_1()
+                                .border_color(c(t.divider))
+                                .flex()
+                                .gap_2()
+                                .child(div().text_color(c(t.accent)).child("›"))
+                                .child(if prompt.is_empty() {
+                                    div().text_color(c(t.faint)).child("Type a command")
+                                } else {
+                                    div().child(prompt)
+                                })
+                        } else {
+                            div().px_2().pb_1().child(prompt)
+                        })
+                        .children({
+                            // A window of rows that keeps the selected one in
+                            // view, so a long list never runs off the window.
+                            let total = rows.len();
+                            let at = rows.iter().position(|(_, s)| *s).unwrap_or(0);
+                            let start = (at + 1).saturating_sub(PALETTE_ROWS);
+                            let below = total.saturating_sub(start + PALETTE_ROWS);
+                            rows.into_iter()
+                                .skip(start)
+                                .take(PALETTE_ROWS)
+                                .map(|(label, selected)| {
+                                    div()
+                                        .px_2()
+                                        .py(px(2.0))
+                                        .rounded_sm()
+                                        .when(selected, |d| d.bg(c(t.selected)))
+                                        .when(label.starts_with("Kill"), |d| {
+                                            d.text_color(c(t.danger))
+                                        })
+                                        .child(label)
+                                })
+                                .chain((below > 0).then(|| {
+                                    div()
+                                        .px_2()
+                                        .pt_1()
+                                        .text_size(px(11.0))
+                                        .text_color(c(t.faint))
+                                        .child(format!("{below} more"))
+                                }))
+                                .collect::<Vec<_>>()
+                        }),
                 )
         });
         let notice = if unsupported {

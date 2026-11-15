@@ -178,7 +178,9 @@ pub(crate) fn for_scheme(scheme: &Scheme) -> Theme {
         (step(0.03), step(0.07), step(0.08), step(0.13))
     };
     let grounds = [bg, surface, raised, selected];
-    let accent = scheme.cursor.map(hex).unwrap_or_else(|| ansi(4));
+    // The scheme's blue: a cursor color is often pale or close to the
+    // background, which reads poorly as an accent line.
+    let accent = if light { ansi(4) } else { ansi(12) };
     let danger = ansi(1);
     let warning = ansi(3);
     Theme {

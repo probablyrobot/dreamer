@@ -341,6 +341,34 @@ pub fn last_paint_stats() -> PaintStats {
     LAST_STATS.with(std::cell::Cell::get)
 }
 
+/// WCAG 2 contrast ratio between two colors.
+fn contrast(a: Rgb, b: Rgb) -> f32 {
+    let lum = |c: Rgb| {
+        let ch = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.039_28 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b)
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// The cursor's color: the terminal's, unless it barely shows on the
+/// background (some schemes pick a cursor close to their background); then
+/// the text color, so the cursor is always findable. A view choice only:
+/// the terminal's colors are unchanged.
+fn cursor_color(colors: &Colors) -> Rgb {
+    match colors.cursor {
+        Some(c) if contrast(c, colors.background) >= 3.0 => c,
+        _ => colors.foreground,
+    }
+}
+
 fn hsla(c: Rgb) -> Hsla {
     gpui::rgb((u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b)).into()
 }
@@ -672,7 +700,7 @@ fn paint_frame(
             origin.x + m.width * f32::from(c.x),
             origin.y + m.height * f32::from(c.y),
         );
-        let mut color = hsla(colors.cursor.unwrap_or(colors.foreground));
+        let mut color = hsla(cursor_color(colors));
         stats.cursor = Some(match c.shape {
             CursorShape::Block => "block",
             CursorShape::Bar => "bar",
@@ -822,5 +850,39 @@ mod tests {
         }
         // The case this guards against does occur with these sizes.
         assert!(exact_differs > 0, "no rounding difference to guard against");
+    }
+
+    #[test]
+    fn a_faint_cursor_is_drawn_in_the_text_color() {
+        let mut c = Colors {
+            foreground: Rgb {
+                r: 0x57,
+                g: 0x52,
+                b: 0x79,
+            },
+            background: Rgb {
+                r: 0xfa,
+                g: 0xf4,
+                b: 0xed,
+            },
+            cursor: Some(Rgb {
+                r: 0xf2,
+                g: 0xe9,
+                b: 0xe1,
+            }),
+            ..Colors::default()
+        };
+        assert_eq!(
+            cursor_color(&c),
+            c.foreground,
+            "too close to the background"
+        );
+        let own = Rgb {
+            r: 0x28,
+            g: 0x69,
+            b: 0x83,
+        };
+        c.cursor = Some(own);
+        assert_eq!(cursor_color(&c), own, "the scheme's own");
     }
 }
