@@ -43,6 +43,22 @@ struct ReadPane {
     pane: u32,
     /// How many history lines above the screen (default 50, at most 500).
     lines: Option<u32>,
+    /// A connected host's name (see list_hosts); without one, this host.
+    host: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct OnHost {
+    /// A connected host's name (see list_hosts); without one, this host.
+    host: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct JobOnHost {
+    /// The job id start_job returned.
+    id: String,
+    /// The host the job was started on; without one, this host.
+    host: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -65,6 +81,9 @@ struct StartJob {
     cwd: Option<String>,
     /// The tmux window name.
     name: Option<String>,
+    /// A connected host's name (see list_hosts) to run it on; without one,
+    /// this host.
+    host: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -108,6 +127,10 @@ struct FindLines {
     panes: Vec<u32>,
     /// How many of each pane's newest lines to search (default 200).
     lines: Option<u32>,
+    /// Connected hosts to search too (all their panes); "*" means every
+    /// live host. Each match names its host.
+    #[serde(default)]
+    hosts: Vec<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -151,6 +174,42 @@ impl Dreamer {
         }
     }
 
+    /// One typed call, here or (with `host`) forwarded to that connected
+    /// host's daemon, under the same grant checks: a forwarded call is a
+    /// `hosts.call`, which this connection's grant must allow.
+    async fn call_on(
+        &self,
+        host: Option<String>,
+        request: api::Request,
+    ) -> Result<CallToolResult, ErrorData> {
+        let Some(name) = host.filter(|h| !h.is_empty()) else {
+            return self.call(request).await;
+        };
+        let method = request.method();
+        let reply = self
+            .client
+            .call(api::Request::HostsCall(api::HostCall {
+                name: name.clone(),
+                method: method.to_owned(),
+                payload: request.encode(),
+            }))
+            .await;
+        Ok(match reply {
+            Ok(api::Response::HostsCall(r)) => match api::Response::decode(method, &r.payload) {
+                Ok(v) => {
+                    let mut j = v.to_json();
+                    if let Some(o) = j.as_object_mut() {
+                        o.insert("host".into(), serde_json::Value::String(name));
+                    }
+                    text(j)
+                }
+                Err(e) => failed(format!("{name}: {method}: undecodable reply: {e}")),
+            },
+            Ok(_) => failed("hosts.call: unexpected answer".into()),
+            Err(e) => failed(format!("{name}: {method}: {e}")),
+        })
+    }
+
     /// One typed call; its result as JSON, or a tool error saying why.
     async fn call(&self, request: api::Request) -> Result<CallToolResult, ErrorData> {
         Ok(match self.client.call(request).await {
@@ -162,9 +221,36 @@ impl Dreamer {
 
 #[tool_router(server_handler)]
 impl Dreamer {
-    #[tool(description = "List the tmux sessions, windows, and panes on this host.")]
-    async fn list_panes(&self, _: Parameters<Nothing>) -> Result<CallToolResult, ErrorData> {
-        self.call(api::Request::TmuxTopology(api::TopologyParams::default()))
+    #[tool(
+        description = "List the tmux sessions, windows, and panes on this host, or on a connected host."
+    )]
+    async fn list_panes(
+        &self,
+        Parameters(p): Parameters<OnHost>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call_on(
+            p.host,
+            api::Request::TmuxTopology(api::TopologyParams::default()),
+        )
+        .await
+    }
+
+    #[tool(
+        description = "List the remote hosts Dreamer knows: each one's name, whether it is connected (live), and why not. Tools that take `host` act on a live one."
+    )]
+    async fn list_hosts(&self, _: Parameters<Nothing>) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::HostsList(api::Empty::default()))
+            .await
+    }
+
+    #[tool(
+        description = "A job's record: its state, exit status, and window. Pass the host it was started on."
+    )]
+    async fn check_job(
+        &self,
+        Parameters(p): Parameters<JobOnHost>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call_on(p.host, api::Request::JobsGet(api::JobRef { id: p.id }))
             .await
     }
 
@@ -187,11 +273,14 @@ impl Dreamer {
         &self,
         Parameters(p): Parameters<ReadPane>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.call(api::Request::TerminalRead(api::ReadParams {
-            pane: p.pane,
-            history: Some(p.lines.unwrap_or(50).min(MAX_LINES)),
-            endpoint: None,
-        }))
+        self.call_on(
+            p.host,
+            api::Request::TerminalRead(api::ReadParams {
+                pane: p.pane,
+                history: Some(p.lines.unwrap_or(50).min(MAX_LINES)),
+                endpoint: None,
+            }),
+        )
         .await
     }
 
@@ -227,18 +316,21 @@ impl Dreamer {
     }
 
     #[tool(
-        description = "Start an exact program as a job in its own tmux window; it keeps running if the daemon stops. Returns the job record."
+        description = "Start an exact program as a job in its own tmux window, on this host or a connected one; it keeps running if the daemon stops. Returns the job record; follow it with check_job on the same host."
     )]
     async fn start_job(
         &self,
         Parameters(p): Parameters<StartJob>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.call(api::Request::JobsStart(api::JobStart {
-            argv: p.argv,
-            cwd: p.cwd,
-            name: p.name,
-            ..api::JobStart::default()
-        }))
+        self.call_on(
+            p.host,
+            api::Request::JobsStart(api::JobStart {
+                argv: p.argv,
+                cwd: p.cwd,
+                name: p.name,
+                ..api::JobStart::default()
+            }),
+        )
         .await
     }
 
@@ -395,6 +487,7 @@ impl Dreamer {
             ignore_case: true,
             panes: p.panes,
             lines: p.lines,
+            hosts: p.hosts,
             max_matches: Some(100),
             ..api::TerminalQuery::default()
         }))
