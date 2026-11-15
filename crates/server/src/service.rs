@@ -200,13 +200,14 @@ fn mirror_config() -> mirror::MirrorConfig {
     // canonical mirrors, and views get them through checkpoints.
     match workspace_config::load_settings() {
         Ok(settings) => {
+            let scheme = settings.scheme();
             let t = settings.terminal;
             c.terminal = mirror::TerminalDefaults {
-                scheme: t.theme,
+                scheme,
                 cursor: t.cursor_style.shape(),
                 blink: t.cursor_blink,
             };
-            log::info(format!("terminal theme {}", t.theme.name));
+            log::info(format!("terminal theme {}", scheme.name));
         }
         Err(e) => log::warn(format!("{e}; terminal defaults used")),
     }

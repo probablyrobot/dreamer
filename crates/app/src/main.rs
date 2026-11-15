@@ -113,11 +113,6 @@ impl TermFont {
     }
 }
 
-static TERM_FONT: std::sync::OnceLock<TermFont> = std::sync::OnceLock::new();
-static LINKS: std::sync::OnceLock<workspace_config::LinkSettings> = std::sync::OnceLock::new();
-/// The skin setting (`system`, `dark`, or `light`).
-pub(crate) static APPEARANCE: std::sync::OnceLock<workspace_config::Appearance> =
-    std::sync::OnceLock::new();
 /// The terminal command for the fallback attach, if configured.
 pub(crate) static FALLBACK_LAUNCH: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 static CLIPBOARD: std::sync::OnceLock<workspace_config::ClipboardWrite> =
@@ -127,6 +122,9 @@ static CLIPBOARD: std::sync::OnceLock<workspace_config::ClipboardWrite> =
 static SMOKE_CLIPBOARD: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
 /// Links the input smoke "opened": recorded instead of launching anything.
 static SMOKE_OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+static TERM_FONT: std::sync::OnceLock<TermFont> = std::sync::OnceLock::new();
+static LINKS: std::sync::OnceLock<workspace_config::LinkSettings> = std::sync::OnceLock::new();
 
 fn term_font() -> TermFont {
     TERM_FONT.get().cloned().unwrap_or_else(|| {
@@ -1205,7 +1203,9 @@ fn main() -> ExitCode {
         let _ = LINKS.set(settings.links.clone());
         let _ = CLIPBOARD.set(settings.clipboard.write);
         let _ = FALLBACK_LAUNCH.set(settings.fallback.launch.clone());
-        let _ = APPEARANCE.set(settings.appearance);
+        // The same scheme the daemon gives the terminals: the chrome is
+        // drawn from it, so the window is one theme.
+        let _ = theme::THEME.set(theme::for_scheme(settings.scheme()));
         let _ = TERM_FONT.set(TermFont {
             family: chosen.family,
             size: settings.font.size,
@@ -1897,6 +1897,15 @@ async fn idle_check(feed: Arc<Feed>, cx: &mut gpui::AsyncApp) {
     );
     let mut code = if wakes == 0 && paints <= IDLE_STRAY_PAINTS {
         0
+    } else if wakes == 0 {
+        // Repaints the pane never asked for: the OS redrew the window
+        // (activation, the pointer, another app moving over it). That says
+        // nothing about the pane, so the check could not run; a view
+        // wakeup is what would mean the idle pane did work.
+        println!(
+            "smoke: {paints} repaints with no view wakeup came from outside the pane (desktop activity); idle check not run"
+        );
+        INCONCLUSIVE
     } else {
         3
     };

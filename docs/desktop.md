@@ -25,7 +25,8 @@ A workspace window shows one tmux session:
   active one is highlighted. Clicking a tab runs `select-window`.
 - **Panes.** The active window's panes are drawn at their tmux cell
   rectangles. tmux is authoritative for geometry (spec 15.1). The one-cell
-  gaps tmux leaves between panes show as dividers. A zoomed window shows
+  gaps tmux leaves between panes show as dividers, and a narrow inset in
+  the same color keeps text off the window's edges. A zoomed window shows
   its active pane over the whole area. A window with a layout Dreamer
   cannot draw yet (floating panes) shows a notice instead of a partial
   layout.
@@ -54,7 +55,10 @@ A workspace window shows one tmux session:
   ends at whatever tmux decided.
 - **Zoom.** Cmd-Shift-Enter on macOS, Ctrl-Shift-Enter on Linux, or the
   `zoom` control on the focused pane, toggles zoom through the typed zoom
-  action. The shortcut is never sent to the pane.
+  action. The shortcut is never sent to the pane. The control appears only
+  while the pointer is over the focused pane, and only when the window has
+  more than one pane. It sits on its own chip in the pane's bottom-right
+  corner.
 
 ## What the workspace does not draw
 
@@ -71,7 +75,8 @@ offer the fallback:
 - **The attach command.** It targets the same tmux server and window, as
   an ordinary tmux client. It is built from the daemon's tmux options
   (`--tmux`, `-L`, or `--tmux-socket-path`). It uses ids (`'$SESSION:@WINDOW'`),
-  never names, and each word is quoted for a POSIX shell when needed.
+  never names, and each word is quoted for a POSIX shell when needed. It
+  is shown in full on a line of its own, wrapped if the pane is narrow.
   **Copy** puts it on the clipboard; only an explicit click does.
 - **Open in terminal**, if `fallback.launch` is set in `dreamer.yaml`. It
   runs that argv with the `{command}` element replaced by the attach
@@ -356,10 +361,11 @@ as evidence when nothing could have painted.
 `dreamer --smoke --expect TEXT --attach %PANE …` waits for a frame
 containing TEXT. It then waits for the pane to settle (no new frame for
 0.5 s), watches 4.5 s of idle pane, and exits with status 3 if any frame
-woke the window or it painted more than once. One stray paint is allowed:
-macOS has GPUI repaint a background window now and then for activity
-elsewhere on the desktop, which the pane did not cause; a repaint loop
-paints more often. A passing count is then checked by requesting one
+woke the window. Repaints the pane did not ask for are not the pane's
+work: macOS has GPUI repaint a window now and then for activity elsewhere
+on the desktop. One is allowed. More, with no view wakeup, means the
+desktop was busy (someone using the Mac), so the result is status 5, not
+run. A repaint loop in the pane would show as view wakeups. A passing count is then checked by requesting one
 repaint as a control: if the window does not paint (occluded, or the
 display asleep), the result is status 5, not a pass. The `live` step runs
 this against an isolated tmux server and private daemon directories.
