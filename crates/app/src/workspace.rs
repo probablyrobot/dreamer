@@ -20,6 +20,9 @@ use crate::{Shell, Smoke, load_frame, term_font};
 
 /// Height of the tab strip.
 const TAB_STRIP: f32 = 24.0;
+/// Space between the window's edges and the panes, so text never touches
+/// the window frame.
+const PANE_INSET: f32 = 6.0;
 
 /// A visible pane: its view and the feed that keeps it current.
 struct PaneView {
@@ -1205,13 +1208,42 @@ impl Workspace {
         let launch = crate::FALLBACK_LAUNCH
             .get()
             .and_then(|t| crate::fallback::launch_argv(t, &attach));
+        // The command on a line of its own, wrapped rather than cut at the
+        // pane's edge, with the buttons below it.
+        let copy_button = div()
+            .id(("fallback-copy", id))
+            .px_1()
+            .rounded_sm()
+            .bg(c(t.selected))
+            .child("Copy")
+            .on_click(cx.listener(move |_, _, _, cx| {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))
+            }));
+        let open_button = launch.map(|argv| {
+            div()
+                .id(("fallback-open", id))
+                .px_1()
+                .rounded_sm()
+                .bg(c(t.selected))
+                .child("Open in terminal")
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    let argv = argv.clone();
+                    // Exact argv, never a shell string; off the UI thread.
+                    cx.background_spawn(async move {
+                        if let Some((program, args)) = argv.split_first() {
+                            let _ = std::process::Command::new(program).args(args).spawn();
+                        }
+                    })
+                    .detach();
+                }))
+        });
         div()
             .flex()
-            .flex_row()
-            .gap_2()
-            .items_center()
+            .flex_col()
+            .gap_1()
             .child(
                 div()
+                    .w_full()
                     .px_1()
                     .bg(c(t.surface))
                     .font_family(term_font().family)
@@ -1219,33 +1251,13 @@ impl Workspace {
             )
             .child(
                 div()
-                    .id(("fallback-copy", id))
-                    .px_1()
-                    .rounded_sm()
-                    .bg(c(t.selected))
-                    .child("Copy")
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))
-                    })),
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .items_center()
+                    .child(copy_button)
+                    .children(open_button),
             )
-            .children(launch.map(|argv| {
-                div()
-                    .id(("fallback-open", id))
-                    .px_1()
-                    .rounded_sm()
-                    .bg(c(t.selected))
-                    .child("Open in terminal")
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        let argv = argv.clone();
-                        // Exact argv, never a shell string; off the UI thread.
-                        cx.background_spawn(async move {
-                            if let Some((program, args)) = argv.split_first() {
-                                let _ = std::process::Command::new(program).args(args).spawn();
-                            }
-                        })
-                        .detach();
-                    }))
-            }))
     }
 
     /// Windows in the session shown: the tabs.
@@ -1560,6 +1572,8 @@ impl Render for Workspace {
         let zoomed = w.as_ref().is_some_and(|w| w.zoomed);
         let unsupported = w.as_ref().is_some_and(|w| !w.layout_supported);
         let focused = self.focused;
+        // Zooming means something only with more than one pane.
+        let zoomable = zoomed || self.visible().len() > 1;
         // Panes in a tmux-drawn mode: marked, with the attach command.
         let mut mode_banners: HashMap<u32, gpui::Div> = self
             .visible()
@@ -1611,6 +1625,7 @@ impl Render for Workspace {
                         .when(Some(id) == focused && !zoomed, |d| {
                             d.border_1().border_color(c(t.focus))
                         })
+                        .group("pane")
                         .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, window, cx| {
                             entity.update(cx, |ws, cx| {
                                 if ws.focused != Some(id) {
@@ -1620,17 +1635,23 @@ impl Render for Workspace {
                         })
                         .child(shell)
                         .children(mode_banners.remove(&id))
-                        .when(Some(id) == focused, |d| {
-                            // Zoom control on the focused pane.
+                        .when(Some(id) == focused && zoomable, |d| {
+                            // Zoom control on the focused pane: shown only
+                            // while the pointer is over the pane, on its
+                            // own chip, so it never sits on terminal text.
                             d.child(
                                 div()
                                     .id(("zoom", id as usize))
                                     .absolute()
-                                    .top_0()
-                                    .right_0()
+                                    .bottom_1()
+                                    .right_1()
                                     .px_1()
+                                    .rounded_sm()
+                                    .bg(c(t.raised))
                                     .text_size(px(11.0))
-                                    .text_color(c(t.faint))
+                                    .text_color(c(t.muted))
+                                    .opacity(0.0)
+                                    .group_hover("pane", |s| s.opacity(1.0))
                                     .hover(|s| s.text_color(c(t.text)))
                                     .child(if zoomed { "unzoom" } else { "zoom" })
                                     .on_click(cx.listener(|ws, _, _, cx| ws.toggle_zoom(cx))),
@@ -1792,7 +1813,6 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|ws, _: &crate::keymap::ToggleSidebar, _, cx| ws.toggle_sidebar(cx)),
             )
-            .children(palette)
             .child(strip)
             .child(
                 div()
@@ -1801,9 +1821,21 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .children(sidebar)
-                    .child(area)
+                    .child(
+                        // Inset from the window's edges; the inset takes the
+                        // dividers' color, so panes read as one surface.
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .p(px(PANE_INSET))
+                            .bg(c(t.divider))
+                            .child(area),
+                    )
                     .children(self.panel.clone()),
             )
+            // Last, so it floats over the panes rather than under them.
+            .children(palette)
     }
 }
 
