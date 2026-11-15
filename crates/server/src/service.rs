@@ -1175,7 +1175,20 @@ impl api::Service for DaemonService {
             if host.wait_live(&[id], remaining).await
                 && let Some(r) = host.read(id, usize::MAX / 2).await
             {
-                break r.map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+                let r = r.map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+                // A mark made from a line the mirror has not applied yet:
+                // give the mirror a moment to catch up.
+                if !self.0.decorations.ahead(
+                    p.pane,
+                    r.generation.0,
+                    u32::from(r.cols),
+                    r.lines.len(),
+                ) || tokio::time::Instant::now() >= deadline
+                {
+                    break r;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                continue;
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(RpcError::new(

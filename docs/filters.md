@@ -66,6 +66,10 @@ filter. A mark is valid only while all of these still hold:
 - a line that left the history, or moved because the history is at its
   limit, is dropped when the marks are next listed.
 
+A mark can be made just before the mirror applies its line. Such a mark
+is not listed yet, and is not dropped: `decorations.list` waits up to 3 s
+for the mirror to reach it.
+
 Each pane keeps at most 500 marks; the oldest go first. A
 `decorations.changed` event (with the `pane`) says when to list again.
 Listing a pane needs it in the grant. The desktop draws them over the
