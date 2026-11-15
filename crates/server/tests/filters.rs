@@ -425,10 +425,36 @@ async fn a_view_finds_a_mark_on_its_own_copy_of_the_line() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while marks.marks(pane).is_empty() {
-        tokio::time::timeout_at(deadline, marks.wake.recv())
+        if tokio::time::timeout_at(deadline, marks.wake.recv())
             .await
-            .expect("the feed never listed the mark")
-            .expect("feed alive");
+            .is_err()
+        {
+            // Say where the mark went missing: in the server, in the
+            // filter, or between the server and the feed.
+            let listed = decorations(&c, pane).await;
+            let filters = call(&c, Request::FiltersList(api::Empty {})).await;
+            let screen = match call(
+                &c,
+                Request::TerminalRead(api::ReadParams {
+                    pane,
+                    history: Some(5),
+                    endpoint: None,
+                }),
+            )
+            .await
+            {
+                Ok(Response::TerminalRead(t)) => format!(
+                    "{} history lines, cols {}, last lines {:?}",
+                    t.history_lines,
+                    t.cols,
+                    t.lines.iter().rev().take(8).collect::<Vec<_>>()
+                ),
+                other => format!("{other:?}"),
+            };
+            panic!(
+                "the feed never listed the mark.\nserver lists: {listed:?}\nfilters: {filters:?}\npane: {screen}"
+            );
+        }
     }
     let m = marks.marks(pane).remove(0);
     assert_eq!(m.text, "MARKED here");
