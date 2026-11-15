@@ -24,6 +24,36 @@ pub struct Settings {
     pub fallback: FallbackSettings,
     pub appearance: Appearance,
     pub terminal: TerminalSettings,
+    pub providers: ProviderSettings,
+}
+
+/// Agent providers (spec 13.5). The CLIs need nothing here; an API
+/// adapter is used only when it is configured, and its model is this
+/// configuration, never a constant in code.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProviderSettings {
+    /// The provider used when none is named: `claude`, `codex`,
+    /// `claude-api`, or `openai-api`. Without one, the first ready CLI.
+    pub default: Option<String>,
+    pub claude_api: Option<ApiProvider>,
+    pub openai_api: Option<ApiProvider>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiProvider {
+    pub model: String,
+    pub key: ApiKey,
+    pub base_url: Option<String>,
+    pub max_tokens: u32,
+}
+
+/// Where an API key is read from: never the settings file itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiKey {
+    /// This environment variable.
+    Env(String),
+    /// The OS keychain under service `dreamer` and this account.
+    Keychain(String),
 }
 
 /// The terminal's defaults, applied by the daemon to every pane's
@@ -154,6 +184,7 @@ impl Default for Settings {
             fallback: FallbackSettings::default(),
             appearance: Appearance::default(),
             terminal: TerminalSettings::default(),
+            providers: ProviderSettings::default(),
         }
     }
 }
@@ -172,6 +203,27 @@ struct File {
     appearance: Option<Appearance>,
     #[serde(default)]
     terminal: TerminalFile,
+    #[serde(default)]
+    providers: ProvidersFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvidersFile {
+    default: Option<String>,
+    claude_api: Option<ApiFile>,
+    openai_api: Option<ApiFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApiFile {
+    model: String,
+    /// `env` (the vendor's variable), `env:NAME`, or `keychain`.
+    #[serde(default)]
+    key: Option<String>,
+    base_url: Option<String>,
+    max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -334,6 +386,88 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
         }
         s.fallback.launch = launch;
     }
+    if let Some(d) = file.providers.default {
+        const NAMES: [&str; 4] = ["claude", "codex", "claude-api", "openai-api"];
+        if !NAMES.contains(&d.as_str()) {
+            return Err(error(
+                origin,
+                "providers.default",
+                format!("`{d}` is not one of {}", NAMES.join(", ")),
+            ));
+        }
+        s.providers.default = Some(d);
+    }
+    for (name, file, var, account) in [
+        (
+            "claude_api",
+            file.providers.claude_api,
+            "ANTHROPIC_API_KEY",
+            "claude-api",
+        ),
+        (
+            "openai_api",
+            file.providers.openai_api,
+            "OPENAI_API_KEY",
+            "openai-api",
+        ),
+    ] {
+        let Some(f) = file else { continue };
+        let at = |k: &str| format!("providers.{name}.{k}");
+        if f.model.trim().is_empty() {
+            return Err(error(origin, &at("model"), "must not be empty".into()));
+        }
+        let key = match f.key.as_deref() {
+            None | Some("env") => ApiKey::Env(var.into()),
+            Some("keychain") => ApiKey::Keychain(account.into()),
+            Some(k) => match k.strip_prefix("env:") {
+                Some(v)
+                    if !v.is_empty()
+                        && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+                {
+                    ApiKey::Env(v.into())
+                }
+                _ => {
+                    return Err(error(
+                        origin,
+                        &at("key"),
+                        format!(
+                            "`{k}` is not `env`, `env:NAME`, or `keychain` (a key itself never goes here)"
+                        ),
+                    ));
+                }
+            },
+        };
+        if let Some(u) = &f.base_url
+            && !(u.starts_with("https://")
+                || u.starts_with("http://127.0.0.1")
+                || u.starts_with("http://localhost"))
+        {
+            return Err(error(
+                origin,
+                &at("base_url"),
+                format!("`{u}` must be https (or http on this machine)"),
+            ));
+        }
+        let max_tokens = f.max_tokens.unwrap_or(4096);
+        if !(1..=200_000).contains(&max_tokens) {
+            return Err(error(
+                origin,
+                &at("max_tokens"),
+                format!("{max_tokens} is outside 1 to 200000"),
+            ));
+        }
+        let api = ApiProvider {
+            model: f.model,
+            key,
+            base_url: f.base_url,
+            max_tokens,
+        };
+        if name == "claude_api" {
+            s.providers.claude_api = Some(api);
+        } else {
+            s.providers.openai_api = Some(api);
+        }
+    }
     Ok(s)
 }
 
@@ -387,6 +521,40 @@ mod tests {
         assert_eq!(s.font.family, DEFAULT_FONT_FAMILY);
         let s = parse_settings("font: { family: Menlo, line_height: 1.4 }", None).expect("family");
         assert_eq!((s.font.family.as_str(), s.font.line_height), ("Menlo", 1.4));
+    }
+
+    #[test]
+    fn api_providers_are_configured_with_a_model_and_a_key_source_never_a_key() {
+        let s = parse_settings(
+            "providers:\n  default: claude-api\n  claude_api:\n    model: some-model\n  openai_api:\n    model: other\n    key: keychain\n    max_tokens: 1000\n",
+            None,
+        )
+        .expect("valid");
+        assert_eq!(s.providers.default.as_deref(), Some("claude-api"));
+        let c = s.providers.claude_api.expect("claude");
+        assert_eq!(
+            (c.model.as_str(), c.key, c.max_tokens),
+            ("some-model", ApiKey::Env("ANTHROPIC_API_KEY".into()), 4096)
+        );
+        let o = s.providers.openai_api.expect("openai");
+        assert_eq!(o.key, ApiKey::Keychain("openai-api".into()));
+        let bad = |y: &str, at: &str| {
+            let e = parse_settings(y, None).expect_err(y);
+            assert!(e.to_string().contains(at), "{e}");
+        };
+        bad(
+            "providers:\n  claude_api:\n    model: m\n    key: sk-ant-123\n",
+            "a key itself never goes here",
+        );
+        bad(
+            "providers:\n  claude_api:\n    model: m\n    base_url: http://example.com\n",
+            "must be https",
+        );
+        bad("providers:\n  default: gpt\n", "providers.default");
+        assert!(
+            parse_settings("providers:\n  claude_api: {}\n", None).is_err(),
+            "a model is required"
+        );
     }
 
     #[test]

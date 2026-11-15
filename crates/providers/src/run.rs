@@ -25,6 +25,18 @@ pub struct Run {
 }
 
 impl Run {
+    pub(crate) fn new(
+        events: mpsc::UnboundedReceiver<Event>,
+        cancel: watch::Sender<bool>,
+        pgid: u32,
+    ) -> Run {
+        Run {
+            events,
+            cancel,
+            pgid,
+        }
+    }
+
     /// Stop the run: its process group gets SIGTERM, then SIGKILL.
     pub fn cancel(&self) {
         let _ = self.cancel.send(true);

@@ -45,16 +45,36 @@ used.
   | Usage | yes | yes |
   | Cost | yes | no |
 
+## API adapters
+
+The Claude Messages API (`claude-api`) and the OpenAI Chat Completions API
+(`openai-api`) keep the same contract.
+- **When they are used:** only when configured in
+  [`dreamer.yaml`](settings.md#agent-providers) with a model, and named
+  (or set as the default). They are metered and never a fallback.
+- **Keys:** read from the environment or the OS keychain at run time,
+  never from a file Dreamer reads, a manifest, a skin, or the action
+  ledger.
+- **Requests:** each model turn is one `curl` request, in its own process
+  group. The key and the body reach `curl` on its standard input
+  (`--config -`), never on its command line or on disk.
+- **Tools:** an adapter starts `dream mcp` itself, takes the tool
+  definitions from it, and runs the tool calls in a loop until the model
+  answers, for at most `--max-turns` turns (16 by default).
+- **Errors:** a refused key (HTTP 401 or 403) is reported as logged out,
+  and HTTP 429 as rate limited.
+- **Requires:** `curl` installed.
+
 ## On the command line
 
 ```sh
 dream agents providers [--json]
-dream agents ask [--provider claude|codex] [--method M]... [--pane %N]... [--all-panes]
+dream agents ask [--provider claude|codex|claude-api|openai-api] [--method M]... [--pane %N]... [--all-panes]
                  [--no-tools] [--max-turns N] [--timeout SECONDS] [--allow-metered] -- PROMPT
 ```
 
-`providers` probes each CLI: installed, a version this adapter reads, and
-logged in. `ask` runs one prompt.
+`providers` probes each CLI (installed, a version this adapter reads, and
+logged in) and each configured API adapter (its key can be read). `ask` runs one prompt.
 - **Output:** the answer is printed on standard output as it arrives.
   Tool calls, their results, and usage go to standard error.
 - **Tools:** `--method`, `--pane`, and `--all-panes` narrow the grant of

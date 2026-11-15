@@ -6,13 +6,14 @@
 use std::io::Write;
 use std::time::Duration;
 
-use providers::{Event, Kind, Request, State, Tools};
+use providers::{Api, ApiConfig, Event, KeySource, Kind, Provider, Request, State, Tools};
+use workspace_config::settings::{ApiKey, ApiProvider};
 
 use crate::daemon::DaemonArgs;
 
 pub const USAGE: &str = "usage:
   dream agents providers [--json]
-  dream agents ask [--provider claude|codex] [--method M]... [--pane %N]... [--all-panes]
+  dream agents ask [--provider claude|codex|claude-api|openai-api] [--method M]... [--pane %N]... [--all-panes]
                    [--no-tools] [--max-turns N] [--timeout SECONDS] [--allow-metered] -- PROMPT";
 
 fn state_text(s: &State) -> String {
@@ -24,6 +25,49 @@ fn state_text(s: &State) -> String {
         State::Incompatible(why) => format!("incompatible: {why}"),
         State::Unknown(why) => format!("unknown: {why}"),
     }
+}
+
+/// The API adapters the user configured in `dreamer.yaml`.
+fn apis() -> Result<(Option<String>, Vec<ApiConfig>), String> {
+    let s = workspace_config::settings::load_settings().map_err(|e| e.to_string())?;
+    let config = |api: Api, p: &ApiProvider| ApiConfig {
+        api,
+        model: p.model.clone(),
+        key: match &p.key {
+            ApiKey::Env(v) => KeySource::Env(v.clone()),
+            ApiKey::Keychain(account) => KeySource::Keychain {
+                service: "dreamer".into(),
+                account: account.clone(),
+            },
+        },
+        base_url: p.base_url.clone(),
+        max_tokens: p.max_tokens,
+    };
+    let mut out = Vec::new();
+    if let Some(p) = &s.providers.claude_api {
+        out.push(config(Api::Claude, p));
+    }
+    if let Some(p) = &s.providers.openai_api {
+        out.push(config(Api::OpenAi, p));
+    }
+    Ok((s.providers.default, out))
+}
+
+/// A provider by name: a CLI, or an API adapter only when configured.
+fn named(name: &str, apis: &[ApiConfig]) -> Result<Provider, String> {
+    if let Some(k) = Kind::parse(name) {
+        return Ok(Provider::Cli(k));
+    }
+    apis.iter()
+        .find(|c| c.api.name() == name)
+        .cloned()
+        .map(Provider::Api)
+        .ok_or_else(|| match name {
+            "claude-api" | "openai-api" => {
+                format!("{name} is not configured (see `providers` in dreamer.yaml)")
+            }
+            _ => format!("unknown provider {name}"),
+        })
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, String> {
@@ -39,12 +83,17 @@ pub fn providers(args: &[String]) -> Result<(), String> {
         [j] if j == "--json" => true,
         _ => return Err(USAGE.into()),
     };
-    let probes = runtime()?.block_on(async {
+    let (_, apis) = apis()?;
+    let (probes, api_states) = runtime()?.block_on(async {
         let mut out = Vec::new();
         for k in providers::ORDER {
             out.push(providers::probe(k).await);
         }
-        out
+        let mut states = Vec::new();
+        for c in &apis {
+            states.push(providers::probe_api(c).await);
+        }
+        (out, states)
     });
     if json {
         let list: Vec<serde_json::Value> = probes
@@ -65,6 +114,15 @@ pub fn providers(args: &[String]) -> Result<(), String> {
                     },
                 })
             })
+            .chain(apis.iter().zip(&api_states).map(|(c, st)| {
+                serde_json::json!({
+                    "provider": c.api.name(),
+                    "model": c.model,
+                    "metered": true,
+                    "ready": *st == State::Ready,
+                    "state": state_text(st),
+                })
+            }))
             .collect();
         println!(
             "{}",
@@ -79,12 +137,20 @@ pub fn providers(args: &[String]) -> Result<(), String> {
                 p.version.as_deref().unwrap_or("")
             );
         }
+        for (c, st) in apis.iter().zip(&api_states) {
+            println!(
+                "{:<10} {:<40} {} (metered)",
+                c.api.name(),
+                state_text(st),
+                c.model
+            );
+        }
     }
     Ok(())
 }
 
 pub fn ask(d: &DaemonArgs, args: &[String]) -> Result<std::process::ExitCode, String> {
-    let mut kind = None;
+    let mut kind: Option<String> = None;
     let mut mcp: Vec<String> = vec!["mcp".into()];
     let mut tools = true;
     let mut req = Request::default();
@@ -93,10 +159,7 @@ pub fn ask(d: &DaemonArgs, args: &[String]) -> Result<std::process::ExitCode, St
     while let Some(a) = it.next() {
         let mut value = |what: &str| it.next().cloned().ok_or(format!("{a} needs {what}"));
         match a.as_str() {
-            "--provider" => {
-                let v = value("claude or codex")?;
-                kind = Some(Kind::parse(&v).ok_or(format!("unknown provider {v}"))?);
-            }
+            "--provider" => kind = Some(value("a provider")?),
             "--method" => mcp.extend(["--method".into(), value("a method")?]),
             "--pane" => mcp.extend(["--pane".into(), value("%N")?]),
             "--all-panes" => mcp.push("--all-panes".into()),
@@ -140,8 +203,11 @@ pub fn ask(d: &DaemonArgs, args: &[String]) -> Result<std::process::ExitCode, St
             // The MCP server needs the daemon; start it if it is not running.
             crate::remote::session(d).await?;
         }
-        let kind = match kind {
-            Some(k) => k,
+        let (default, apis) = apis()?;
+        // A named provider, else the configured default, else the first
+        // ready CLI. An API adapter is never picked on its own.
+        let kind = match kind.or(default) {
+            Some(name) => named(&name, &apis)?,
             None => {
                 let mut ready = None;
                 for k in providers::ORDER {
@@ -150,10 +216,12 @@ pub fn ask(d: &DaemonArgs, args: &[String]) -> Result<std::process::ExitCode, St
                         break;
                     }
                 }
-                ready.ok_or("no provider is ready; see `dream agents providers`")?
+                Provider::Cli(ready.ok_or("no provider is ready; see `dream agents providers`")?)
             }
         };
-        let mut run = providers::start(kind, &req).map_err(|e| format!("{}: {e}", kind.name()))?;
+        let mut run = kind
+            .start(&req)
+            .map_err(|e| format!("{}: {e}", kind.name()))?;
         let mut interrupted = std::pin::pin!(tokio::signal::ctrl_c());
         let mut cancelled = false;
         let mut out = std::io::stdout();
