@@ -270,6 +270,70 @@ fn body(app: &App, t: &theme::Theme) -> gpui::AnyElement {
         None => text(r),
     };
     match v.kind {
+        ViewKind::Agent => {
+            use app_model::Said;
+            let a = &app.agent;
+            let kind = app
+                .manifest
+                .agent
+                .as_ref()
+                .map_or("agent", |s| s.kind.name());
+            let activity = if a.running {
+                "working (Esc cancels)"
+            } else {
+                "idle"
+            };
+            let newest = a.transcript.len().saturating_sub(MAX_ROWS);
+            div()
+                .flex()
+                .flex_col()
+                .h_full()
+                .gap_1()
+                .child(
+                    div()
+                        .text_color(c(t.muted))
+                        .child(SharedString::from(format!(
+                            "{kind} · {} · {activity}",
+                            a.mode
+                        ))),
+                )
+                .child(
+                    div()
+                        .text_color(c(t.faint))
+                        .child(SharedString::from(format!("grant: {}", a.grant))),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .justify_end()
+                        .children(a.transcript[newest..].iter().map(|e| {
+                            let (mark, color) = match e.who {
+                                Said::You => ("> ", t.text),
+                                Said::Agent => ("", t.text),
+                                Said::Tool => ("→ ", t.accent),
+                                Said::Result { ok: true } => ("← ", t.faint),
+                                Said::Result { ok: false } => ("← failed: ", t.danger),
+                                Said::Note => ("· ", t.faint),
+                                Said::Failed => ("✗ ", t.danger),
+                            };
+                            div()
+                                .text_color(c(color))
+                                .child(SharedString::from(format!("{mark}{}", e.text)))
+                        })),
+                )
+                .child(
+                    div()
+                        .px_1()
+                        .rounded_sm()
+                        .bg(c(t.selected))
+                        .child(SharedString::from(format!("> {}▏", a.input))),
+                )
+                .into_any_element()
+        }
         ViewKind::Table => {
             let (start, rows) = window(app);
             div()
