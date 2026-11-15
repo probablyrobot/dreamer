@@ -30,6 +30,69 @@ pub struct App {
     pub focus: usize,
     /// How many times the package was reloaded.
     pub version: u32,
+    /// An agentic pane's prompt and what happened (agent views only).
+    pub agent: AgentState,
+}
+
+/// Who said or did a transcript entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Said {
+    /// The prompt typed.
+    You,
+    /// The model's text.
+    Agent,
+    /// A tool the model called, with its input.
+    Tool,
+    /// A tool's result.
+    Result { ok: bool },
+    /// The runtime: usage, a scripted answer, a mode change.
+    Note,
+    /// A run that ended without an answer, and why.
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub who: Said,
+    pub text: String,
+}
+
+/// Entries kept at most; the oldest go first.
+pub const TRANSCRIPT: usize = 500;
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentState {
+    /// The prompt being typed.
+    pub input: String,
+    pub transcript: Vec<Entry>,
+    /// A run is in progress (Esc cancels it).
+    pub running: bool,
+    /// The provider in use, or why there is none (no-model mode).
+    pub provider: Option<String>,
+    pub mode: String,
+    /// What the agent may do, as shown in the header.
+    pub grant: String,
+}
+
+impl AgentState {
+    /// Add an entry; text from the model joins the entry it continues.
+    pub fn say(&mut self, who: Said, text: &str) {
+        if who == Said::Agent
+            && let Some(last) = self.transcript.last_mut()
+            && last.who == Said::Agent
+        {
+            last.text.push_str(text);
+            return;
+        }
+        self.transcript.push(Entry {
+            who,
+            text: text.to_owned(),
+        });
+        if self.transcript.len() > TRANSCRIPT {
+            let extra = self.transcript.len() - TRANSCRIPT;
+            self.transcript.drain(..extra);
+        }
+    }
 }
 
 /// A value as one line of text.
@@ -53,6 +116,7 @@ impl App {
             form: Vec::new(),
             focus: 0,
             version: 1,
+            agent: AgentState::default(),
         }
         .with_form()
     }
@@ -189,6 +253,14 @@ impl App {
             Link::Live => "live".to_owned(),
             Link::Stale(_, why) => format!("stale: {why}"),
         };
+        if self.manifest.view.kind == crate::manifest::ViewKind::Agent {
+            let mut s = format!("[{link}] Enter run  Esc cancel  Ctrl-c quit");
+            if let Some(st) = &self.status {
+                s.push_str("  | ");
+                s.push_str(st);
+            }
+            return s;
+        }
         let keys: Vec<String> = self
             .manifest
             .commands

@@ -196,6 +196,7 @@ dependencies = [
  "api",
  "client",
  "platform",
+ "providers",
  "script-runtime",
  "serde",
  "serde_json",
