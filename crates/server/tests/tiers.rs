@@ -20,8 +20,17 @@ struct Setup {
     daemon: Child,
 }
 
+/// Settings that turn the tier policy off, for tests that set tiers
+/// themselves.
+const NO_POLICY: &str = "tiers:\n  cold_after: never\n  warm_limit: none\n";
+
 impl Setup {
     fn new() -> Setup {
+        Setup::with(NO_POLICY)
+    }
+
+    /// A daemon whose `dreamer.yaml` is `settings`.
+    fn with(settings: &str) -> Setup {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let root = PathBuf::from(format!(
             "/tmp/drm-tier-{}-{}",
@@ -29,7 +38,8 @@ impl Setup {
             N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(root.join("config")).expect("root");
+        std::fs::write(root.join("config/dreamer.yaml"), settings).expect("settings");
         let tmux = TmuxServer::start(100, 30, "/bin/sh").expect("tmux");
         let daemon = Command::new(EXE)
             .args(["--background", "--tmux-socket", tmux.socket(), "--tmux"])
@@ -44,6 +54,13 @@ impl Setup {
             .spawn()
             .expect("dreamerd");
         Setup { root, tmux, daemon }
+    }
+
+    /// Replace `dreamer.yaml`; the daemon applies it live.
+    fn settings(&self, text: &str) {
+        let tmp = self.root.join("config/dreamer.yaml.new");
+        std::fs::write(&tmp, text).expect("settings");
+        std::fs::rename(tmp, self.root.join("config/dreamer.yaml")).expect("settings");
     }
 
     async fn client(&self) -> Client {
@@ -277,4 +294,113 @@ async fn three_hundred_new_panes_all_become_live() {
         assert!(Instant::now() < deadline, "{live} of 301 live");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+async fn states(c: &Client, panes: &[u32]) -> Vec<i32> {
+    let Ok(Response::TerminalMirrors(l)) = c
+        .call(Request::TerminalMirrors(api::TopologyParams::default()))
+        .await
+    else {
+        panic!("mirrors")
+    };
+    panes
+        .iter()
+        .map(|p| {
+            l.mirrors
+                .iter()
+                .find(|m| m.pane == *p)
+                .map_or(-1, |m| m.state)
+        })
+        .collect()
+}
+
+/// Wait until the panes' states are `want`, then check they stay so.
+async fn until_states(c: &Client, panes: &[u32], want: &[api::MirrorState], what: &str) {
+    let want: Vec<i32> = want.iter().map(|s| *s as i32).collect();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while states(c, panes).await != want {
+        assert!(
+            Instant::now() < deadline,
+            "{what}: {:?}, wanted {want:?}",
+            states(c, panes).await
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(states(c, panes).await, want, "{what}, two seconds on");
+}
+
+/// The tier policy (`tiers:` in `dreamer.yaml`, applied live): over the
+/// Warm limit the quietest unfollowed panes go Cold first; a pane quiet for
+/// longer than `cold_after` goes Cold; a followed pane never does.
+#[tokio::test]
+async fn the_tier_policy_demotes_quiet_unfollowed_panes_and_keeps_followed_ones() {
+    use api::MirrorState::{Cold, Live};
+    let s = Setup::new();
+    let c = s.client().await;
+    s.tmux
+        .run_checked(&[
+            "new-window",
+            "-d",
+            "/bin/sh",
+            ";",
+            "new-window",
+            "-d",
+            "/bin/sh",
+            ";",
+            "new-window",
+            "-d",
+            "/bin/sh",
+            ";",
+            "new-window",
+            "-d",
+            "/bin/sh",
+        ])
+        .expect("windows");
+    let Ok(Response::TmuxTopology(t)) = c
+        .call(Request::TmuxTopology(api::TopologyParams::default()))
+        .await
+    else {
+        panic!("topology")
+    };
+    let mut panes: Vec<u32> = t.panes.iter().map(|p| p.id).collect();
+    panes.sort_unstable();
+    assert_eq!(panes.len(), 5);
+    until_states(&c, &panes, &[Live; 5], "all live").await;
+
+    // The first is followed by a view.
+    let feed = replica::feed::Feed::start(s.root.join("rt/dreamerd.sock"), Some(panes[0]), None)
+        .expect("feed");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while feed.take().is_none() {
+        assert!(Instant::now() < deadline, "the view never got a frame");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // The last two wrote something just now: the second and third are the
+    // quietest.
+    for p in &panes[3..] {
+        s.tmux
+            .run_checked(&["send-keys", "-t", &format!("%{p}"), "echo busy", "Enter"])
+            .expect("type");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    s.settings("tiers:\n  cold_after: never\n  warm_limit: 2\n");
+    until_states(
+        &c,
+        &panes,
+        &[Live, Cold, Cold, Live, Live],
+        "a Warm limit of 2 demotes the two quietest unfollowed panes",
+    )
+    .await;
+
+    s.settings("tiers:\n  cold_after: 2s\n  warm_limit: none\n");
+    until_states(
+        &c,
+        &panes,
+        &[Live, Cold, Cold, Cold, Cold],
+        "quiet panes go Cold; the followed one stays",
+    )
+    .await;
+    drop(feed);
 }

@@ -15,7 +15,8 @@ The file is the one place to configure Dreamer, and changes apply live.
   - the terminal theme and cursor reach every running pane, in every
     window, including on other machines;
   - the font, chrome, appearance, links, clipboard, and fallback apply in
-    every window.
+    every window;
+  - the tier budgets apply to the daemon's panes.
 - **Refusing.** A file that does not read changes nothing. Dreamer keeps
   the settings in force, and the window's tab strip says
   `dreamer.yaml not applied: …` with the reason until the file reads
@@ -54,6 +55,9 @@ terminal:
   cursor:
     style: block                         # block (default), bar, or underline
     blink: false                         # default
+tiers:
+  cold_after: 30m                        # default; a wait (90s, 30m, 2h) or never
+  warm_limit: 128                        # default; a number of panes or none
 ```
 
 ## Font
@@ -201,6 +205,30 @@ checkpoint. A program can still change colors for itself (OSC 4, 10, 11,
 
 Scrollback length follows tmux's own `history-limit`, which the mirrors
 copy.
+
+## Pane tiers
+
+The daemon keeps a terminal mirror (Warm) for every pane, so a window,
+tap, or filter can follow it at once. A Warm pane holds about 1 KiB for
+each line of history it keeps: about 2 MiB at tmux's default 2,000 lines.
+A pane that nothing follows can go Cold instead. A Cold pane holds no
+mirror, keeps running in tmux, and is attached again in tens of
+milliseconds when something asks for it ([mirrors.md](mirrors.md#tiers),
+[performance.md](performance.md)).
+
+```yaml
+tiers:
+  cold_after: 30m      # quiet this long, and nothing follows it: Cold
+  warm_limit: 128      # at most this many Warm panes that nothing follows
+```
+
+- **Followed** means a window shows the pane, or a tap or filter reads
+  it. A followed pane is never demoted.
+- **Over the limit,** the quietest panes go Cold first.
+- **Each daemon applies its own host's file,** so the budgets are per
+  host.
+- **Turning it off:** `cold_after: never` and `warm_limit: none` keep
+  every pane Warm.
 
 ## Agent providers
 

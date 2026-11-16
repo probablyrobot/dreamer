@@ -1,6 +1,6 @@
 ---
 name: dreamer-config
-description: Configure the Dreamer terminal for the user: themes and color schemes, fonts, appearance, links, clipboard, agent providers, remote host profiles, and workspace layouts. Use when the user asks to change how Dreamer looks or behaves, to add a theme, or to set up a host or workspace. Edits the configuration files, checks them, and the running Dreamer applies them live.
+description: Configure the Dreamer terminal for the user: themes and color schemes, fonts, appearance, links, clipboard, agent providers, pane tier budgets (how many panes keep a live mirror), remote host profiles, and workspace layouts. Use when the user asks to change how Dreamer looks or behaves, to add a theme, or to set up a host or workspace. Edits the configuration files, checks them, and the running Dreamer applies them live.
 ---
 
 # Configuring Dreamer
@@ -11,7 +11,7 @@ the directory (usually `~/.config/dreamer`).
 
 | File | What it holds |
 | --- | --- |
-| `dreamer.yaml` | Appearance, terminal theme and cursor, font, links, clipboard, fallback terminal, agent providers |
+| `dreamer.yaml` | Appearance, terminal theme and cursor, font, links, clipboard, fallback terminal, agent providers, pane tiers |
 | `themes/` | The user's own color schemes, one file each |
 | `hosts.yaml` | Remote host profiles (reached over SSH only) |
 | `workspaces/*.yaml` | Workspace layouts: sessions, windows, splits, and what runs in each pane |

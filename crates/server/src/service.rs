@@ -83,6 +83,9 @@ pub struct State {
     /// views get them through checkpoints. Changed live by the
     /// configuration (`config_watch`).
     pub terminal: Mutex<mirror::TerminalDefaults>,
+    /// When panes nothing follows go Cold (`tiers:` in the settings),
+    /// changed live by the configuration.
+    pub tiers: Mutex<mirror::TierPolicy>,
     /// Connection epochs: each new control connection gets the next one.
     pub epochs: std::sync::atomic::AtomicU64,
     /// Outbound connections to other hosts' daemons (the coordinator role).

@@ -143,8 +143,17 @@ in tmux's own grid.
   [performance.md](performance.md)).
 
 `dream mirrors` shows a Cold pane with state `cold` and tier `cold`, and
-no sequence or journal. Nothing demotes a pane on its own yet; the
-policy and the budgets come from the measurements.
+no sequence or journal.
+
+**Going Cold on its own:**
+- A pane that nothing follows goes Cold after it has been quiet for
+  `tiers.cold_after` (30 minutes by default).
+- It also goes Cold when there are more than `tiers.warm_limit` such panes
+  (128 by default), quietest first.
+- One check every 10 s covers the whole host; there is no timer per pane.
+- The daemon logs what it demoted.
+
+See [settings.md](settings.md#pane-tiers).
 
 ## Reading mirrors
 

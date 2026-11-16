@@ -23,6 +23,14 @@ pub fn defaults(settings: &workspace_config::Settings) -> mirror::TerminalDefaul
     }
 }
 
+/// The tier policy `settings` give.
+pub fn tiers(t: &workspace_config::TierSettings) -> mirror::TierPolicy {
+    mirror::TierPolicy {
+        cold_after: t.cold_after,
+        warm_limit: t.warm_limit,
+    }
+}
+
 fn same(a: &mirror::TerminalDefaults, b: &mirror::TerminalDefaults) -> bool {
     a.scheme == b.scheme && a.cursor == b.cursor && a.blink == b.blink
 }
@@ -57,6 +65,17 @@ async fn apply(state: &State) {
             return;
         }
     };
+    let policy = tiers(&settings.tiers);
+    {
+        let mut current = state.tiers.lock().await;
+        if *current != policy {
+            *current = policy;
+            log::info(format!(
+                "configuration applied: tiers {}",
+                crate::tiers::describe(&policy)
+            ));
+        }
+    }
     let new = defaults(&settings);
     let changed = {
         let mut current = state.terminal.lock().await;

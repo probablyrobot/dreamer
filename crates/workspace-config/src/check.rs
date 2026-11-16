@@ -139,6 +139,22 @@ pub const SCHEMA: &[Key] = &[
         example: "{model: gpt-5, key: env}",
         live: false,
     },
+    Key {
+        path: "tiers.cold_after",
+        kind: "a wait (90s, 30m, 2h) | never",
+        default: "30m",
+        doc: "A pane that nothing follows (no window shows it, no tap or filter reads it) and that has written nothing for this long goes Cold: its mirror is dropped until something asks for it again.",
+        example: "1h",
+        live: true,
+    },
+    Key {
+        path: "tiers.warm_limit",
+        kind: "whole number of panes | none",
+        default: "128",
+        doc: "At most this many Warm panes that nothing follows; beyond it the quietest go Cold. A Warm pane holds about 1 KiB per line of history.",
+        example: "256",
+        live: true,
+    },
 ];
 
 /// What the live configuration files look like now: `dreamer.yaml` and
