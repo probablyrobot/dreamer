@@ -16,7 +16,7 @@ pub const USAGE: &str = "usage:
   dream agents ask [--provider claude|codex|claude-api|openai-api] [--method M]... [--pane %N]... [--all-panes]
                    [--no-tools] [--max-turns N] [--timeout SECONDS] [--allow-metered] -- PROMPT";
 
-fn state_text(s: &State) -> String {
+pub fn state_text(s: &State) -> String {
     match s {
         State::Ready => "ready".into(),
         State::NotInstalled => "not installed".into(),

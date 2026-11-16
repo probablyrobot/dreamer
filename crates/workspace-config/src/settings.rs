@@ -26,6 +26,7 @@ pub struct Settings {
     pub terminal: TerminalSettings,
     pub providers: ProviderSettings,
     pub tiers: TierSettings,
+    pub agents: crate::agents::AgentSettings,
 }
 
 /// When panes that nothing follows (no view, tap, or filter) go Cold on
@@ -265,6 +266,7 @@ impl Default for Settings {
             terminal: TerminalSettings::default(),
             providers: ProviderSettings::default(),
             tiers: TierSettings::default(),
+            agents: crate::agents::AgentSettings::default(),
         }
     }
 }
@@ -287,6 +289,7 @@ struct File {
     providers: ProvidersFile,
     #[serde(default)]
     tiers: TiersFile,
+    agents: Option<serde_norway::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -611,6 +614,9 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
             s.providers.openai_api = Some(api);
         }
     }
+    if let Some(v) = &file.agents {
+        s.agents = crate::agents::parse(v).map_err(|(at, m)| error(origin, &at, m))?;
+    }
     Ok(s)
 }
 
@@ -751,6 +757,15 @@ mod tests {
         assert!(parse_settings("colors: {}", None).is_err());
         let e = parse_settings("links: { schemes: ['https:'] }", None).expect_err("scheme");
         assert_eq!(e.at, "links.schemes");
+    }
+
+    #[test]
+    fn a_bad_agents_block_is_refused_at_its_key_path() {
+        let s = parse_settings("agents:\n  default: codex\n", None).expect("valid");
+        assert_eq!(s.agents.default_harness(), "codex");
+        let e = parse_settings("agents:\n  pi:\n    modle: x\n", None).expect_err("typo");
+        assert_eq!(e.at, "agents.pi", "{e}");
+        assert!(e.to_string().contains("modle"), "{e}");
     }
 
     #[test]

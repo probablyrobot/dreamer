@@ -134,6 +134,11 @@ prints, or adds to a settings file, the Claude Code hooks that report run
 state. `dream hook claude` is the hook itself. See
 [processes.md](processes.md).
 
+`dream agents status [--json]`, `dream agents update [--version X.Y.Z]`,
+and `dream agents rollback` show, install or update, and roll back the pi
+that Dreamer installs in its data directory. See
+[agents.md](agents.md#pi-installed-by-dreamer).
+
 `dream agents providers` shows whether Claude Code and Codex are ready
 to run on your own login, and `dream agents ask [options] -- PROMPT` runs
 a prompt on one of them with Dreamer's tools. See
@@ -176,7 +181,7 @@ files directly; see [workspaces.md](workspaces.md).
 
 | Command | What it does |
 | --- | --- |
-| `dream config check` | Validate every configuration file. Exits 1 on a problem, naming the file, key or line, and what is wrong |
+| `dream config check` | Validate every configuration file. Exits 1 on a problem, naming the file, key or line, and what is wrong. Also reports each agent harness: whether its program is there, and its login state |
 | `dream config schema [--json]` | Every key of `dreamer.yaml`: kind and range, default, meaning, example, and whether it applies live |
 | `dream themes` | Every theme, built in and yours, with a swatch and the one in force |
 | `dream skills` | The agent skills that ship with Dreamer |

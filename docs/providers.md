@@ -12,6 +12,9 @@ logged in to:
 The default order is `claude`, then `codex`: the first that is ready is
 used.
 
+Agent sessions run a harness (pi by default, which Dreamer installs) chosen
+by `agents:` in `dreamer.yaml`; see [agents.md](agents.md).
+
 ## Rules
 
 - **No metered fallback.** The child process never gets

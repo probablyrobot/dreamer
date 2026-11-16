@@ -49,6 +49,10 @@ Otherwise it is `/tmp/dreamer-<uid>`.
 The **state directory** is `DREAMER_STATE_DIR`, then
 `$XDG_STATE_HOME/dreamer`, then `~/.local/state/dreamer`.
 
+The **data directory**, where Dreamer installs pi
+([agents.md](agents.md#pi-installed-by-dreamer)), is `DREAMER_DATA_DIR`,
+then `$XDG_DATA_HOME/dreamer`, then `~/.local/share/dreamer`.
+
 Both directories are created with mode 0700. The daemon refuses to start if
 an existing directory belongs to another user or is open to other users. It
 never loosens or takes over such a directory.
@@ -141,7 +145,8 @@ demand.
 
 | Variable | Effect |
 | --- | --- |
-| `DREAMER_RUNTIME_DIR`, `DREAMER_STATE_DIR` | Private directories per test |
+| `DREAMER_RUNTIME_DIR`, `DREAMER_STATE_DIR`, `DREAMER_DATA_DIR` | Private directories per test |
+| `DREAMER_PI_LATEST_URL`, `DREAMER_PI_DOWNLOAD_URL` | Where pi releases are found; tests point them at `file://` stand-ins so nothing is downloaded |
 | `DREAMER_FORBID_DEFAULT_TMUX` | The daemon refuses to attach to the default tmux server. Test harnesses set it so no test can reach the user's own tmux, even if it forgets to name an isolated socket |
 | `DREAMER_TEST_ABORT_AFTER_DISPATCH` | Abort the process right after an action reaches tmux, to test crash recovery |
 | `DREAMER_TEST_SLOW_PANE` | `PANE:MICROS`: sleep that long before applying each output chunk of that pane, so it outruns its mirror |
