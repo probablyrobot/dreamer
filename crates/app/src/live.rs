@@ -14,6 +14,8 @@ use std::time::Duration;
 use gpui::App;
 use workspace_config::{ClipboardWrite, LinkSettings, Settings};
 
+use terminal_ghostty::core::schemes::Scheme;
+
 use crate::TermFont;
 use crate::theme::Theme;
 
@@ -25,6 +27,11 @@ pub(crate) struct Live {
     pub links: LinkSettings,
     pub clipboard: ClipboardWrite,
     pub fallback: Vec<String>,
+    /// The scheme in force, and every theme there is to choose from.
+    pub scheme: &'static Scheme,
+    pub themes: Vec<&'static Scheme>,
+    /// The chrome of a theme being previewed, drawn instead of `theme`.
+    pub preview: Option<Theme>,
     /// Why the last change to the configuration was not applied.
     pub refused: Option<String>,
 }
@@ -36,8 +43,30 @@ pub(crate) fn with<R>(f: impl FnOnce(&Live) -> R) -> Option<R> {
     LIVE.read().ok().and_then(|l| l.as_ref().map(f))
 }
 
+/// Every theme: the user's files in `themes/`, then the built-ins. Reads
+/// files, so not on the UI thread once windows are open.
+pub(crate) fn themes() -> Vec<&'static Scheme> {
+    let dir = workspace_config::themes::themes_dir();
+    workspace_config::themes::all(dir.as_deref())
+        .0
+        .into_iter()
+        .map(|l| l.scheme)
+        .collect()
+}
+
+/// Draw the chrome in `scheme` until this is called with `None`; the
+/// terminals follow when the file says so.
+pub(crate) fn preview(cx: &mut App, scheme: Option<&'static Scheme>) {
+    if let Ok(mut l) = LIVE.write()
+        && let Some(l) = l.as_mut()
+    {
+        l.preview = scheme.map(crate::theme::for_scheme);
+    }
+    cx.refresh_windows();
+}
+
 /// Make `settings` the ones in force, and repaint every window.
-pub(crate) fn apply(cx: &mut App, settings: &Settings) {
+pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Scheme>) {
     let chosen = crate::fonts::choose(cx, settings);
     let live = Live {
         font: TermFont {
@@ -53,6 +82,9 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings) {
         links: settings.links.clone(),
         clipboard: settings.clipboard.write,
         fallback: settings.fallback.launch.clone(),
+        scheme: settings.scheme(),
+        themes,
+        preview: None,
         refused: None,
     };
     if let Ok(mut l) = LIVE.write() {
@@ -62,7 +94,7 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings) {
 }
 
 /// Keep the settings in force, and say why the change was not applied.
-fn refuse(cx: &mut App, why: String) {
+pub(crate) fn refuse(cx: &mut App, why: String) {
     if let Ok(mut l) = LIVE.write()
         && let Some(l) = l.as_mut()
     {
@@ -97,10 +129,23 @@ pub(crate) fn watch(cx: &mut App) {
             seen = now;
             let read = cx
                 .background_executor()
-                .spawn(async move { workspace_config::load_settings().map_err(|e| e.to_string()) })
+                .spawn(async move {
+                    workspace_config::load_settings()
+                        .map(|s| (s, themes()))
+                        .map_err(|e| e.to_string())
+                })
                 .await;
             cx.update(|cx| match read {
-                Ok(s) => apply(cx, &s),
+                Ok((s, themes)) => {
+                    // A preview in progress stays on top until it ends.
+                    let preview = with(|l| l.preview).flatten();
+                    apply(cx, &s, themes);
+                    if let Ok(mut l) = LIVE.write()
+                        && let Some(l) = l.as_mut()
+                    {
+                        l.preview = preview;
+                    }
+                }
                 Err(why) => refuse(cx, why),
             });
         }

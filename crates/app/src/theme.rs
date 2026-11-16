@@ -97,7 +97,8 @@ pub(crate) const LIGHT: Theme = Theme {
 
 /// The window's skin: the one for the scheme in force (see `live`).
 pub(crate) fn for_window(_window: &Window) -> Theme {
-    crate::live::with(|l| l.theme).unwrap_or_else(|| for_scheme(terminal_core::schemes::default()))
+    crate::live::with(|l| l.preview.unwrap_or(l.theme))
+        .unwrap_or_else(|| for_scheme(terminal_core::schemes::default()))
 }
 
 fn hex(c: terminal_core::Rgb) -> u32 {

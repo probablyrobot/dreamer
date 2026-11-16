@@ -29,6 +29,7 @@ mod live;
 mod palette;
 mod panel;
 mod theme;
+mod theme_pick;
 
 use theme::{c, ca};
 mod workspace;
@@ -1193,7 +1194,7 @@ fn main() -> ExitCode {
         });
         // The settings in force, then kept live: a valid change to the
         // configuration applies at once, an invalid one is shown and waits.
-        live::apply(cx, &settings);
+        live::apply(cx, &settings, live::themes());
         live::watch(cx);
         if workspace_mode {
             let launch = client::Launch::new(args.daemon.clone());

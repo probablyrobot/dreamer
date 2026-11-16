@@ -12,6 +12,7 @@
 pub mod check;
 pub mod desktop_state;
 mod dirs;
+pub mod edit;
 pub mod extensions;
 pub mod hosts;
 mod plan;

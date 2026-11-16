@@ -2,6 +2,8 @@
 //! keyboard. Destructive actions are named as such and need a second
 //! Enter; "Close view" closes only this window and never kills anything.
 
+use terminal_ghostty::core::schemes::Scheme;
+
 /// A workspace command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -28,12 +30,13 @@ pub(crate) enum Command {
     ToggleDecorations,
     OpenPanel,
     ClosePanel,
+    Theme,
     /// An installed package's contributed command, by its place in the
     /// palette's `contributed` labels.
     Contributed(u16),
 }
 
-pub(crate) const ALL: [Command; 23] = [
+pub(crate) const ALL: [Command; 24] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -57,6 +60,7 @@ pub(crate) const ALL: [Command; 23] = [
     Command::ToggleDecorations,
     Command::OpenPanel,
     Command::ClosePanel,
+    Command::Theme,
 ];
 
 impl Command {
@@ -85,6 +89,7 @@ impl Command {
             Command::ToggleDecorations => "Show or hide decorations in this pane (filter marks)",
             Command::OpenPanel => "Open an app package as a panel… (its manifest's path)",
             Command::ClosePanel => "Close the app panel",
+            Command::Theme => "Theme… (colors of the terminals and the window)",
             Command::Contributed(_) => "",
         }
     }
@@ -133,6 +138,31 @@ pub(crate) enum Stage {
     Name(Command, String),
     /// A command waits for several values, one field at a time.
     Form(Form),
+    /// Choosing a theme; the highlighted one is previewed.
+    Theme(Pick),
+}
+
+/// Themes to choose from, narrowed by what is typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Pick {
+    pub filter: String,
+    pub selected: usize,
+    pub choices: Vec<&'static Scheme>,
+}
+
+impl Pick {
+    /// The themes the filter leaves, matched on the title or the name.
+    pub(crate) fn shown(&self) -> Vec<&'static Scheme> {
+        self.choices
+            .iter()
+            .copied()
+            .filter(|s| matches(&self.filter, s.title) || matches(&self.filter, s.name))
+            .collect()
+    }
+
+    pub(crate) fn highlighted(&self) -> Option<&'static Scheme> {
+        self.shown().get(self.selected).copied()
+    }
 }
 
 /// Fields typed one after another: Enter moves to the next, and the last
@@ -181,6 +211,8 @@ pub(crate) enum Decision {
     Run(Command, Option<String>),
     /// Submit a form's values.
     Submit(Form),
+    /// Keep this theme.
+    Theme(&'static Scheme),
     /// Stay open: confirm or name next, or nothing matches.
     Stay,
 }
@@ -192,6 +224,9 @@ pub(crate) struct Palette {
     pub stage: Stage,
     /// Labels of installed packages' commands, after the built-in ones.
     pub contributed: Vec<String>,
+    /// Every theme, for "Theme…", and the one in force.
+    pub themes: Vec<&'static Scheme>,
+    pub current: Option<&'static Scheme>,
 }
 
 impl Palette {
@@ -201,6 +236,27 @@ impl Palette {
             selected: 0,
             stage: Stage::Choose,
             contributed: Vec::new(),
+            themes: Vec::new(),
+            current: None,
+        }
+    }
+
+    /// With the themes "Theme…" offers, starting at `current`.
+    pub(crate) fn with_themes(
+        mut self,
+        themes: Vec<&'static Scheme>,
+        current: Option<&'static Scheme>,
+    ) -> Palette {
+        self.themes = themes;
+        self.current = current;
+        self
+    }
+
+    /// The theme to preview: the highlighted one while choosing a theme.
+    pub(crate) fn previewed(&self) -> Option<&'static Scheme> {
+        match &self.stage {
+            Stage::Theme(p) => p.highlighted(),
+            _ => None,
         }
     }
 
@@ -240,6 +296,10 @@ impl Palette {
                 self.selected = 0;
             }
             Stage::Name(_, name) => name.push(c),
+            Stage::Theme(p) => {
+                p.filter.push(c);
+                p.selected = 0;
+            }
             Stage::Confirm(_) => {}
             Stage::Form(f) => {
                 f.fields[f.at].1.push(c);
@@ -256,6 +316,10 @@ impl Palette {
             }
             Stage::Name(_, name) => {
                 name.pop();
+            }
+            Stage::Theme(p) => {
+                p.filter.pop();
+                p.selected = 0;
             }
             Stage::Confirm(_) => self.stage = Stage::Choose,
             Stage::Form(f) => {
@@ -275,14 +339,17 @@ impl Palette {
             };
             return;
         }
-        let n = self.shown().len();
+        let (n, selected) = match &mut self.stage {
+            Stage::Theme(p) => (p.shown().len(), &mut p.selected),
+            _ => (self.shown().len(), &mut self.selected),
+        };
         if n == 0 {
             return;
         }
-        self.selected = if down {
-            (self.selected + 1) % n
+        *selected = if down {
+            (*selected + 1) % n
         } else {
-            (self.selected + n - 1) % n
+            (*selected + n - 1) % n
         };
     }
 
@@ -298,6 +365,17 @@ impl Palette {
                 } else if c.needs_name() {
                     self.stage = Stage::Name(c, String::new());
                     Decision::Stay
+                } else if c == Command::Theme {
+                    let selected = self
+                        .current
+                        .and_then(|now| self.themes.iter().position(|s| s.name == now.name))
+                        .unwrap_or(0);
+                    self.stage = Stage::Theme(Pick {
+                        filter: String::new(),
+                        selected,
+                        choices: self.themes.clone(),
+                    });
+                    Decision::Stay
                 } else if c == Command::AddHost {
                     self.stage = Stage::Form(Form::host(c, Default::default(), None));
                     Decision::Stay
@@ -310,6 +388,7 @@ impl Palette {
                 Decision::Run(c, Some(name.trim().to_owned()))
             }
             Stage::Name(..) => Decision::Stay,
+            Stage::Theme(p) => p.highlighted().map_or(Decision::Stay, Decision::Theme),
             Stage::Form(mut f) => {
                 let (label, value, required) = &f.fields[f.at];
                 if *required && value.trim().is_empty() {
@@ -421,6 +500,27 @@ mod tests {
                 .filter(|c| c.destructive())
                 .all(|c| c.label().contains("Kill"))
         );
+    }
+
+    #[test]
+    fn theme_starts_at_the_one_in_force_and_narrows_by_typing() {
+        use terminal_ghostty::core::schemes;
+        let all: Vec<_> = schemes::all().collect();
+        let nord = schemes::find("nord").expect("ok");
+        let mut p = Palette::new().with_themes(all, Some(nord));
+        "theme".chars().for_each(|c| p.type_char(c));
+        assert_eq!(p.shown()[0], Command::Theme);
+        assert_eq!(p.previewed(), None);
+        assert_eq!(p.enter(), Decision::Stay);
+        assert_eq!(p.previewed(), Some(nord), "the one in force first");
+        "rose pine dawn".chars().for_each(|c| p.type_char(c));
+        let dawn = p.previewed().expect("ok");
+        assert_eq!(dawn.name, "rose-pine-dawn");
+        p.move_selection(true);
+        p.move_selection(false);
+        assert_eq!(p.enter(), Decision::Theme(dawn));
+        "zzzz".chars().for_each(|c| p.type_char(c));
+        assert_eq!(p.enter(), Decision::Stay, "nothing left to choose");
     }
 
     #[test]
