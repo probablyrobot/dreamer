@@ -258,6 +258,13 @@ pub enum WorkerMsg {
         tier: Tier,
         reply: oneshot::Sender<bool>,
     },
+    /// New terminal defaults (the configuration changed): apply them to
+    /// every mirror, and end its subscriptions as re-attached so every view
+    /// takes a checkpoint with the new colors.
+    SetDefaults {
+        terminal: crate::TerminalDefaults,
+        reply: oneshot::Sender<()>,
+    },
     /// Start a subscription on the pane's owner: decide replay or
     /// checkpoint and register the sink before any later record is applied.
     Subscribe {
@@ -312,6 +319,9 @@ struct Mirror {
     /// was re-attached because its output outran the mirror.
     attach: u32,
     reattaches: u32,
+    /// The sequence when the default colors last changed: a view resuming
+    /// from at or before it takes a checkpoint, not a replay without them.
+    colors_from: u64,
 }
 
 impl Drop for Mirror {
@@ -337,7 +347,7 @@ impl Mirror {
             return Err(format!("the mirror failed: {e}"));
         }
         let replay = resume
-            .filter(|(g, _)| *g == self.generation)
+            .filter(|(g, after)| *g == self.generation && *after > self.colors_from)
             .and_then(|(_, after)| {
                 self.journal
                     .since(after + 1)
@@ -554,7 +564,7 @@ pub fn spawn(
     index: usize,
     capacity: usize,
     retention: Retention,
-    terminal: crate::TerminalDefaults,
+    mut terminal: crate::TerminalDefaults,
     host_bytes: Arc<AtomicUsize>,
 ) -> std::io::Result<WorkerHandle> {
     let (tx, mut rx) = mpsc::channel::<WorkerMsg>(capacity);
@@ -666,6 +676,7 @@ pub fn spawn(
                             focused: None,
                             attach,
                             reattaches,
+                            colors_from: 0,
                         };
                         // Clipboard writes count only from live output, never
                         // from what bootstrap restored.
@@ -745,6 +756,28 @@ pub fn spawn(
                     WorkerMsg::SetTier { pane, tier, reply } => {
                         let found = mirrors.get_mut(&pane).map(|m| m.tier = tier).is_some();
                         let _ = reply.send(found);
+                    }
+                    WorkerMsg::SetDefaults { terminal: t, reply } => {
+                        terminal = t;
+                        for m in mirrors.values_mut() {
+                            // Setting defaults on a live engine does not fail
+                            // short of a broken engine, which its next record
+                            // reports.
+                            let _ = m
+                                .engine
+                                .set_scheme(terminal.scheme)
+                                .and_then(|()| m.engine.set_default_cursor(terminal.cursor, terminal.blink));
+                            m.colors_from = m.sequence;
+                            for s in m.subscribers.drain(..) {
+                                let _ = s.ended.compare_exchange(
+                                    end::RUNNING,
+                                    end::REATTACHED,
+                                    Ordering::SeqCst,
+                                    Ordering::SeqCst,
+                                );
+                            }
+                        }
+                        let _ = reply.send(());
                     }
                     WorkerMsg::Read {
                         pane,

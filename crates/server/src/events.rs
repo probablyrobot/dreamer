@@ -52,6 +52,10 @@ pub mod kind {
     /// A job started or ended; `subject` is its id, `state` its state
     /// (`running`, `succeeded`, `failed`, `killed`, `lost`), `pane`.
     pub const JOB: &str = "jobs.state";
+    /// The configuration directory changed. `state` is `applied` (and
+    /// `subject` the terminal theme in force) or `refused` (and `subject`
+    /// why: the settings in force are kept).
+    pub const CONFIG: &str = "config.changed";
 }
 
 struct Ring {
@@ -223,6 +227,15 @@ impl Events {
         self.push(DaemonEvent {
             kind: kind::DECORATIONS.into(),
             pane: Some(pane),
+            ..DaemonEvent::default()
+        });
+    }
+
+    pub fn config(&self, applied: bool, subject: &str) {
+        self.push(DaemonEvent {
+            kind: kind::CONFIG.into(),
+            subject: Some(subject.to_owned()),
+            state: Some(if applied { "applied" } else { "refused" }.into()),
             ..DaemonEvent::default()
         });
     }

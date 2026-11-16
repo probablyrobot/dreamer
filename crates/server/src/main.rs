@@ -13,6 +13,7 @@
 
 mod agents;
 mod apps;
+mod config_watch;
 mod conn;
 mod decorations;
 mod events;
@@ -253,6 +254,17 @@ fn run(args: Args) -> Result<ExitCode, String> {
             sizing: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             pastes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             leases: crate::leases::Leases::default(),
+            terminal: tokio::sync::Mutex::new(match workspace_config::load_settings() {
+                Ok(s) => {
+                    let d = config_watch::defaults(&s);
+                    log::info(format!("terminal theme {}", d.scheme.name));
+                    d
+                }
+                Err(e) => {
+                    log::warn(format!("{e}; terminal defaults used"));
+                    mirror::TerminalDefaults::default()
+                }
+            }),
             hosts: hosts::Hosts::new(events.clone()),
             events,
             broker: Arc::default(),
@@ -275,6 +287,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
         ));
         extensions::start_all(&state).await;
         tokio::spawn(jobs::watch(state.clone()));
+        tokio::spawn(config_watch::run(state.clone()));
         let r = serve(listener, rpc, state.clone()).await;
         state.filters.remove_all();
         state.scripts.stop_all().await;

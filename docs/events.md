@@ -18,6 +18,7 @@ output; read that with `terminal.read` or `terminal.subscribe`.
 | `filters.tripped` | A filter's circuit breaker stopped it | `subject`: the filter; `state`: why |
 | `decorations.changed` | A pane's decorations were added or dropped | `pane`; list them with `decorations.list` |
 | `jobs.state` | A job started, or ended while this daemon ran | `subject`: the job id; `state`: `running`, `succeeded`, `failed`, `killed`, or `lost`; `pane` |
+| `config.changed` | The configuration directory changed | `state`: `applied` (`subject`: the terminal theme in force) or `refused` (`subject`: why; the settings in force are kept) |
 
 Every event also has a `sequence` and `time_unix_ms`. Sequences start at 1
 when the daemon starts and increase by one per event.

@@ -25,6 +25,7 @@ mod fallback;
 mod fonts;
 mod input;
 mod keymap;
+mod live;
 mod palette;
 mod panel;
 mod theme;
@@ -96,7 +97,7 @@ pub(crate) enum Smoke {
 
 /// The terminal font for this run, set once before the window opens.
 #[derive(Debug, Clone)]
-struct TermFont {
+pub(crate) struct TermFont {
     family: String,
     size: f32,
     line_height: f32,
@@ -113,21 +114,14 @@ impl TermFont {
     }
 }
 
-/// The terminal command for the fallback attach, if configured.
-pub(crate) static FALLBACK_LAUNCH: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-static CLIPBOARD: std::sync::OnceLock<workspace_config::ClipboardWrite> =
-    std::sync::OnceLock::new();
 /// Clipboard writes the smoke received: recorded, never put on the
 /// system clipboard.
 static SMOKE_CLIPBOARD: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
 /// Links the input smoke "opened": recorded instead of launching anything.
 static SMOKE_OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-static TERM_FONT: std::sync::OnceLock<TermFont> = std::sync::OnceLock::new();
-static LINKS: std::sync::OnceLock<workspace_config::LinkSettings> = std::sync::OnceLock::new();
-
 fn term_font() -> TermFont {
-    TERM_FONT.get().cloned().unwrap_or_else(|| {
+    live::with(|l| l.font.clone()).unwrap_or_else(|| {
         let d = workspace_config::Settings::default();
         TermFont {
             family: d.font.family,
@@ -389,9 +383,7 @@ impl Shell {
             let Some(link) = feed.link_at(cell.0 as u16, cell.1 as u16).await else {
                 return;
             };
-            let allowed = LINKS
-                .get()
-                .cloned()
+            let allowed = live::with(|l| l.links.clone())
                 .unwrap_or_else(|| workspace_config::Settings::default().links)
                 .allows(&link.uri);
             if !allowed {
@@ -422,7 +414,7 @@ impl Shell {
     /// (it is the pane's focused client), applied under `clipboard.write`.
     fn clipboard_write(&mut self, text: Vec<u8>, window: &Window, cx: &mut Context<Self>) {
         use workspace_config::ClipboardWrite;
-        let allowed = match CLIPBOARD.get().copied().unwrap_or_default() {
+        let allowed = match live::with(|l| l.clipboard).unwrap_or_default() {
             ClipboardWrite::Deny => false,
             ClipboardWrite::Allow => true,
             ClipboardWrite::Focused => window.is_window_active() || self.smoke != Smoke::Off,
@@ -762,7 +754,7 @@ impl Render for Shell {
             });
             cx.notify();
         }
-        let t = *theme::for_window(window);
+        let t = theme::for_window(window);
         let term = term_font();
         let entity = cx.entity();
         let grid_size = self.frame.size;
@@ -1199,20 +1191,10 @@ fn main() -> ExitCode {
                 eprintln!("dreamer: {e}");
             }
         });
-        let chosen = fonts::choose(cx, &settings);
-        let _ = LINKS.set(settings.links.clone());
-        let _ = CLIPBOARD.set(settings.clipboard.write);
-        let _ = FALLBACK_LAUNCH.set(settings.fallback.launch.clone());
-        // The same scheme the daemon gives the terminals: the chrome is
-        // drawn from it, so the window is one theme.
-        let _ = theme::THEME.set(theme::for_scheme(settings.scheme()));
-        let _ = TERM_FONT.set(TermFont {
-            family: chosen.family,
-            size: settings.font.size,
-            line_height: settings.font.line_height,
-            letter_spacing: settings.font.letter_spacing,
-            source: chosen.source,
-        });
+        // The settings in force, then kept live: a valid change to the
+        // configuration applies at once, an invalid one is shown and waits.
+        live::apply(cx, &settings);
+        live::watch(cx);
         if workspace_mode {
             let launch = client::Launch::new(args.daemon.clone());
             if let Some(host) = &args.host {

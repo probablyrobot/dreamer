@@ -106,6 +106,12 @@ fn main() -> ExitCode {
             .ok_or_else(|| "cannot determine the configuration directory (HOME unset)".into()),
         ["workspace", "list"] => list(),
         ["themes"] => themes(),
+        ["config", "check"] => config_check(),
+        ["skills"] | ["skills", "list"] => skills_list(),
+        ["skills", "show", name] => skills_show(name),
+        ["skills", "install", rest @ ..] => skills_install(rest),
+        ["config", "schema"] => config_schema(false),
+        ["config", "schema", "--json"] => config_schema(true),
         ["workspace", "check", target] => check(target),
         ["workspace", "up", target, rest @ ..] => up(target, rest),
         ["version"] => daemon::version(),
@@ -225,6 +231,142 @@ fn main() -> ExitCode {
 
 /// Every built-in color scheme with a swatch of its colors, the configured
 /// one marked. Swatches use 24-bit color only on a terminal.
+/// Agent skills that ship with Dreamer: instructions an agent (Claude
+/// Code, Codex) reads to help with Dreamer, so people need not edit its
+/// files by hand.
+const SKILLS: &[(&str, &str)] = &[(
+    "dreamer-config",
+    include_str!("../skills/dreamer-config/SKILL.md"),
+)];
+
+fn skill_description(text: &str) -> &str {
+    text.lines()
+        .find_map(|l| l.strip_prefix("description: "))
+        .unwrap_or_default()
+}
+
+fn skills_list() -> Result<(), String> {
+    for (name, text) in SKILLS {
+        println!("{name}\n    {}", skill_description(text));
+    }
+    println!("\nInstall for your agents with `dream skills install` (Claude Code and Codex).");
+    Ok(())
+}
+
+fn skills_show(name: &str) -> Result<(), String> {
+    let (_, text) = SKILLS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .ok_or_else(|| format!("no skill `{name}`; see `dream skills`"))?;
+    print!("{text}");
+    Ok(())
+}
+
+/// `dream skills install [--claude] [--codex]`: write the skills where the
+/// agents look for them (`~/.claude/skills/NAME/SKILL.md`,
+/// `~/.codex/skills/NAME/SKILL.md`). Both by default. Only what Dreamer
+/// ships is written, each skill in its own directory.
+fn skills_install(args: &[&str]) -> Result<(), String> {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or("HOME is not set")?;
+    let mut targets = Vec::new();
+    for a in args {
+        match *a {
+            "--claude" => targets.push(home.join(".claude/skills")),
+            "--codex" => targets.push(home.join(".codex/skills")),
+            other => {
+                return Err(format!(
+                    "unknown option `{other}`; use --claude, --codex, or neither for both"
+                ));
+            }
+        }
+    }
+    if targets.is_empty() {
+        targets = vec![home.join(".claude/skills"), home.join(".codex/skills")];
+    }
+    for dir in targets {
+        for (name, text) in SKILLS {
+            let d = dir.join(name);
+            std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+            let f = d.join("SKILL.md");
+            std::fs::write(&f, text).map_err(|e| format!("{}: {e}", f.display()))?;
+            println!("installed {}", f.display());
+        }
+    }
+    Ok(())
+}
+
+/// `dream config check`: every configuration file, checked with the
+/// parsers the programs use. Exit status 1 if any has a problem.
+fn config_check() -> Result<(), String> {
+    let dir = config_dir().ok_or("cannot determine the configuration directory (HOME unset)")?;
+    let results = workspace_config::check::check(&dir);
+    let mut bad = 0;
+    for c in &results {
+        match (&c.problem, c.exists) {
+            (Some(p), _) => {
+                bad += 1;
+                println!("✗ {}\n  {p}", c.file.display());
+            }
+            (None, true) => println!("✓ {}", c.file.display()),
+            (None, false) => println!("· {} (absent: defaults)", c.file.display()),
+        }
+    }
+    if bad > 0 {
+        return Err(format!(
+            "{bad} file(s) with problems; Dreamer keeps the settings in force until they are fixed"
+        ));
+    }
+    Ok(())
+}
+
+/// `dream config schema [--json]`: every key of dreamer.yaml with its kind,
+/// default, meaning, an example, and whether it applies live.
+fn config_schema(json: bool) -> Result<(), String> {
+    let keys = workspace_config::check::SCHEMA;
+    if json {
+        let v: Vec<serde_json::Value> = keys
+            .iter()
+            .map(|k| {
+                serde_json::json!({
+                    "path": k.path, "kind": k.kind, "default": k.default,
+                    "doc": k.doc, "example": k.example, "live": k.live,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    for k in keys {
+        println!("{}  ({})", k.path, k.kind);
+        println!("    {}", k.doc);
+        println!(
+            "    default: {}   example: {}{}",
+            k.default,
+            k.example,
+            if k.live {
+                "   applies live"
+            } else {
+                "   applies to what starts next"
+            }
+        );
+    }
+    println!(
+        "\nThe file: {}. Theme files: {}/themes. Check with `dream config check`.",
+        workspace_config::settings_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "dreamer.yaml".into()),
+        config_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|| "<config dir>".into())
+    );
+    Ok(())
+}
+
 fn themes() -> Result<(), String> {
     use std::io::IsTerminal as _;
     let configured = workspace_config::load_settings()

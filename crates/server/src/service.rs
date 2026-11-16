@@ -78,6 +78,11 @@ pub struct State {
     pub pastes: Mutex<std::collections::HashMap<(u32, u64), Vec<u8>>>,
     /// Interaction leases for automated input.
     pub leases: crate::leases::Leases,
+    /// The terminal defaults in force (theme, cursor). The terminal's
+    /// colors are the daemon's to set: it owns the canonical mirrors, and
+    /// views get them through checkpoints. Changed live by the
+    /// configuration (`config_watch`).
+    pub terminal: Mutex<mirror::TerminalDefaults>,
     /// Connection epochs: each new control connection gets the next one.
     pub epochs: std::sync::atomic::AtomicU64,
     /// Outbound connections to other hosts' daemons (the coordinator role).
@@ -164,10 +169,13 @@ impl State {
             // The mirrors take the event stream first: responses to the
             // commands below only arrive while events keep flowing.
             let epoch = domain::ConnectionEpoch(self.epochs.fetch_add(1, Ordering::SeqCst) + 1);
-            let (host, changes) =
-                mirror::MirrorHost::start(conn.clone(), events, epoch, mirror_config())
-                    .await
-                    .map_err(|e| unavailable(format!("cannot start mirror workers: {e}")))?;
+            let mut mc = mirror_config();
+            // The terminal defaults in force: from the configuration when
+            // the daemon started, or as a later valid change left them.
+            mc.terminal = *self.terminal.lock().await;
+            let (host, changes) = mirror::MirrorHost::start(conn.clone(), events, epoch, mc)
+                .await
+                .map_err(|e| unavailable(format!("cannot start mirror workers: {e}")))?;
             let (tracker, _) = InventoryTracker::start(
                 conn.clone(),
                 ServerKey(cfg.name.clone()),
@@ -198,21 +206,6 @@ impl State {
 /// `DREAMER_JOURNAL_PANE_BYTES` and `DREAMER_JOURNAL_HOST_BYTES` if set.
 fn mirror_config() -> mirror::MirrorConfig {
     let mut c = mirror::MirrorConfig::default();
-    // The terminal's colors and cursor are the daemon's to set: it owns the
-    // canonical mirrors, and views get them through checkpoints.
-    match workspace_config::load_settings() {
-        Ok(settings) => {
-            let scheme = settings.scheme();
-            let t = settings.terminal;
-            c.terminal = mirror::TerminalDefaults {
-                scheme,
-                cursor: t.cursor_style.shape(),
-                blink: t.cursor_blink,
-            };
-            log::info(format!("terminal theme {}", scheme.name));
-        }
-        Err(e) => log::warn(format!("{e}; terminal defaults used")),
-    }
     let env = |name: &str| {
         std::env::var(name)
             .ok()

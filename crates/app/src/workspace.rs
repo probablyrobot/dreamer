@@ -1219,9 +1219,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let copy = attach.display.clone();
-        let launch = crate::FALLBACK_LAUNCH
-            .get()
-            .and_then(|t| crate::fallback::launch_argv(t, &attach));
+        let launch = crate::live::with(|l| l.fallback.clone())
+            .and_then(|t| crate::fallback::launch_argv(&t, &attach));
         // The command on a line of its own, wrapped rather than cut at the
         // pane's edge, with the buttons below it.
         let copy_button = div()
@@ -1464,7 +1463,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_title(window, cx);
-        let t = *crate::theme::for_window(window);
+        let t = crate::theme::for_window(window);
         let tf = term_font();
         let m = cell_metrics(window, &font(tf.family.clone()), px(tf.size), tf.spacing());
         let entity = cx.entity();
@@ -1591,7 +1590,28 @@ impl Render for Workspace {
                     .px_2()
                     .text_color(c(t.warning))
                     .child(s)
-            }));
+            }))
+            // A configuration change that was not applied, and why: the
+            // settings in force stay until the file reads again.
+            .children(
+                crate::live::with(|l| l.refused.clone())
+                    .flatten()
+                    .map(|why| {
+                        let short = why
+                            .rsplit_once("dreamer.yaml: ")
+                            .map_or(why.as_str(), |(_, rest)| rest)
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned();
+                        div()
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .text_color(c(t.warning))
+                            .child(format!("dreamer.yaml not applied: {short}"))
+                    }),
+            );
 
         // The sidebar, on demand: sessions, the shown one highlighted.
         let sidebar = self.sidebar.then(|| {

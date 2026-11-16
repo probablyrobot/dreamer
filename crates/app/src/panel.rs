@@ -180,7 +180,7 @@ fn window(app: &App) -> (usize, &[serde_json::Value]) {
 
 impl Render for AppPanel {
     fn render(&mut self, window_: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = *theme::for_window(window_);
+        let t = theme::for_window(window_);
         let latest = self.latest.lock().ok().and_then(|l| l.clone());
         if latest.is_some() {
             self.shown = latest;
