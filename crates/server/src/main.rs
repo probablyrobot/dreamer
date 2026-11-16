@@ -14,6 +14,7 @@
 mod agents;
 mod approvals;
 mod apps;
+mod collectors;
 mod config_watch;
 mod conn;
 mod decorations;
@@ -287,6 +288,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             extensions: extensions::Extensions::default(),
             scripts: scripts::Scripts::default(),
             filters: filters::Filters::default(),
+            collectors: collectors::Collectors::new(state_dir.join("collectors")),
             decorations: decorations::Decorations::default(),
             agents: agents::Agents::default(),
             apps: apps::Apps::default(),
@@ -302,11 +304,13 @@ fn run(args: Args) -> Result<ExitCode, String> {
             args.background
         ));
         extensions::start_all(&state).await;
+        collectors::start_all(&state).await;
         tokio::spawn(jobs::watch(state.clone()));
         tokio::spawn(config_watch::run(state.clone()));
         tokio::spawn(tiers::run(state.clone()));
         let r = serve(listener, rpc, state.clone()).await;
         state.filters.remove_all();
+        state.collectors.save_all();
         state.scripts.stop_all().await;
         state.extensions.stop_all().await;
         r

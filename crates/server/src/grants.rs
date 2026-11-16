@@ -42,6 +42,24 @@ fn targets(r: &Request) -> Targets {
         Request::ProcessesList(p) => Targets::Panes(p.panes.clone()),
         // A job gets a window of its own; cancelling signals a process.
         Request::JobsStart(_) | Request::JobsCancel(_) => Targets::Everything,
+        // A collector reads its panes for as long as it runs; one that
+        // names only listed panes needs those, any other every pane.
+        Request::CollectCreate(p) => match &p.from {
+            Some(f)
+                if !f.all
+                    && f.session.is_none()
+                    && f.window.is_none()
+                    && f.command.is_none()
+                    && !f.panes.is_empty() =>
+            {
+                Targets::Panes(f.panes.clone())
+            }
+            _ => Targets::Everything,
+        },
+        // Rows come from any pane a collector covers.
+        Request::CollectList(_) | Request::CollectQuery(_) | Request::CollectStop(_) => {
+            Targets::Everything
+        }
         Request::TapsSubscribe(p) if p.every_pane => Targets::Everything,
         Request::TapsSubscribe(p) => Targets::Panes(p.panes.clone()),
         Request::ActionsSubmit(s) => match s.action.as_ref().and_then(|a| a.kind.as_ref()) {

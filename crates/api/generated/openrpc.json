@@ -378,6 +378,413 @@
         },
         "type": "object"
       },
+      "CollectCapture": {
+        "description": "What a row keeps besides its metadata.",
+        "properties": {
+          "after": {
+            "description": "Lines after a matched line to keep (at most 100).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "before": {
+            "description": "Lines before a matched line to keep (at most 100).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fields": {
+            "description": "Fields from a line match: each value is a template where $1 or ${name} stands for a group.",
+            "items": {
+              "$ref": "#/components/schemas/CollectField"
+            },
+            "type": "array"
+          },
+          "json": {
+            "description": "The matched line is a JSON object: its top-level members become fields.",
+            "type": "boolean"
+          },
+          "lines": {
+            "description": "Keep the pane's last N lines (at most 1000).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "screen": {
+            "description": "Keep the pane's screen.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "CollectField": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CollectFrom": {
+        "description": "The panes a collector covers: exactly one of these.",
+        "properties": {
+          "all": {
+            "description": "Every pane, including panes created later.",
+            "type": "boolean"
+          },
+          "command": {
+            "description": "Panes whose current command (as tmux names it) matches this regular expression, while it does.",
+            "type": "string"
+          },
+          "panes": {
+            "description": "These panes.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "session": {
+            "description": "The panes of the session with this name.",
+            "type": "string"
+          },
+          "window": {
+            "description": "The panes of this window (@N).",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "CollectGroup": {
+        "properties": {
+          "count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "latest_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "description": "Empty for rows without the field.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CollectKeep": {
+        "properties": {
+          "max_age_s": {
+            "description": "Rows older than this go. Default 7 days.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "description": "Rows kept; the oldest go first. Default 5000, at most 100000.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "CollectList": {
+        "properties": {
+          "collectors": {
+            "items": {
+              "$ref": "#/components/schemas/CollectorStatus"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "CollectQuery": {
+        "properties": {
+          "after": {
+            "description": "Only rows after this row id: the first `limit` of them. Without it, the newest `limit`.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fields": {
+            "description": "Only rows with each of these fields at exactly this value.",
+            "items": {
+              "$ref": "#/components/schemas/CollectField"
+            },
+            "type": "array"
+          },
+          "group_by": {
+            "description": "Count rows by a field, or by pane, session, window, cwd, command, or trigger, instead of listing them.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Default 100, at most 10000.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "panes": {
+            "description": "Only rows from these panes.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "since_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "until_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "CollectRef": {
+        "properties": {
+          "delete": {
+            "description": "Also delete its definition and rows.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CollectResult": {
+        "properties": {
+          "dropped": {
+            "description": "The collector's dropped count (see CollectorStatus).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "groups": {
+            "description": "With group_by: most rows first.",
+            "items": {
+              "$ref": "#/components/schemas/CollectGroup"
+            },
+            "type": "array"
+          },
+          "matched": {
+            "description": "Rows that passed the filters.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "description": "Oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/CollectRow"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "description": "More rows matched than were returned.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "CollectRow": {
+        "description": "One row of a collector's table.",
+        "properties": {
+          "after": {
+            "description": "Context lines after the matched line.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "before": {
+            "description": "Context lines before the matched line, oldest first.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "collector": {
+            "type": "string"
+          },
+          "command": {
+            "description": "The command line the shell reported, else the pane's current command.",
+            "type": "string"
+          },
+          "cwd": {
+            "description": "The pane's working directory: as the shell reports it (OSC 7), else its process's.",
+            "type": "string"
+          },
+          "dropped": {
+            "description": "Rows this pane dropped (rate cap) since its previous recorded row.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "exit_status": {
+            "description": "command_end: the status the shell reported.",
+            "type": "integer"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/CollectField"
+            },
+            "type": "array"
+          },
+          "id": {
+            "description": "Increases by one per row of the collector, across daemon restarts.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "line": {
+            "description": "The matched line (line trigger).",
+            "type": "string"
+          },
+          "lines": {
+            "description": "The screen or the last lines, when capture asks for them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The pane's session name.",
+            "type": "string"
+          },
+          "time_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "trigger": {
+            "description": "line, command_end, idle, bell, exit, or interval.",
+            "type": "string"
+          },
+          "window": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "CollectWhen": {
+        "description": "What makes a row: exactly one of these.",
+        "properties": {
+          "bell": {
+            "description": "The pane rang the bell.",
+            "type": "boolean"
+          },
+          "command_end": {
+            "description": "A command finished, as the shell reports it through shell integration (OSC 133).",
+            "type": "boolean"
+          },
+          "every_s": {
+            "description": "Every this many seconds (at least 1); captures the screen unless capture says lines.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "exit": {
+            "description": "The pane's process ended: the pane closed, died, or was respawned.",
+            "type": "boolean"
+          },
+          "idle_ms": {
+            "description": "The pane wrote nothing for this long after writing something (at least 100).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ignore_case": {
+            "description": "For line.",
+            "type": "boolean"
+          },
+          "line": {
+            "description": "A committed line matches this regular expression.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CollectorSpec": {
+        "properties": {
+          "capture": {
+            "$ref": "#/components/schemas/CollectCapture"
+          },
+          "from": {
+            "$ref": "#/components/schemas/CollectFrom"
+          },
+          "keep": {
+            "$ref": "#/components/schemas/CollectKeep"
+          },
+          "name": {
+            "description": "Letters, digits, `-`, `_`, or `.`; unique.",
+            "type": "string"
+          },
+          "per_second": {
+            "description": "Rows per second per pane; more are dropped and counted. Default 10, at most 1000.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "when": {
+            "$ref": "#/components/schemas/CollectWhen"
+          }
+        },
+        "type": "object"
+      },
+      "CollectorState": {
+        "enum": [
+          "unspecified",
+          "running",
+          "stopped"
+        ],
+        "type": "string"
+      },
+      "CollectorStatus": {
+        "properties": {
+          "collected": {
+            "description": "Rows recorded since it was created.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "created_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dropped": {
+            "description": "Rows not recorded since it was created: over per_second, or the writer fell behind.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "panes": {
+            "description": "The panes it follows now.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "rows": {
+            "description": "Rows kept now.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/CollectorSpec"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CollectorState"
+          }
+        },
+        "type": "object"
+      },
       "DaemonEvent": {
         "description": "One entry of the daemon's event log: metadata only, never terminal content.",
         "properties": {
@@ -3735,7 +4142,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.40"
+    "version": "1.41"
   },
   "methods": [
     {
@@ -6067,6 +6474,176 @@
         }
       },
       "summary": "Allow or deny a waiting action (owner only).",
+      "x-mutation": true
+    },
+    {
+      "name": "collect.create",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Letters, digits, `-`, `_`, or `.`; unique.",
+          "name": "name",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "from",
+          "schema": {
+            "$ref": "#/components/schemas/CollectFrom"
+          }
+        },
+        {
+          "name": "when",
+          "schema": {
+            "$ref": "#/components/schemas/CollectWhen"
+          }
+        },
+        {
+          "name": "capture",
+          "schema": {
+            "$ref": "#/components/schemas/CollectCapture"
+          }
+        },
+        {
+          "name": "keep",
+          "schema": {
+            "$ref": "#/components/schemas/CollectKeep"
+          }
+        },
+        {
+          "description": "Rows per second per pane; more are dropped and counted. Default 10, at most 1000.",
+          "name": "per_second",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CollectorStatus"
+        }
+      },
+      "summary": "Start a collector: a standing rule that records rows from pane output. It only reads, and survives daemon restarts.",
+      "x-mutation": true
+    },
+    {
+      "name": "collect.list",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CollectList"
+        }
+      },
+      "x-mutation": false
+    },
+    {
+      "name": "collect.query",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "name",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Only rows from these panes.",
+          "name": "panes",
+          "schema": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "Only rows with each of these fields at exactly this value.",
+          "name": "fields",
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/CollectField"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "name": "since_unix_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "until_unix_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "Only rows after this row id: the first `limit` of them. Without it, the newest `limit`.",
+          "name": "after",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "Default 100, at most 10000.",
+          "name": "limit",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "Count rows by a field, or by pane, session, window, cwd, command, or trigger, instead of listing them.",
+          "name": "group_by",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CollectResult"
+        }
+      },
+      "summary": "A collector's rows, filtered, or counts grouped by a field.",
+      "x-mutation": false
+    },
+    {
+      "name": "collect.stop",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "name",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Also delete its definition and rows.",
+          "name": "delete",
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/CollectorStatus"
+        }
+      },
+      "summary": "Stop a collector; its rows stay queryable unless delete is set.",
       "x-mutation": true
     }
   ],

@@ -67,6 +67,9 @@ pub mod kind {
     /// An approval was answered or timed out; `subject` is its id, `state`
     /// `once`, `pane`, `deny`, or `timeout`.
     pub const APPROVAL_ANSWERED: &str = "approvals.answered";
+    /// A collector recorded a row; `subject` is the collector, `pane`, and
+    /// `state` the row's id.
+    pub const COLLECT_ROW: &str = "collect.row";
 }
 
 struct Ring {
@@ -255,6 +258,16 @@ impl Events {
             kind: kind::CONFIG.into(),
             subject: Some(subject.to_owned()),
             state: Some(if applied { "applied" } else { "refused" }.into()),
+            ..DaemonEvent::default()
+        });
+    }
+
+    pub fn collect_row(&self, collector: &str, pane: u32, id: u64) {
+        self.push(DaemonEvent {
+            kind: kind::COLLECT_ROW.into(),
+            subject: Some(collector.to_owned()),
+            pane: Some(pane),
+            state: Some(id.to_string()),
             ..DaemonEvent::default()
         });
     }

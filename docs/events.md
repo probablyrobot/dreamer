@@ -22,6 +22,7 @@ output; read that with `terminal.read` or `terminal.subscribe`.
 | `config.changed` | The configuration directory changed | `state`: `applied` (`subject`: the terminal theme in force) or `refused` (`subject`: why; the settings in force are kept) |
 | `approvals.requested` | An agent's action waits for the user's approval ([grants.md](grants.md#act-levels-and-approvals)) | `subject`: the approval id; `pane`: the first pane it would act on; `state`: what it would do |
 | `approvals.answered` | An approval was answered, or nobody answered in time | `subject`: the approval id; `pane`; `state`: `once`, `pane`, `deny`, or `timeout` |
+| `collect.row` | A collector recorded a row | `subject`: the collector; `pane`; `state`: the row's id (read it with `collect.query`; see [collectors.md](collectors.md#events)) |
 
 Every event also has a `sequence` and `time_unix_ms`. Sequences start at 1
 when the daemon starts and increase by one per event.

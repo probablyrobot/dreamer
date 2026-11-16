@@ -1321,8 +1321,16 @@ async fn stream(
     };
     while let Some((seq, r, fx)) = rx.recv().await {
         let mut records = vec![to_api(seq, &r)];
-        let mut effects: Vec<api::TerminalEffect> =
-            fx.map(|e| effect(seq, e)).into_iter().collect();
+        // Command steps (shell integration) are for collectors; an effect
+        // with nothing else is not sent to views.
+        let shown = |e: &mirror::Effect| {
+            e.bells > 0 || e.title.is_some() || e.cwd.is_some() || e.clipboard.is_some()
+        };
+        let mut effects: Vec<api::TerminalEffect> = fx
+            .filter(shown)
+            .map(|e| effect(seq, e))
+            .into_iter()
+            .collect();
         let mut bytes = records[0].data.len();
         while records.len() < BATCH_RECORDS && bytes < BATCH_BYTES {
             match rx.try_recv() {
@@ -1330,7 +1338,7 @@ async fn stream(
                     let r = to_api(seq, &r);
                     bytes += r.data.len();
                     records.push(r);
-                    effects.extend(fx.map(|e| effect(seq, e)));
+                    effects.extend(fx.filter(shown).map(|e| effect(seq, e)));
                 }
                 Err(_) => break,
             }

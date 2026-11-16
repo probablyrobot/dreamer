@@ -35,6 +35,8 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `agents.runs` | `all_panes` |
 | `processes.list` | The listed panes in scope; no panes (every process) needs `all_panes` |
 | `jobs.start`, `jobs.cancel` | `all_panes` (a job gets its own window; cancelling signals a process) |
+| `collect.create` | The listed panes in scope when `from` lists panes; any other `from` needs `all_panes` (see [collectors.md](collectors.md#grants)) |
+| `collect.list`, `collect.query`, `collect.stop` | `all_panes` |
 | `terminal.query` | The listed panes in scope; no panes (every pane) or any `hosts` needs `all_panes` |
 | `actions.submit` on a pane (split, resize, select, zoom, input, keys, kill) | That pane in scope |
 | `actions.submit` on a window or session (select, rename, kill, new window) | `all_panes` |

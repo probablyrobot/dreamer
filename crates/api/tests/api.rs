@@ -301,6 +301,21 @@ impl Service for Fixed {
     async fn taps_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn collect_create(
+        &self,
+        _: api::CollectorSpec,
+    ) -> Result<api::CollectorStatus, RpcError> {
+        Ok(api::CollectorStatus::default())
+    }
+    async fn collect_list(&self, _: Empty) -> Result<api::CollectList, RpcError> {
+        Ok(api::CollectList::default())
+    }
+    async fn collect_query(&self, _: api::CollectQuery) -> Result<api::CollectResult, RpcError> {
+        Ok(api::CollectResult::default())
+    }
+    async fn collect_stop(&self, _: api::CollectRef) -> Result<api::CollectorStatus, RpcError> {
+        Ok(api::CollectorStatus::default())
+    }
     async fn scripts_validate(&self, _: api::ScriptSource) -> Result<api::ScriptCheck, RpcError> {
         Ok(api::ScriptCheck::default())
     }

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 40;
+pub const PROTOCOL_MINOR: u32 = 41;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1046,6 +1046,50 @@ mod approval_decision_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| ApprovalDecision::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CollectorState {
+    Unspecified = 0,
+    Running = 1,
+    /// Stopped with collect.stop; its rows can still be queried.
+    Stopped = 2,
+}
+
+impl CollectorState {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Running => "running",
+            Self::Stopped => "stopped",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "running" => Some(Self::Running),
+            "stopped" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+}
+
+mod collector_state_json {
+    use super::CollectorState;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match CollectorState::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| CollectorState::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -3682,6 +3726,294 @@ pub struct ApprovalAnswer {
     pub decision: i32,
 }
 
+/// The panes a collector covers: exactly one of these.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectFrom {
+    /// Every pane, including panes created later.
+    #[prost(bool, tag = "1")]
+    pub all: bool,
+    /// The panes of the session with this name.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// The panes of this window (@N).
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+    /// These panes.
+    #[prost(uint32, repeated, tag = "4")]
+    pub panes: Vec<u32>,
+    /// Panes whose current command (as tmux names it) matches this regular expression, while it does.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+/// What makes a row: exactly one of these.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectWhen {
+    /// A committed line matches this regular expression.
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// For line.
+    #[prost(bool, tag = "2")]
+    pub ignore_case: bool,
+    /// A command finished, as the shell reports it through shell integration (OSC 133).
+    #[prost(bool, tag = "3")]
+    pub command_end: bool,
+    /// The pane wrote nothing for this long after writing something (at least 100).
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_ms: Option<u32>,
+    /// The pane rang the bell.
+    #[prost(bool, tag = "5")]
+    pub bell: bool,
+    /// The pane's process ended: the pane closed, died, or was respawned.
+    #[prost(bool, tag = "6")]
+    pub exit: bool,
+    /// Every this many seconds (at least 1); captures the screen unless capture says lines.
+    #[prost(uint32, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub every_s: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectField {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub value: String,
+}
+
+/// What a row keeps besides its metadata.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectCapture {
+    /// Fields from a line match: each value is a template where $1 or ${name} stands for a group.
+    #[prost(message, repeated, tag = "1")]
+    pub fields: Vec<CollectField>,
+    /// The matched line is a JSON object: its top-level members become fields.
+    #[prost(bool, tag = "2")]
+    pub json: bool,
+    /// Keep the pane's screen.
+    #[prost(bool, tag = "3")]
+    pub screen: bool,
+    /// Keep the pane's last N lines (at most 1000).
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u32>,
+    /// Lines before a matched line to keep (at most 100).
+    #[prost(uint32, tag = "5")]
+    pub before: u32,
+    /// Lines after a matched line to keep (at most 100).
+    #[prost(uint32, tag = "6")]
+    pub after: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectKeep {
+    /// Rows kept; the oldest go first. Default 5000, at most 100000.
+    #[prost(uint32, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u32>,
+    /// Rows older than this go. Default 7 days.
+    #[prost(uint64, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_age_s: Option<u64>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectorSpec {
+    /// Letters, digits, `-`, `_`, or `.`; unique.
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<CollectFrom>,
+    #[prost(message, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub when: Option<CollectWhen>,
+    #[prost(message, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture: Option<CollectCapture>,
+    #[prost(message, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep: Option<CollectKeep>,
+    /// Rows per second per pane; more are dropped and counted. Default 10, at most 1000.
+    #[prost(uint32, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub per_second: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectorStatus {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec: Option<CollectorSpec>,
+    #[prost(enumeration = "CollectorState", tag = "3")]
+    #[serde(with = "collector_state_json")]
+    pub state: i32,
+    /// Rows kept now.
+    #[prost(uint64, tag = "4")]
+    pub rows: u64,
+    /// Rows recorded since it was created.
+    #[prost(uint64, tag = "5")]
+    pub collected: u64,
+    /// Rows not recorded since it was created: over per_second, or the writer fell behind.
+    #[prost(uint64, tag = "6")]
+    pub dropped: u64,
+    /// The panes it follows now.
+    #[prost(uint32, repeated, tag = "7")]
+    pub panes: Vec<u32>,
+    #[prost(uint64, tag = "8")]
+    pub created_unix_ms: u64,
+    #[prost(string, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectList {
+    #[prost(message, repeated, tag = "1")]
+    pub collectors: Vec<CollectorStatus>,
+}
+
+/// One row of a collector's table.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectRow {
+    /// Increases by one per row of the collector, across daemon restarts.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(string, tag = "2")]
+    pub collector: String,
+    #[prost(uint64, tag = "3")]
+    pub time_unix_ms: u64,
+    #[prost(uint32, tag = "4")]
+    pub pane: u32,
+    /// The pane's session name.
+    #[prost(string, tag = "5")]
+    pub session: String,
+    /// The pane's working directory: as the shell reports it (OSC 7), else its process's.
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The command line the shell reported, else the pane's current command.
+    #[prost(string, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// line, command_end, idle, bell, exit, or interval.
+    #[prost(string, tag = "8")]
+    pub trigger: String,
+    /// The matched line (line trigger).
+    #[prost(string, tag = "9")]
+    pub line: String,
+    #[prost(message, repeated, tag = "10")]
+    pub fields: Vec<CollectField>,
+    /// Context lines before the matched line, oldest first.
+    #[prost(string, repeated, tag = "11")]
+    pub before: Vec<String>,
+    /// Context lines after the matched line.
+    #[prost(string, repeated, tag = "12")]
+    pub after: Vec<String>,
+    /// The screen or the last lines, when capture asks for them.
+    #[prost(string, repeated, tag = "13")]
+    pub lines: Vec<String>,
+    /// command_end: the status the shell reported.
+    #[prost(int32, optional, tag = "14")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_status: Option<i32>,
+    /// Rows this pane dropped (rate cap) since its previous recorded row.
+    #[prost(uint64, tag = "15")]
+    pub dropped: u64,
+    #[prost(uint32, optional, tag = "16")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectQuery {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// Only rows from these panes.
+    #[prost(uint32, repeated, tag = "2")]
+    pub panes: Vec<u32>,
+    /// Only rows with each of these fields at exactly this value.
+    #[prost(message, repeated, tag = "3")]
+    pub fields: Vec<CollectField>,
+    #[prost(uint64, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since_unix_ms: Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until_unix_ms: Option<u64>,
+    /// Only rows after this row id: the first `limit` of them. Without it, the newest `limit`.
+    #[prost(uint64, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+    /// Default 100, at most 10000.
+    #[prost(uint32, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// Count rows by a field, or by pane, session, window, cwd, command, or trigger, instead of listing them.
+    #[prost(string, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectGroup {
+    /// Empty for rows without the field.
+    #[prost(string, tag = "1")]
+    pub value: String,
+    #[prost(uint64, tag = "2")]
+    pub count: u64,
+    #[prost(uint64, tag = "3")]
+    pub latest_unix_ms: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectResult {
+    /// Oldest first.
+    #[prost(message, repeated, tag = "1")]
+    pub rows: Vec<CollectRow>,
+    /// With group_by: most rows first.
+    #[prost(message, repeated, tag = "2")]
+    pub groups: Vec<CollectGroup>,
+    /// Rows that passed the filters.
+    #[prost(uint64, tag = "3")]
+    pub matched: u64,
+    /// More rows matched than were returned.
+    #[prost(bool, tag = "4")]
+    pub truncated: bool,
+    /// The collector's dropped count (see CollectorStatus).
+    #[prost(uint64, tag = "5")]
+    pub dropped: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollectRef {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// Also delete its definition and rows.
+    #[prost(bool, tag = "2")]
+    pub delete: bool,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -3753,6 +4085,10 @@ pub mod method {
     pub const TERMINAL_RUN: &str = "terminal.run";
     pub const APPROVALS_LIST: &str = "approvals.list";
     pub const APPROVALS_ANSWER: &str = "approvals.answer";
+    pub const COLLECT_CREATE: &str = "collect.create";
+    pub const COLLECT_LIST: &str = "collect.list";
+    pub const COLLECT_QUERY: &str = "collect.query";
+    pub const COLLECT_STOP: &str = "collect.stop";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4248,6 +4584,34 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Allow or deny a waiting action (owner only).",
     },
+    MethodInfo {
+        name: "collect.create",
+        params: "CollectorSpec",
+        result: "CollectorStatus",
+        mutation: true,
+        doc: "Start a collector: a standing rule that records rows from pane output. It only reads, and survives daemon restarts.",
+    },
+    MethodInfo {
+        name: "collect.list",
+        params: "Empty",
+        result: "CollectList",
+        mutation: false,
+        doc: "",
+    },
+    MethodInfo {
+        name: "collect.query",
+        params: "CollectQuery",
+        result: "CollectResult",
+        mutation: false,
+        doc: "A collector's rows, filtered, or counts grouped by a field.",
+    },
+    MethodInfo {
+        name: "collect.stop",
+        params: "CollectRef",
+        result: "CollectorStatus",
+        mutation: true,
+        doc: "Stop a collector; its rows stay queryable unless delete is set.",
+    },
 ];
 
 /// A typed request for one method.
@@ -4322,6 +4686,10 @@ pub enum Request {
     TerminalRun(TerminalRun),
     ApprovalsList(Empty),
     ApprovalsAnswer(ApprovalAnswer),
+    CollectCreate(CollectorSpec),
+    CollectList(Empty),
+    CollectQuery(CollectQuery),
+    CollectStop(CollectRef),
 }
 
 impl Request {
@@ -4396,6 +4764,10 @@ impl Request {
             Self::TerminalRun(_) => "terminal.run",
             Self::ApprovalsList(_) => "approvals.list",
             Self::ApprovalsAnswer(_) => "approvals.answer",
+            Self::CollectCreate(_) => "collect.create",
+            Self::CollectList(_) => "collect.list",
+            Self::CollectQuery(_) => "collect.query",
+            Self::CollectStop(_) => "collect.stop",
         }
     }
 
@@ -4471,6 +4843,10 @@ impl Request {
             Self::TerminalRun(v) => ::prost::Message::encode_to_vec(v),
             Self::ApprovalsList(v) => ::prost::Message::encode_to_vec(v),
             Self::ApprovalsAnswer(v) => ::prost::Message::encode_to_vec(v),
+            Self::CollectCreate(v) => ::prost::Message::encode_to_vec(v),
+            Self::CollectList(v) => ::prost::Message::encode_to_vec(v),
+            Self::CollectQuery(v) => ::prost::Message::encode_to_vec(v),
+            Self::CollectStop(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -4553,6 +4929,10 @@ impl Request {
             "terminal.run" => Ok(Self::TerminalRun(::prost::Message::decode(bytes)?)),
             "approvals.list" => Ok(Self::ApprovalsList(::prost::Message::decode(bytes)?)),
             "approvals.answer" => Ok(Self::ApprovalsAnswer(::prost::Message::decode(bytes)?)),
+            "collect.create" => Ok(Self::CollectCreate(::prost::Message::decode(bytes)?)),
+            "collect.list" => Ok(Self::CollectList(::prost::Message::decode(bytes)?)),
+            "collect.query" => Ok(Self::CollectQuery(::prost::Message::decode(bytes)?)),
+            "collect.stop" => Ok(Self::CollectStop(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -4628,6 +5008,10 @@ impl Request {
             Self::TerminalRun(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ApprovalsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ApprovalsAnswer(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::CollectCreate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::CollectList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::CollectQuery(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::CollectStop(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -4706,6 +5090,10 @@ impl Request {
             "terminal.run" => Ok(Self::TerminalRun(serde_json::from_value(value)?)),
             "approvals.list" => Ok(Self::ApprovalsList(serde_json::from_value(value)?)),
             "approvals.answer" => Ok(Self::ApprovalsAnswer(serde_json::from_value(value)?)),
+            "collect.create" => Ok(Self::CollectCreate(serde_json::from_value(value)?)),
+            "collect.list" => Ok(Self::CollectList(serde_json::from_value(value)?)),
+            "collect.query" => Ok(Self::CollectQuery(serde_json::from_value(value)?)),
+            "collect.stop" => Ok(Self::CollectStop(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -4783,6 +5171,10 @@ pub enum Response {
     TerminalRun(RunResult),
     ApprovalsList(ApprovalList),
     ApprovalsAnswer(Approval),
+    CollectCreate(CollectorStatus),
+    CollectList(CollectList),
+    CollectQuery(CollectResult),
+    CollectStop(CollectorStatus),
 }
 
 impl Response {
@@ -4857,6 +5249,10 @@ impl Response {
             Self::TerminalRun(_) => "terminal.run",
             Self::ApprovalsList(_) => "approvals.list",
             Self::ApprovalsAnswer(_) => "approvals.answer",
+            Self::CollectCreate(_) => "collect.create",
+            Self::CollectList(_) => "collect.list",
+            Self::CollectQuery(_) => "collect.query",
+            Self::CollectStop(_) => "collect.stop",
         }
     }
 
@@ -4932,6 +5328,10 @@ impl Response {
             Self::TerminalRun(v) => ::prost::Message::encode_to_vec(v),
             Self::ApprovalsList(v) => ::prost::Message::encode_to_vec(v),
             Self::ApprovalsAnswer(v) => ::prost::Message::encode_to_vec(v),
+            Self::CollectCreate(v) => ::prost::Message::encode_to_vec(v),
+            Self::CollectList(v) => ::prost::Message::encode_to_vec(v),
+            Self::CollectQuery(v) => ::prost::Message::encode_to_vec(v),
+            Self::CollectStop(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -5014,6 +5414,10 @@ impl Response {
             "terminal.run" => Ok(Self::TerminalRun(::prost::Message::decode(bytes)?)),
             "approvals.list" => Ok(Self::ApprovalsList(::prost::Message::decode(bytes)?)),
             "approvals.answer" => Ok(Self::ApprovalsAnswer(::prost::Message::decode(bytes)?)),
+            "collect.create" => Ok(Self::CollectCreate(::prost::Message::decode(bytes)?)),
+            "collect.list" => Ok(Self::CollectList(::prost::Message::decode(bytes)?)),
+            "collect.query" => Ok(Self::CollectQuery(::prost::Message::decode(bytes)?)),
+            "collect.stop" => Ok(Self::CollectStop(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5089,6 +5493,10 @@ impl Response {
             Self::TerminalRun(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ApprovalsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ApprovalsAnswer(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::CollectCreate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::CollectList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::CollectQuery(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::CollectStop(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -5167,6 +5575,10 @@ impl Response {
             "terminal.run" => Ok(Self::TerminalRun(serde_json::from_value(value)?)),
             "approvals.list" => Ok(Self::ApprovalsList(serde_json::from_value(value)?)),
             "approvals.answer" => Ok(Self::ApprovalsAnswer(serde_json::from_value(value)?)),
+            "collect.create" => Ok(Self::CollectCreate(serde_json::from_value(value)?)),
+            "collect.list" => Ok(Self::CollectList(serde_json::from_value(value)?)),
+            "collect.query" => Ok(Self::CollectQuery(serde_json::from_value(value)?)),
+            "collect.stop" => Ok(Self::CollectStop(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5509,6 +5921,25 @@ pub trait Service: Sync {
         &self,
         params: ApprovalAnswer,
     ) -> impl ::core::future::Future<Output = Result<Approval, RpcError>> + Send;
+    /// Start a collector: a standing rule that records rows from pane output. It only reads, and survives daemon restarts.
+    fn collect_create(
+        &self,
+        params: CollectorSpec,
+    ) -> impl ::core::future::Future<Output = Result<CollectorStatus, RpcError>> + Send;
+    fn collect_list(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<CollectList, RpcError>> + Send;
+    /// A collector's rows, filtered, or counts grouped by a field.
+    fn collect_query(
+        &self,
+        params: CollectQuery,
+    ) -> impl ::core::future::Future<Output = Result<CollectResult, RpcError>> + Send;
+    /// Stop a collector; its rows stay queryable unless delete is set.
+    fn collect_stop(
+        &self,
+        params: CollectRef,
+    ) -> impl ::core::future::Future<Output = Result<CollectorStatus, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -5658,6 +6089,10 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .approvals_answer(p)
             .await
             .map(Response::ApprovalsAnswer),
+        Request::CollectCreate(p) => service.collect_create(p).await.map(Response::CollectCreate),
+        Request::CollectList(p) => service.collect_list(p).await.map(Response::CollectList),
+        Request::CollectQuery(p) => service.collect_query(p).await.map(Response::CollectQuery),
+        Request::CollectStop(p) => service.collect_stop(p).await.map(Response::CollectStop),
     }
 }
 

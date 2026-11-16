@@ -123,6 +123,44 @@ impl Matcher {
     pub fn is_match(&self, line: &str) -> bool {
         self.find(line).is_some()
     }
+
+    /// The pattern's groups, numbered from 1 in order, with their names.
+    pub fn group_names(&self) -> Vec<Option<String>> {
+        self.0
+            .capture_names()
+            .skip(1)
+            .map(|n| n.map(str::to_owned))
+            .collect()
+    }
+
+    /// The groups of the first match in `line`, numbered from 1 in order,
+    /// each with its name if it has one and its text if it took part.
+    /// `None` when nothing matched.
+    pub fn captures(&self, line: &str) -> Option<Vec<Group>> {
+        let mut cut = line.len().min(MAX_LINE);
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let caps = self.0.captures(&line[..cut])?;
+        Some(
+            self.0
+                .capture_names()
+                .enumerate()
+                .skip(1)
+                .map(|(i, name)| Group {
+                    name: name.map(str::to_owned),
+                    text: caps.get(i).map(|m| m.as_str().to_owned()),
+                })
+                .collect(),
+        )
+    }
+}
+
+/// One group of a match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    pub name: Option<String>,
+    pub text: Option<String>,
 }
 
 #[cfg(test)]
@@ -171,6 +209,20 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(!m.is_match(&format!("{}!", "a".repeat(5000))));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn groups_are_numbered_and_named() {
+        let m = Matcher::new(&spec(r"^(FAILED|ok) (?P<test>\S+)(?: (x))?")).expect("regex");
+        let g = m.captures("FAILED tests::one").expect("match");
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0].text.as_deref(), Some("FAILED"));
+        assert_eq!(
+            (g[1].name.as_deref(), g[1].text.as_deref()),
+            (Some("test"), Some("tests::one"))
+        );
+        assert_eq!(g[2].text, None, "a group that took no part");
+        assert!(m.captures("nothing").is_none());
     }
 
     #[test]

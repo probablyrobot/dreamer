@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 40 }
+version: { major: 1, minor: 41 }
 package: dreamer.v1
 
 types:
@@ -1427,6 +1427,128 @@ types:
     fields:
       - { n: 1, name: id, type: string }
       - { n: 2, name: decision, type: ApprovalDecision }
+  # ---- collectors ---------------------------------------------------------
+
+  - message: CollectFrom
+    doc: "The panes a collector covers: exactly one of these."
+    fields:
+      - { n: 1, name: all, type: bool, doc: "Every pane, including panes created later." }
+      - { n: 2, name: session, type: string, optional: true, doc: "The panes of the session with this name." }
+      - { n: 3, name: window, type: u32, optional: true, doc: "The panes of this window (@N)." }
+      - { n: 4, name: panes, type: u32, repeated: true, doc: "These panes." }
+      - { n: 5, name: command, type: string, optional: true, doc: "Panes whose current command (as tmux names it) matches this regular expression, while it does." }
+
+  - message: CollectWhen
+    doc: "What makes a row: exactly one of these."
+    fields:
+      - { n: 1, name: line, type: string, optional: true, doc: "A committed line matches this regular expression." }
+      - { n: 2, name: ignore_case, type: bool, doc: "For line." }
+      - { n: 3, name: command_end, type: bool, doc: "A command finished, as the shell reports it through shell integration (OSC 133)." }
+      - { n: 4, name: idle_ms, type: u32, optional: true, doc: "The pane wrote nothing for this long after writing something (at least 100)." }
+      - { n: 5, name: bell, type: bool, doc: "The pane rang the bell." }
+      - { n: 6, name: exit, type: bool, doc: "The pane's process ended: the pane closed, died, or was respawned." }
+      - { n: 7, name: every_s, type: u32, optional: true, doc: "Every this many seconds (at least 1); captures the screen unless capture says lines." }
+
+  - message: CollectField
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: value, type: string }
+
+  - message: CollectCapture
+    doc: "What a row keeps besides its metadata."
+    fields:
+      - { n: 1, name: fields, type: CollectField, repeated: true, doc: "Fields from a line match: each value is a template where $1 or ${name} stands for a group." }
+      - { n: 2, name: json, type: bool, doc: "The matched line is a JSON object: its top-level members become fields." }
+      - { n: 3, name: screen, type: bool, doc: "Keep the pane's screen." }
+      - { n: 4, name: lines, type: u32, optional: true, doc: "Keep the pane's last N lines (at most 1000)." }
+      - { n: 5, name: before, type: u32, doc: "Lines before a matched line to keep (at most 100)." }
+      - { n: 6, name: after, type: u32, doc: "Lines after a matched line to keep (at most 100)." }
+
+  - message: CollectKeep
+    fields:
+      - { n: 1, name: rows, type: u32, optional: true, doc: "Rows kept; the oldest go first. Default 5000, at most 100000." }
+      - { n: 2, name: max_age_s, type: u64, optional: true, doc: "Rows older than this go. Default 7 days." }
+
+  - message: CollectorSpec
+    fields:
+      - { n: 1, name: name, type: string, doc: "Letters, digits, `-`, `_`, or `.`; unique." }
+      - { n: 2, name: from, type: CollectFrom }
+      - { n: 3, name: when, type: CollectWhen }
+      - { n: 4, name: capture, type: CollectCapture }
+      - { n: 5, name: keep, type: CollectKeep }
+      - { n: 6, name: per_second, type: u32, optional: true, doc: "Rows per second per pane; more are dropped and counted. Default 10, at most 1000." }
+
+  - enum: CollectorState
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: running }
+      - { n: 2, name: stopped, doc: "Stopped with collect.stop; its rows can still be queried." }
+
+  - message: CollectorStatus
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: spec, type: CollectorSpec }
+      - { n: 3, name: state, type: CollectorState }
+      - { n: 4, name: rows, type: u64, doc: "Rows kept now." }
+      - { n: 5, name: collected, type: u64, doc: "Rows recorded since it was created." }
+      - { n: 6, name: dropped, type: u64, doc: "Rows not recorded since it was created: over per_second, or the writer fell behind." }
+      - { n: 7, name: panes, type: u32, repeated: true, doc: "The panes it follows now." }
+      - { n: 8, name: created_unix_ms, type: u64 }
+      - { n: 9, name: last_error, type: string, optional: true }
+
+  - message: CollectList
+    fields:
+      - { n: 1, name: collectors, type: CollectorStatus, repeated: true }
+
+  - message: CollectRow
+    doc: "One row of a collector's table."
+    fields:
+      - { n: 1, name: id, type: u64, doc: "Increases by one per row of the collector, across daemon restarts." }
+      - { n: 2, name: collector, type: string }
+      - { n: 3, name: time_unix_ms, type: u64 }
+      - { n: 4, name: pane, type: u32 }
+      - { n: 5, name: session, type: string, doc: "The pane's session name." }
+      - { n: 6, name: cwd, type: string, optional: true, doc: "The pane's working directory: as the shell reports it (OSC 7), else its process's." }
+      - { n: 7, name: command, type: string, optional: true, doc: "The command line the shell reported, else the pane's current command." }
+      - { n: 8, name: trigger, type: string, doc: "line, command_end, idle, bell, exit, or interval." }
+      - { n: 9, name: line, type: string, doc: "The matched line (line trigger)." }
+      - { n: 10, name: fields, type: CollectField, repeated: true }
+      - { n: 11, name: before, type: string, repeated: true, doc: "Context lines before the matched line, oldest first." }
+      - { n: 12, name: after, type: string, repeated: true, doc: "Context lines after the matched line." }
+      - { n: 13, name: lines, type: string, repeated: true, doc: "The screen or the last lines, when capture asks for them." }
+      - { n: 14, name: exit_status, type: i32, optional: true, doc: "command_end: the status the shell reported." }
+      - { n: 15, name: dropped, type: u64, doc: "Rows this pane dropped (rate cap) since its previous recorded row." }
+      - { n: 16, name: window, type: u32, optional: true }
+
+  - message: CollectQuery
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: panes, type: u32, repeated: true, doc: "Only rows from these panes." }
+      - { n: 3, name: fields, type: CollectField, repeated: true, doc: "Only rows with each of these fields at exactly this value." }
+      - { n: 4, name: since_unix_ms, type: u64, optional: true }
+      - { n: 5, name: until_unix_ms, type: u64, optional: true }
+      - { n: 6, name: after, type: u64, optional: true, doc: "Only rows after this row id: the first `limit` of them. Without it, the newest `limit`." }
+      - { n: 7, name: limit, type: u32, optional: true, doc: "Default 100, at most 10000." }
+      - { n: 8, name: group_by, type: string, optional: true, doc: "Count rows by a field, or by pane, session, window, cwd, command, or trigger, instead of listing them." }
+
+  - message: CollectGroup
+    fields:
+      - { n: 1, name: value, type: string, doc: "Empty for rows without the field." }
+      - { n: 2, name: count, type: u64 }
+      - { n: 3, name: latest_unix_ms, type: u64 }
+
+  - message: CollectResult
+    fields:
+      - { n: 1, name: rows, type: CollectRow, repeated: true, doc: "Oldest first." }
+      - { n: 2, name: groups, type: CollectGroup, repeated: true, doc: "With group_by: most rows first." }
+      - { n: 3, name: matched, type: u64, doc: "Rows that passed the filters." }
+      - { n: 4, name: truncated, type: bool, doc: "More rows matched than were returned." }
+      - { n: 5, name: dropped, type: u64, doc: "The collector's dropped count (see CollectorStatus)." }
+
+  - message: CollectRef
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: delete, type: bool, doc: "Also delete its definition and rows." }
 
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
@@ -1498,6 +1620,10 @@ methods:
   - { method: terminal.run, params: TerminalRun, result: RunResult, mutation: true, doc: "Run an exact program as a job in a new window or pane the caller then owns; returns its exit status and output." }
   - { method: approvals.list, params: Empty, result: ApprovalList, doc: "Actions waiting for the user's approval (owner only)." }
   - { method: approvals.answer, params: ApprovalAnswer, result: Approval, mutation: true, doc: "Allow or deny a waiting action (owner only)." }
+  - { method: collect.create, params: CollectorSpec, result: CollectorStatus, mutation: true, doc: "Start a collector: a standing rule that records rows from pane output. It only reads, and survives daemon restarts." }
+  - { method: collect.list, params: Empty, result: CollectList }
+  - { method: collect.query, params: CollectQuery, result: CollectResult, doc: "A collector's rows, filtered, or counts grouped by a field." }
+  - { method: collect.stop, params: CollectRef, result: CollectorStatus, mutation: true, doc: "Stop a collector; its rows stay queryable unless delete is set." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the
