@@ -1471,6 +1471,23 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The session's windows (tabs) by index, and the active one.
+    pub(crate) fn tabs(&self) -> (Vec<u32>, Option<u32>) {
+        let mut tabs: Vec<&api::Window> = match (&self.current, self.session) {
+            (Some(t), Some(s)) => t
+                .windows
+                .iter()
+                .filter(|w| w.sessions.contains(&s))
+                .collect(),
+            _ => Vec::new(),
+        };
+        tabs.sort_by_key(|w| w.index);
+        (
+            tabs.iter().map(|w| w.id).collect(),
+            self.active_window().map(|w| w.id),
+        )
+    }
+
     pub(crate) fn click_tab_for_smoke(&mut self, window_id: u32, cx: &mut Context<Self>) {
         self.click_tab(window_id, cx);
     }
@@ -1500,8 +1517,18 @@ impl Workspace {
     }
 }
 
+/// Each window frame's start and the terminal paint time so far, while
+/// the GUI benchmark records them (`crate::bench_gui`).
+pub(crate) static FRAME_LOG: std::sync::Mutex<Option<Vec<(std::time::Instant, u64)>>> =
+    std::sync::Mutex::new(None);
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Ok(mut log) = FRAME_LOG.lock()
+            && let Some(log) = log.as_mut()
+        {
+            log.push((std::time::Instant::now(), terminal_render::paint_nanos()));
+        }
         self.sync_title(window, cx);
         let t = crate::theme::for_window(window);
         let tf = term_font();
@@ -2179,6 +2206,7 @@ pub(crate) fn open_via(
     use gpui::{Bounds, WindowBounds, WindowOptions, size};
     let socket = launch.socket.clone();
     let daemon_args = launch.args.clone();
+    let bench_daemon = daemon_args.clone();
     let topology = Arc::new(
         TopologyFeed::start_via(socket.clone(), via.clone(), Some(launch))
             .map_err(|e| format!("cannot follow the tmux topology: {e}"))?,
@@ -2261,6 +2289,15 @@ pub(crate) fn open_via(
                 ws.open_palette(window, cx);
             }
         });
+    }
+    // The GUI benchmark (`cargo xtask bench gui`): measures this window.
+    if via == replica::Via::Local
+        && let Some(out) = std::env::var_os("DREAMER_BENCH_GUI")
+    {
+        let weak = ws.downgrade();
+        let daemon = bench_daemon;
+        cx.spawn(async move |cx| crate::bench_gui::run(any, weak, daemon, out.into(), cx).await)
+            .detach();
     }
     if let Some((daemon, restore)) = smoke {
         let weak = ws.downgrade();

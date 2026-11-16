@@ -159,13 +159,45 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let started = std::time::Instant::now();
         let stats = paint_frame(self, bounds, layout.metrics, window, cx);
+        PAINT_NANOS.fetch_add(
+            started.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         LAST_STATS.with(|s| s.set(stats));
+        PAINTED.with(|p| {
+            let mut p = p.borrow_mut();
+            if p.len() == 256 {
+                p.pop_front();
+            }
+            p.push_back(Arc::as_ptr(&self.frame) as usize);
+        });
         PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
 static PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PAINT_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    /// The frames painted lately, by address (the benchmark asks whether a
+    /// given frame has reached the screen).
+    static PAINTED: std::cell::RefCell<std::collections::VecDeque<usize>> =
+        std::cell::RefCell::new(std::collections::VecDeque::with_capacity(256));
+}
+
+/// Whether `frame` was among the last 256 frames painted on this thread.
+pub fn was_painted(frame: &Arc<FrameSnapshot>) -> bool {
+    let at = Arc::as_ptr(frame) as usize;
+    PAINTED.with(|p| p.borrow().contains(&at))
+}
+
+/// CPU time spent painting terminal elements since the process started,
+/// in nanoseconds (the benchmark's frame work).
+pub fn paint_nanos() -> u64 {
+    PAINT_NANOS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Terminal elements painted since the process started. A static view
 /// must not move it (spec 16.6: zero render wakeups).

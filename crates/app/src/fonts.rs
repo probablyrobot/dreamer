@@ -54,9 +54,19 @@ pub struct ChosenFont {
 
 /// Load shipped fonts, then pick the configured family if any source has
 /// it (shipped files or the system), else the platform's monospace font.
+/// Whether `family` resolves to itself, not to a fallback. One family
+/// lookup: listing every installed font (`all_font_names`) takes over half
+/// a second on macOS, and launch has 150 ms (spec 16.6).
+fn available(cx: &App, family: &str) -> bool {
+    let ts = cx.text_system();
+    let id = ts.resolve_font(&gpui::font(family.to_owned()));
+    ts.get_font_for_id(id)
+        .is_some_and(|f| f.family.as_ref() == family)
+}
+
 pub fn choose(cx: &mut App, settings: &Settings) -> ChosenFont {
     let wanted = settings.font.family.clone();
-    let on_system = cx.text_system().all_font_names().contains(&wanted);
+    let on_system = available(cx, &wanted);
     let mut loaded_from = None;
     for dir in font_dirs() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -74,8 +84,7 @@ pub fn choose(cx: &mut App, settings: &Settings) -> ChosenFont {
             break;
         }
     }
-    let names = cx.text_system().all_font_names();
-    if names.contains(&wanted) {
+    if on_system || available(cx, &wanted) {
         let source = match loaded_from {
             Some(dir) if !on_system => format!("loaded from {}", dir.display()),
             _ => "installed on the system".into(),
@@ -90,7 +99,7 @@ pub fn choose(cx: &mut App, settings: &Settings) -> ChosenFont {
     } else {
         "DejaVu Sans Mono"
     };
-    let family = if names.iter().any(|n| n == fallback) {
+    let family = if available(cx, fallback) {
         fallback.to_owned()
     } else {
         "monospace".to_owned()

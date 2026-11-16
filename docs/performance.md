@@ -129,6 +129,32 @@ Machine and container as above, with `cargo xtask bench busy --idle M
 On the Mac with 400 idle panes, the same run gave 13.7 / 14.3 ms through
 the daemon, with tmux at 100 % of a core.
 
+### Desktop, macOS (M3 Max, as above)
+
+`cargo xtask bench gui --panes N` creates an isolated tmux server with N
+panes, at most 16 to a tab, the first tab visible. It starts the daemon
+first, then a release `dreamer`, which measures itself
+(`crates/app/src/bench_gui.rs`):
+- **Ends at a paint.** Each measure stops when the pane's new frame has
+  been painted, not when it arrived.
+- **Load.** Under load, every other visible pane prints a line every
+  20 ms.
+- **Needs a display.** It must be awake and unlocked, with the window in
+  front.
+
+Revision: branch `m7-05-gui-bench`.
+
+| Measure | 1 pane | 16 panes | 64 panes | 256 panes | Target |
+| --- | --- | --- | --- | --- | --- |
+| Visible panes | 1 | 16 | 16 | 16 | — |
+| Launch to every visible pane painted (daemon running) | 230 ms | 199 ms | 191 ms | 196 ms | Under 150 ms: **not met** |
+| Terminal paints over 3 s with nothing changing | 0 | 0 | 0 | 0 | Zero: met |
+| Key to echo including paint, idle, p50 / p95 | 2.1 / 3.0 ms | 2.1 / 4.2 ms | 2.1 / 4.2 ms | 2.9 / 6.5 ms | p95 under 30 ms: met |
+| Key to echo including paint, 15 busy panes, p50 / p95 | — | 2.1 / 3.3 ms | 2.1 / 3.4 ms | 2.1 / 3.5 ms | One-pane budget plus 10 ms: met |
+| Terminal paint time per frame, 15 busy panes, p95 | — | 1.6 ms | 1.3 ms | 1.5 ms | Under 8 ms: met |
+| Time between frames, 15 busy panes, p95 | — | 25 ms | 17 ms | 17 ms | — |
+| Tab switch to every pane painted, p50 / p95 | — | — | 59 / 65 ms | 67 / 80 ms | p95 under 50 ms: **not met** |
+
 ## Findings
 
 - **Typing under load is bounded by tmux, not the daemon.**
@@ -164,6 +190,22 @@ the daemon, with tmux at 100 % of a core.
 - **Warm panes with long histories are expensive.** 1,000 Warm panes with
   2,000 lines each take 1.9 GB. Demoting panes nobody watches to Cold is
   what keeps a large daemon small.
+- **Launch spent 1.2 s listing fonts.** Choosing the terminal font asked
+  GPUI for every installed font name, twice, and on macOS each listing
+  takes about 0.6 s. Looking up only the wanted family brought launch
+  from 1.33 s to 0.2 s.
+  - The remaining 200 ms is spread out: GPUI's platform start (65 ms),
+    loading the bundled fonts (45 ms), opening the window (40 ms), and the
+    first frame (60 ms).
+  - The target is still not met. Candidates: loading the fonts while the
+    window opens, and painting the first frame before the topology
+    arrives.
+- **A tab switch is a tmux round trip and new subscriptions.**
+  - Selecting a tab goes through tmux. When the topology comes back,
+    each pane of the new tab starts a feed and waits for its checkpoint.
+  - The spec wants the cached last frame painted at once, then a catch-up.
+    The desktop does not keep frames for hidden tabs yet. That is the
+    change that would meet 50 ms (#66).
 - **Attaching many panes at once failed some of them.** Each attach is a
   few command batches on the daemon's one tmux control connection, whose
   queue holds 256. Creating hundreds of panes together overflowed it, and
@@ -177,9 +219,8 @@ the daemon, with tmux at 100 % of a core.
 
 ## Not measured yet
 
-- **GUI workloads (1, 16, 64, and 256 observed panes):** frame time,
-  launch to first interactive frame, tab switch, and key to visible echo
-  including paint. These need a display that is awake and unlocked.
+- **Desktop workloads on Linux** (Wayland and X11), and on macOS with more
+  than 16 visible panes.
 - **Image-heavy and escape-heavy streams.**
 - **Remote latency and jitter.**
 - **The same workloads in reference terminals.**
