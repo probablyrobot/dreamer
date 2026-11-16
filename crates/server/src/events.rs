@@ -47,6 +47,10 @@ pub mod kind {
     /// A filter's circuit breaker tripped; `subject` is the filter, `state`
     /// why.
     pub const FILTER_TRIPPED: &str = "filters.tripped";
+    /// A tmux paste buffer changed (a copy in tmux, or `set-buffer` by
+    /// anyone but Dreamer); `subject` is the buffer's name. The text is
+    /// never in the event: read it with `clipboard.read_tmux_buffer`.
+    pub const TMUX_BUFFER: &str = "clipboard.tmux_buffer";
     /// A pane's decorations changed; `pane`. List them again.
     pub const DECORATIONS: &str = "decorations.changed";
     /// A job started or ended; `subject` is its id, `state` its state
@@ -226,6 +230,14 @@ impl Events {
             subject: Some(id.to_owned()),
             state: Some(state.to_owned()),
             pane,
+            ..DaemonEvent::default()
+        });
+    }
+
+    pub fn tmux_buffer(&self, name: &str) {
+        self.push(DaemonEvent {
+            kind: kind::TMUX_BUFFER.into(),
+            subject: Some(name.to_owned()),
             ..DaemonEvent::default()
         });
     }

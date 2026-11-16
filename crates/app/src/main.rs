@@ -483,8 +483,52 @@ impl Shell {
         };
         cx.spawn(async move |_, cx| {
             if let Some(text) = feed.selection_text().await {
+                to_tmux_buffer(&text);
                 cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)));
             }
+        })
+        .detach();
+    }
+
+    /// A mouse selection was finished: like marking text in tmux, it
+    /// becomes tmux's newest buffer, and with `copy_on_select` it goes to
+    /// the clipboard too (and on Linux, to the primary selection).
+    fn selection_done(&mut self, cx: &mut Context<Self>) {
+        let Some(feed) = self.feed.clone() else {
+            return;
+        };
+        cx.spawn(async move |_, cx| {
+            let Some(text) = feed.selection_text().await.filter(|t| !t.is_empty()) else {
+                return;
+            };
+            to_tmux_buffer(&text);
+            cx.update(|cx| {
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                cx.write_to_primary(gpui::ClipboardItem::new_string(text.clone()));
+                if live::with(|l| l.copy_on_select).unwrap_or(false) {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The middle button pastes tmux's newest buffer, as in tmux.
+    fn paste_tmux_buffer(&mut self, cx: &mut Context<Self>) {
+        let Some(feed) = self.feed.clone() else {
+            return;
+        };
+        cx.spawn(async move |_, _| {
+            let Some(text) = (match TMUX_BUFFERS.get() {
+                Some(b) => b.newest().await,
+                None => None,
+            }) else {
+                return;
+            };
+            feed.send(api::terminal_input::Event::Paste(api::PasteInput {
+                data: text.into_bytes(),
+                ..api::PasteInput::default()
+            }));
         })
         .detach();
     }
@@ -740,7 +784,13 @@ impl Shell {
                     // Shift selects even then.
                     let select = ev.button == gpui::MouseButton::Left
                         && (!s.frame.view.mouse_tracking || ev.modifiers.shift);
-                    if select {
+                    let paste = ev.button == gpui::MouseButton::Middle
+                        && (!s.frame.view.mouse_tracking || ev.modifiers.shift)
+                        && live::with(|l| l.middle_click)
+                            == Some(workspace_config::MiddleClick::Paste);
+                    if paste {
+                        s.paste_tmux_buffer(cx);
+                    } else if select {
                         s.selecting = true;
                         s.select(SelectEvent::Press {
                             at: grid.cell_pos(ev.position),
@@ -756,12 +806,15 @@ impl Shell {
         let e = entity.clone();
         window.on_mouse_event(move |ev: &MouseUpEvent, phase, _, cx| {
             if phase == DispatchPhase::Bubble {
-                e.update(cx, |s, _| {
+                e.update(cx, |s, cx| {
                     if s.selecting && ev.button == gpui::MouseButton::Left {
                         s.selecting = false;
                         s.select(SelectEvent::Release {
                             at: grid.cell_pos(ev.position),
                         });
+                        s.selection_done(cx);
+                    } else if ev.button == gpui::MouseButton::Middle {
+                        // A middle click that pasted sends no release either.
                     } else {
                         let out = s.pointer.up(&grid, ev.button, ev.position, &ev.modifiers);
                         s.send_all(out);
@@ -1328,6 +1381,21 @@ fn parse(args: &[String]) -> Result<Args, String> {
         }
     }
     Ok(a)
+}
+
+/// tmux's paste buffers for this process's local daemon, once a window
+/// has started following them.
+pub(crate) static TMUX_BUFFERS: std::sync::OnceLock<replica::clipboard::TmuxBuffers> =
+    std::sync::OnceLock::new();
+
+/// Send `text` to tmux as its newest paste buffer, if the settings say
+/// Dreamer's copies go there.
+pub(crate) fn to_tmux_buffer(text: &str) {
+    if live::with(|l| l.clipboard_tmux.to_tmux()).unwrap_or(false)
+        && let Some(b) = TMUX_BUFFERS.get()
+    {
+        b.write(text.to_owned());
+    }
 }
 
 /// When the process started (the GUI benchmark's launch time).

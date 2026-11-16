@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 39 }
+version: { major: 1, minor: 40 }
 package: dreamer.v1
 
 types:
@@ -769,6 +769,21 @@ types:
 
   # ---- events -------------------------------------------------------------
 
+  - message: TmuxBufferRead
+    fields:
+      - { n: 1, name: endpoint, type: string, optional: true, doc: Endpoint name; the default endpoint when absent. }
+      - { n: 2, name: name, type: string, optional: true, doc: "The buffer to read (from a clipboard.tmux_buffer event); the newest when absent." }
+
+  - message: TmuxBuffer
+    fields:
+      - { n: 1, name: found, type: bool, doc: "False when there is no such buffer." }
+      - { n: 2, name: text, type: string, doc: "The buffer's text, at most 4 MiB." }
+
+  - message: TmuxBufferWrite
+    fields:
+      - { n: 1, name: endpoint, type: string, optional: true, doc: Endpoint name; the default endpoint when absent. }
+      - { n: 2, name: text, type: string, doc: "Becomes tmux's newest paste buffer (1 byte to 4 MiB)." }
+
   - message: DaemonEvent
     doc: "One entry of the daemon's event log: metadata only, never terminal content."
     fields:
@@ -1419,6 +1434,8 @@ methods:
   - { method: daemon.shutdown, params: Empty, result: ShutdownResult, mutation: true, doc: "Stop the daemon; tmux sessions and panes keep running." }
   - { method: tmux.topology, params: TopologyParams, result: Topology, doc: "Sessions, windows, and panes of one endpoint." }
   - { method: tmux.size_window, params: SizeWindow, result: SizeResult, mutation: true, doc: "Size a tmux window for the client that owns its size (see SizeWindow)." }
+  - { method: clipboard.read_tmux_buffer, params: TmuxBufferRead, result: TmuxBuffer, doc: "A tmux paste buffer's text: the newest, or one a clipboard.tmux_buffer event named." }
+  - { method: clipboard.write_tmux_buffer, params: TmuxBufferWrite, result: Empty, mutation: true, doc: "Make text tmux's newest paste buffer, for tmux's own paste and other tmux clients. Not reported back as a clipboard.tmux_buffer event." }
   - { method: tmux.watch, params: TopologyParams, result: TopologyUpdate, doc: "The current topology; afterwards `tmux.topology` events follow every change." }
   - { method: actions.submit, params: SubmitAction, result: ActionRecord, mutation: true, doc: "Run a typed action and report its observed outcome." }
   - { method: leases.acquire, params: LeaseAcquire, result: Lease, mutation: true, doc: "Hold a pane's interaction lease, so automated input to it is accepted until a person types there." }

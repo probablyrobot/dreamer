@@ -48,6 +48,9 @@ links:
   schemes: [http, https, mailto]         # default
 clipboard:
   write: focused                         # focused (default), allow, or deny
+  tmux: sync                             # sync (default), from_tmux, to_tmux, or off
+  copy_on_select: false                  # default
+  middle_click: paste                    # paste (default) or off
 fallback:
   launch: [kitty, -e, "{command}"]       # optional; no default
 appearance: system                       # system (default), dark, or light
@@ -110,6 +113,20 @@ reaches the system clipboard:
 
 The daemon addresses each write to one window only: the one focused on
 the pane. Programs can never read the clipboard. See `docs/effects.md`.
+
+
+**tmux's paste buffers and the clipboard** (`clipboard.tmux`):
+- **A copy made in tmux** reaches the system clipboard. That covers copy
+  mode's yank in any tmux client, or `tmux set-buffer`. It obeys `write`:
+  with `focused`, only while a Dreamer window is active.
+- **A copy made in Dreamer** becomes tmux's newest buffer. That covers
+  Cmd-C, a finished mouse selection, and Copy in an app panel. tmux's own
+  paste, and plain tmux clients, see it too.
+- **Turning it down:** `from_tmux` or `to_tmux` keeps one direction, and
+  `off` keeps neither.
+- **What the daemon reports:** it says only that a buffer changed and its
+  name. Its text is read by the window that puts it on the clipboard, and
+  is never in the event log.
 
 ## Fallback terminal
 

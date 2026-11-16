@@ -2301,6 +2301,7 @@ pub(crate) fn open_via(
     let socket = launch.socket.clone();
     let daemon_args = launch.args.clone();
     let bench_daemon = daemon_args.clone();
+    let socket_for_buffers = launch.socket.clone();
     let early = (via == replica::Via::Local)
         .then(|| EARLY_TOPOLOGY.lock().ok().and_then(|mut t| t.take()))
         .flatten();
@@ -2389,6 +2390,36 @@ pub(crate) fn open_via(
                 ws.open_palette(window, cx);
             }
         });
+    }
+    // tmux's paste buffers: one follower per process, for the local
+    // daemon. A copy in tmux reaches the clipboard when the settings say
+    // so, under the same rule as a program's clipboard write.
+    if via == replica::Via::Local
+        && crate::TMUX_BUFFERS.get().is_none()
+        && let Ok(b) = replica::clipboard::TmuxBuffers::start(socket_for_buffers.clone())
+    {
+        let copied = b.copied.clone();
+        let _ = crate::TMUX_BUFFERS.set(b);
+        cx.spawn(async move |cx| {
+            while let Ok(text) = copied.recv().await {
+                let _ = cx.update_window(any, |_, window, cx| {
+                    use workspace_config::ClipboardWrite;
+                    let (from, write) =
+                        crate::live::with(|l| (l.clipboard_tmux.from_tmux(), l.clipboard))
+                            .unwrap_or((false, ClipboardWrite::Deny));
+                    let allowed = from
+                        && match write {
+                            ClipboardWrite::Deny => false,
+                            ClipboardWrite::Allow => true,
+                            ClipboardWrite::Focused => window.is_window_active(),
+                        };
+                    if allowed {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    }
+                });
+            }
+        })
+        .detach();
     }
     // The GUI benchmark (`cargo xtask bench gui`): measures this window.
     if via == replica::Via::Local

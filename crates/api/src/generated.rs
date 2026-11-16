@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 39;
+pub const PROTOCOL_MINOR: u32 = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2357,6 +2357,42 @@ pub struct Registration {
     pub grant: Option<Grant>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TmuxBufferRead {
+    /// Endpoint name; the default endpoint when absent.
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// The buffer to read (from a clipboard.tmux_buffer event); the newest when absent.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TmuxBuffer {
+    /// False when there is no such buffer.
+    #[prost(bool, tag = "1")]
+    pub found: bool,
+    /// The buffer's text, at most 4 MiB.
+    #[prost(string, tag = "2")]
+    pub text: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TmuxBufferWrite {
+    /// Endpoint name; the default endpoint when absent.
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Becomes tmux's newest paste buffer (1 byte to 4 MiB).
+    #[prost(string, tag = "2")]
+    pub text: String,
+}
+
 /// One entry of the daemon's event log: metadata only, never terminal content.
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
@@ -3653,6 +3689,8 @@ pub mod method {
     pub const DAEMON_SHUTDOWN: &str = "daemon.shutdown";
     pub const TMUX_TOPOLOGY: &str = "tmux.topology";
     pub const TMUX_SIZE_WINDOW: &str = "tmux.size_window";
+    pub const CLIPBOARD_READ_TMUX_BUFFER: &str = "clipboard.read_tmux_buffer";
+    pub const CLIPBOARD_WRITE_TMUX_BUFFER: &str = "clipboard.write_tmux_buffer";
     pub const TMUX_WATCH: &str = "tmux.watch";
     pub const ACTIONS_SUBMIT: &str = "actions.submit";
     pub const LEASES_ACQUIRE: &str = "leases.acquire";
@@ -3761,6 +3799,20 @@ pub const METHODS: &[MethodInfo] = &[
         result: "SizeResult",
         mutation: true,
         doc: "Size a tmux window for the client that owns its size (see SizeWindow).",
+    },
+    MethodInfo {
+        name: "clipboard.read_tmux_buffer",
+        params: "TmuxBufferRead",
+        result: "TmuxBuffer",
+        mutation: false,
+        doc: "A tmux paste buffer's text: the newest, or one a clipboard.tmux_buffer event named.",
+    },
+    MethodInfo {
+        name: "clipboard.write_tmux_buffer",
+        params: "TmuxBufferWrite",
+        result: "Empty",
+        mutation: true,
+        doc: "Make text tmux's newest paste buffer, for tmux's own paste and other tmux clients. Not reported back as a clipboard.tmux_buffer event.",
     },
     MethodInfo {
         name: "tmux.watch",
@@ -4206,6 +4258,8 @@ pub enum Request {
     DaemonShutdown(Empty),
     TmuxTopology(TopologyParams),
     TmuxSizeWindow(SizeWindow),
+    ClipboardReadTmuxBuffer(TmuxBufferRead),
+    ClipboardWriteTmuxBuffer(TmuxBufferWrite),
     TmuxWatch(TopologyParams),
     ActionsSubmit(SubmitAction),
     LeasesAcquire(LeaseAcquire),
@@ -4278,6 +4332,8 @@ impl Request {
             Self::DaemonShutdown(_) => "daemon.shutdown",
             Self::TmuxTopology(_) => "tmux.topology",
             Self::TmuxSizeWindow(_) => "tmux.size_window",
+            Self::ClipboardReadTmuxBuffer(_) => "clipboard.read_tmux_buffer",
+            Self::ClipboardWriteTmuxBuffer(_) => "clipboard.write_tmux_buffer",
             Self::TmuxWatch(_) => "tmux.watch",
             Self::ActionsSubmit(_) => "actions.submit",
             Self::LeasesAcquire(_) => "leases.acquire",
@@ -4351,6 +4407,8 @@ impl Request {
             Self::DaemonShutdown(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxSizeWindow(v) => ::prost::Message::encode_to_vec(v),
+            Self::ClipboardReadTmuxBuffer(v) => ::prost::Message::encode_to_vec(v),
+            Self::ClipboardWriteTmuxBuffer(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
             Self::LeasesAcquire(v) => ::prost::Message::encode_to_vec(v),
@@ -4423,6 +4481,12 @@ impl Request {
             "daemon.shutdown" => Ok(Self::DaemonShutdown(::prost::Message::decode(bytes)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(::prost::Message::decode(bytes)?)),
+            "clipboard.read_tmux_buffer" => Ok(Self::ClipboardReadTmuxBuffer(
+                ::prost::Message::decode(bytes)?,
+            )),
+            "clipboard.write_tmux_buffer" => Ok(Self::ClipboardWriteTmuxBuffer(
+                ::prost::Message::decode(bytes)?,
+            )),
             "tmux.watch" => Ok(Self::TmuxWatch(::prost::Message::decode(bytes)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
             "leases.acquire" => Ok(Self::LeasesAcquire(::prost::Message::decode(bytes)?)),
@@ -4500,6 +4564,8 @@ impl Request {
             Self::DaemonShutdown(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxSizeWindow(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ClipboardReadTmuxBuffer(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ClipboardWriteTmuxBuffer(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::LeasesAcquire(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -4572,6 +4638,12 @@ impl Request {
             "daemon.shutdown" => Ok(Self::DaemonShutdown(serde_json::from_value(value)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(serde_json::from_value(value)?)),
+            "clipboard.read_tmux_buffer" => Ok(Self::ClipboardReadTmuxBuffer(
+                serde_json::from_value(value)?,
+            )),
+            "clipboard.write_tmux_buffer" => Ok(Self::ClipboardWriteTmuxBuffer(
+                serde_json::from_value(value)?,
+            )),
             "tmux.watch" => Ok(Self::TmuxWatch(serde_json::from_value(value)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
             "leases.acquire" => Ok(Self::LeasesAcquire(serde_json::from_value(value)?)),
@@ -4647,6 +4719,8 @@ pub enum Response {
     DaemonShutdown(ShutdownResult),
     TmuxTopology(Topology),
     TmuxSizeWindow(SizeResult),
+    ClipboardReadTmuxBuffer(TmuxBuffer),
+    ClipboardWriteTmuxBuffer(Empty),
     TmuxWatch(TopologyUpdate),
     ActionsSubmit(ActionRecord),
     LeasesAcquire(Lease),
@@ -4719,6 +4793,8 @@ impl Response {
             Self::DaemonShutdown(_) => "daemon.shutdown",
             Self::TmuxTopology(_) => "tmux.topology",
             Self::TmuxSizeWindow(_) => "tmux.size_window",
+            Self::ClipboardReadTmuxBuffer(_) => "clipboard.read_tmux_buffer",
+            Self::ClipboardWriteTmuxBuffer(_) => "clipboard.write_tmux_buffer",
             Self::TmuxWatch(_) => "tmux.watch",
             Self::ActionsSubmit(_) => "actions.submit",
             Self::LeasesAcquire(_) => "leases.acquire",
@@ -4792,6 +4868,8 @@ impl Response {
             Self::DaemonShutdown(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxSizeWindow(v) => ::prost::Message::encode_to_vec(v),
+            Self::ClipboardReadTmuxBuffer(v) => ::prost::Message::encode_to_vec(v),
+            Self::ClipboardWriteTmuxBuffer(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxWatch(v) => ::prost::Message::encode_to_vec(v),
             Self::ActionsSubmit(v) => ::prost::Message::encode_to_vec(v),
             Self::LeasesAcquire(v) => ::prost::Message::encode_to_vec(v),
@@ -4864,6 +4942,12 @@ impl Response {
             "daemon.shutdown" => Ok(Self::DaemonShutdown(::prost::Message::decode(bytes)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(::prost::Message::decode(bytes)?)),
+            "clipboard.read_tmux_buffer" => Ok(Self::ClipboardReadTmuxBuffer(
+                ::prost::Message::decode(bytes)?,
+            )),
+            "clipboard.write_tmux_buffer" => Ok(Self::ClipboardWriteTmuxBuffer(
+                ::prost::Message::decode(bytes)?,
+            )),
             "tmux.watch" => Ok(Self::TmuxWatch(::prost::Message::decode(bytes)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(::prost::Message::decode(bytes)?)),
             "leases.acquire" => Ok(Self::LeasesAcquire(::prost::Message::decode(bytes)?)),
@@ -4941,6 +5025,8 @@ impl Response {
             Self::DaemonShutdown(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxSizeWindow(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ClipboardReadTmuxBuffer(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ClipboardWriteTmuxBuffer(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxWatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ActionsSubmit(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::LeasesAcquire(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -5013,6 +5099,12 @@ impl Response {
             "daemon.shutdown" => Ok(Self::DaemonShutdown(serde_json::from_value(value)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(serde_json::from_value(value)?)),
+            "clipboard.read_tmux_buffer" => Ok(Self::ClipboardReadTmuxBuffer(
+                serde_json::from_value(value)?,
+            )),
+            "clipboard.write_tmux_buffer" => Ok(Self::ClipboardWriteTmuxBuffer(
+                serde_json::from_value(value)?,
+            )),
             "tmux.watch" => Ok(Self::TmuxWatch(serde_json::from_value(value)?)),
             "actions.submit" => Ok(Self::ActionsSubmit(serde_json::from_value(value)?)),
             "leases.acquire" => Ok(Self::LeasesAcquire(serde_json::from_value(value)?)),
@@ -5108,6 +5200,16 @@ pub trait Service: Sync {
         &self,
         params: SizeWindow,
     ) -> impl ::core::future::Future<Output = Result<SizeResult, RpcError>> + Send;
+    /// A tmux paste buffer's text: the newest, or one a clipboard.tmux_buffer event named.
+    fn clipboard_read_tmux_buffer(
+        &self,
+        params: TmuxBufferRead,
+    ) -> impl ::core::future::Future<Output = Result<TmuxBuffer, RpcError>> + Send;
+    /// Make text tmux's newest paste buffer, for tmux's own paste and other tmux clients. Not reported back as a clipboard.tmux_buffer event.
+    fn clipboard_write_tmux_buffer(
+        &self,
+        params: TmuxBufferWrite,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
     /// The current topology; afterwards `tmux.topology` events follow every change.
     fn tmux_watch(
         &self,
@@ -5423,6 +5525,14 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .tmux_size_window(p)
             .await
             .map(Response::TmuxSizeWindow),
+        Request::ClipboardReadTmuxBuffer(p) => service
+            .clipboard_read_tmux_buffer(p)
+            .await
+            .map(Response::ClipboardReadTmuxBuffer),
+        Request::ClipboardWriteTmuxBuffer(p) => service
+            .clipboard_write_tmux_buffer(p)
+            .await
+            .map(Response::ClipboardWriteTmuxBuffer),
         Request::TmuxWatch(p) => service.tmux_watch(p).await.map(Response::TmuxWatch),
         Request::ActionsSubmit(p) => service.actions_submit(p).await.map(Response::ActionsSubmit),
         Request::LeasesAcquire(p) => service.leases_acquire(p).await.map(Response::LeasesAcquire),

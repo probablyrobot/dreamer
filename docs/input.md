@@ -80,7 +80,19 @@ needs no daemon round trip (spec 9.3, 11.5).
 
 - **Copy:** Cmd-C on macOS, Ctrl-Shift-C on Linux (Ctrl-C still goes to
   the program). The text comes from the replica on the window's own feed
-  thread. Wrapped lines are joined and trailing blanks are trimmed.
+  thread. Wrapped lines are joined and trailing blanks are trimmed. It goes
+  to the system clipboard and, as in tmux, becomes tmux's newest paste
+  buffer.
+- **Paste:** Cmd-V on macOS, Ctrl-Shift-V on Linux: the system clipboard,
+  as a bracketed paste when the program asked for one.
+- **Marking text, as in tmux:** a finished mouse selection becomes tmux's
+  newest paste buffer, so tmux's own paste (and any other tmux client)
+  has it. On Linux it is also the primary selection. With
+  `clipboard.copy_on_select: true` it goes to the system clipboard too.
+- **Middle click:** pastes tmux's newest buffer, as tmux does
+  (`clipboard.middle_click: off` turns it off). Like the left button, it
+  goes to the program instead when the program tracks the mouse, unless
+  Shift is held.
 - **Painting:** the highlight is drawn over cell backgrounds and under the
   text. Frames carry the selected columns per row, apart from the shared
   rows.

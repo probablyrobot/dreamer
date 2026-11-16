@@ -199,6 +199,18 @@ impl Service for Fixed {
     async fn terminal_run(&self, _: api::TerminalRun) -> Result<api::RunResult, RpcError> {
         Ok(api::RunResult::default())
     }
+    async fn clipboard_read_tmux_buffer(
+        &self,
+        _: api::TmuxBufferRead,
+    ) -> Result<api::TmuxBuffer, RpcError> {
+        Ok(api::TmuxBuffer::default())
+    }
+    async fn clipboard_write_tmux_buffer(
+        &self,
+        _: api::TmuxBufferWrite,
+    ) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
     async fn approvals_list(&self, _: Empty) -> Result<api::ApprovalList, RpcError> {
         Ok(api::ApprovalList::default())
     }
