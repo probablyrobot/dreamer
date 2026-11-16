@@ -1,6 +1,6 @@
 ---
 name: dreamer-config
-description: Configure the Dreamer terminal for the user: themes and color schemes, fonts, appearance, links, clipboard, agent providers and harnesses, pane tier budgets (how many panes keep a live mirror), remote host profiles, and workspace layouts. Use when the user asks to change how Dreamer looks or behaves, to add a theme, or to set up a host or workspace. Edits the configuration files, checks them, and the running Dreamer applies them live.
+description: "Configure the Dreamer terminal for the user: themes and color schemes, fonts, appearance, links, clipboard, agent providers and harnesses, pane tier budgets (how many panes keep a live mirror), remote host profiles, and workspace layouts. Use when the user asks to change how Dreamer looks or behaves, to add a theme, or to set up a host or workspace. Edits the configuration files, checks them, and the running Dreamer applies them live."
 ---
 
 # Configuring Dreamer

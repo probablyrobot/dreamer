@@ -147,6 +147,12 @@ and `dream agents rollback` show, install or update, and roll back the pi
 that Dreamer installs in its data directory. See
 [agents.md](agents.md#pi-installed-by-dreamer).
 
+`dream agents pi [ARGS...]` starts pi the way Dreamer runs it: with
+Dreamer's pi profile, checked first and restored to its last loading
+version if it no longer loads. `dream agents profile
+init|status|log|diff|revert|commit|check` show and manage that profile
+and its history. See [agents.md](agents.md#dreamers-pi-profile).
+
 `dream agents providers` shows whether Claude Code and Codex are ready
 to run on your own login, and `dream agents ask [options] -- PROMPT` runs
 a prompt on one of them with Dreamer's tools. See
@@ -194,6 +200,6 @@ files directly; see [workspaces.md](workspaces.md).
 | `dream themes` | Every theme, built in and yours, with a swatch and the one in force |
 | `dream skills` | The agent skills that ship with Dreamer |
 | `dream skills show NAME` | Print a skill |
-| `dream skills install [--claude] [--codex]` | Write the skills to `~/.claude/skills/` and `~/.codex/skills/` (both by default): `dreamer-config` (configuring Dreamer) and `dreamer-apps` (building pane apps) |
+| `dream skills install [--claude] [--codex]` | Write the skills to `~/.claude/skills/` and `~/.codex/skills/` (both by default): `dreamer-config` (configuring Dreamer) and `dreamer-apps` (building pane apps). Dreamer's pi profile has them already |
 
 See [settings.md](settings.md#live-and-checked).

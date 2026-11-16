@@ -1,0 +1,333 @@
+// Dreamer's extension for pi: the terminals, layout, and collectors of the
+// Dreamer daemon as native pi tools, and the profile's history.
+//
+// Each tool is one call to the daemon over its JSON-RPC socket, on a
+// connection that has narrowed itself to an agent's grant
+// (`DREAMER_AGENT_LEVEL`, default `elsewhere`). The daemon checks every
+// call; acting on a pane this session did not create waits for the user's
+// approval. This extension shows those approvals and never answers them.
+//
+// Shipped with Dreamer as part of its pi profile. Edits here are kept when
+// Dreamer updates, but Dreamer's newer version of this file is then not
+// applied; see `dream agents profile status`.
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { COLLECTOR_METHODS, Session, inputEvents, readResult } from "./daemon.ts";
+
+type Ui = { notify(message: string, kind?: "info" | "warning" | "error"): void; setStatus(key: string, text: string | undefined): void };
+
+const json = (v: unknown) => ({
+	content: [{ type: "text" as const, text: JSON.stringify(v, null, 2) }],
+	details: {},
+});
+
+export default function (pi: ExtensionAPI) {
+	const session = new Session();
+	const agentDir = process.env.PI_CODING_AGENT_DIR ?? "";
+	const dream = process.env.DREAMER_DREAM_BIN || "dream";
+	// Dreamer's profile check starts pi only to see that it loads.
+	const checking = process.env.DREAMER_PI_CHECK === "1";
+	let ui: Ui | undefined;
+	let sessionId = "";
+	let reloadRequested = false;
+	let collectorTools = false;
+
+	session.onApproval = (a) => {
+		const where = a.pane !== undefined ? ` in pane %${a.pane}` : "";
+		if (a.answered) {
+			ui?.setStatus("dreamer", undefined);
+			ui?.notify(`Approval ${a.id}${where}: ${a.answered}`, a.answered === "deny" || a.answered === "timeout" ? "warning" : "info");
+		} else {
+			ui?.setStatus("dreamer", `waiting for your approval (${a.id})`);
+			ui?.notify(
+				`Dreamer asks your approval${where}: ${a.what}\nAnswer in Dreamer, or run \`dream approvals allow ${a.id}\` (add --pane for this pane from now on) or \`dream approvals deny ${a.id}\`.`,
+				"warning",
+			);
+		}
+		pi.appendEntry("dreamer-approval", { ...a, time: Date.now() });
+	};
+
+	/** Run a daemon call for a tool; register collector tools once the
+	 * daemon is known to offer them. */
+	const call = async (method: string, params: Record<string, unknown>) => {
+		const r = await session.call(method, params);
+		if (session.collectors && !collectorTools) registerCollectors();
+		return r;
+	};
+
+	const tool = (def: {
+		name: string;
+		label: string;
+		description: string;
+		parameters: any;
+		run: (p: any) => Promise<unknown>;
+	}) =>
+		pi.registerTool({
+			name: def.name,
+			label: def.label,
+			description: def.description,
+			parameters: def.parameters,
+			async execute(_id: string, params: any, _signal: unknown, _onUpdate: unknown, ctx: any) {
+				if (ctx?.hasUI) ui = ctx.ui;
+				return json(await def.run(params));
+			},
+		});
+
+	const pane = Type.Integer({ minimum: 0, description: "The pane id: the number in %N." });
+
+	tool({
+		name: "terminals_list",
+		label: "Terminals",
+		description:
+			"List every terminal pane: its session, window, command, directory, title, size, tier, how long it has been quiet, and whether you created it (you may act there without asking).",
+		parameters: Type.Object({}),
+		run: () => call("terminal.list", {}),
+	});
+
+	tool({
+		name: "terminal_read",
+		label: "Read terminal",
+		description: "Read a pane as text: its screen, or with `lines` the last that many lines of history and screen.",
+		parameters: Type.Object({
+			pane,
+			lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000, description: "Return the last this many lines instead of the screen." })),
+		}),
+		run: async (p) => {
+			const lines = p.lines === undefined ? undefined : Math.min(p.lines, 2000);
+			const t = await call("terminal.read", { pane: p.pane, ...(lines !== undefined ? { history: lines } : {}) });
+			return readResult(t, lines);
+		},
+	});
+
+	tool({
+		name: "terminal_search",
+		label: "Search terminals",
+		description:
+			"Search panes' recent output with a regular expression (or plain text with `literal`): one pane, some, or every pane. Bounded in lines, matches, bytes, and time; a cut-short answer says so.",
+		parameters: Type.Object({
+			pattern: Type.String(),
+			literal: Type.Optional(Type.Boolean()),
+			ignore_case: Type.Optional(Type.Boolean()),
+			panes: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }), { description: "Empty searches every pane." })),
+			lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000, description: "Newest lines per pane; default 200." })),
+			max_matches: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })),
+			max_bytes: Type.Optional(Type.Integer({ minimum: 1 })),
+			timeout_ms: Type.Optional(Type.Integer({ minimum: 1, maximum: 10000 })),
+		}),
+		run: (p) => call("terminal.query", p),
+	});
+
+	tool({
+		name: "terminal_watch",
+		label: "Watch terminal",
+		description:
+			"Wait until a pattern appears in a pane's new output, the pane goes quiet for quiet_ms, or (exit) its program ends; whichever comes first, or the timeout (default 30 s). Returns what happened and the matching line.",
+		parameters: Type.Object({
+			pane,
+			pattern: Type.Optional(Type.String()),
+			literal: Type.Optional(Type.Boolean()),
+			ignore_case: Type.Optional(Type.Boolean()),
+			quiet_ms: Type.Optional(Type.Integer({ minimum: 50 })),
+			exit: Type.Optional(Type.Boolean()),
+			timeout_ms: Type.Optional(Type.Integer({ minimum: 1, maximum: 600000 })),
+		}),
+		run: (p) => call("terminal.watch", p),
+	});
+
+	tool({
+		name: "terminal_run",
+		label: "Run in a terminal",
+		description:
+			"Run a command in a new window (or a pane split from `split`) that you then own, wait for it, and return its exit status and output. Give `argv` (no shell) or `command` (run with /bin/sh -c). If it outlasts the timeout it keeps running: follow it with terminal_watch (exit) and terminal_read.",
+		parameters: Type.Object({
+			argv: Type.Optional(Type.Array(Type.String())),
+			command: Type.Optional(Type.String()),
+			cwd: Type.Optional(Type.String()),
+			split: Type.Optional(Type.Integer({ minimum: 0, description: "Split this pane for it instead of opening a window." })),
+			direction: Type.Optional(Type.Union([Type.Literal("vertical"), Type.Literal("horizontal")])),
+			name: Type.Optional(Type.String({ description: "The new window's name." })),
+			timeout_ms: Type.Optional(Type.Integer({ minimum: 1, maximum: 600000 })),
+			lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })),
+		}),
+		run: async (p) => {
+			const hasArgv = Array.isArray(p.argv) && p.argv.length > 0;
+			if (hasArgv === (typeof p.command === "string")) throw new Error("give either argv or command");
+			const argv = hasArgv ? p.argv : ["/bin/sh", "-c", p.command];
+			const { command: _c, ...rest } = p;
+			return session.acting_on(p.split, () => call("terminal.run", { ...rest, argv }));
+		},
+	});
+
+	tool({
+		name: "terminal_send",
+		label: "Type into a terminal",
+		description:
+			"Type `text`, paste `paste`, and press Enter (`enter`) in a pane, under an interaction lease: a person typing there takes the pane back, and you then stop. In a pane you did not create this waits for the user's approval.",
+		parameters: Type.Object({
+			pane,
+			text: Type.Optional(Type.String()),
+			paste: Type.Optional(Type.String()),
+			enter: Type.Optional(Type.Boolean()),
+		}),
+		run: async (p) => {
+			const events = inputEvents(p);
+			await session.connection();
+			return session.send(p.pane, events);
+		},
+	});
+
+	tool({
+		name: "layout",
+		label: "Change the layout",
+		description:
+			"Change the terminal layout: `split` a pane (optionally running an exact `argv`; you own the new pane), `select` a pane or window, `rename` a window or session, `move` a pane to another window or a new one, `zoom` a pane, or `close` a pane or window. Outside what you created this waits for the user's approval; closing always asks.",
+		parameters: Type.Object({
+			action: Type.Union(["split", "select", "rename", "move", "zoom", "close"].map((a) => Type.Literal(a))),
+			pane: Type.Optional(Type.Integer({ minimum: 0 })),
+			window: Type.Optional(Type.Integer({ minimum: 0, description: "A window id: the number in @N." })),
+			session: Type.Optional(Type.Integer({ minimum: 0, description: "A session id: the number in $N." })),
+			name: Type.Optional(Type.String({ description: "For rename." })),
+			new_window: Type.Optional(Type.String({ description: "For move: the name of a new window." })),
+			direction: Type.Optional(Type.Union([Type.Literal("vertical"), Type.Literal("horizontal")])),
+			argv: Type.Optional(Type.Array(Type.String(), { description: "For split: the exact program and arguments." })),
+			cwd: Type.Optional(Type.String()),
+		}),
+		run: async (p) => {
+			await session.connection();
+			return session.layout(p.action, p);
+		},
+	});
+
+	const registerCollectors = () => {
+		if (collectorTools) return;
+		collectorTools = true;
+		tool({
+			name: "collector_create",
+			label: "Create a collector",
+			description:
+				"Create a collector: a named, standing rule that turns terminal output into rows. `from` (panes: all, a session, a list, or a command pattern), `when` (a line regex, command end, idle, bell, exit, or an interval), `capture` (regex fields, JSON, the line, the screen, or the last lines, with context), `keep` (rows and age).",
+			parameters: Type.Object({
+				name: Type.String(),
+				from: Type.Optional(Type.Any()),
+				when: Type.Any(),
+				capture: Type.Optional(Type.Any()),
+				keep: Type.Optional(Type.Any()),
+			}),
+			run: (p) => call(COLLECTOR_METHODS[0], p),
+		});
+		tool({
+			name: "collector_query",
+			label: "Query a collector",
+			description: "Rows a collector gathered: filter by fields, since a time, grouped or counted.",
+			parameters: Type.Object({
+				name: Type.String(),
+				filter: Type.Optional(Type.Any()),
+				since: Type.Optional(Type.Any()),
+				group: Type.Optional(Type.Any()),
+				count: Type.Optional(Type.Boolean()),
+				limit: Type.Optional(Type.Integer({ minimum: 1 })),
+			}),
+			run: (p) => call(COLLECTOR_METHODS[1], p),
+		});
+		tool({
+			name: "collector_list",
+			label: "List collectors",
+			description: "Every collector, with its rule and how many rows it holds.",
+			parameters: Type.Object({}),
+			run: () => call(COLLECTOR_METHODS[2], {}),
+		});
+		tool({
+			name: "collector_stop",
+			label: "Stop a collector",
+			description: "Stop and remove a collector.",
+			parameters: Type.Object({ name: Type.String() }),
+			run: (p) => call(COLLECTOR_METHODS[3], p),
+		});
+	};
+
+	// The profile's history: every change is a commit naming the session.
+	const isProfile = agentDir !== "" && fs.existsSync(path.join(agentDir, ".dreamer", "base.json"));
+
+	const commit = async (message: string | undefined, check: boolean) => {
+		const args = ["agents", "profile", "commit", "--dir", agentDir];
+		if (sessionId) args.push("--session", sessionId);
+		if (message) args.push("-m", message);
+		if (!check) args.push("--no-check");
+		const r = await pi.exec(dream, args, { timeout: 120000 });
+		return { ok: r.code === 0, text: `${r.stdout}${r.stderr}`.trim() };
+	};
+
+	if (isProfile) {
+		tool({
+			name: "dreamer_profile_commit",
+			label: "Commit profile change",
+			description: `Record a change you made to your own pi profile (${agentDir}: extensions, skills, prompts, settings) as a commit with a message saying why, and check that pi still loads with it. Set reload to load the change into this session once your reply ends.`,
+			parameters: Type.Object({
+				message: Type.String({ description: "What changed and why, in one line." }),
+				reload: Type.Optional(Type.Boolean()),
+			}),
+			run: async (p) => {
+				const r = await commit(p.message, true);
+				if (!r.ok) throw new Error(r.text || "the commit failed");
+				if (p.reload && r.text.includes("check: ok")) reloadRequested = true;
+				return { result: r.text, reload: reloadRequested ? "after this reply" : "no" };
+			},
+		});
+
+		pi.registerCommand("dreamer-reload", {
+			description: "Commit profile changes, then reload extensions, skills, and prompts",
+			handler: async (_args: string, ctx: any) => {
+				await commit(undefined, false);
+				await ctx.reload();
+				return;
+			},
+		});
+
+		pi.on("agent_settled", async () => {
+			if (checking) return;
+			await commit(undefined, false).catch(() => {});
+			if (reloadRequested) {
+				reloadRequested = false;
+				pi.sendUserMessage("/dreamer-reload", { expandPromptTemplates: true });
+			}
+		});
+	}
+
+	pi.registerCommand("dreamer", {
+		description: "Dreamer: the daemon connection, the agent's level, and the profile",
+		handler: async (_args: string, ctx: any) => {
+			let daemon: string;
+			try {
+				const panes = await call("terminal.list", {});
+				const n = Array.isArray(panes?.terminals) ? panes.terminals.length : 0;
+				daemon = `connected to ${session.socket} at level ${session.level}; ${n} panes; collectors ${session.collectors ? "available" : "not offered"}`;
+			} catch (e) {
+				daemon = `not connected: ${e instanceof Error ? e.message : String(e)}`;
+			}
+			const profile = isProfile ? `profile ${agentDir} (versioned)` : `agent directory ${agentDir || "(pi's default)"} (not a Dreamer profile)`;
+			ctx.ui.notify(`Dreamer: ${daemon}\n${profile}`, "info");
+		},
+	});
+
+	pi.on("session_start", async (_event: any, ctx: any) => {
+		if (ctx?.hasUI) ui = ctx.ui;
+		sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
+		if (checking) return;
+		// Collector tools appear when the daemon offers them; a daemon that
+		// is not running yet is tried again on the first tool call.
+		session
+			.connection()
+			.then(() => {
+				if (session.collectors) registerCollectors();
+			})
+			.catch(() => {});
+	});
+
+	pi.on("session_shutdown", async () => {
+		if (isProfile && !checking) await commit(undefined, false).catch(() => {});
+		session.close();
+	});
+}

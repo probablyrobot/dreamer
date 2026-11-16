@@ -21,6 +21,7 @@ mod claude;
 mod codex;
 mod mcp;
 pub mod pi;
+pub mod pi_profile;
 mod run;
 
 use std::path::{Path, PathBuf};
