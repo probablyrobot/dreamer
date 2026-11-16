@@ -714,6 +714,40 @@ fn screens(dir: &Path) -> Result<Done, String> {
         let summary = crate::scenes::check_capture(&path, background, green)?;
         println!("gate:   screen: {} ({summary})", path.display());
     }
+    // The theme switched live (#265): every pane and the chrome take the
+    // new scheme in the same window, and a program's own background
+    // (OSC 11) stays as it set it.
+    let (before, after) = (
+        out.join("theme-switch-before.png"),
+        out.join("theme-switch-after.png"),
+    );
+    crate::scenes::capture_switch(dir, "gruvbox-dark", &before, &after)?;
+    let own = 0x40_20_20;
+    let summary = crate::scenes::check_capture(&before, 0x14_16_1a, 0x81_c9_95)?;
+    println!("gate:   screen: {} ({summary})", before.display());
+    let summary = crate::scenes::check_capture(&after, 0x28_28_28, 0x98_97_1a)?;
+    println!("gate:   screen: {} ({summary})", after.display());
+    let old = crate::scenes::share_of(&after, 0x14_16_1a)?;
+    if old > 0.005 {
+        return Err(format!(
+            "{}: {:.1}% of the window still has the old background",
+            after.display(),
+            old * 100.0
+        ));
+    }
+    for p in [&before, &after] {
+        let kept = crate::scenes::share_of(p, own)?;
+        if kept < 0.05 {
+            return Err(format!(
+                "{}: the pane's own OSC 11 background covers only {:.1}%",
+                p.display(),
+                kept * 100.0
+            ));
+        }
+    }
+    println!(
+        "gate:   screen: the switch to gruvbox-dark reached every pane and the chrome; the OSC 11 background stayed"
+    );
     Ok(Done::Passed)
 }
 

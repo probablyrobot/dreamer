@@ -41,6 +41,17 @@ const SCENES: &[Scene] = &[
         after: &[],
     },
     Scene {
+        name: "theme-switch",
+        what: "two panes, the narrow one with its own background (OSC 11), for switching the theme live",
+        setup: &[&["split-window", "-h", "-l", "40", "-t", "main:0", SH]],
+        type_all: Some("printf '\\033[32mgreen\\033[0m text in the theme\\n'"),
+        args: &[],
+        // The narrow pane's own background is set by `capture_switch` once
+        // the pane is attached: a color set before the daemon attaches is
+        // not restored yet.
+        after: &[],
+    },
+    Scene {
         name: "dense-splits",
         what: "six panes in one window",
         setup: &[
@@ -245,12 +256,17 @@ fn launch(root: &Path, scene: &Scene, skin: &str, extra: &str) -> Result<Running
 const SCREENSHOT_USAGE: &str = "\
 usage: cargo xtask screenshot [--scene NAME] [--skin dark|light] [--out DIR]
                               [--settings YAML] [--settle SECONDS]
+       cargo xtask screenshot --switch THEME [--out DIR]
 
 Opens a reference scene (default single-pane) against an isolated tmux
 server and saves a PNG of the app's own window, at device resolution, to
 DIR (default target/screenshots). --settings is appended to the scene's
 dreamer.yaml, e.g. --settings 'font: {size: 15, letter_spacing: -0.3}'.
-Only Dreamer's window is captured. macOS only for now.";
+Only Dreamer's window is captured. macOS only for now.
+
+--switch opens the theme-switch scene in the dark scheme, captures it,
+changes terminal.theme to THEME in the running window's dreamer.yaml (as
+the palette's Theme command does), and captures it again.";
 
 /// `cargo xtask screenshot`: open a scene and capture the app's window.
 ///
@@ -265,6 +281,7 @@ pub fn screenshot(args: &[String]) -> Result<(), String> {
     let mut out = root.join("target/screenshots");
     let mut extra = String::new();
     let mut settle = 2.0f64;
+    let mut switch: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || {
@@ -277,6 +294,7 @@ pub fn screenshot(args: &[String]) -> Result<(), String> {
             "--skin" => skin = value()?,
             "--out" => out = PathBuf::from(value()?),
             "--settings" => extra = value()?,
+            "--switch" => switch = Some(value()?),
             "--settle" => {
                 settle = value()?
                     .parse()
@@ -305,6 +323,22 @@ pub fn screenshot(args: &[String]) -> Result<(), String> {
     if crate::package::screen_locked() == Some(true) {
         return Err("screenshot: the screen is locked, so the window is not drawn".into());
     }
+    if let Some(theme) = switch {
+        let (before, after) = (
+            out.join("theme-switch-before.png"),
+            out.join(format!("theme-switch-{theme}.png")),
+        );
+        capture_switch(&root, &theme, &before, &after)?;
+        for p in [&before, &after] {
+            println!(
+                "screenshot: {} (Dreamer dark background {:.1}%, the pane's own #402020 {:.1}%)",
+                p.display(),
+                share_of(p, 0x14_16_1a)? * 100.0,
+                share_of(p, 0x40_20_20)? * 100.0
+            );
+        }
+        return Ok(());
+    }
     build(&root)?;
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let path = out.join(format!("{}-{skin}.png", scene.name));
@@ -331,6 +365,71 @@ pub fn capture(root: &Path, scene: &str, skin: &str, path: &Path) -> Result<(), 
     let result = capture_window(running.app.id(), path, 3.0);
     running.finish();
     result
+}
+
+/// The live theme switch (#265): `theme-switch` captured in Dreamer's dark
+/// scheme, then again after `terminal.theme` in its `dreamer.yaml` changes
+/// to `theme` (what the palette's Theme command writes), in the same
+/// running window.
+pub fn capture_switch(root: &Path, theme: &str, before: &Path, after: &Path) -> Result<(), String> {
+    let scene = SCENES
+        .iter()
+        .find(|s| s.name == "theme-switch")
+        .ok_or("no theme-switch scene")?;
+    build(root)?;
+    if let Some(dir) = before.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let running = launch(root, scene, "dark", "")?;
+    // Once the panes are live: the program sets its own background.
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let _ = Command::new(&running.tmux)
+        .args(["-L", &running.socket, "send-keys", "-t", "main:0.1"])
+        .args(["printf '\\033]11;#402020\\007'", "Enter"])
+        .status();
+    let result = capture_window(running.app.id(), before, 2.0).and_then(|()| {
+        std::fs::write(
+            running.dir.join("config/dreamer.yaml"),
+            format!("appearance: dark\nterminal:\n  theme: {theme}\n"),
+        )
+        .map_err(|e| format!("config: {e}"))?;
+        capture_window(running.app.id(), after, 3.0)
+    });
+    running.finish();
+    result
+}
+
+/// The share of a capture's pixels within a few steps of `color` (12 per
+/// channel: the display profile moves saturated colors more than grays).
+pub fn share_of(path: &Path, color: u32) -> Result<f64, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut buf = vec![0; reader.output_buffer_size().unwrap_or(0)];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let channels = if info.color_type == png::ColorType::Rgba {
+        4
+    } else {
+        3
+    };
+    let want = [(color >> 16) as u8, (color >> 8) as u8, color as u8];
+    let (mut near, mut all) = (0usize, 0usize);
+    for px in buf[..info.buffer_size()].chunks_exact(channels) {
+        all += 1;
+        if px[..3]
+            .iter()
+            .zip(want)
+            .all(|(a, b)| (i32::from(*a) - i32::from(b)).abs() <= 12)
+        {
+            near += 1;
+        }
+    }
+    Ok(near as f64 / all.max(1) as f64)
 }
 
 /// What a capture shows, checked against the scheme it was drawn in: the
