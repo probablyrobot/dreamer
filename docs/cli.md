@@ -208,6 +208,12 @@ definition; `dream collect create NAME` takes the same from options:
 | Capture | `--field NAME=TEMPLATE` (repeat), `--json-line`, `--screen` or `--lines N`, `--before N`, `--after N` |
 | Bounds | `--keep-rows N`, `--keep-for DURATION` (`30s`, `10m`, `2h`, `7d`), `--per-second N` |
 
+`dream collect create --preset PRESET [NAME] [options]` starts one of the
+shipped presets (`errors`, `test-failures`, `commands`, `urls`, `paths`),
+named after the preset unless NAME is given. Each part given in options
+(panes, trigger, capture, bounds) replaces the preset's part; see
+[Presets](collectors.md#presets).
+
 `dream collect list [--json]` shows each collector, its state, and its
 counts. `dream collect query NAME [--pane %N]... [--field NAME=VALUE]...
 [--since DURATION] [--after ID] [--limit N] [--group-by FIELD] [--json]`

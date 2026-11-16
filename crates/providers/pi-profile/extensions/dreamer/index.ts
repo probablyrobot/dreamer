@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { COLLECTOR_METHODS, Session, inputEvents, readResult } from "./daemon.ts";
+import { COLLECTOR_PRESETS, Session, collectorQuery, collectorSpec, inputEvents, readResult } from "./daemon.ts";
 
 type Ui = { notify(message: string, kind?: "info" | "warning" | "error"): void; setStatus(key: string, text: string | undefined): void };
 
@@ -204,48 +204,131 @@ export default function (pi: ExtensionAPI) {
 	const registerCollectors = () => {
 		if (collectorTools) return;
 		collectorTools = true;
+		const from = Type.Object(
+			{
+				all: Type.Optional(Type.Boolean({ description: "Every pane, including panes created later." })),
+				session: Type.Optional(Type.String({ description: "The panes of the session with this name." })),
+				window: Type.Optional(Type.Integer({ minimum: 0, description: "The panes of window @N." })),
+				panes: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }), { description: "These panes." })),
+				command: Type.Optional(
+					Type.String({ description: "Panes whose current command (cargo, pytest, ...) matches this regex, while it does." }),
+				),
+			},
+			{ additionalProperties: false, description: "Which panes: exactly one of all, session, window, panes, command." },
+		);
+		const when = Type.Object(
+			{
+				line: Type.Optional(
+					Type.String({ description: "A committed output line matches this regex (Rust syntax); named groups (?P<name>...) become fields." }),
+				),
+				ignore_case: Type.Optional(Type.Boolean()),
+				command_end: Type.Optional(
+					Type.Boolean({ description: "A command finished (needs the shell's OSC 133 marks): exit_status and the field duration_ms." }),
+				),
+				idle_ms: Type.Optional(Type.Integer({ minimum: 100, description: "The pane wrote nothing for this many ms." })),
+				bell: Type.Optional(Type.Boolean()),
+				exit: Type.Optional(Type.Boolean({ description: "The pane's process ended." })),
+				every_s: Type.Optional(Type.Integer({ minimum: 1, description: "Every N seconds (keeps the screen)." })),
+			},
+			{ additionalProperties: false, description: "What makes a row: exactly one of line, command_end, idle_ms, bell, exit, every_s." },
+		);
+		const capture = Type.Object(
+			{
+				fields: Type.Optional(
+					Type.Array(
+						Type.Object({
+							name: Type.String(),
+							value: Type.String({ description: "A template: $1, ${1}, or ${name} is a group of `line`." }),
+						}),
+					),
+				),
+				json: Type.Optional(Type.Boolean({ description: "The line is a JSON object: its members become fields." })),
+				screen: Type.Optional(Type.Boolean()),
+				lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000, description: "Keep the pane's last N lines." })),
+				before: Type.Optional(Type.Integer({ minimum: 0, maximum: 100 })),
+				after: Type.Optional(Type.Integer({ minimum: 0, maximum: 100 })),
+			},
+			{ additionalProperties: false },
+		);
+		const keep = Type.Object(
+			{
+				rows: Type.Optional(Type.Integer({ minimum: 1, maximum: 100000 })),
+				max_age_s: Type.Optional(Type.Integer({ minimum: 1 })),
+			},
+			{ additionalProperties: false },
+		);
 		tool({
 			name: "collector_create",
 			label: "Create a collector",
-			description:
-				"Create a collector: a named, standing rule that turns terminal output into rows. `from` (panes: all, a session, a list, or a command pattern), `when` (a line regex, command end, idle, bell, exit, or an interval), `capture` (regex fields, JSON, the line, the screen, or the last lines, with context), `keep` (rows and age).",
+			description: `Create a collector: a standing rule in the Dreamer daemon that turns terminal output into rows, kept across restarts. Start from a preset (${COLLECTOR_PRESETS.join(", ")}) or give from, when, capture, and keep; parts you give replace the preset's. It only reads panes. With wake (the default), you are told of new rows as they come; read them with collector_query.`,
 			parameters: Type.Object({
-				name: Type.String(),
-				from: Type.Optional(Type.Any()),
-				when: Type.Any(),
-				capture: Type.Optional(Type.Any()),
-				keep: Type.Optional(Type.Any()),
+				name: Type.Optional(Type.String({ description: "Letters, digits, -, _, or .; unique. Defaults to the preset's name." })),
+				preset: Type.Optional(Type.Union(COLLECTOR_PRESETS.map((p) => Type.Literal(p)))),
+				from: Type.Optional(from),
+				when: Type.Optional(when),
+				capture: Type.Optional(capture),
+				keep: Type.Optional(keep),
+				per_second: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000, description: "Rows per second per pane; default 10." })),
+				wake: Type.Optional(Type.Boolean({ description: "Tell me about new rows (default true)." })),
 			}),
-			run: (p) => call(COLLECTOR_METHODS[0], p),
+			run: async (p) => {
+				const status = await call("collect.create", collectorSpec(p));
+				if (p.wake !== false && status?.name) session.following.add(String(status.name));
+				return status;
+			},
 		});
 		tool({
 			name: "collector_query",
 			label: "Query a collector",
-			description: "Rows a collector gathered: filter by fields, since a time, grouped or counted.",
+			description:
+				"Rows a collector recorded, oldest first: filter by panes, exact field values, time (since_s), or row id (after); or with group_by count rows per value of a field (or pane, session, window, cwd, command, trigger), most first.",
 			parameters: Type.Object({
 				name: Type.String(),
-				filter: Type.Optional(Type.Any()),
-				since: Type.Optional(Type.Any()),
-				group: Type.Optional(Type.Any()),
-				count: Type.Optional(Type.Boolean()),
-				limit: Type.Optional(Type.Integer({ minimum: 1 })),
+				panes: Type.Optional(Type.Array(Type.Integer({ minimum: 0 }))),
+				fields: Type.Optional(Type.Record(Type.String(), Type.String(), { description: 'Exact values, such as {"severity": "error"}.' })),
+				since_s: Type.Optional(Type.Integer({ minimum: 0, description: "Only rows from the last this many seconds." })),
+				after: Type.Optional(Type.Integer({ minimum: 0, description: "Only rows after this row id: pick up where you left off." })),
+				limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10000, description: "Default 100; without after, the newest." })),
+				group_by: Type.Optional(Type.String()),
 			}),
-			run: (p) => call(COLLECTOR_METHODS[1], p),
+			run: (p) => call("collect.query", collectorQuery(p)),
 		});
 		tool({
 			name: "collector_list",
 			label: "List collectors",
-			description: "Every collector, with its rule and how many rows it holds.",
+			description:
+				"Every collector: its definition, whether it runs, rows kept, collected, and dropped, the panes it follows, and its last error.",
 			parameters: Type.Object({}),
-			run: () => call(COLLECTOR_METHODS[2], {}),
+			run: () => call("collect.list", {}),
 		});
 		tool({
 			name: "collector_stop",
 			label: "Stop a collector",
-			description: "Stop and remove a collector.",
-			parameters: Type.Object({ name: Type.String() }),
-			run: (p) => call(COLLECTOR_METHODS[3], p),
+			description: "Stop a collector; its rows stay queryable. With delete, also remove its definition and rows.",
+			parameters: Type.Object({ name: Type.String(), delete: Type.Optional(Type.Boolean()) }),
+			run: async (p) => {
+				session.following.delete(p.name);
+				return call("collect.stop", { name: p.name, delete: p.delete === true });
+			},
 		});
+	};
+
+	// New rows of the collectors this session created wake the agent, one
+	// short note per batch.
+	session.onRows = (batches) => {
+		if (checking) return;
+		const text = batches
+			.map((b) => {
+				const panes = b.panes.map((p) => `%${p}`).join(", ") || "-";
+				return `Collector \`${b.collector}\` recorded ${b.count} new row(s) (ids ${b.first}..${b.last}, pane(s) ${panes}). Read them with collector_query name="${b.collector}" after=${b.first - 1}.`;
+			})
+			.join("\n");
+		const p = pi as any;
+		if (typeof p.sendMessage === "function") {
+			p.sendMessage({ customType: "dreamer-collector", content: text, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+		} else {
+			ui?.notify(text, "info");
+		}
 	};
 
 	// The profile's history: every change is a commit naming the session.

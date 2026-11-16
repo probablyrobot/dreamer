@@ -70,9 +70,10 @@ const answered = approvals.find((a) => a.answered);
 step("answered", { ok: answered?.answered === "deny", approval: answered });
 
 // A window the client opened is its own: typing there asks nobody.
+let own;
 try {
 	const r = await s.call("terminal.run", { argv: ["/bin/sh"], name: "agent-own", timeout_ms: 300 });
-	const own = r.job?.pane;
+	own = r.job?.pane;
 	step("run", { ok: typeof own === "number" && r.finished === false, pane: own });
 	const before = approvals.length;
 	await s.send(own, m.inputEvents({ text: "echo own-pane", enter: true }));
@@ -85,5 +86,22 @@ try {
 	step("rename", { ok: renamed.state === "completed" && approvals.length === before });
 } catch (e) {
 	fail("own", e);
+}
+
+// The test-failures preset: a failing test in a pane wakes the agent, and
+// the rows group by test.
+try {
+	const created = await s.call("collect.create", m.collectorSpec({ preset: "test-failures", name: "agent-fails" }));
+	s.following.add(created.name);
+	const woken = new Promise((r) => {
+		s.onRows = r;
+	});
+	await s.send(own, m.inputEvents({ text: "printf 'test a::b ... FAILED\\n'", enter: true }));
+	const rows = await Promise.race([woken, new Promise((r) => setTimeout(() => r(null), 15000))]);
+	step("woken", { ok: Array.isArray(rows) && rows[0]?.collector === "agent-fails" && rows[0].panes.includes(own), rows });
+	const q = await s.call("collect.query", m.collectorQuery({ name: "agent-fails", group_by: "test", since_s: 600 }));
+	step("grouped", { ok: q.groups?.[0]?.value === "a::b" && q.groups[0].count === 1, result: q });
+} catch (e) {
+	fail("collect", e);
 }
 s.close();

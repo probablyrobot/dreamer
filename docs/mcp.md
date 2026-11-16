@@ -48,6 +48,27 @@ waits for the user's answer (up to 60 s) before it runs or fails; see
 [Act levels and approvals](grants.md#act-levels-and-approvals). Answer
 with `dream approvals`.
 
+## Collector tools
+
+Collectors are standing rules in the daemon that turn terminal output into
+rows ([collectors.md](collectors.md)). An agent sets one up once and asks
+for what it gathered later, instead of re-reading scrollback.
+
+| Tool | Does | API |
+| --- | --- | --- |
+| `collector_create` | Start a collector: a `preset` (`errors`, `test-failures`, `commands`, `urls`, `paths`) and/or `from`, `when`, `capture`, `keep`, `per_second`, as in a definition. Parts given replace the preset's; the name defaults to the preset's | `collect.create` |
+| `collector_query` | A collector's rows, oldest first, filtered by `panes`, exact `fields` values (an object, such as `{"test": "a"}`), `since_s` (the last N seconds), and `after` (a row id); or with `group_by` the count of rows per value, most first | `collect.query` |
+| `collector_list` | Each collector's definition, state, counts, followed panes, and last error | `collect.list` |
+| `collector_stop` | Stop a collector (its rows stay); with `delete`, remove it and its rows | `collect.stop` |
+
+Collectors only read, so act levels do not govern them: at every level,
+`observe` included, the agent may create, query, and stop collectors.
+They need `all_panes` unless `from` lists only panes in scope
+([collectors.md](collectors.md#grants)). MCP has no way to wake an agent
+when a row arrives; an agent asks with `collector_query` and `after` (the
+last row id it saw). Dreamer's pi extension does wake its agent
+([agents.md](agents.md#dreamers-tools-inside-pi)).
+
 ## Other tools
 
 | Tool | Does | API |
@@ -98,7 +119,8 @@ every pane (unless `--pane` names some), the act level, and, unless
 `--method` names others, the methods of the terminal tools. At `observe`
 those are `tmux.topology`, `terminal.list`, `terminal.read`,
 `terminal.query`, `terminal.watch`, `jobs.get`, `jobs.list`,
-`actions.get`, `actions.list`, and `agents.runs`; `own` and `elsewhere`
+`actions.get`, `actions.list`, `agents.runs`, `collect.create`,
+`collect.list`, `collect.query`, and `collect.stop`; `own` and `elsewhere`
 add `terminal.input`, `terminal.run`, `actions.submit`, `jobs.start`, and
 `jobs.cancel`.
 

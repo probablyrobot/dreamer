@@ -33,6 +33,11 @@ pub fn agent_methods(level: i32) -> Vec<String> {
         method::ACTIONS_GET,
         method::ACTIONS_LIST,
         method::AGENTS_RUNS,
+        // Collectors only read panes, so observing may start and query
+        // them. Stopping one, which may be the user's, is an action.
+        method::COLLECT_CREATE,
+        method::COLLECT_LIST,
+        method::COLLECT_QUERY,
     ];
     if level >= ActLevel::Own as i32 {
         m.extend([
@@ -41,6 +46,7 @@ pub fn agent_methods(level: i32) -> Vec<String> {
             method::ACTIONS_SUBMIT,
             method::JOBS_START,
             method::JOBS_CANCEL,
+            method::COLLECT_STOP,
         ]);
     }
     m.into_iter().map(str::to_owned).collect()

@@ -84,7 +84,10 @@ What counts as acting, and on which panes:
 | `terminal.run` with `split` | The pane it splits |
 | `jobs.start`, `terminal.run` without `split`, `actions.submit` new window | Nothing: they create, and the connection owns what they create |
 
-Reading, searching, watching, and listing are never acting.
+Reading, searching, watching, and listing are never acting. Neither is
+starting or querying a collector: collectors only read panes, so any
+level may create and query them. Stopping one is an action (it may be the
+user's), given from `own` up ([collectors.md](collectors.md#grants)).
 
 **Ownership.** A connection owns the panes it creates: the new pane of a
 split or new window, a job's pane, a `terminal.run` pane. Ownership

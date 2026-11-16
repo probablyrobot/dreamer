@@ -163,6 +163,160 @@ struct ByName {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct Nothing {}
 
+/// Which panes a collector reads: exactly one of these.
+#[derive(Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CollectFrom {
+    /// Every pane, including panes created later.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    all: bool,
+    /// The panes of the session with this name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session: Option<String>,
+    /// The panes of window @N.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window: Option<u32>,
+    /// These panes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    panes: Vec<u32>,
+    /// Panes whose current command (such as cargo or pytest) matches this
+    /// regular expression, while it does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+}
+
+/// What makes a row: exactly one of line, command_end, idle_ms, bell,
+/// exit, or every_s.
+#[derive(Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CollectWhen {
+    /// A committed output line matches this regular expression (Rust
+    /// syntax); named groups (?P<name>...) become fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ignore_case: bool,
+    /// A command finished (needs the shell's OSC 133 marks); the row has
+    /// its exit status and the field duration_ms.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    command_end: bool,
+    /// The pane wrote nothing for this many ms after writing something.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    idle_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    bell: bool,
+    /// The pane's process ended.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    exit: bool,
+    /// Every this many seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    every_s: Option<u32>,
+}
+
+#[derive(Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CollectField {
+    name: String,
+    /// A template: $1, ${1}, or ${name} is a group of `line`.
+    value: String,
+}
+
+/// What a row keeps besides the matched line.
+#[derive(Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CollectCapture {
+    /// Fields from templates over `line`'s groups.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fields: Vec<CollectField>,
+    /// The matched line is a JSON object: its members become fields.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    json: bool,
+    /// Keep the pane's screen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    screen: bool,
+    /// Keep the pane's last N lines (at most 1000).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lines: Option<u32>,
+    /// Lines before a matched line (at most 100).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    before: Option<u32>,
+    /// Lines after a matched line (at most 100).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after: Option<u32>,
+}
+
+#[derive(Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CollectKeep {
+    /// Rows kept (default 5000, at most 100000); the oldest go first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rows: Option<u32>,
+    /// Rows older than this many seconds go (default 7 days).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_age_s: Option<u64>,
+}
+
+#[derive(Deserialize, serde::Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CollectorCreate {
+    /// Letters, digits, `-`, `_`, or `.`; unique. Defaults to the
+    /// preset's name.
+    #[serde(default)]
+    name: String,
+    /// A shipped definition to start from: errors, test-failures,
+    /// commands, urls, or paths. Each part given here replaces the
+    /// preset's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<CollectFrom>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    when: Option<CollectWhen>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture: Option<CollectCapture>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep: Option<CollectKeep>,
+    /// Rows per second per pane (default 10); more are dropped and
+    /// counted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    per_second: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CollectorQuery {
+    /// The collector's name.
+    name: String,
+    /// Only rows from these panes.
+    #[serde(default)]
+    panes: Vec<u32>,
+    /// Only rows with each of these fields at exactly this value, such as
+    /// {"severity": "error"}.
+    #[serde(default)]
+    fields: std::collections::BTreeMap<String, String>,
+    /// Only rows from the last this many seconds.
+    since_s: Option<u64>,
+    /// Only rows after this row id (the first `limit` of them): pick up
+    /// where you left off.
+    after: Option<u64>,
+    /// Rows returned at most (default 100, at most 10000); without
+    /// `after`, the newest.
+    limit: Option<u32>,
+    /// Count rows by a field, or by pane, session, window, cwd, command,
+    /// or trigger, instead of listing them.
+    group_by: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct CollectorStop {
+    /// The collector's name.
+    name: String,
+    /// Also delete its definition and rows.
+    #[serde(default)]
+    delete: bool,
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 struct TerminalRead {
     /// The pane id (the number in %N).
@@ -1012,6 +1166,75 @@ impl Dreamer {
     ) -> Result<CallToolResult, ErrorData> {
         self.call(api::Request::JobsCancel(api::JobRef { id: p.id }))
             .await
+    }
+
+    #[tool(
+        description = "Create a collector: a standing rule in the daemon that turns terminal output into rows, kept across restarts. Start from a preset (errors, test-failures, commands, urls, paths) or give from (which panes), when (a line regex, command_end, idle_ms, bell, exit, every_s), capture, and keep; parts you give replace the preset's. It only reads panes. Read its rows with collector_query."
+    )]
+    async fn collector_create(
+        &self,
+        Parameters(p): Parameters<CollectorCreate>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if p.name.is_empty() && p.preset.is_none() {
+            return Ok(failed("give a name or a preset".into()));
+        }
+        let spec = match serde_json::to_value(&p).and_then(serde_json::from_value) {
+            Ok(s) => s,
+            Err(e) => return Ok(failed(format!("collector_create: {e}"))),
+        };
+        self.call(api::Request::CollectCreate(spec)).await
+    }
+
+    #[tool(
+        description = "Rows a collector recorded, oldest first: filter by panes, exact field values, time (since_s), or row id (after); or with group_by count rows per value of a field (or pane, session, window, cwd, command, trigger), most first."
+    )]
+    async fn collector_query(
+        &self,
+        Parameters(p): Parameters<CollectorQuery>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let since_unix_ms = p.since_s.map(|s| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            now.saturating_sub(s.saturating_mul(1000))
+        });
+        self.call(api::Request::CollectQuery(api::CollectQuery {
+            name: p.name,
+            panes: p.panes,
+            fields: p
+                .fields
+                .into_iter()
+                .map(|(name, value)| api::CollectField { name, value })
+                .collect(),
+            since_unix_ms,
+            after: p.after,
+            limit: p.limit,
+            group_by: p.group_by,
+            ..api::CollectQuery::default()
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "List collectors: each one's definition, whether it runs, rows kept, rows collected and dropped, the panes it follows, and its last error."
+    )]
+    async fn collector_list(&self, _: Parameters<Nothing>) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::CollectList(api::Empty::default()))
+            .await
+    }
+
+    #[tool(
+        description = "Stop a collector; its rows stay queryable. With delete, also remove its definition and rows."
+    )]
+    async fn collector_stop(
+        &self,
+        Parameters(p): Parameters<CollectorStop>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::CollectStop(api::CollectRef {
+            name: p.name,
+            delete: p.delete,
+        }))
+        .await
     }
 }
 

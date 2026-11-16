@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 43;
+pub const PROTOCOL_MINOR: u32 = 44;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -4067,6 +4067,10 @@ pub struct CollectorSpec {
     #[prost(uint32, optional, tag = "6")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_second: Option<u32>,
+    /// A shipped definition to start from (errors, test-failures, commands, urls, paths); each part given here replaces the preset's. The name defaults to the preset's.
+    #[prost(string, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]

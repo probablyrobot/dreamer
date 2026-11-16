@@ -167,7 +167,7 @@ API as `dream mcp` ([mcp.md](mcp.md#terminal-tools)):
 | `terminal_run` | `terminal.run` |
 | `terminal_send` | `leases.acquire`, `terminal.input` |
 | `layout` (`split`, `select`, `rename`, `move`, `zoom`, `close`) | `actions.submit` |
-| `collector_create`, `collector_query`, `collector_list`, `collector_stop` | `collect.*`; registered only when the daemon offers `collect.list` |
+| `collector_create`, `collector_query`, `collector_list`, `collector_stop` | `collect.*`, with the parameters of `dream mcp`'s collector tools ([mcp.md](mcp.md#collector-tools)); registered only when the daemon offers `collect.list` |
 | `dreamer_profile_commit` | `dream agents profile commit` (below) |
 
 It also adds the commands `/dreamer` (whether the daemon is reachable,
@@ -181,8 +181,19 @@ the level, the profile) and `/dreamer-reload` (commit, then reload).
   agent's grant ([grants.md](grants.md#act-levels-and-approvals)): every
   pane, the level from `DREAMER_AGENT_LEVEL` (`observe`, `own`, or
   `elsewhere`, the default), and the tools' methods plus
-  `events.subscribe`. It connects when a session starts or a tool first
-  runs, never when pi only loads it.
+  `events.subscribe`. The collector methods are in the grant at every
+  level, `observe` included: collectors only read
+  ([collectors.md](collectors.md#grants)). It connects when a session
+  starts or a tool first runs, never when pi only loads it.
+- **Collector rows.** A collector the agent creates with
+  `collector_create` (unless `wake` is false) is followed: its
+  `collect.row` events are gathered for 1.5 seconds and then sent to the
+  session as one `dreamer-collector` message that names the collector, how
+  many rows, their ids and panes, and the `collector_query` call that
+  reads them. The message starts a turn, or follows the current one, so
+  the agent is woken by a failing test in another pane instead of
+  polling. A pi without `sendMessage` for extensions gets a notice
+  instead. Following lasts for the pi process; `collector_stop` ends it.
 - **Approvals.** When an action waits for your approval, the extension
   shows it in pi (a notice and a status line, with the `dream approvals`
   command that answers it) and records it in the session as a
@@ -425,7 +436,5 @@ no prompt, so it calls no model.
 
 - The daily check for a newer pi release; `dream agents update` runs it
   by hand.
-- Collector tools follow the daemon's `collect.*` methods; their
-  parameters are passed through as the agent gives them.
 - Sessions over Claude Code, Codex, and ACP harnesses.
 - Running the pi contract test in CI against each new pi release.

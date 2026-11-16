@@ -42,11 +42,12 @@ export function level(env: Record<string, string | undefined> = process.env): Le
 	return v === "observe" || v === "own" || v === "elsewhere" ? v : "elsewhere";
 }
 
-/** The collector methods, used when the daemon offers them. */
-export const COLLECTOR_METHODS = ["collect.create", "collect.query", "collect.list", "collect.stop"];
+/** The collector presets the daemon ships (docs/collectors.md). */
+export const COLLECTOR_PRESETS = ["errors", "test-failures", "commands", "urls", "paths"];
 
 /** The methods of the agent's grant at `level`: the same set `dream mcp
- * --level` uses, plus the event stream (to show approvals) and collectors. */
+ * --level` uses (collectors only read panes, so every level keeps them),
+ * plus the event stream (approvals and collector rows). */
 export function agentMethods(l: Level): string[] {
 	const m = [
 		"tmux.topology",
@@ -59,23 +60,48 @@ export function agentMethods(l: Level): string[] {
 		"actions.get",
 		"actions.list",
 		"agents.runs",
-		"events.subscribe",
-		"collect.query",
+		"collect.create",
 		"collect.list",
+		"collect.query",
+		"collect.stop",
+		"events.subscribe",
 	];
 	if (l !== "observe") {
-		m.push(
-			"terminal.input",
-			"terminal.run",
-			"actions.submit",
-			"jobs.start",
-			"jobs.cancel",
-			"collect.create",
-			"collect.stop",
-		);
+		m.push("terminal.input", "terminal.run", "actions.submit", "jobs.start", "jobs.cancel");
 	}
 	return m;
 }
+
+/** `collect.create`'s parameters from the collector_create tool's: the
+ * definition as the API takes it (docs/collectors.md). `wake` is the
+ * tool's own. */
+export function collectorSpec(p: Record<string, any>): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const k of ["name", "preset", "from", "when", "capture", "keep", "per_second"]) {
+		if (p[k] !== undefined && p[k] !== null && p[k] !== "") out[k] = p[k];
+	}
+	if (out.name === undefined && out.preset === undefined) throw new Error("give a name or a preset");
+	return out;
+}
+
+/** `collect.query`'s parameters from the collector_query tool's: `fields`
+ * as an object of exact values, `since_s` as seconds before `now`. */
+export function collectorQuery(p: Record<string, any>, now: number = Date.now()): Record<string, unknown> {
+	const q: Record<string, unknown> = { name: p.name };
+	if (Array.isArray(p.panes) && p.panes.length > 0) q.panes = p.panes;
+	if (p.fields && typeof p.fields === "object") {
+		q.fields = Object.entries(p.fields).map(([name, value]) => ({ name, value: String(value) }));
+	}
+	if (typeof p.since_s === "number") q.since_unix_ms = Math.max(0, now - p.since_s * 1000);
+	for (const k of ["after", "limit", "group_by"]) if (p[k] !== undefined) q[k] = p[k];
+	return q;
+}
+
+/** New rows of a collector this session follows, gathered for a moment. */
+export type Rows = { collector: string; first: number; last: number; count: number; panes: number[] };
+
+/** How long rows gather before the agent hears of them. */
+const ROWS_MS = 1500;
 
 /** The narrowed grant: every pane, at the level. */
 export function agentGrant(l: Level): Record<string, unknown> {
@@ -276,6 +302,12 @@ export class Session {
 	readonly level: Level;
 	/** An approval this session waits for was requested or answered. */
 	onApproval: (a: { id: string; pane?: number; what: string; answered?: string }) => void = () => {};
+	/** Collectors whose new rows this session tells its agent about. */
+	readonly following = new Set<string>();
+	/** New rows of followed collectors, gathered for a moment. */
+	onRows: (rows: Rows[]) => void = () => {};
+	private gathering = new Map<string, Rows>();
+	private gatherTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(env: Record<string, string | undefined> = process.env) {
 		this.socket = socketPath(env);
@@ -299,8 +331,9 @@ export class Session {
 					this.leases.clear();
 				};
 				c.onNotification = (method, params) => this.notified(method, params);
-				// Approvals are shown, never answered: this grant cannot.
-				await c.call("events.subscribe", { kinds: ["approvals"] }).catch(() => {});
+				// Approvals are shown, never answered (this grant cannot);
+				// and collector rows wake the agent when it follows them.
+				await c.call("events.subscribe", { kinds: ["approvals", "collect.row"] }).catch(() => {});
 				try {
 					await c.call("collect.list", {});
 					this.collectors = true;
@@ -319,6 +352,10 @@ export class Session {
 	private notified(method: string, params: any) {
 		if (method !== "events.batch") return;
 		for (const e of params?.events ?? []) {
+			if (e.kind === "collect.row") {
+				this.row(String(e.subject ?? ""), Number(e.state ?? 0), e.pane);
+				continue;
+			}
 			const id = String(e.subject ?? "");
 			if (e.kind === "approvals.requested") {
 				const pane = typeof e.pane === "number" ? e.pane : undefined;
@@ -331,6 +368,24 @@ export class Session {
 				this.onApproval({ id, pane: e.pane, what: "", answered: String(e.state ?? "") });
 			}
 		}
+	}
+
+	/** A row of `collector`: gathered, then told in one batch. */
+	private row(collector: string, id: number, pane: unknown) {
+		if (!this.following.has(collector)) return;
+		const g = this.gathering.get(collector) ?? { collector, first: id, last: id, count: 0, panes: [] };
+		g.first = Math.min(g.first, id);
+		g.last = Math.max(g.last, id);
+		g.count += 1;
+		if (typeof pane === "number" && !g.panes.includes(pane)) g.panes.push(pane);
+		this.gathering.set(collector, g);
+		if (this.gatherTimer) return;
+		this.gatherTimer = setTimeout(() => {
+			this.gatherTimer = undefined;
+			const rows = [...this.gathering.values()];
+			this.gathering.clear();
+			if (rows.length > 0) this.onRows(rows);
+		}, ROWS_MS);
 	}
 
 	async call(method: string, params: Record<string, unknown> = {}): Promise<any> {
@@ -400,6 +455,8 @@ export class Session {
 	}
 
 	close() {
+		if (this.gatherTimer) clearTimeout(this.gatherTimer);
+		this.gatherTimer = undefined;
 		this.client?.close();
 		this.client = undefined;
 	}

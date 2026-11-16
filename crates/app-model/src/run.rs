@@ -261,17 +261,18 @@ async fn fetch(
 async fn rows_of(c: &client::Client, src: &Source) -> Result<Vec<Value>, (bool, String)> {
     let result = call(
         c,
-        &src.method,
-        to_json(&toml::Value::Table(src.params.clone())),
+        src.method_name(),
+        to_json(&toml::Value::Table(src.call_params())),
     )
     .await?;
     Ok(rows_in(result, src))
 }
 
-/// The rows in a method's `result`, as `src` takes them.
+/// The rows in a method's `result`, as `src` takes them: a collector's
+/// rows with their fields as members.
 fn rows_in(result: Value, src: &Source) -> Vec<Value> {
-    let data = match &src.path {
-        Some(p) => field(&result, p).cloned().unwrap_or(Value::Null),
+    let data = match src.rows_path() {
+        Some(p) => field(&result, &p).cloned().unwrap_or(Value::Null),
         None => result,
     };
     let mut rows = match data {
@@ -280,6 +281,12 @@ fn rows_in(result: Value, src: &Source) -> Vec<Value> {
         other => vec![other],
     };
     rows.truncate(src.limit);
+    if src.collector.is_some() {
+        rows = rows
+            .into_iter()
+            .map(crate::manifest::collector_row)
+            .collect();
+    }
     rows
 }
 
@@ -333,7 +340,7 @@ pub struct Session {
 
 impl Session {
     pub async fn open(endpoint: &Endpoint, manifest: &Manifest) -> Result<Session, String> {
-        let conn = connect(endpoint, &mut false, &[], &manifest.capabilities).await?;
+        let conn = connect(endpoint, &mut false, &[], &manifest.methods()).await?;
         let client = Arc::try_unwrap(conn.client).map_err(|_| "connection shared".to_owned())?;
         Ok(Session { client })
     }
@@ -656,7 +663,7 @@ pub async fn run(
                     }
                 }
                 if conn.is_none() && !gave_up && now >= retry {
-                    match connect(&endpoint, &mut registered, &watch, &app.manifest.capabilities).await {
+                    match connect(&endpoint, &mut registered, &watch, &app.manifest.methods()).await {
                         Ok(c) => {
                             *current.borrow_mut() = Some(c.client.clone());
                             crate::agent::refresh_filters(&mut app, &c.client).await;

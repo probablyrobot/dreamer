@@ -9,6 +9,9 @@ pub const USAGE: &str = "usage:
   dream collect create -f FILE
       a definition in YAML or JSON (see docs/collectors.md)
   dream collect create NAME FROM WHEN [CAPTURE] [KEEP]
+  dream collect create --preset PRESET [NAME] [FROM] [WHEN] [CAPTURE] [KEEP]
+      PRESET:  errors | test-failures | commands | urls | paths; each part
+               given replaces the preset's
       FROM:    --all | --session NAME | --window @N | --pane %N... | --command REGEX
       WHEN:    --line REGEX [--ignore-case] | --command-end | --idle MS | --bell
                | --exit | --every SECONDS
@@ -108,13 +111,15 @@ fn from_flags(name: &str, args: &[String]) -> Result<api::CollectorSpec, String>
             "--keep-rows" => keep.rows = Some(number("--keep-rows", &value()?)?),
             "--keep-for" => keep.max_age_s = Some(seconds(&value()?)?),
             "--per-second" => spec.per_second = Some(number("--per-second", &value()?)?),
+            "--preset" => spec.preset = Some(value()?),
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
     }
-    spec.from = Some(from);
-    spec.when = Some(when);
-    spec.capture = Some(capture);
-    spec.keep = Some(keep);
+    // A part not given stays unset, so a preset's part stands.
+    spec.from = (from != api::CollectFrom::default()).then_some(from);
+    spec.when = (when != api::CollectWhen::default()).then_some(when);
+    spec.capture = (capture != api::CollectCapture::default()).then_some(capture);
+    spec.keep = (keep != api::CollectKeep::default()).then_some(keep);
     Ok(spec)
 }
 
@@ -166,6 +171,16 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         [v, name, rest @ ..] if v == "create" && !name.starts_with('-') => {
             Request::CollectCreate(from_flags(name, rest)?)
         }
+        // A preset's name is the collector's unless one follows.
+        [v, p, preset, rest @ ..] if v == "create" && p == "--preset" => {
+            let (name, rest) = match rest {
+                [n, more @ ..] if !n.starts_with('-') => (n.as_str(), more),
+                _ => ("", rest),
+            };
+            let mut spec = from_flags(name, rest)?;
+            spec.preset = Some(preset.clone());
+            Request::CollectCreate(spec)
+        }
         [v] if v == "list" => Request::CollectList(api::Empty {}),
         [] => Request::CollectList(api::Empty {}),
         [v, name] if v == "stop" => Request::CollectStop(api::CollectRef {
@@ -215,12 +230,14 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
                 for s in l.collectors {
                     let state = api::CollectorState::try_from(s.state)
                         .map_or("?", api::CollectorState::name);
-                    let when = s
-                        .spec
-                        .as_ref()
-                        .and_then(|s| s.when.as_ref())
-                        .map(describe_when)
-                        .unwrap_or_default();
+                    // A preset's long pattern is in --json.
+                    let when = match s.spec.as_ref() {
+                        Some(sp) if sp.preset.is_some() => {
+                            format!("preset {}", sp.preset.as_deref().unwrap_or_default())
+                        }
+                        Some(sp) => sp.when.as_ref().map(describe_when).unwrap_or_default(),
+                        None => String::new(),
+                    };
                     println!(
                         "{:<20} {:<8} {:>6} rows  {:>7} collected  {:>6} dropped  {} pane(s)  {when}",
                         s.name,

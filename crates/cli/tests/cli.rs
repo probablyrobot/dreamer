@@ -2145,6 +2145,10 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             "cancel_job",
             "check_action",
             "check_job",
+            "collector_create",
+            "collector_list",
+            "collector_query",
+            "collector_stop",
             "create_pane",
             "find_lines",
             "layout_close",
@@ -2292,6 +2296,82 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
         "{listed}"
     );
     let stopped = m.call("stop_filter", serde_json::json!({ "name": "errs" }));
+    assert_ne!(stopped["isError"], true, "{stopped}");
+}
+
+/// An agent at the observe level keeps the test-failures preset over every
+/// pane; failing tests in another pane become rows, grouped by test.
+#[test]
+fn an_mcp_agent_collects_test_failures_from_another_pane() {
+    let cli = Cli::new();
+    cli.ok(&["ensure-running"]);
+    cli.tmux
+        .run_checked(&["split-window", "-t", "main", "/bin/sh"])
+        .expect("split");
+    let mut m = Mcp::start(cli.mcp(&["--level", "observe"]));
+    let created = m.call(
+        "collector_create",
+        serde_json::json!({ "preset": "test-failures" }),
+    );
+    assert_ne!(created["isError"], true, "{created}");
+    assert_eq!(
+        created["structuredContent"]["name"], "test-failures",
+        "{created}"
+    );
+    let bad = m.call("collector_create", serde_json::json!({ "preset": "nope" }));
+    assert_eq!(bad["isError"], true, "{bad}");
+
+    // Two runs in pane 1: `a` fails twice, `b` once; a passing test is no
+    // row.
+    for out in [
+        r"test a ... FAILED\ntest ok ... ok\n",
+        r"test a ... FAILED\ntest b ... FAILED\n",
+    ] {
+        cli.tmux
+            .run_checked(&["send-keys", "-t", "%1", &format!("printf '{out}'"), "Enter"])
+            .expect("type");
+    }
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let grouped = loop {
+        let q = m.call(
+            "collector_query",
+            serde_json::json!({ "name": "test-failures", "group_by": "test" }),
+        );
+        assert_ne!(q["isError"], true, "{q}");
+        if q["structuredContent"]["matched"] == 3 {
+            break q;
+        }
+        assert!(Instant::now() < deadline, "never three rows: {q}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let groups = &grouped["structuredContent"]["groups"];
+    assert_eq!(groups[0]["value"], "a", "{grouped}");
+    assert_eq!(groups[0]["count"], 2, "{grouped}");
+    assert_eq!(groups[1]["value"], "b", "{grouped}");
+    let only_b = m.call(
+        "collector_query",
+        serde_json::json!({ "name": "test-failures", "fields": { "test": "b" }, "panes": [1] }),
+    );
+    let rows = &only_b["structuredContent"]["rows"];
+    assert_eq!(rows.as_array().map(Vec::len), Some(1), "{only_b}");
+    assert_eq!(rows[0]["pane"], 1, "{only_b}");
+    let listed = m.call("collector_list", serde_json::json!({}));
+    assert_eq!(
+        listed["structuredContent"]["collectors"][0]["spec"]["preset"], "test-failures",
+        "{listed}"
+    );
+    // Stopping a collector, which may be the user's, is an action:
+    // refused at observe, allowed from own up.
+    let refused = m.call(
+        "collector_stop",
+        serde_json::json!({ "name": "test-failures", "delete": true }),
+    );
+    assert_eq!(refused["isError"], true, "{refused}");
+    let mut own = Mcp::start(cli.mcp(&["--level", "own"]));
+    let stopped = own.call(
+        "collector_stop",
+        serde_json::json!({ "name": "test-failures", "delete": true }),
+    );
     assert_ne!(stopped["isError"], true, "{stopped}");
 }
 

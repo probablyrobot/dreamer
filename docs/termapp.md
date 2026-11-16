@@ -52,6 +52,35 @@ params = { action = { kind = { rename_window = { window = "${selected.window}", 
   the rows from `path`. They are fetched when the app connects, on
   `refresh_ms` (at least 200), and when an event of the listed kinds is
   recorded ([events.md](events.md)).
+- **Collectors as data:** a source with `collector = "NAME"` instead of
+  `method` shows a collector's rows ([collectors.md](collectors.md)). It
+  calls `collect.query` with that name; its `params` are the query's other
+  parts (`fields`, `panes`, `since_unix_ms`, `group_by`, ...), and `name`
+  is refused there. It asks for as many rows as the source's `limit`
+  unless `params` sets `limit`, and the rows are the newest, oldest first.
+  Each row's fields become members of the row, so `columns` and `field`
+  name them directly (`test`, `severity`); a row's own member of the same
+  name (`pane`, `line`, ...) wins, and all fields stay in `fields`. With
+  `group_by`, the rows are the groups (`value`, `count`,
+  `latest_unix_ms`), which a `chart` of `count` draws. Add
+  `events = ["collect.row"]` to fetch again on each new row. A collector
+  source adds `collect.query` and every pane to the grant the app needs:
+  a collector's rows come from any pane it covers. The collector itself is
+  made elsewhere (`dream collect create`, or an agent); a source never
+  creates one, and a source naming a collector that does not exist shows
+  the daemon's error in the status line.
+
+  ```toml
+  [data.failures]
+  collector = "test-failures"   # e.g. dream collect create --preset test-failures
+  events = ["collect.row"]
+
+  [view]
+  type = "table"
+  source = "failures"
+  row_key = "id"
+  columns = ["test", "file", "pane", "time_unix_ms"]
+  ```
 - **Views:** `table` shows `columns`; `list` and `log` show one `field` per
   row (a log follows its newest row); `text` shows one value; `gauge`
   shows one numeric `field` (0 to 1, or a percentage) as a bar with an
@@ -85,8 +114,9 @@ them.
    source a `fixtures/<source>.json` holding what its method returns.
 2. **Check:** `dream app check DIR` lists every problem and the grant the
    app needs: its `capabilities`, plus `events.subscribe` when a source
-   follows events, on its own pane, its agent's panes, or every pane with
-   `all_panes`.
+   follows events and `collect.query` when a source is a collector, on its
+   own pane, its agent's panes, or every pane with `all_panes` (or a
+   collector source).
 3. **Preview:** `dream app preview DIR` draws the app once from its
    fixtures, through its module's `transform`, with no daemon. The status
    line says `preview from fixtures`.
