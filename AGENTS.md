@@ -30,8 +30,9 @@ These are settled. Changing one needs an ADR (kept outside the repository, in `~
 - The GUI thread never blocks on I/O, parses terminal streams, decodes images, runs scripts, or calls models.
 - Terminal bytes are ordered and never silently dropped. Only superseded render frames may be coalesced.
 - UI code never builds tmux command strings. Use the typed backend operations and the single argument encoder.
-- Extensions use the same typed API as the GUI, under grants. Script tier is sandboxed Luau; heavy or OS-facing work runs as a supervised process. Scripts and filters never modify what a process wrote or what a normal tmux client sees.
-- Agent providers default to the installed Claude Code and Codex CLIs on the user's own login. Never fall back to a metered API key automatically, and never read the CLIs' credential stores.
+- Extensions use the same typed API as the GUI, under grants. Filters, triggers, and daemon scripts are sandboxed Luau. App logic is TypeScript, run sandboxed in the app host's embedded engine (QuickJS) with only the typed API its grant allows; types are stripped when an app is checked or installed. Heavy or OS-facing work runs as a supervised process. Scripts, filters, and collectors never modify what a process wrote or what a normal tmux client sees.
+- Apps describe their UI as a tree of host components that the desktop draws natively and the app host draws as a TUI. App code never runs in the desktop process and never touches GPUI or the OS directly.
+- Agent harnesses are configuration (`agents:` in `dreamer.yaml`): pi by default, installed and kept at its latest release by Dreamer in Dreamer's own data directory, run with Dreamer's pi profile; Claude Code, Codex, or any ACP agent when configured. Every harness uses its own login. Never fall back to a metered API key automatically, and never read a harness's credential store.
 - Every dependency that matters (Rust toolchain, GPUI, Ghostty, Zig, tmux baseline) is pinned and recorded in `docs/dependency-baseline.md`. Builds use `--locked` and do not download changing sources.
 
 ## Verification
