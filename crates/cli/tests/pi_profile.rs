@@ -367,6 +367,8 @@ fn the_extension_client_works_under_an_agents_grant() {
         "own",
         "owned",
         "rename",
+        "woken",
+        "grouped",
     ] {
         let s = steps
             .iter()

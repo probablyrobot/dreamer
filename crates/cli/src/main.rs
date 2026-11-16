@@ -92,7 +92,7 @@ const USAGE: &str = "usage:
   dream agents ask [--provider claude|codex] [--pane %N]... [--all-panes] [--no-tools] [--timeout S] -- PROMPT
   dream jobs [--json] | start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...] | cancel ID | artifacts ID
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME
-  dream collect create -f FILE | create NAME ... | list | query NAME ... | stop NAME [--delete]
+  dream collect create -f FILE | create NAME ... | create --preset NAME ... | list | query NAME ... | stop NAME [--delete]
   dream hosts connect|list|call|disconnect ... (see `dream hosts`)
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status

@@ -21,6 +21,8 @@ per_second: 10
 ```
 
 The same in JSON works too: `dream collect create -f FILE` reads either.
+A definition can also start from a shipped one, with `preset`; see
+[Presets](#presets).
 
 ### `from`: which panes
 
@@ -84,7 +86,7 @@ as a job ([jobs.md](jobs.md)), for the status.
 | --- | --- | --- |
 | (always) | The matched line in `line` | `line` |
 | Named groups `(?P<name>...)` | A field per group that took part | `line` |
-| `fields: [{ name, value }]` | A field per entry; `value` is a template where `$1`, `${1}`, or `${name}` is a group and `$$` a dollar sign | `line` |
+| `fields: [{ name, value }]` | A field per entry; `value` is a template where `$1`, `${1}`, or `${name}` is a group and `$$` a dollar sign. A group that took no part is empty, and a template that comes out empty adds no field | `line` |
 | Numbered groups | Fields `1`, `2`, ... when the pattern has no named groups and `fields` is empty | `line` |
 | `json: true` | The matched line is a JSON object: each top-level member becomes a field (strings as they are, other values as JSON). A line that is not an object adds no fields | `line` |
 | `before: N`, `after: N` | Up to N lines before and after the matched line (at most 100 each). A row waits up to 2 seconds for its `after` lines, then is recorded with what came | `line` |
@@ -109,6 +111,41 @@ are not recorded and are counted: `dropped` in the collector's status
 counts them all, and each row's `dropped` says how many that pane dropped
 since its previous recorded row. A row that finds the file's write queue
 full (4096 rows) is dropped and counted the same way.
+
+## Presets
+
+Dreamer ships five definitions, used by name: `preset: NAME` in a
+definition (`collect.create`), `dream collect create --preset NAME`, or the
+`preset` of the agent tool `collector_create`. A preset is a plain
+definition like any other. Each part a definition gives (`from`, `when`,
+`capture`, `keep`, `per_second`) replaces the preset's part as a whole;
+the parts it leaves out are the preset's. The collector is named after the
+preset unless the definition names it. `collect.list` shows the definition
+as it runs, with `preset` naming where it started.
+
+| Preset | Panes | A row when | Fields |
+| --- | --- | --- | --- |
+| `errors` | all | A line is an error or a warning: gcc and clang (`file:line:col: error: ...`), tsc (both formats), rustc (`error[E0308]: ...`; the location is in `after`), eslint's stylish format (the file is the heading above), Python and JavaScript exceptions (`ValueError: ...`, pytest's `E   ...`), Go build errors and panics, and log lines with an upper-case level (`ERROR`, `WARN`, `WARNING`, `FATAL`, `CRITICAL`). Keeps 5 lines before and 3 after | `severity` (as written: `error`, `warning`, `Error`, `ERROR`, `panic`, ...), `code` (`E0308`, `TS2322`, an eslint rule, an exception's name), `file`, `line`, `col`, `message` |
+| `test-failures` | all | A test failed: cargo test (`test x ... FAILED`), go test (`--- FAIL: TestX`, and `FAIL pkg` for a package), pytest (`FAILED node - message`, and `-v`'s `node FAILED`), jest and vitest (`✕`, `×`, or `✗` marks, and `FAIL file [> test]` lines). Keeps 5 lines after | `test`, `file`, `message` |
+| `commands` | all | A command finished (`command_end`; needs OSC 133, see above). Keeps the last 20 lines | `duration_ms`; the row's `exit_status` and `command` |
+| `urls` | all | A line holds an `http` or `https` URL (the first one; trailing punctuation is left out) | `url` |
+| `paths` | all | A line holds a file path with a line number, `path:line` or `path:line:col`; the file name needs an extension, so times (`12:30:45`) and host ports (`localhost:8080`) are not paths | `file`, `line`, `col` |
+
+A field a format does not have is absent: a Go build error has no
+`severity`, a rustc error no `file`. Each format is one alternative of the
+preset's pattern, with numbered groups, and each field's template joins
+the groups that can hold it; only the matching alternative's groups take
+part. `dream collect list --json` shows the full definitions.
+
+Overriding, for example the test failures of one session's panes only, kept
+for a day:
+
+```yaml
+name: ci-failures
+preset: test-failures
+from: { session: ci }
+keep: { max_age_s: 86400 }
+```
 
 ## A row
 
@@ -196,8 +233,16 @@ cannot slow a pane or another client down.
 ## Grants
 
 `collect.create` with only `panes` needs those panes in the connection's
-grant; any other `from`, and `collect.list`, `collect.query`, and
+grant; any other `from`, a preset without a `from` of its own (every
+preset reads all panes), and `collect.list`, `collect.query`, and
 `collect.stop`, need `all_panes` (see [grants.md](grants.md)).
+
+Collectors only read, so an agent's grant at any level, `observe`
+included, may create, list, and query collectors (`dream mcp --level` and
+Dreamer's pi extension give it `collect.create`, `collect.list`, and
+`collect.query`). Collectors have no owner, so stopping or deleting one
+may undo the user's own: `collect.stop` is an action, given from `own`
+up.
 
 ## From the command line
 
@@ -205,6 +250,8 @@ grant; any other `from`, and `collect.list`, `collect.query`, and
 dream collect create -f test-failures.yaml
 dream collect create fails --all --line '^FAILED (?P<test>\S+)' --after 5 --keep-for 7d
 dream collect create cmds --session main --command-end --lines 20
+dream collect create --preset test-failures
+dream collect create --preset errors build-errors --session build
 dream collect list
 dream collect query fails --since 1h --group-by test
 dream collect query cmds --field exit_status=1 --json

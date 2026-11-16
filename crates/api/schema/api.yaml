@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 43 }
+version: { major: 1, minor: 44 }
 package: dreamer.v1
 
 types:
@@ -1479,6 +1479,7 @@ types:
       - { n: 4, name: capture, type: CollectCapture }
       - { n: 5, name: keep, type: CollectKeep }
       - { n: 6, name: per_second, type: u32, optional: true, doc: "Rows per second per pane; more are dropped and counted. Default 10, at most 1000." }
+      - { n: 7, name: preset, type: string, optional: true, doc: "A shipped definition to start from (errors, test-failures, commands, urls, paths); each part given here replaces the preset's. The name defaults to the preset's." }
 
   - enum: CollectorState
     values:

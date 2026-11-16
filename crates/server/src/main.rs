@@ -14,6 +14,7 @@
 mod agents;
 mod approvals;
 mod apps;
+mod collect_presets;
 mod collectors;
 mod config_watch;
 mod conn;

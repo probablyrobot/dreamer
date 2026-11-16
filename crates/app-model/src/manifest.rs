@@ -218,8 +218,15 @@ pub fn binding_ok(k: &str) -> bool {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
-    /// An API method that returns the data (a query, not a mutation).
+    /// An API method that returns the data (a query, not a mutation), or
+    #[serde(default)]
     pub method: String,
+    /// a collector's name: its rows, through `collect.query`, each with its
+    /// fields as members.
+    #[serde(default)]
+    pub collector: Option<String>,
+    /// The method's parameters; for a collector, `collect.query`'s other
+    /// than `name` (`fields`, `panes`, `group_by`, ...).
     #[serde(default)]
     pub params: toml::Table,
     /// Where the rows are in the result, as dotted field names.
@@ -238,6 +245,71 @@ pub struct Source {
 
 fn default_limit() -> usize {
     500
+}
+
+/// The method a collector source calls.
+pub const COLLECT_QUERY: &str = "collect.query";
+
+impl Source {
+    /// The method called: its own, or `collect.query` for a collector.
+    pub fn method_name(&self) -> &str {
+        if self.collector.is_some() {
+            COLLECT_QUERY
+        } else {
+            &self.method
+        }
+    }
+
+    /// The parameters sent: for a collector, its name, and as many rows as
+    /// the source keeps unless the parameters say otherwise.
+    pub fn call_params(&self) -> toml::Table {
+        let mut p = self.params.clone();
+        if let Some(c) = &self.collector {
+            p.insert("name".into(), toml::Value::String(c.clone()));
+            if !p.contains_key("limit") {
+                p.insert("limit".into(), toml::Value::Integer(self.limit as i64));
+            }
+        }
+        p
+    }
+
+    /// Where the rows are in the result: the source's `path`, or for a
+    /// collector `rows` (`groups` with `group_by`).
+    pub fn rows_path(&self) -> Option<String> {
+        if self.path.is_some() || self.collector.is_none() {
+            return self.path.clone();
+        }
+        Some(if self.params.contains_key("group_by") {
+            "groups".into()
+        } else {
+            "rows".into()
+        })
+    }
+}
+
+/// A collector row as an app shows it: its fields become members (a
+/// row's own member of the same name wins), and `fields` an object of them.
+pub fn collector_row(row: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(mut o) = row else {
+        return row;
+    };
+    let fields = match o.remove("fields") {
+        Some(serde_json::Value::Array(a)) => a,
+        _ => Vec::new(),
+    };
+    let mut by_name = serde_json::Map::new();
+    for f in fields {
+        if let (Some(n), Some(v)) = (f["name"].as_str(), f.get("value")) {
+            by_name.insert(n.to_owned(), v.clone());
+        }
+    }
+    for (k, v) in &by_name {
+        if !o.contains_key(k) {
+            o.insert(k.clone(), v.clone());
+        }
+    }
+    o.insert("fields".into(), serde_json::Value::Object(by_name));
+    serde_json::Value::Object(o)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -406,8 +478,26 @@ pub struct Needs {
 
 impl Manifest {
     /// What a launch must grant this package.
-    pub fn needs(&self) -> Needs {
+    /// The methods the package calls: its capabilities, and `collect.query`
+    /// when a data source is a collector.
+    pub fn methods(&self) -> Vec<String> {
         let mut methods = self.capabilities.clone();
+        let declared = methods
+            .iter()
+            .any(|c| c == COLLECT_QUERY || c == "collect.*");
+        if !declared && self.data.values().any(|s| s.collector.is_some()) {
+            methods.push(COLLECT_QUERY.into());
+        }
+        methods
+    }
+
+    /// Whether a data source is a collector, whose rows come from any pane.
+    fn reads_collectors(&self) -> bool {
+        self.data.values().any(|s| s.collector.is_some())
+    }
+
+    pub fn needs(&self) -> Needs {
+        let mut methods = self.methods();
         let follows = self.data.values().any(|s| !s.events.is_empty())
             || self
                 .agent
@@ -423,7 +513,7 @@ impl Manifest {
         Needs {
             methods,
             panes,
-            all_panes,
+            all_panes: all_panes || self.reads_collectors(),
         }
     }
 
@@ -471,13 +561,33 @@ impl Manifest {
         }
         for (name, s) in &self.data {
             let at = format!("data.{name}");
-            match method_info(&s.method) {
-                None => errors.push(format!("{at}.method: no method `{}`", s.method)),
-                Some(m) if m.mutation => errors.push(format!(
-                    "{at}.method: `{}` changes things; data comes from queries",
-                    s.method
-                )),
-                Some(_) => {}
+            match (&s.collector, s.method.is_empty()) {
+                (Some(_), false) => {
+                    errors.push(format!("{at}: give a method or a collector, not both"));
+                }
+                (Some(c), true) => {
+                    let label = !c.is_empty()
+                        && c.len() <= 64
+                        && c.chars()
+                            .all(|ch| ch.is_ascii_alphanumeric() || "-_.".contains(ch));
+                    if !label {
+                        errors.push(format!(
+                            "{at}.collector: `{c}` is not a collector name (letters, digits, `-`, `_`, `.`)"
+                        ));
+                    }
+                    if s.params.contains_key("name") {
+                        errors.push(format!("{at}.params.name: the collector names it"));
+                    }
+                }
+                (None, true) => errors.push(format!("{at}: give a method or a collector")),
+                (None, false) => match method_info(&s.method) {
+                    None => errors.push(format!("{at}.method: no method `{}`", s.method)),
+                    Some(m) if m.mutation => errors.push(format!(
+                        "{at}.method: `{}` changes things; data comes from queries",
+                        s.method
+                    )),
+                    Some(_) => {}
+                },
             }
             if s.path.as_deref().is_some_and(|p| !path_ok(p)) {
                 errors.push(format!("{at}.path: not dotted field names"));
@@ -1025,5 +1135,46 @@ source = "panes"
         assert!(!binding_ok("r"));
         assert!(!binding_ok("cmd-cmd-r"));
         assert!(!binding_ok("hyper-r"));
+    }
+
+    #[test]
+    fn a_collector_is_a_data_source() {
+        let head = "schema_version = 1\nid = \"t.c\"\nversion = \"1\"\ntitle = \"T\"\n";
+        let view = "[view]\ntype = \"table\"\nsource = \"f\"\ncolumns = [\"test\"]\n";
+        let m = Manifest::parse(&format!(
+            "{head}[data.f]\ncollector = \"test-failures\"\nevents = [\"collect.row\"]\n{view}"
+        ))
+        .expect("valid");
+        let n = m.needs();
+        assert!(n.methods.iter().any(|x| x == COLLECT_QUERY), "{n:?}");
+        assert!(n.all_panes);
+        let s = &m.data["f"];
+        assert_eq!(s.method_name(), COLLECT_QUERY);
+        assert_eq!(s.call_params()["name"].as_str(), Some("test-failures"));
+        assert_eq!(s.call_params()["limit"].as_integer(), Some(500));
+        assert_eq!(s.rows_path().as_deref(), Some("rows"));
+        let m = Manifest::parse(&format!(
+            "{head}[data.f]\ncollector = \"errors\"\nparams = {{ group_by = \"severity\" }}\n{view}"
+        ))
+        .expect("valid");
+        assert_eq!(m.data["f"].rows_path().as_deref(), Some("groups"));
+        let errors = |src: &str| {
+            Manifest::parse(&format!("{head}[data.f]\n{src}\n{view}")).expect_err("invalid")
+        };
+        assert!(errors("collector = \"a\"\nmethod = \"tmux.topology\"")[0].contains("not both"));
+        assert!(errors("params = {}")[0].contains("give a method or a collector"));
+        assert!(errors("collector = \"a b\"")[0].contains("not a collector name"));
+        assert!(
+            errors("collector = \"a\"\nparams = { name = \"b\" }")[0]
+                .contains("the collector names it")
+        );
+        let row = collector_row(serde_json::json!({
+            "id": 3,
+            "pane": 1,
+            "fields": [{ "name": "test", "value": "a::b" }, { "name": "pane", "value": "x" }],
+        }));
+        assert_eq!(row["test"], "a::b");
+        assert_eq!(row["pane"], 1);
+        assert_eq!(row["fields"]["pane"], "x");
     }
 }

@@ -219,3 +219,96 @@ fn a_narrowed_package_can_do_only_what_it_declares() {
     inputs.send(Input::Quit).expect("send");
     assert_eq!(runner.join().expect("runner"), Ok(()));
 }
+
+/// A package whose table shows a collector's rows: the shipped
+/// test-failures preset, refreshed by its row events.
+const FAILURES: &str = r#"schema_version = 1
+id = "test.failures"
+version = "0.1.0"
+title = "Failures"
+
+[data.failures]
+collector = "test-failures"
+events = ["collect.row"]
+
+[view]
+type = "table"
+source = "failures"
+row_key = "id"
+columns = ["test", "pane"]
+"#;
+
+#[test]
+fn a_collector_s_rows_are_a_table_s_data() {
+    let s = Setup::new();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let c = client::Client::connect(&s.root.join("rt/dreamerd.sock"), "test")
+            .await
+            .expect("connect");
+        let r = c
+            .call(api::Request::CollectCreate(api::CollectorSpec {
+                preset: Some("test-failures".into()),
+                ..api::CollectorSpec::default()
+            }))
+            .await;
+        assert!(
+            matches!(&r, Ok(api::Response::CollectCreate(st)) if st.name == "test-failures"),
+            "{r:?}"
+        );
+    });
+    let manifest = s.root.join("app.toml");
+    std::fs::write(&manifest, FAILURES).expect("manifest");
+    let (inputs, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (models_tx, models) = mpsc::channel();
+    // Narrowed to what the package declares: its collector source brings
+    // `collect.query` and every pane.
+    let endpoint = Endpoint {
+        socket: s.root.join("rt/dreamerd.sock"),
+        role: "test",
+        ticket: false,
+        narrow: true,
+    };
+    let runner = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let mut publish = |app: &App| {
+            let _ = models_tx.send(app.clone());
+            Ok(())
+        };
+        rt.block_on(app_model::run(manifest, endpoint, &mut rx, &mut publish))
+    });
+    let first = until(&models, "live", |a| a.link == Link::Live);
+    assert!(first.rows.is_empty(), "{:?}", first.rows);
+    assert_eq!(first.status, None);
+
+    let pane = s
+        .tmux
+        .run_checked(&["list-panes", "-a", "-F", "#{pane_id}"])
+        .expect("panes")
+        .lines()
+        .next()
+        .expect("a pane")
+        .to_owned();
+    s.tmux
+        .run_checked(&[
+            "send-keys",
+            "-t",
+            &pane,
+            r"printf 'test parse::empty ... FAILED\n'",
+            "Enter",
+        ])
+        .expect("type");
+    let shown = until(&models, "the failure's row", |a| !a.rows.is_empty());
+    let row = &shown.rows[0];
+    assert_eq!(row["test"], "parse::empty", "{row}");
+    assert_eq!(format!("%{}", row["pane"]), pane, "{row}");
+    assert_eq!(row["trigger"], "line", "{row}");
+    inputs.send(Input::Quit).expect("send");
+    assert_eq!(runner.join().expect("runner"), Ok(()));
+}

@@ -372,6 +372,27 @@ fn compile(spec: &api::CollectorSpec) -> Result<Rule, String> {
     })
 }
 
+/// Check a definition as `collect.create` does.
+#[cfg(test)]
+pub(crate) fn check(spec: &api::CollectorSpec) -> Result<(), String> {
+    compile(spec).map(|_| ())
+}
+
+/// The fields a line collector `spec` records for `line`, sorted by name;
+/// `None` when the line makes no row.
+#[cfg(test)]
+pub(crate) fn sample(spec: &api::CollectorSpec, line: &str) -> Option<Vec<(String, String)>> {
+    let rule = compile(spec).expect("a valid definition");
+    let groups = rule.line.as_ref()?.captures(line)?;
+    let mut f: Vec<(String, String)> = rule
+        .fields_of(line, &groups)
+        .into_iter()
+        .map(|f| (f.name, f.value))
+        .collect();
+    f.sort();
+    Some(f)
+}
+
 impl Rule {
     /// The panes of `t` this rule covers now.
     fn covers(&self, t: &api::Topology) -> Vec<u32> {
@@ -435,6 +456,11 @@ impl Rule {
             let value = expand(template, |key| {
                 group_index(key, &self.groups).and_then(|i| groups.get(i)?.text.clone())
             });
+            // A template that comes out empty adds no field: a pattern of
+            // alternatives fills each field from the one that matched.
+            if value.is_empty() {
+                continue;
+            }
             out.retain(|f| &f.name != name);
             out.push(field(name, &value));
         }
@@ -895,6 +921,7 @@ pub async fn create(
     state: &Arc<State>,
     spec: api::CollectorSpec,
 ) -> Result<api::CollectorStatus, RpcError> {
+    let spec = crate::collect_presets::apply(spec).map_err(invalid)?;
     let rule = compile(&spec).map_err(invalid)?;
     let dir = state.collectors.dir.join(&spec.name);
     // A stopped collector of the same name is replaced; its rows stay.
