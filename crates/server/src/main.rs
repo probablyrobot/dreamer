@@ -31,6 +31,7 @@ mod query;
 mod scripts;
 mod service;
 mod taps;
+mod tiers;
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek as _, Write as _};
@@ -230,6 +231,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
         platform::owner_only(&rpc_socket)?;
         let (started, started_unix_ms) = service::started_now();
         let events = Arc::new(events::Events::default());
+        let settings = workspace_config::load_settings();
         let state = Arc::new(State {
             identity: Identity::current("daemon"),
             instance: format!("{:x}-{:x}", started_unix_ms, std::process::id()),
@@ -254,9 +256,9 @@ fn run(args: Args) -> Result<ExitCode, String> {
             sizing: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             pastes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             leases: crate::leases::Leases::default(),
-            terminal: tokio::sync::Mutex::new(match workspace_config::load_settings() {
+            terminal: tokio::sync::Mutex::new(match &settings {
                 Ok(s) => {
-                    let d = config_watch::defaults(&s);
+                    let d = config_watch::defaults(s);
                     log::info(format!("terminal theme {}", d.scheme.name));
                     d
                 }
@@ -265,6 +267,9 @@ fn run(args: Args) -> Result<ExitCode, String> {
                     mirror::TerminalDefaults::default()
                 }
             }),
+            tiers: tokio::sync::Mutex::new(config_watch::tiers(
+                &settings.as_ref().map(|s| s.tiers).unwrap_or_default(),
+            )),
             hosts: hosts::Hosts::new(events.clone()),
             events,
             broker: Arc::default(),
@@ -288,6 +293,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
         extensions::start_all(&state).await;
         tokio::spawn(jobs::watch(state.clone()));
         tokio::spawn(config_watch::run(state.clone()));
+        tokio::spawn(tiers::run(state.clone()));
         let r = serve(listener, rpc, state.clone()).await;
         state.filters.remove_all();
         state.scripts.stop_all().await;

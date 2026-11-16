@@ -228,6 +228,11 @@ pub struct LiveStats {
     pub title: Option<String>,
     pub cwd: Option<String>,
     pub reattaches: u32,
+    /// Subscribers following the pane now: views, taps, and filters.
+    pub followers: usize,
+    /// How long since the pane last wrote anything (or since the mirror
+    /// started, if it has written nothing).
+    pub quiet: std::time::Duration,
 }
 
 #[derive(Debug)]
@@ -330,6 +335,8 @@ struct Mirror {
     /// The sequence when the default colors last changed: a view resuming
     /// from at or before it takes a checkpoint, not a replay without them.
     colors_from: u64,
+    /// When the pane last wrote anything.
+    last_output: Instant,
 }
 
 impl Drop for Mirror {
@@ -429,6 +436,14 @@ impl Mirror {
             title: self.title.clone(),
             cwd: self.cwd.clone(),
             reattaches: self.reattaches,
+            followers: self
+                .subscribers
+                .iter()
+                .filter(|s| {
+                    !s.records.is_closed() && s.ended.load(Ordering::SeqCst) == end::RUNNING
+                })
+                .count(),
+            quiet: self.last_output.elapsed(),
         }
     }
 
@@ -441,6 +456,7 @@ impl Mirror {
         let r = match &record {
             Record::Bytes(b) => {
                 self.ingested += b.len() as u64;
+                self.last_output = Instant::now();
                 // Mirrors never answer the application (tmux owns replies).
                 // Title and cwd become state; they and bells are live
                 // effects for subscribers present now, never journaled.
@@ -659,6 +675,8 @@ pub fn spawn(
                                         title: None,
                                         cwd: None,
                                         reattaches: 0,
+                                        followers: 0,
+                                        quiet: std::time::Duration::ZERO,
                                     },
                                 );
                                 continue;
@@ -685,6 +703,7 @@ pub fn spawn(
                             attach,
                             reattaches,
                             colors_from: 0,
+                            last_output: Instant::now(),
                         };
                         // Clipboard writes count only from live output, never
                         // from what bootstrap restored.

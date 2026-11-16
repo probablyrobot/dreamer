@@ -70,6 +70,25 @@ impl Default for MirrorConfig {
     }
 }
 
+/// When panes that nothing follows go Cold on their own (spec 16.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TierPolicy {
+    /// A pane quiet for this long goes Cold; `None`: never for quiet.
+    pub cold_after: Option<Duration>,
+    /// At most this many Warm panes that nothing follows; beyond it the
+    /// quietest go Cold. `None`: no limit.
+    pub warm_limit: Option<usize>,
+}
+
+/// What one pass of a [`TierPolicy`] demoted.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Demoted {
+    /// Quiet for longer than `cold_after`.
+    pub quiet: usize,
+    /// Over `warm_limit`.
+    pub over_limit: usize,
+}
+
 /// Where a pane's mirror stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MirrorState {
@@ -255,6 +274,44 @@ impl MirrorHost {
         answer
             .await
             .map_err(|_| "the mirror router has stopped".to_owned())?
+    }
+
+    /// Apply a tier policy once: the Warm panes that nothing follows go
+    /// Cold, quietest first, while they are quiet for longer than
+    /// `cold_after` or there are more than `warm_limit` of them. A pane
+    /// that gains a follower meanwhile is refused and stays Warm.
+    pub async fn apply_policy(&self, policy: TierPolicy) -> Demoted {
+        let mut unfollowed: Vec<(TmuxPaneId, Duration)> = self
+            .status()
+            .await
+            .into_iter()
+            .filter(|m| m.state == MirrorState::Live)
+            .filter_map(|m| {
+                m.live
+                    .filter(|l| l.followers == 0 && l.tier == Tier::Warm && l.error.is_none())
+                    .map(|l| (m.pane, l.quiet))
+            })
+            .collect();
+        unfollowed.sort_by_key(|a| std::cmp::Reverse(a.1));
+        let mut left = unfollowed.len();
+        let mut out = Demoted::default();
+        for (pane, quiet) in unfollowed {
+            let is_quiet = policy.cold_after.is_some_and(|d| quiet >= d);
+            let over = policy.warm_limit.is_some_and(|n| left > n);
+            // Quietest first: once neither holds, neither holds for the rest.
+            if !is_quiet && !over {
+                break;
+            }
+            if self.set_cold(pane).await.is_ok() {
+                left -= 1;
+                if is_quiet {
+                    out.quiet += 1;
+                } else {
+                    out.over_limit += 1;
+                }
+            }
+        }
+        out
     }
 
     /// Subscribe to a live mirror: replay after `resume` when it is still

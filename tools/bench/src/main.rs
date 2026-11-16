@@ -61,6 +61,13 @@ impl Rig {
         // the daemon's, not scrollback held for nothing.
         tmux.run_checked(&["set-option", "-g", "history-limit", "2000"])
             .map_err(|e| e.to_string())?;
+        // The workloads demote panes themselves: no tier policy.
+        std::fs::create_dir_all(root.join("config")).map_err(|e| e.to_string())?;
+        std::fs::write(
+            root.join("config/dreamer.yaml"),
+            "tiers:\n  cold_after: never\n  warm_limit: none\n",
+        )
+        .map_err(|e| e.to_string())?;
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let daemon = std::env::var_os("DREAMER_BENCH_DAEMON")
             .map(PathBuf::from)

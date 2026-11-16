@@ -25,7 +25,7 @@ pub use plan::{Arrange, PanePlan, PaneRef, Plan, SizeArg, SplitStep, Start, Wind
 pub use schema::{Direction, NodeSpec, Size, WindowSpec, WorkspaceFile};
 pub use settings::{
     Appearance, ClipboardSettings, ClipboardWrite, FallbackSettings, FontSettings, LinkSettings,
-    Settings, load_settings, settings_path,
+    Settings, TierSettings, load_settings, settings_path,
 };
 
 use std::path::{Path, PathBuf};

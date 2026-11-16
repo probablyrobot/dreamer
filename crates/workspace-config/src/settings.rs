@@ -25,6 +25,34 @@ pub struct Settings {
     pub appearance: Appearance,
     pub terminal: TerminalSettings,
     pub providers: ProviderSettings,
+    pub tiers: TierSettings,
+}
+
+/// When panes that nothing follows (no view, tap, or filter) go Cold on
+/// their own (spec 16.6). The defaults come from the M7 measurements in
+/// `docs/performance.md`: a Warm pane holds about 1 KiB per line of
+/// history (about 2 MiB at tmux's default 2,000 lines), a Cold one about
+/// 3 KiB, and opening a Cold pane again takes tens of milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TierSettings {
+    /// A pane that has written nothing for this long goes Cold; `None`:
+    /// never for being quiet.
+    pub cold_after: Option<std::time::Duration>,
+    /// At most this many Warm panes that nothing follows; beyond it the
+    /// quietest go Cold. `None`: no limit.
+    pub warm_limit: Option<usize>,
+}
+
+pub const DEFAULT_COLD_AFTER: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+pub const DEFAULT_WARM_LIMIT: usize = 128;
+
+impl Default for TierSettings {
+    fn default() -> Self {
+        TierSettings {
+            cold_after: Some(DEFAULT_COLD_AFTER),
+            warm_limit: Some(DEFAULT_WARM_LIMIT),
+        }
+    }
 }
 
 /// Agent providers (spec 13.5). The CLIs need nothing here; an API
@@ -236,6 +264,7 @@ impl Default for Settings {
             appearance: Appearance::default(),
             terminal: TerminalSettings::default(),
             providers: ProviderSettings::default(),
+            tiers: TierSettings::default(),
         }
     }
 }
@@ -256,6 +285,45 @@ struct File {
     terminal: TerminalFile,
     #[serde(default)]
     providers: ProvidersFile,
+    #[serde(default)]
+    tiers: TiersFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TiersFile {
+    /// `30m`, `90s`, `2h`, or `never`.
+    cold_after: Option<serde_norway::Value>,
+    /// A number, or `none`.
+    warm_limit: Option<serde_norway::Value>,
+}
+
+/// `90s`, `30m`, `2h`; `never` is `None`.
+fn parse_wait(v: &serde_norway::Value) -> Result<Option<std::time::Duration>, String> {
+    let text = match v {
+        serde_norway::Value::String(t) => t.trim().to_owned(),
+        serde_norway::Value::Number(n) => format!("{n}"),
+        _ => String::new(),
+    };
+    if text == "never" {
+        return Ok(None);
+    }
+    let (n, unit) = text.split_at(
+        text.find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len()),
+    );
+    let secs = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        _ => 0,
+    };
+    match n.parse::<u64>() {
+        Ok(n) if secs > 0 && n > 0 => Ok(Some(std::time::Duration::from_secs(n * secs))),
+        _ => Err(format!(
+            "{text:?} is not a wait: write a number with s, m, or h (`30m`), or `never`"
+        )),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -432,6 +500,24 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(blink) = file.terminal.cursor.blink {
         s.terminal.cursor_blink = blink;
     }
+    if let Some(v) = &file.tiers.cold_after {
+        s.tiers.cold_after = parse_wait(v).map_err(|e| error(origin, "tiers.cold_after", e))?;
+    }
+    if let Some(v) = &file.tiers.warm_limit {
+        s.tiers.warm_limit = match v {
+            serde_norway::Value::String(t) if t.trim() == "none" => None,
+            serde_norway::Value::Number(n) if n.as_u64().is_some() => {
+                n.as_u64().map(|n| n as usize)
+            }
+            _ => {
+                return Err(error(
+                    origin,
+                    "tiers.warm_limit",
+                    "must be a whole number of panes, or `none`".into(),
+                ));
+            }
+        };
+    }
     if let Some(launch) = file.fallback.launch {
         let slots = launch.iter().filter(|a| *a == "{command}").count();
         if !launch.is_empty() && slots != 1 {
@@ -551,6 +637,32 @@ mod tests {
         assert_eq!(s, Settings::default());
         assert_eq!(s.font.family, "JetBrainsMono Nerd Font Mono");
         assert_eq!(s.font.size, 13.0);
+    }
+
+    #[test]
+    fn tier_budgets_take_waits_counts_and_words() {
+        let s = parse_settings("tiers:\n  cold_after: 90s\n  warm_limit: 10\n", None).expect("ok");
+        assert_eq!(s.tiers.cold_after, Some(std::time::Duration::from_secs(90)));
+        assert_eq!(s.tiers.warm_limit, Some(10));
+        let s =
+            parse_settings("tiers:\n  cold_after: never\n  warm_limit: none\n", None).expect("ok");
+        assert_eq!(
+            s.tiers,
+            TierSettings {
+                cold_after: None,
+                warm_limit: None
+            }
+        );
+        for bad in [
+            "cold_after: 30",
+            "cold_after: 5d",
+            "cold_after: 0m",
+            "warm_limit: -1",
+            "warm_limit: lots",
+        ] {
+            let e = parse_settings(&format!("tiers:\n  {bad}\n"), None).expect_err(bad);
+            assert!(e.at.starts_with("tiers."), "{bad}: {e:?}");
+        }
     }
 
     #[test]
