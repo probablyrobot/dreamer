@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 41;
+pub const PROTOCOL_MINOR: u32 = 42;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1093,6 +1093,60 @@ mod collector_state_json {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum DrawerWant {
+    /// Same as toggle.
+    Unspecified = 0,
+    /// Show and focus it when hidden or in another window; focus it when shown and not focused; hide it when focused.
+    Toggle = 1,
+    /// Show it in the window and focus it, starting the harness first if the session has no drawer.
+    Show = 2,
+    /// Move it to the holding session; focus returns to the pane that had it before the drawer was shown.
+    Hide = 3,
+    /// Close the session's drawer pane if there is one, and start a fresh harness, shown and focused.
+    New = 4,
+}
+
+impl DrawerWant {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Toggle => "toggle",
+            Self::Show => "show",
+            Self::Hide => "hide",
+            Self::New => "new",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "toggle" => Some(Self::Toggle),
+            "show" => Some(Self::Show),
+            "hide" => Some(Self::Hide),
+            "new" => Some(Self::New),
+            _ => None,
+        }
+    }
+}
+
+mod drawer_want_json {
+    use super::DrawerWant;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match DrawerWant::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| DrawerWant::from_name(n).map(|e| e as i32))
+    }
+}
+
 /// No parameters or no result.
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
@@ -1210,6 +1264,9 @@ pub struct Session {
     #[prost(uint32, optional, tag = "4")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_window: Option<u32>,
+    /// Dreamer's holding session for hidden harness drawers. Clients leave it out of tabs, sidebars, and session lists.
+    #[prost(bool, tag = "5")]
+    pub holding: bool,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -1275,6 +1332,10 @@ pub struct Pane {
     #[prost(string, optional, tag = "13")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// This pane is the harness drawer of that tmux session (drawer.toggle).
+    #[prost(uint32, optional, tag = "14")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drawer_of: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -4014,6 +4075,67 @@ pub struct CollectRef {
     pub delete: bool,
 }
 
+/// Which session's drawer, and where to show it. With none of session, window, or pane given the request is refused.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DrawerRequest {
+    /// The tmux session whose drawer this is.
+    #[prost(uint32, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<u32>,
+    /// The window to show it in; names the session when `session` is absent. Default: the session's active window.
+    #[prost(uint32, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+    /// The pane asking (a shell's TMUX_PANE): names the window and session when they are absent. The drawer pane itself names its own session.
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u32>,
+    #[prost(enumeration = "DrawerWant", tag = "4")]
+    #[serde(with = "drawer_want_json")]
+    pub want: i32,
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DrawerStatus {
+    #[prost(uint32, tag = "1")]
+    pub session: u32,
+    /// The drawer's pane; absent while the session has none.
+    #[prost(uint32, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane: Option<u32>,
+    /// In a window of the session (not the holding session).
+    #[prost(bool, tag = "3")]
+    pub shown: bool,
+    /// The window the pane is in, the holding session's while hidden.
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<u32>,
+    /// The active pane of its window, and that window the session's active one.
+    #[prost(bool, tag = "5")]
+    pub focused: bool,
+    /// Shown zoomed, because the window was too small to dock it.
+    #[prost(bool, tag = "6")]
+    pub zoomed: bool,
+    /// This call started the harness.
+    #[prost(bool, tag = "7")]
+    pub created: bool,
+    /// The harness the pane was started with.
+    #[prost(string, tag = "8")]
+    pub harness: String,
+    /// The program and arguments it was started with; empty unless this call started it.
+    #[prost(string, repeated, tag = "9")]
+    pub command: Vec<String>,
+    /// Why the harness could not start; the pane says the same.
+    #[prost(string, optional, tag = "10")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -4089,6 +4211,8 @@ pub mod method {
     pub const COLLECT_LIST: &str = "collect.list";
     pub const COLLECT_QUERY: &str = "collect.query";
     pub const COLLECT_STOP: &str = "collect.stop";
+    pub const DRAWER_TOGGLE: &str = "drawer.toggle";
+    pub const DRAWER_STATUS: &str = "drawer.status";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4612,6 +4736,20 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Stop a collector; its rows stay queryable unless delete is set.",
     },
+    MethodInfo {
+        name: "drawer.toggle",
+        params: "DrawerRequest",
+        result: "DrawerStatus",
+        mutation: true,
+        doc: "Show, focus, hide, or restart a tmux session's harness drawer: a pane running the configured agent harness, kept in a holding session while hidden (owner only).",
+    },
+    MethodInfo {
+        name: "drawer.status",
+        params: "DrawerRequest",
+        result: "DrawerStatus",
+        mutation: false,
+        doc: "A session's harness drawer: whether it exists, where it is, and whether it is shown and focused.",
+    },
 ];
 
 /// A typed request for one method.
@@ -4690,6 +4828,8 @@ pub enum Request {
     CollectList(Empty),
     CollectQuery(CollectQuery),
     CollectStop(CollectRef),
+    DrawerToggle(DrawerRequest),
+    DrawerStatus(DrawerRequest),
 }
 
 impl Request {
@@ -4768,6 +4908,8 @@ impl Request {
             Self::CollectList(_) => "collect.list",
             Self::CollectQuery(_) => "collect.query",
             Self::CollectStop(_) => "collect.stop",
+            Self::DrawerToggle(_) => "drawer.toggle",
+            Self::DrawerStatus(_) => "drawer.status",
         }
     }
 
@@ -4847,6 +4989,8 @@ impl Request {
             Self::CollectList(v) => ::prost::Message::encode_to_vec(v),
             Self::CollectQuery(v) => ::prost::Message::encode_to_vec(v),
             Self::CollectStop(v) => ::prost::Message::encode_to_vec(v),
+            Self::DrawerToggle(v) => ::prost::Message::encode_to_vec(v),
+            Self::DrawerStatus(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -4933,6 +5077,8 @@ impl Request {
             "collect.list" => Ok(Self::CollectList(::prost::Message::decode(bytes)?)),
             "collect.query" => Ok(Self::CollectQuery(::prost::Message::decode(bytes)?)),
             "collect.stop" => Ok(Self::CollectStop(::prost::Message::decode(bytes)?)),
+            "drawer.toggle" => Ok(Self::DrawerToggle(::prost::Message::decode(bytes)?)),
+            "drawer.status" => Ok(Self::DrawerStatus(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5012,6 +5158,8 @@ impl Request {
             Self::CollectList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::CollectQuery(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::CollectStop(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DrawerToggle(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DrawerStatus(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -5094,6 +5242,8 @@ impl Request {
             "collect.list" => Ok(Self::CollectList(serde_json::from_value(value)?)),
             "collect.query" => Ok(Self::CollectQuery(serde_json::from_value(value)?)),
             "collect.stop" => Ok(Self::CollectStop(serde_json::from_value(value)?)),
+            "drawer.toggle" => Ok(Self::DrawerToggle(serde_json::from_value(value)?)),
+            "drawer.status" => Ok(Self::DrawerStatus(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5175,6 +5325,8 @@ pub enum Response {
     CollectList(CollectList),
     CollectQuery(CollectResult),
     CollectStop(CollectorStatus),
+    DrawerToggle(DrawerStatus),
+    DrawerStatus(DrawerStatus),
 }
 
 impl Response {
@@ -5253,6 +5405,8 @@ impl Response {
             Self::CollectList(_) => "collect.list",
             Self::CollectQuery(_) => "collect.query",
             Self::CollectStop(_) => "collect.stop",
+            Self::DrawerToggle(_) => "drawer.toggle",
+            Self::DrawerStatus(_) => "drawer.status",
         }
     }
 
@@ -5332,6 +5486,8 @@ impl Response {
             Self::CollectList(v) => ::prost::Message::encode_to_vec(v),
             Self::CollectQuery(v) => ::prost::Message::encode_to_vec(v),
             Self::CollectStop(v) => ::prost::Message::encode_to_vec(v),
+            Self::DrawerToggle(v) => ::prost::Message::encode_to_vec(v),
+            Self::DrawerStatus(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -5418,6 +5574,8 @@ impl Response {
             "collect.list" => Ok(Self::CollectList(::prost::Message::decode(bytes)?)),
             "collect.query" => Ok(Self::CollectQuery(::prost::Message::decode(bytes)?)),
             "collect.stop" => Ok(Self::CollectStop(::prost::Message::decode(bytes)?)),
+            "drawer.toggle" => Ok(Self::DrawerToggle(::prost::Message::decode(bytes)?)),
+            "drawer.status" => Ok(Self::DrawerStatus(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5497,6 +5655,8 @@ impl Response {
             Self::CollectList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::CollectQuery(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::CollectStop(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DrawerToggle(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DrawerStatus(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -5579,6 +5739,8 @@ impl Response {
             "collect.list" => Ok(Self::CollectList(serde_json::from_value(value)?)),
             "collect.query" => Ok(Self::CollectQuery(serde_json::from_value(value)?)),
             "collect.stop" => Ok(Self::CollectStop(serde_json::from_value(value)?)),
+            "drawer.toggle" => Ok(Self::DrawerToggle(serde_json::from_value(value)?)),
+            "drawer.status" => Ok(Self::DrawerStatus(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5940,6 +6102,16 @@ pub trait Service: Sync {
         &self,
         params: CollectRef,
     ) -> impl ::core::future::Future<Output = Result<CollectorStatus, RpcError>> + Send;
+    /// Show, focus, hide, or restart a tmux session's harness drawer: a pane running the configured agent harness, kept in a holding session while hidden (owner only).
+    fn drawer_toggle(
+        &self,
+        params: DrawerRequest,
+    ) -> impl ::core::future::Future<Output = Result<DrawerStatus, RpcError>> + Send;
+    /// A session's harness drawer: whether it exists, where it is, and whether it is shown and focused.
+    fn drawer_status(
+        &self,
+        params: DrawerRequest,
+    ) -> impl ::core::future::Future<Output = Result<DrawerStatus, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -6093,6 +6265,8 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::CollectList(p) => service.collect_list(p).await.map(Response::CollectList),
         Request::CollectQuery(p) => service.collect_query(p).await.map(Response::CollectQuery),
         Request::CollectStop(p) => service.collect_stop(p).await.map(Response::CollectStop),
+        Request::DrawerToggle(p) => service.drawer_toggle(p).await.map(Response::DrawerToggle),
+        Request::DrawerStatus(p) => service.drawer_status(p).await.map(Response::DrawerStatus),
     }
 }
 

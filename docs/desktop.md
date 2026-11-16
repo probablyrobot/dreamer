@@ -133,6 +133,39 @@ the coordinator show none: the host's events are not relayed.
   found again by name, and otherwise the first session is shown. An id
   from another server is never reopened (spec 15.2).
 
+## The harness drawer
+
+The drawer is the agent harness (pi by default; see
+[agents.md](agents.md#the-harness-drawer)) in an ordinary tmux pane that
+slides up at the bottom of the window and away again. Each tmux session
+has its own. Nothing exists until the first use.
+
+| Key (macOS) | Key (Linux) | Does |
+| --- | --- | --- |
+| Cmd-J | Ctrl-Shift-J | Hidden: show it and focus it. Shown but not focused: focus it. Focused: hide it, and focus the pane you came from |
+| Cmd-Shift-J | Ctrl-Alt-Shift-J | Start a fresh harness in the drawer. The running one ends |
+
+The palette has both: "Harness drawer: show, focus, or hide", and "New
+harness drawer (ends the running harness)…", which asks for a second
+Enter.
+
+- **Showing** docks the pane into the window you are looking at, across
+  its whole width, at the bottom, taking 35 % of the height (`drawer.side`
+  and `drawer.size` in [settings](settings.md#harness-drawer)). The other
+  panes reflow as tmux lays them out, and every tmux client sees the same
+  layout. A window that would keep fewer than 8 rows (or 20 columns, on a
+  side) for its other panes shows the drawer zoomed instead.
+- **Hiding** moves the pane to a holding session, `_dreamer_drawers`. The
+  harness keeps running there. Showing it again brings back the same pane
+  with everything in it. Tabs, the sidebar, and the session chosen at
+  startup leave the holding session out.
+- **In another window,** the key brings the drawer to the window you are
+  looking at.
+- The daemon does the moving (`drawer.toggle`); the window follows the
+  topology. `dream drawer` does the same from a shell
+  ([cli.md](cli.md#harness-drawer)), for a tmux key of your own. Dreamer
+  never changes tmux's configuration.
+
 ## Menus and shortcuts
 
 Commands, their shortcuts, and the macOS menu bar come from one table
@@ -151,13 +184,16 @@ the program in the pane.
 | Zoom the focused pane | Cmd-Shift-Enter | Ctrl-Shift-Enter |
 | Sessions sidebar | Cmd-Shift-S | Ctrl-Shift-S |
 | Find in the focused pane | Cmd-F | Ctrl-Shift-F |
+| Harness drawer: show, focus, or hide | Cmd-J | Ctrl-Shift-J |
+| New harness drawer | Cmd-Shift-J | Ctrl-Alt-Shift-J |
 | Full screen | Ctrl-Cmd-F | F11 |
 | Hide, hide others | Cmd-H, Alt-Cmd-H | (window manager) |
 | Minimize | Cmd-M | (window manager) |
 
 On macOS the menu bar has Dreamer (Services, Hide, Hide Others, Show All,
 Quit), Shell (New Window, Close Window), Edit (Copy, Paste, Find…), View
-(Command Palette, Sessions Sidebar, Zoom Pane, Enter Full Screen), and
+(Command Palette, Sessions Sidebar, Zoom Pane, Harness Drawer, New Harness
+Drawer, Enter Full Screen), and
 Window (Minimize, Zoom), each item showing its shortcut.
 
 Closing a window or quitting closes views only: tmux sessions, panes, and
@@ -303,6 +339,8 @@ Escape closes.
 | Next window, Previous window | Switches windows, wrapping around |
 | Focus next pane | Moves focus here and in tmux |
 | Zoom or unzoom pane | Toggles zoom |
+| Harness drawer: show, focus, or hide | As Cmd-J ([the harness drawer](#the-harness-drawer)) |
+| New harness drawer (ends the running harness)… | Destructive: a second Enter starts a fresh harness in the drawer |
 | Close view (programs keep running) | Closes this desktop window only; tmux and every program keep running |
 | Kill pane (ends its program)…, Kill window (ends its programs)… | Destructive. Shown in red; the first Enter only asks, a second Enter runs it, and Backspace backs out |
 | Show or hide decorations in this pane (filter marks) | Switches drawing [decorations](#decorations) for the focused pane, in this window |

@@ -461,6 +461,8 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         api::method::SCRIPTS_STOP,
         api::method::APPROVALS_LIST,
         api::method::APPROVALS_ANSWER,
+        // The drawer starts the user's harness with the user's authority.
+        api::method::DRAWER_TOGGLE,
     ]
     .contains(&req.method.as_str())
     {

@@ -244,6 +244,22 @@ pub const SCHEMA: &[Key] = &[
         live: false,
     },
     Key {
+        path: "drawer.side",
+        kind: "bottom | right | left",
+        default: "bottom",
+        doc: "Where the harness drawer docks in the window it is shown in. Applies the next time it is shown.",
+        example: "bottom",
+        live: true,
+    },
+    Key {
+        path: "drawer.size",
+        kind: "percent, 10 to 90",
+        default: "35",
+        doc: "How much of the window's height (bottom) or width (left, right) the drawer takes. A window too small to leave room for the other panes shows the drawer zoomed instead.",
+        example: "35",
+        live: true,
+    },
+    Key {
         path: "tiers.cold_after",
         kind: "a wait (90s, 30m, 2h) | never",
         default: "30m",

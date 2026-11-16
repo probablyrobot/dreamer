@@ -63,6 +63,9 @@ pub struct PaneInfo {
     pub command: String,
     pub title: String,
     pub mode: Option<String>,
+    /// The session whose harness drawer this pane is: the pane's
+    /// `@dreamer-drawer-for` user option ([`crate::ops::DRAWER_FOR`]).
+    pub drawer_for: Option<TmuxSessionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,7 +213,12 @@ impl Inventory {
             ))
             .push(list("list-panes", true, "#{pane_current_command}".into()))
             .push(list("list-panes", true, "#{pane_title}".into()))
-            .push(list("list-panes", true, "#{pane_mode}".into()));
+            .push(list("list-panes", true, "#{pane_mode}".into()))
+            .push(list(
+                "list-panes",
+                true,
+                format!("#{{{}}}", crate::ops::DRAWER_FOR),
+            ));
         let r = conn.execute(batch).await?;
 
         let ident = rows(&r[0], 2, "server")?;
@@ -276,13 +284,16 @@ impl Inventory {
         let pane_modes = text_rows(&r[9]);
         aligned(pane_rows.len(), &pane_commands, "pane commands")?;
         aligned(pane_rows.len(), &pane_titles, "pane titles")?;
+        let pane_drawers = text_rows(&r[10]);
         aligned(pane_rows.len(), &pane_modes, "pane modes")?;
+        aligned(pane_rows.len(), &pane_drawers, "pane drawers")?;
         let mut panes = BTreeMap::new();
-        for (((f, command), title), mode) in pane_rows
+        for ((((f, command), title), mode), drawer) in pane_rows
             .iter()
             .zip(pane_commands)
             .zip(pane_titles)
             .zip(pane_modes)
+            .zip(pane_drawers)
         {
             let pane = id(&f[0], '%', TmuxPaneId)?;
             let window = id(&f[1], '@', TmuxWindowId)?;
@@ -305,6 +316,7 @@ impl Inventory {
                     // A tmux-drawn mode (copy, choose, ...): its screen is not
                     // the program's output, so mirrors do not show it.
                     mode: (f[8] == "1").then_some(mode).filter(|m| !m.is_empty()),
+                    drawer_for: id(drawer.trim(), '$', TmuxSessionId).ok(),
                 },
             );
         }

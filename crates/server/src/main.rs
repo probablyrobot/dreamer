@@ -18,6 +18,7 @@ mod collectors;
 mod config_watch;
 mod conn;
 mod decorations;
+mod drawer;
 mod events;
 mod extensions;
 mod filters;

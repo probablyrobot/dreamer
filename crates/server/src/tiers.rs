@@ -48,7 +48,25 @@ pub async fn run(state: Arc<State>) {
         let Some(host) = host else {
             continue;
         };
-        let d = host.apply_policy(policy).await;
+        // Harness drawers count as followed while they exist, so a hidden
+        // one is never put to sleep. When the endpoint is busy, skip this
+        // round rather than demote without knowing them.
+        let keep = match state.endpoint.try_lock() {
+            Ok(guard) => guard
+                .as_ref()
+                .map(|ep| {
+                    ep.tracker
+                        .inventory()
+                        .panes
+                        .iter()
+                        .filter(|(_, p)| p.drawer_for.is_some())
+                        .map(|(id, _)| *id)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Err(_) => continue,
+        };
+        let d = host.apply_policy(policy, &keep).await;
         if d.quiet + d.over_limit > 0 {
             log::info(format!(
                 "tiers: {} quiet and {} over the Warm limit went Cold ({})",

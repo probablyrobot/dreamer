@@ -1488,6 +1488,16 @@ impl api::Service for DaemonService {
             .unwrap_or(api::ApprovalDecision::Unspecified);
         self.0.approvals.answer(&self.0, &p.id, decision)
     }
+
+    async fn drawer_toggle(&self, p: api::DrawerRequest) -> Result<api::DrawerStatus, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        crate::drawer::run(&self.0, p, true).await
+    }
+
+    async fn drawer_status(&self, p: api::DrawerRequest) -> Result<api::DrawerStatus, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        crate::drawer::run(&self.0, p, false).await
+    }
 }
 
 impl DaemonService {

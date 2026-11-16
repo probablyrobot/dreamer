@@ -43,6 +43,7 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `terminal.mirrors`, `daemon.shutdown`, every `hosts.*` method | `all_panes` |
 | Metadata and the caller's own state (`tmux.topology`, `tmux.watch`, `terminal.list`, `daemon.version`, `actions.get`, `terminal.unsubscribe`, …) | Only the method |
 | `approvals.list`, `approvals.answer` | The owner grant: an agent never answers its own approvals |
+| `drawer.toggle` | The owner grant: it starts the user's harness with the user's authority. `drawer.status` needs only the method |
 | `extensions.restart`, `apps.launch`, `scripts.load`, `scripts.reload`, `scripts.stop` | The owner grant: no app, extension, script, or filter, whatever its grant lists |
 | `filters.install`, `filters.list`, `filters.pause`, `filters.resume`, `filters.remove` | The owner grant, or `filters.manage` plus content read; see [Filters an app installs](filters.md#filters-an-app-installs) |
 | `messages.*` | Only the method; messages never reach a pane (see [messages.md](messages.md)) |
