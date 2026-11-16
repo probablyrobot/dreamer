@@ -217,6 +217,12 @@ impl Service for Fixed {
     async fn approvals_answer(&self, _: api::ApprovalAnswer) -> Result<api::Approval, RpcError> {
         Ok(api::Approval::default())
     }
+    async fn drawer_toggle(&self, _: api::DrawerRequest) -> Result<api::DrawerStatus, RpcError> {
+        Ok(api::DrawerStatus::default())
+    }
+    async fn drawer_status(&self, _: api::DrawerRequest) -> Result<api::DrawerStatus, RpcError> {
+        Ok(api::DrawerStatus::default())
+    }
     async fn events_subscribe(
         &self,
         _: api::EventSubscribe,

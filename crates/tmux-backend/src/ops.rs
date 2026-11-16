@@ -405,3 +405,172 @@ pub async fn window_zoomed(conn: &Connection, target: TmuxWindowId) -> Result<bo
         .await?;
     Ok(r.first().map(first_line).as_deref() == Some("1"))
 }
+
+/// The pane user option that makes a pane a session's harness drawer: the
+/// session id (`$N`). It lives in tmux, so a restarted daemon finds every
+/// drawer again from the inventory.
+pub const DRAWER_FOR: &str = "@dreamer_drawer_for";
+/// The pane that was focused before the drawer was shown (`%N`), focused
+/// again when it hides.
+pub const DRAWER_RETURN: &str = "@dreamer_drawer_return";
+/// The harness the drawer was started with.
+pub const DRAWER_HARNESS: &str = "@dreamer_drawer_harness";
+/// The session hidden drawers wait in, created when first needed. Clients
+/// leave it out of their tabs and session lists.
+pub const DRAWER_HOLDING: &str = "_dreamer_drawers";
+
+/// Where a docked pane goes relative to the window's other panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Bottom,
+    Right,
+    Left,
+}
+
+/// Move a pane into the window of pane `target`, across the whole window
+/// on `side` (`join-pane -f`), taking `size` of it. Focus stays where it
+/// was. A window left with no panes closes.
+pub async fn dock_pane(
+    conn: &Connection,
+    source: TmuxPaneId,
+    target: TmuxPaneId,
+    side: Side,
+    size: Option<Size>,
+) -> Result<(), CommandError> {
+    let mut cmd = TmuxCommand::new("join-pane").flag("-d").flag("-f");
+    cmd = match side {
+        Side::Bottom => cmd.flag("-v"),
+        Side::Right => cmd.flag("-h"),
+        Side::Left => cmd.flag("-h").flag("-b"),
+    };
+    match size {
+        Some(Size::Cells(c)) => cmd = cmd.opt("-l", c.to_string()),
+        Some(Size::Percent(p)) => cmd = cmd.opt("-l", format!("{p}%")),
+        None => {}
+    }
+    conn.execute(cmd.opt("-s", pane(source)).opt("-t", pane(target)))
+        .await
+        .map(drop)
+}
+
+/// Move a pane into a new window at the end of session `target`, named
+/// `name`. Focus stays where it was.
+pub async fn break_pane_to(
+    conn: &Connection,
+    source: TmuxPaneId,
+    target: TmuxSessionId,
+    name: &str,
+) -> Result<(), CommandError> {
+    conn.execute(
+        TmuxCommand::new("break-pane")
+            .flag("-d")
+            .opt("-s", pane(source))
+            .opt("-t", format!("{}:", session(target)))
+            .opt("-n", name.to_owned()),
+    )
+    .await
+    .map(drop)
+}
+
+/// Create a detached session named `name`; returns it and its first pane.
+pub async fn new_session(
+    conn: &Connection,
+    name: &str,
+    launch: &Launch,
+) -> Result<(TmuxSessionId, TmuxPaneId), CommandError> {
+    let mut cmd = TmuxCommand::new("new-session")
+        .flag("-d")
+        .flag("-P")
+        .opt_format("-F", "#{session_id} #{pane_id}")
+        .opt("-s", name.to_owned());
+    if let Some(cwd) = &launch.cwd {
+        cmd = cmd.opt("-c", cwd.clone());
+    }
+    for (k, v) in &launch.env {
+        cmd = cmd.opt("-e", format!("{k}={v}"));
+    }
+    // One argument would go through `sh -c`; wrapping it keeps argv exact.
+    let argv: Vec<String> = match launch.argv.as_slice() {
+        [] => Vec::new(),
+        [one] => vec!["/usr/bin/env".into(), one.clone()],
+        many => many.to_vec(),
+    };
+    for a in argv {
+        cmd = cmd.arg(a);
+    }
+    let r = conn.execute(cmd).await?;
+    let line = r.first().map(first_line).unwrap_or_default();
+    let (s, p) = line.split_once(' ').ok_or(CommandError::Closed)?;
+    let s = s.strip_prefix('$').and_then(|n| n.parse().ok());
+    let p = p.strip_prefix('%').and_then(|n| n.parse().ok());
+    match (s, p) {
+        (Some(s), Some(p)) => Ok((TmuxSessionId(s), TmuxPaneId(p))),
+        _ => Err(CommandError::Closed),
+    }
+}
+
+/// Set a user option (`@name`) on a pane; an empty value unsets it.
+pub async fn set_pane_option(
+    conn: &Connection,
+    target: TmuxPaneId,
+    name: &'static str,
+    value: &str,
+) -> Result<(), CommandError> {
+    debug_assert!(name.starts_with('@'));
+    let cmd = TmuxCommand::new("set-option")
+        .flag("-p")
+        .opt("-t", pane(target));
+    let cmd = if value.is_empty() {
+        cmd.flag("-u").arg(name)
+    } else {
+        cmd.arg(name).arg(value.to_owned())
+    };
+    conn.execute(cmd).await.map(drop)
+}
+
+/// A pane's user option (`@name`); empty when unset.
+pub async fn pane_option(
+    conn: &Connection,
+    target: TmuxPaneId,
+    name: &'static str,
+) -> Result<String, CommandError> {
+    debug_assert!(name.starts_with('@'));
+    let r = conn
+        .execute(
+            TmuxCommand::new("display-message")
+                .flag("-p")
+                .opt("-t", pane(target))
+                .format(format!("#{{{name}}}")),
+        )
+        .await?;
+    Ok(r.first().map(first_line).unwrap_or_default())
+}
+
+/// Keep a session when no client is attached to it, whatever the global
+/// `destroy-unattached` is (set on that session only).
+pub async fn keep_unattached(conn: &Connection, target: TmuxSessionId) -> Result<(), CommandError> {
+    conn.execute(
+        TmuxCommand::new("set-option")
+            .opt("-t", session(target))
+            .arg("destroy-unattached")
+            .arg("off"),
+    )
+    .await
+    .map(drop)
+}
+
+/// The working directory of the program in a pane, when tmux can tell.
+pub async fn pane_current_path(
+    conn: &Connection,
+    target: TmuxPaneId,
+) -> Result<Option<String>, CommandError> {
+    let r = conn
+        .execute(
+            TmuxCommand::new("display-message")
+                .flag("-p")
+                .opt("-t", pane(target))
+                .format("#{pane_current_path}"),
+        )
+        .await?;
+    Ok(r.first().map(first_line).filter(|p| !p.is_empty()))
+}

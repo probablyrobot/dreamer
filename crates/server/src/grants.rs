@@ -74,6 +74,7 @@ fn targets(r: &Request) -> Targets {
             _ => Targets::Everything,
         },
         Request::TerminalMirrors(_)
+        | Request::DrawerToggle(_)
         | Request::DaemonShutdown(_)
         | Request::HostsConnect(_)
         | Request::HostsDisconnect(_)

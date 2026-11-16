@@ -76,7 +76,12 @@ pub fn ls(d: &DaemonArgs, json: bool) -> Result<(), String> {
         }
         println!("endpoint {}", t.endpoint);
         for s in &t.sessions {
-            println!("${} {}", s.id, s.name);
+            println!(
+                "${} {}{}",
+                s.id,
+                s.name,
+                if s.holding { " (hidden drawers)" } else { "" }
+            );
             for wid in &s.windows {
                 let Some(w) = t.windows.iter().find(|w| w.id == *wid) else {
                     continue;
@@ -100,7 +105,7 @@ pub fn ls(d: &DaemonArgs, json: bool) -> Result<(), String> {
                         continue;
                     };
                     println!(
-                        "    %{}{} {}x{} {}{} gen {}{}",
+                        "    %{}{} {}x{} {}{} gen {}{}{}",
                         p.id,
                         if p.active { "*" } else { "" },
                         p.width,
@@ -108,7 +113,10 @@ pub fn ls(d: &DaemonArgs, json: bool) -> Result<(), String> {
                         p.current_command,
                         p.pid.map(|pid| format!(" pid {pid}")).unwrap_or_default(),
                         p.generation,
-                        if p.dead { " (dead)" } else { "" }
+                        if p.dead { " (dead)" } else { "" },
+                        p.drawer_of
+                            .map(|s| format!(" (drawer of ${s})"))
+                            .unwrap_or_default()
                     );
                 }
             }
@@ -862,6 +870,143 @@ fn print_job(j: &api::JobRecord) {
         j.pane,
         j.argv.join(" ")
     );
+}
+
+// ---- drawer -----------------------------------------------------------------
+
+/// `dream drawer toggle|show|hide|status|new`: a tmux session's harness
+/// drawer. Without `--session`, `--window`, or `--pane`, the pane this
+/// runs in (`TMUX_PANE`) names the session and window.
+pub fn drawer(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage:
+  dream drawer toggle|show|hide|status [--session $N|NAME] [--window @N] [--pane %N] [--json]
+  dream drawer new --yes [--session $N|NAME] [--window @N] [--pane %N] [--json]";
+    let Some((verb, rest)) = args.split_first() else {
+        return Err(USAGE.into());
+    };
+    let want = match verb.as_str() {
+        "toggle" => Some(api::DrawerWant::Toggle),
+        "show" => Some(api::DrawerWant::Show),
+        "hide" => Some(api::DrawerWant::Hide),
+        "new" => Some(api::DrawerWant::New),
+        "status" => None,
+        _ => return Err(USAGE.into()),
+    };
+    let mut req = api::DrawerRequest::default();
+    let mut session_name = None;
+    let (mut yes, mut json) = (false, false);
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        let mut value = || {
+            it.next()
+                .ok_or_else(|| format!("{a} needs a value\n{USAGE}"))
+        };
+        match a.as_str() {
+            "--session" => {
+                let v = value()?;
+                match id(v, '$', "session") {
+                    Ok(n) => req.session = Some(n),
+                    Err(_) => session_name = Some(v.clone()),
+                }
+            }
+            "--window" => req.window = Some(id(value()?, '@', "window")?),
+            "--pane" => req.pane = Some(id(value()?, '%', "pane")?),
+            "--yes" => yes = true,
+            "--json" => json = true,
+            other => return Err(format!("unknown option `{other}`\n{USAGE}")),
+        }
+    }
+    if req.session.is_none() && session_name.is_none() && req.window.is_none() && req.pane.is_none()
+    {
+        let here = std::env::var("TMUX_PANE").map_err(|_| {
+            format!("not inside tmux: name the session with --session $N or NAME\n{USAGE}")
+        })?;
+        req.pane = Some(id(&here, '%', "pane")?);
+    }
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        if let Some(name) = session_name {
+            let Response::TmuxTopology(t) = call(
+                &mut c,
+                Request::TmuxTopology(api::TopologyParams::default()),
+            )
+            .await?
+            else {
+                return Err("unexpected reply".into());
+            };
+            req.session = Some(
+                t.sessions
+                    .iter()
+                    .find(|s| s.name == name && !s.holding)
+                    .ok_or_else(|| format!("no tmux session named `{name}`"))?
+                    .id,
+            );
+        }
+        if want == Some(api::DrawerWant::New) && !yes {
+            let Response::DrawerStatus(s) =
+                call(&mut c, Request::DrawerStatus(req.clone())).await?
+            else {
+                return Err("unexpected reply".into());
+            };
+            if let Some(p) = s.pane {
+                return Err(format!(
+                    "session ${}'s drawer is pane %{p}, running {}; `dream drawer new --yes` \
+                     closes it and starts a fresh harness",
+                    s.session,
+                    if s.harness.is_empty() {
+                        "its harness"
+                    } else {
+                        &s.harness
+                    }
+                ));
+            }
+        }
+        let request = match want {
+            Some(w) => Request::DrawerToggle(api::DrawerRequest {
+                want: w as i32,
+                ..req
+            }),
+            None => Request::DrawerStatus(req),
+        };
+        let s = match call(&mut c, request).await? {
+            Response::DrawerToggle(s) | Response::DrawerStatus(s) => s,
+            _ => return Err("unexpected reply".into()),
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?
+            );
+            return Ok(());
+        }
+        let Some(p) = s.pane else {
+            println!("session ${} has no drawer yet", s.session);
+            return Ok(());
+        };
+        let place = if s.shown {
+            format!(
+                "shown in @{}{}{}",
+                s.window.unwrap_or_default(),
+                if s.focused { ", focused" } else { "" },
+                if s.zoomed { ", zoomed" } else { "" }
+            )
+        } else {
+            "hidden".to_owned()
+        };
+        let harness = if s.harness.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", s.harness)
+        };
+        println!("session ${} drawer %{p}{harness}: {place}", s.session);
+        if s.created && !s.command.is_empty() {
+            println!("started: {}", s.command.join(" "));
+        }
+        if let Some(why) = &s.problem {
+            println!("the harness did not start: {why}");
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]

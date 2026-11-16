@@ -383,13 +383,18 @@ impl MirrorHost {
     /// Apply a tier policy once: the Warm panes that nothing follows go
     /// Cold, quietest first, while they are quiet for longer than
     /// `cold_after` or there are more than `warm_limit` of them. A pane
-    /// that gains a follower meanwhile is refused and stays Warm.
-    pub async fn apply_policy(&self, policy: TierPolicy) -> Demoted {
+    /// that gains a follower meanwhile is refused and stays Warm. Panes in
+    /// `keep` count as followed (a harness drawer while it is hidden).
+    pub async fn apply_policy(
+        &self,
+        policy: TierPolicy,
+        keep: &std::collections::HashSet<TmuxPaneId>,
+    ) -> Demoted {
         let mut unfollowed: Vec<(TmuxPaneId, Duration)> = self
             .status()
             .await
             .into_iter()
-            .filter(|m| m.state == MirrorState::Live)
+            .filter(|m| m.state == MirrorState::Live && !keep.contains(&m.pane))
             .filter_map(|m| {
                 m.live
                     .filter(|l| l.followers == 0 && l.tier == Tier::Warm && l.error.is_none())

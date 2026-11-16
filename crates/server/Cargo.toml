@@ -22,6 +22,7 @@ domain = { path = "../domain" }
 mirror = { path = "../mirror" }
 platform = { path = "../platform" }
 prost = "0.14.5"
+providers = { path = "../providers" }
 terminal-core = { path = "../terminal-core" }
 tmux-backend = { path = "../tmux-backend" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "signal", "macros", "process"] }

@@ -27,6 +27,34 @@ pub struct Settings {
     pub providers: ProviderSettings,
     pub tiers: TierSettings,
     pub agents: crate::agents::AgentSettings,
+    pub drawer: DrawerSettings,
+}
+
+/// Where the harness drawer docks in a window, and how much of it it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DrawerSettings {
+    pub side: DrawerSide,
+    /// Percent of the window's height (bottom) or width (left, right).
+    pub size: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DrawerSide {
+    Bottom,
+    Right,
+    Left,
+}
+
+pub const DEFAULT_DRAWER_SIZE: u32 = 35;
+
+impl Default for DrawerSettings {
+    fn default() -> Self {
+        DrawerSettings {
+            side: DrawerSide::Bottom,
+            size: DEFAULT_DRAWER_SIZE,
+        }
+    }
 }
 
 /// When panes that nothing follows (no view, tap, or filter) go Cold on
@@ -308,6 +336,7 @@ impl Default for Settings {
             providers: ProviderSettings::default(),
             tiers: TierSettings::default(),
             agents: crate::agents::AgentSettings::default(),
+            drawer: DrawerSettings::default(),
         }
     }
 }
@@ -331,6 +360,15 @@ struct File {
     #[serde(default)]
     tiers: TiersFile,
     agents: Option<serde_norway::Value>,
+    #[serde(default)]
+    drawer: DrawerFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DrawerFile {
+    side: Option<DrawerSide>,
+    size: Option<serde_norway::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -670,6 +708,26 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(v) = &file.agents {
         s.agents = crate::agents::parse(v).map_err(|(at, m)| error(origin, &at, m))?;
     }
+    if let Some(side) = file.drawer.side {
+        s.drawer.side = side;
+    }
+    if let Some(v) = &file.drawer.size {
+        let text = match v {
+            serde_norway::Value::String(t) => t.trim().trim_end_matches('%').trim().to_owned(),
+            serde_norway::Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        };
+        s.drawer.size = match text.parse::<u32>() {
+            Ok(n) if (10..=90).contains(&n) => n,
+            _ => {
+                return Err(error(
+                    origin,
+                    "drawer.size",
+                    format!("{text:?} is not a percent from 10 to 90"),
+                ));
+            }
+        };
+    }
     Ok(s)
 }
 
@@ -810,6 +868,36 @@ mod tests {
         assert!(parse_settings("colors: {}", None).is_err());
         let e = parse_settings("links: { schemes: ['https:'] }", None).expect_err("scheme");
         assert_eq!(e.at, "links.schemes");
+    }
+
+    #[test]
+    fn the_drawer_docks_at_the_bottom_at_35_percent_unless_configured() {
+        let s = parse_settings("", None).expect("empty");
+        assert_eq!(s.drawer.side, DrawerSide::Bottom);
+        assert_eq!(s.drawer.size, 35);
+        let s = parse_settings("drawer:\n  side: right\n  size: 40\n", None).expect("valid");
+        assert_eq!(
+            s.drawer,
+            DrawerSettings {
+                side: DrawerSide::Right,
+                size: 40
+            }
+        );
+        let s = parse_settings("drawer: {size: 50%}\n", None).expect("percent sign");
+        assert_eq!(s.drawer.size, 50);
+        for (bad, at) in [
+            ("drawer: {side: top}", "drawer"),
+            ("drawer: {size: 5}", "drawer.size"),
+            ("drawer: {size: 95}", "drawer.size"),
+            ("drawer: {size: half}", "drawer.size"),
+            ("drawer: {width: 30}", "drawer"),
+        ] {
+            let e = parse_settings(bad, None).expect_err(bad);
+            assert!(
+                e.at.starts_with(at) || e.message.contains("drawer"),
+                "{bad}: {e:?}"
+            );
+        }
     }
 
     #[test]

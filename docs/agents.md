@@ -263,6 +263,40 @@ the next start.
 | `dream agents profile check [--no-restore]` | Update Dreamer's files, commit stray changes, check, and restore the last good commit on failure; `--no-restore` only reports |
 
 Each `profile` command takes `--dir DIR` for another profile directory.
+## The harness drawer
+
+The drawer ([desktop.md](desktop.md#the-harness-drawer)) runs the harness
+in a tmux pane: its own terminal interface, as you would run it in a
+shell. The daemon starts it the first time a session's drawer is asked
+for.
+
+- **Which program.** `agents.default` names the harness. With a
+  `command`, that program and its arguments run exactly as given (no
+  shell). Without one, pi runs through `dream agents pi`, which checks
+  Dreamer's pi profile (restoring the last good one if a change broke
+  loading), removes API-key variables, and passes `agents.pi.model`; it
+  uses the managed install (`agents/pi/current/pi`), else `pi` on the
+  daemon's `PATH`. `claude`
+  and `codex` are looked up on the daemon's `PATH`. A custom ACP agent
+  runs its `command`.
+- **When it is missing,** the pane says so (for pi: run `dream agents
+  update`) and closes on Enter. The next use starts the harness again.
+- **Working directory:** that of the focused pane in the window it is
+  first shown in.
+- **Environment.** The pane gets `DREAMER_RUNTIME_DIR`,
+  `DREAMER_STATE_DIR`, `DREAMER_DATA_DIR`, and `DREAMER_CONFIG_DIR`, so
+  `dream` and Dreamer's tools inside the harness reach this daemon, and
+  `DREAMER_DRAWER` with the session id (`$N`). For pi,
+  `PI_CODING_AGENT_DIR` is `agents.pi.agent_dir`, else Dreamer's pi
+  profile, `<data dir>/pi-profile`, created if missing.
+- **Tagged in tmux.** The pane carries the user option
+  `@dreamer_drawer_for` with its session id, so a restarted daemon finds
+  it again, and other tmux clients can see which pane it is.
+- **Never put to sleep.** While the pane exists the tier policy treats
+  it as followed, so a hidden drawer keeps its mirror
+  ([settings.md](settings.md#pane-tiers)).
+- `drawer.toggle` is for the user's own clients only: an app or agent
+  grant cannot call it.
 
 ## Not yet
 

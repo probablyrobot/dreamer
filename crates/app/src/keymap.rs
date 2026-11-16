@@ -39,6 +39,10 @@ gpui::actions!(
         ToggleSidebar,
         /// Find in the focused pane's history and screen.
         Find,
+        /// The harness drawer: show and focus it, focus it, or hide it.
+        ToggleDrawer,
+        /// Start a fresh harness in the drawer.
+        NewDrawer,
     ]
 );
 
@@ -85,6 +89,8 @@ pub(crate) const SHORTCUTS: &[Shortcut] = &[
     shortcut!(ZoomPane, Some("cmd-shift-enter"), Some("ctrl-shift-enter")),
     shortcut!(ToggleSidebar, Some("cmd-shift-s"), Some("ctrl-shift-s")),
     shortcut!(Find, Some("cmd-f"), Some("ctrl-shift-f")),
+    shortcut!(ToggleDrawer, Some("cmd-j"), Some("ctrl-shift-j")),
+    shortcut!(NewDrawer, Some("cmd-shift-j"), Some("ctrl-alt-shift-j")),
 ];
 
 fn bindings(cx: &App) -> Vec<KeyBinding> {
@@ -125,6 +131,8 @@ fn menus() -> Vec<Menu> {
             MenuItem::action("Command Palette", CommandPalette),
             MenuItem::action("Sessions Sidebar", ToggleSidebar),
             MenuItem::action("Zoom Pane", ZoomPane),
+            MenuItem::action("Harness Drawer", ToggleDrawer),
+            MenuItem::action("New Harness Drawer", NewDrawer),
             MenuItem::separator(),
             MenuItem::action("Enter Full Screen", ToggleFullScreen),
         ]),
@@ -141,7 +149,7 @@ pub(crate) struct Opener(pub Box<dyn Fn(&mut App)>);
 impl gpui::Global for Opener {}
 
 /// Bind the shortcuts, set the menu bar, and handle the app-wide commands.
-/// View commands (copy, paste, palette, zoom, sidebar) are handled by the
+/// View commands (copy, paste, palette, zoom, sidebar, drawer) are handled by the
 /// focused view; without one they do nothing.
 pub(crate) fn install(cx: &mut App, open_window: impl Fn(&mut App) + 'static) {
     cx.set_global(Opener(Box::new(open_window)));

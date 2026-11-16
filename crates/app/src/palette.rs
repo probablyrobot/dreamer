@@ -19,6 +19,8 @@ pub(crate) enum Command {
     KillPane,
     KillWindow,
     ToggleSidebar,
+    ToggleDrawer,
+    NewDrawer,
     OpenHost,
     ReconnectHost,
     VerifyHost,
@@ -36,7 +38,7 @@ pub(crate) enum Command {
     Contributed(u16),
 }
 
-pub(crate) const ALL: [Command; 24] = [
+pub(crate) const ALL: [Command; 26] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -49,6 +51,8 @@ pub(crate) const ALL: [Command; 24] = [
     Command::KillPane,
     Command::KillWindow,
     Command::ToggleSidebar,
+    Command::ToggleDrawer,
+    Command::NewDrawer,
     Command::OpenHost,
     Command::ReconnectHost,
     Command::VerifyHost,
@@ -78,6 +82,8 @@ impl Command {
             Command::KillPane => "Kill pane (ends its program)…",
             Command::KillWindow => "Kill window (ends its programs)…",
             Command::ToggleSidebar => "Toggle sidebar (sessions and hosts)",
+            Command::ToggleDrawer => "Harness drawer: show, focus, or hide",
+            Command::NewDrawer => "New harness drawer (ends the running harness)…",
             Command::OpenHost => "Open host…",
             Command::ReconnectHost => "Reconnect host…",
             Command::AddHost => "Add a host profile…",
@@ -96,7 +102,10 @@ impl Command {
 
     /// Ends programs: asks for a second Enter.
     pub(crate) fn destructive(self) -> bool {
-        matches!(self, Command::KillPane | Command::KillWindow)
+        matches!(
+            self,
+            Command::KillPane | Command::KillWindow | Command::NewDrawer
+        )
     }
 
     /// Needs a name typed before it runs.
@@ -498,7 +507,8 @@ mod tests {
         assert!(
             ALL.iter()
                 .filter(|c| c.destructive())
-                .all(|c| c.label().contains("Kill"))
+                .all(|c| c.label().contains("ends")),
+            "a destructive command says what it ends"
         );
     }
 

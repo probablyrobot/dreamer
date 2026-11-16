@@ -32,6 +32,7 @@ const RESTART_EVERY: Duration = Duration::from_secs(5);
 enum Command {
     Act(api::action::Kind),
     Size { window: u32, cols: u32, rows: u32 },
+    Drawer(api::DrawerRequest),
 }
 
 #[derive(Debug)]
@@ -114,6 +115,12 @@ impl TopologyFeed {
     /// result shows up as a newer topology.
     pub fn act(&self, action: api::action::Kind) {
         let _ = self.actions.send(Command::Act(action));
+    }
+
+    /// Show, focus, hide, or restart a session's harness drawer
+    /// (`drawer.toggle`). Its result shows up as a newer topology.
+    pub fn drawer(&self, request: api::DrawerRequest) {
+        let _ = self.actions.send(Command::Drawer(request));
     }
 
     /// Ask for a tmux window's size in cells. Applied only while this view
@@ -274,6 +281,10 @@ impl Owner {
                             ..api::SizeWindow::default()
                         });
                         let _ = self.via.call(&c, size).await;
+                    }
+                    Some(Command::Drawer(request)) => {
+                        // The outcome arrives as a topology change.
+                        let _ = self.via.call(&c, Request::DrawerToggle(request)).await;
                     }
                     None => return Ok(()),
                 },

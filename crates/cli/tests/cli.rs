@@ -2475,3 +2475,40 @@ columns = ["argv", "state"]
     );
     cli.wait_pane(&pane, "succeeded");
 }
+
+#[test]
+fn the_drawer_toggles_from_a_shell_and_asks_before_replacing_its_harness() {
+    let cli = Cli::new();
+    std::fs::create_dir_all(cli.root.join("config")).expect("config");
+    std::fs::write(
+        cli.root.join("config/dreamer.yaml"),
+        "agents:\n  default: claude\n  claude:\n    command: ['/bin/sh', '-c', 'echo DRAWER''''HARNESS; exec sleep 600']\n",
+    )
+    .expect("settings");
+    let shown = cli.ok(&["drawer", "toggle", "--session", "main"]);
+    assert!(
+        shown.contains("shown in @") && shown.contains("(claude)"),
+        "{shown}"
+    );
+    let status: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["drawer", "status", "--session", "main", "--json"]))
+            .expect("json");
+    let pane = status["pane"].as_u64().expect("pane");
+    cli.wait_for_text(&format!("%{pane}"), "DRAWERHARNESS");
+    let refused = cli.on_tmux(&["drawer", "new", "--session", "main"]);
+    assert!(!refused.status.success());
+    let why = String::from_utf8_lossy(&refused.stderr);
+    assert!(why.contains("--yes"), "{why}");
+    let hidden = cli.ok(&["drawer", "toggle", "--session", "main"]);
+    assert!(hidden.contains("hidden"), "{hidden}");
+    let ls = cli.ok(&["ls"]);
+    assert!(
+        ls.contains("(hidden drawers)") && ls.contains("(drawer of "),
+        "{ls}"
+    );
+    let fresh: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["drawer", "new", "--yes", "--session", "main", "--json"]))
+            .expect("json");
+    assert_eq!(fresh["created"], true);
+    assert_ne!(fresh["pane"].as_u64(), Some(pane));
+}

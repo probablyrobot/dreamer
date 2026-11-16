@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 41 }
+version: { major: 1, minor: 42 }
 package: dreamer.v1
 
 types:
@@ -83,6 +83,7 @@ types:
       - { n: 2, name: name, type: string }
       - { n: 3, name: windows, type: u32, repeated: true, doc: Window ids in index order. }
       - { n: 4, name: active_window, type: u32, optional: true }
+      - { n: 5, name: holding, type: bool, doc: "Dreamer's holding session for hidden harness drawers. Clients leave it out of tabs, sidebars, and session lists." }
 
   - message: Window
     fields:
@@ -112,6 +113,7 @@ types:
       - { n: 11, name: dead, type: bool }
       - { n: 12, name: generation, type: u64, doc: Process generation; changes when the pane is respawned. }
       - { n: 13, name: mode, type: string, optional: true, doc: "A tmux-drawn mode the pane is in (copy-mode, tree-mode, ...). Its screen is tmux's, not the program's, and Dreamer does not draw it." }
+      - { n: 14, name: drawer_of, type: u32, optional: true, doc: "This pane is the harness drawer of that tmux session (drawer.toggle)." }
 
   - message: Topology
     fields:
@@ -1550,6 +1552,40 @@ types:
       - { n: 1, name: name, type: string }
       - { n: 2, name: delete, type: bool, doc: "Also delete its definition and rows." }
 
+  # ---- the harness drawer -------------------------------------------------
+
+  - enum: DrawerWant
+    values:
+      - { n: 0, name: unspecified, doc: Same as toggle. }
+      - { n: 1, name: toggle, doc: "Show and focus it when hidden or in another window; focus it when shown and not focused; hide it when focused." }
+      - { n: 2, name: show, doc: "Show it in the window and focus it, starting the harness first if the session has no drawer." }
+      - { n: 3, name: hide, doc: "Move it to the holding session; focus returns to the pane that had it before the drawer was shown." }
+      - { n: 4, name: new, doc: "Close the session's drawer pane if there is one, and start a fresh harness, shown and focused." }
+
+  - message: DrawerRequest
+    doc: >-
+      Which session's drawer, and where to show it. With none of session,
+      window, or pane given the request is refused.
+    fields:
+      - { n: 1, name: session, type: u32, optional: true, doc: "The tmux session whose drawer this is." }
+      - { n: 2, name: window, type: u32, optional: true, doc: "The window to show it in; names the session when `session` is absent. Default: the session's active window." }
+      - { n: 3, name: pane, type: u32, optional: true, doc: "The pane asking (a shell's TMUX_PANE): names the window and session when they are absent. The drawer pane itself names its own session." }
+      - { n: 4, name: want, type: DrawerWant }
+      - { n: 5, name: endpoint, type: string, optional: true }
+
+  - message: DrawerStatus
+    fields:
+      - { n: 1, name: session, type: u32 }
+      - { n: 2, name: pane, type: u32, optional: true, doc: "The drawer's pane; absent while the session has none." }
+      - { n: 3, name: shown, type: bool, doc: "In a window of the session (not the holding session)." }
+      - { n: 4, name: window, type: u32, optional: true, doc: "The window the pane is in, the holding session's while hidden." }
+      - { n: 5, name: focused, type: bool, doc: "The active pane of its window, and that window the session's active one." }
+      - { n: 6, name: zoomed, type: bool, doc: "Shown zoomed, because the window was too small to dock it." }
+      - { n: 7, name: created, type: bool, doc: "This call started the harness." }
+      - { n: 8, name: harness, type: string, doc: "The harness the pane was started with." }
+      - { n: 9, name: command, type: string, repeated: true, doc: "The program and arguments it was started with; empty unless this call started it." }
+      - { n: 10, name: problem, type: string, optional: true, doc: "Why the harness could not start; the pane says the same." }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -1624,6 +1660,8 @@ methods:
   - { method: collect.list, params: Empty, result: CollectList }
   - { method: collect.query, params: CollectQuery, result: CollectResult, doc: "A collector's rows, filtered, or counts grouped by a field." }
   - { method: collect.stop, params: CollectRef, result: CollectorStatus, mutation: true, doc: "Stop a collector; its rows stay queryable unless delete is set." }
+  - { method: drawer.toggle, params: DrawerRequest, result: DrawerStatus, mutation: true, doc: "Show, focus, hide, or restart a tmux session's harness drawer: a pane running the configured agent harness, kept in a holding session while hidden (owner only)." }
+  - { method: drawer.status, params: DrawerRequest, result: DrawerStatus, doc: "A session's harness drawer: whether it exists, where it is, and whether it is shown and focused." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the

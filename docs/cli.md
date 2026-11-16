@@ -126,6 +126,26 @@ one again now. See [extensions.md](extensions.md).
 [--all-panes]` serves Dreamer's tools to an MCP client on standard input
 and output. See [mcp.md](mcp.md).
 
+## Harness drawer
+
+`dream drawer toggle|show|hide|status|new` works the session's
+[harness drawer](desktop.md#the-harness-drawer) from a shell, so a tmux
+key of your own can run it (for example `bind j run-shell "dream drawer
+toggle --pane '#{pane_id}'"` in your own tmux configuration).
+
+| Command | Does |
+| --- | --- |
+| `toggle` | Hidden or in another window: show it here and focus it. Shown but not focused: focus it. Focused: hide it |
+| `show` | Show it here and focus it, starting the harness if there is none |
+| `hide` | Move it to the holding session; focus goes back where it was |
+| `status` | Whether the session has one, its pane, and where it is |
+| `new --yes` | End the running harness and start a fresh one, shown. Without `--yes` it refuses while a drawer exists |
+
+`--session $N` (or a session name), `--window @N`, or `--pane %N` names
+the session and the window to show it in. Without them, the pane the
+command runs in (`TMUX_PANE`) does; run in the drawer itself, it means
+the drawer's session. `--json` prints the daemon's answer as data.
+
 ## Approvals
 
 `dream approvals [--json]` lists the actions agents are waiting to have

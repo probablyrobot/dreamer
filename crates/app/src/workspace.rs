@@ -111,7 +111,16 @@ pub(crate) struct Workspace {
     pub(crate) contributed: crate::contrib::Snapshot,
     /// The palette's contributed entries, as (package index, command index).
     palette_contributed: Vec<(usize, usize)>,
+    /// The harness drawer was asked for: focus it once it shows here (not
+    /// the pane it replaces), until the grace runs out.
+    drawer_focus: Option<(std::time::Instant, Option<u32>)>,
+    /// The pane focused before the drawer took focus, focused again when it
+    /// hides.
+    drawer_back: Option<u32>,
 }
+
+/// How long a requested drawer is waited for, to focus it when it shows.
+const DRAWER_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A divider being dragged: the size the pointer asks for, the last size
 /// sent to tmux, and whether a throttled send is pending.
@@ -174,6 +183,8 @@ impl Workspace {
             contrib: None,
             contributed: crate::contrib::Snapshot::default(),
             palette_contributed: Vec::new(),
+            drawer_focus: None,
+            drawer_back: None,
         }
     }
 
@@ -775,6 +786,14 @@ impl Workspace {
                 self.toggle_sidebar(cx);
                 None
             }
+            C::ToggleDrawer => {
+                self.toggle_drawer(false, window, cx);
+                None
+            }
+            C::NewDrawer => {
+                self.toggle_drawer(true, window, cx);
+                None
+            }
             C::OpenHost => {
                 if let Some(name) = name {
                     self.open_host(&name, cx);
@@ -866,6 +885,80 @@ impl Workspace {
             self.topology
                 .act(api::action::Kind::ZoomPane(api::ZoomPane { pane }));
             cx.notify();
+        }
+    }
+
+    /// The session's harness drawer: show and focus it, focus it if shown,
+    /// hide it if focused (focus goes back where it was), or with `new` a
+    /// fresh harness. The daemon moves the pane; this view follows the
+    /// topology.
+    pub(crate) fn toggle_drawer(&mut self, new: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(session), Some(here)) = (self.session, self.active_window().map(|w| w.id)) else {
+            return;
+        };
+        let drawer = self.current.as_ref().and_then(|t| {
+            t.panes
+                .iter()
+                .find(|p| p.drawer_of == Some(session))
+                .map(|p| (p.id, p.window))
+        });
+        let want = match drawer {
+            _ if new => api::DrawerWant::New,
+            Some((id, w)) if w == here && self.focused == Some(id) => api::DrawerWant::Hide,
+            Some((id, w)) if w == here => {
+                if self.panes.contains_key(&id) {
+                    self.drawer_back = self.focused;
+                    self.click_pane(id, window, cx);
+                    return;
+                }
+                api::DrawerWant::Show
+            }
+            _ => api::DrawerWant::Show,
+        };
+        let id = drawer.map(|(id, _)| id);
+        if want == api::DrawerWant::Hide {
+            self.drawer_focus = None;
+            let back = self
+                .drawer_back
+                .take()
+                .filter(|b| self.panes.contains_key(b));
+            if back.is_some() {
+                self.set_focus(back, window, cx);
+            }
+        } else {
+            if self.focused.is_some() && self.focused != id {
+                self.drawer_back = self.focused;
+            }
+            // A new drawer replaces the old pane: wait for the other one.
+            let skip = if new { id } else { None };
+            self.drawer_focus = Some((std::time::Instant::now(), skip));
+        }
+        self.topology.drawer(api::DrawerRequest {
+            session: Some(session),
+            window: Some(here),
+            want: want as i32,
+            ..api::DrawerRequest::default()
+        });
+        cx.notify();
+    }
+
+    /// Focus the drawer asked for once it is shown here.
+    fn focus_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((at, skip)) = self.drawer_focus else {
+            return;
+        };
+        let session = self.session;
+        let shown = self.current.as_ref().and_then(|t| {
+            t.panes
+                .iter()
+                .find(|p| session.is_some() && p.drawer_of == session && Some(p.id) != skip)
+                .map(|p| p.id)
+        });
+        if let Some(id) = shown.filter(|id| self.panes.contains_key(id)) {
+            self.drawer_focus = None;
+            self.set_focus(Some(id), window, cx);
+        } else if at.elapsed() >= DRAWER_GRACE {
+            self.drawer_focus = None;
         }
     }
 
@@ -1390,8 +1483,13 @@ impl Workspace {
             // The first topology: the saved session, by id only for the same
             // server incarnation, else by name (spec 15.2: never reopen a
             // stale id from another server epoch).
-            let sessions: Vec<(u32, &str)> =
-                t.sessions.iter().map(|s| (s.id, s.name.as_str())).collect();
+            // The holding session of hidden drawers is never shown.
+            let sessions: Vec<(u32, &str)> = t
+                .sessions
+                .iter()
+                .filter(|s| !s.holding)
+                .map(|s| (s.id, s.name.as_str()))
+                .collect();
             self.session = workspace_config::desktop_state::choose_session(
                 self.saved.as_ref(),
                 &t.endpoint,
@@ -1401,9 +1499,9 @@ impl Workspace {
             self.restored = true;
         } else if self
             .session
-            .is_none_or(|s| !t.sessions.iter().any(|x| x.id == s))
+            .is_none_or(|s| !t.sessions.iter().any(|x| x.id == s && !x.holding))
         {
-            self.session = t.sessions.first().map(|s| s.id);
+            self.session = t.sessions.iter().find(|s| !s.holding).map(|s| s.id);
         }
         let first_save = self.current.is_none();
         // tmux confirmed the clicked tab, or the grace ran out: from here
@@ -1420,6 +1518,7 @@ impl Workspace {
         }
         self.current = Some(t);
         self.sync_panes(window, cx);
+        self.focus_drawer(window, cx);
         self.follow_decorations(window, cx);
         self.follow_contributions(window, cx);
         if first_save {
@@ -1774,7 +1873,7 @@ impl Render for Workspace {
             let sessions: Vec<api::Session> = self
                 .current
                 .as_ref()
-                .map(|t| t.sessions.clone())
+                .map(|t| t.sessions.iter().filter(|s| !s.holding).cloned().collect())
                 .unwrap_or_default();
             let shown = self.session;
             div()
@@ -2134,6 +2233,14 @@ impl Render for Workspace {
             .on_action(
                 cx.listener(|ws, _: &crate::keymap::ToggleSidebar, _, cx| ws.toggle_sidebar(cx)),
             )
+            .on_action(
+                cx.listener(|ws, _: &crate::keymap::ToggleDrawer, window, cx| {
+                    ws.toggle_drawer(false, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|ws, _: &crate::keymap::NewDrawer, window, cx| {
+                ws.toggle_drawer(true, window, cx)
+            }))
             .child(strip)
             .child(
                 div()

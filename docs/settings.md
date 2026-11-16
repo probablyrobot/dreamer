@@ -62,6 +62,9 @@ terminal:
 tiers:
   cold_after: 30m                        # default; a wait (90s, 30m, 2h) or never
   warm_limit: 128                        # default; a number of panes or none
+drawer:
+  side: bottom                           # bottom (default), right, or left
+  size: 35                               # default; percent of the window, 10 to 90
 ```
 
 ## Font
@@ -264,6 +267,17 @@ agents:
   gemini:
     protocol: acp
     command: [gemini, --experimental-acp]
+```
+
+## Harness drawer
+
+`drawer:` places the [harness drawer](desktop.md#the-harness-drawer) in
+the window it is shown in. A change applies the next time it is shown.
+
+```yaml
+drawer:
+  side: bottom     # bottom (default), right, or left; always the whole window's width or height
+  size: 35         # percent of the window's height (bottom) or width (sides), 10 to 90; `35%` also reads
 ```
 
 ## Agent providers

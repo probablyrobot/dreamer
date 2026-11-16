@@ -14,6 +14,7 @@ pub fn topology(endpoint: &str, tracker: &InventoryTracker) -> api::Topology {
             name: s.name.clone(),
             windows: s.windows.values().map(|w| w.0).collect(),
             active_window: s.active_window.map(|w| w.0),
+            holding: s.name == tmux_backend::ops::DRAWER_HOLDING,
         })
         .collect();
     let windows = inv
@@ -85,6 +86,7 @@ pub fn topology(endpoint: &str, tracker: &InventoryTracker) -> api::Topology {
                 title: p.title.clone(),
                 dead: p.dead,
                 mode: p.mode.clone(),
+                drawer_of: p.drawer_for.map(|s| s.0),
                 generation: tracker.generation(*id).map_or(0, |g| g.0),
             }
         })

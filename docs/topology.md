@@ -6,7 +6,10 @@ daemon last read them from tmux:
   whether Dreamer can draw their layout (`layout_supported`, false for
   floating panes);
 - panes have their cell rectangle in the window, process, title, and
-  process generation.
+  process generation, and `drawer_of` names the session whose
+  [harness drawer](desktop.md#the-harness-drawer) a pane is;
+- the session `_dreamer_drawers`, where hidden drawers wait, has
+  `holding` set. Clients leave it out of tabs and session lists.
 
 tmux is authoritative for all of it.
 
