@@ -820,7 +820,69 @@ pub fn zip_bundle(app: &Path, out: &Path) -> Result<PathBuf, String> {
         format!("{hash}  {file_name}\n"),
     )
     .map_err(|e| e.to_string())?;
+    record_bundle(app, &zip, hash)?;
     Ok(zip)
+}
+
+/// How the bundle is signed, from `codesign`: the kind (`adhoc`, or the
+/// first signing authority), the team, and whether a notarization ticket
+/// is stapled.
+fn signing_state(app: &Path) -> (String, String, bool) {
+    let out = Command::new("codesign")
+        .args(["-d", "--verbose=2"])
+        .arg(app)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
+        .unwrap_or_default();
+    let field = |k: &str| {
+        out.lines()
+            .find_map(|l| l.strip_prefix(k).map(str::trim))
+            .map(str::to_owned)
+    };
+    let kind = match field("Signature=") {
+        Some(s) if s == "adhoc" => "adhoc".to_owned(),
+        _ => field("Authority=").unwrap_or_else(|| "unsigned".to_owned()),
+    };
+    let team = field("TeamIdentifier=").unwrap_or_else(|| "not set".to_owned());
+    let stapled = Command::new("xcrun")
+        .args(["stapler", "validate", "-q"])
+        .arg(app)
+        .status()
+        .is_ok_and(|s| s.success());
+    (kind, team, stapled)
+}
+
+/// `<zip>.json`: what the zip is, the commit it was built from, and its
+/// signing state, for the release's build report (spec 17.6).
+fn record_bundle(app: &Path, zip: &Path, sha256: &str) -> Result<(), String> {
+    use crate::gate::json_escape as esc;
+    let root = repo_root();
+    let commit = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&root)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default();
+    let bytes = std::fs::metadata(zip).map_or(0, |m| m.len());
+    let (kind, team, stapled) = signing_state(app);
+    let exes: Vec<String> = EXECUTABLES.iter().map(|e| format!("\"{e}\"")).collect();
+    let json = format!(
+        "{{\n  \"artifact\": \"{}\",\n  \"bytes\": {bytes},\n  \"sha256\": \"{}\",\n  \
+         \"target\": \"aarch64-apple-darwin\",\n  \"version\": \"{}\",\n  \"commit\": \"{}\",\n  \
+         \"minimum_macos\": \"{MIN_MACOS}\",\n  \"executables\": [{}],\n  \
+         \"signing\": {{ \"kind\": \"{}\", \"team\": \"{}\", \"notarized\": {stapled} }}\n}}\n",
+        esc(&zip
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()),
+        esc(sha256),
+        esc(&version(&root)?),
+        esc(&commit),
+        exes.join(", "),
+        esc(&kind),
+        esc(&team),
+    );
+    std::fs::write(zip.with_extension("zip.json"), json).map_err(|e| e.to_string())
 }
 
 /// Unpack a bundle zip outside the source tree and launch it from there.

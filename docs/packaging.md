@@ -37,7 +37,10 @@ ln -s /Applications/Dreamer.app/Contents/MacOS/dream /usr/local/bin/dream
 ```
 
 The bundle is ad hoc signed, not Developer ID signed or notarized; that is
-a separate release step. For a zip downloaded from elsewhere, Gatekeeper
+a separate release step. Beside the zip, `<zip>.json` records what was
+built and how it is signed: size and SHA-256, the commit, the target and
+minimum macOS, the executables, and the signing kind (`adhoc` or the
+signing authority), team, and whether a notarization ticket is stapled. For a zip downloaded from elsewhere, Gatekeeper
 asks you to confirm the first launch: Control-click the app, choose Open,
 then confirm.
 
