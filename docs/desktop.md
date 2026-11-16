@@ -272,6 +272,7 @@ Escape closes.
 | Kill pane (ends its program)…, Kill window (ends its programs)… | Destructive. Shown in red; the first Enter only asks, a second Enter runs it, and Backspace backs out |
 | Show or hide decorations in this pane (filter marks) | Switches drawing [decorations](#decorations) for the focused pane, in this window |
 | Open an app package as a panel…, Close the app panel | Shows an [app panel](#app-panels), or removes it |
+| Theme… (colors of the terminals and the window) | Lists every theme with a swatch and previews the highlighted one; Enter keeps it in `dreamer.yaml`, Escape puts the file back ([settings](settings.md#terminal)) |
 
 No destructive action is hidden behind "close". Every command goes
 through the typed actions, and its result shows only in a newer topology.

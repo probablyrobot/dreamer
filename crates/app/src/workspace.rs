@@ -71,6 +71,8 @@ pub(crate) struct Workspace {
     /// The command palette while open, and where its keys go.
     pub(crate) palette: Option<crate::palette::Palette>,
     palette_focus: FocusHandle,
+    /// The theme being previewed from the palette, and its pending write.
+    theme_preview: Option<(&'static str, gpui::Task<()>)>,
     /// A press on the title bar's empty space: the next move drags the
     /// window (macOS, where the tab strip is the title bar).
     title_drag: bool,
@@ -143,6 +145,7 @@ impl Workspace {
             resizes_sent: 0,
             palette: None,
             palette_focus: cx.focus_handle(),
+            theme_preview: None,
             title_drag: false,
             sidebar: false,
             state_path: None,
@@ -465,7 +468,13 @@ impl Workspace {
                 }
             })
             .collect();
-        self.palette = Some(crate::palette::Palette::new().with_contributed(labels));
+        let (themes, current) =
+            crate::live::with(|l| (l.themes.clone(), Some(l.scheme))).unwrap_or_default();
+        self.palette = Some(
+            crate::palette::Palette::new()
+                .with_contributed(labels)
+                .with_themes(themes, current),
+        );
         window.focus(&self.palette_focus, cx);
         cx.notify();
     }
@@ -588,6 +597,10 @@ impl Workspace {
     }
 
     pub(crate) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Leaving the theme list without choosing puts everything back.
+        if self.theme_preview.take().is_some() {
+            crate::theme_pick::cancel(cx);
+        }
         self.palette = None;
         if let Some(view) = self.focused.and_then(|f| self.panes.get(&f)) {
             let handle = view.shell.read(cx).focus.clone();
@@ -611,6 +624,11 @@ impl Workspace {
             Decision::Submit(form) => {
                 self.close_palette(window, cx);
                 self.submit_host_form(form, window.window_handle(), cx);
+            }
+            Decision::Theme(scheme) => {
+                self.theme_preview = None;
+                self.close_palette(window, cx);
+                crate::theme_pick::keep(cx, scheme);
             }
             Decision::Stay => {}
         }
@@ -642,8 +660,28 @@ impl Workspace {
                 }
             }
         }
+        self.preview_theme(cx);
         cx.stop_propagation();
         cx.notify();
+    }
+
+    /// Preview the theme highlighted in the palette, if it changed. The
+    /// one in force when the list opened is not a change.
+    fn preview_theme(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = &self.palette else {
+            return;
+        };
+        let Some(scheme) = p.previewed() else {
+            return;
+        };
+        let before = match &self.theme_preview {
+            Some((name, _)) => Some(*name),
+            None => p.current.map(|s| s.name),
+        };
+        if before != Some(scheme.name) {
+            let task = crate::theme_pick::preview(cx, scheme);
+            self.theme_preview = Some((scheme.name, task));
+        }
     }
 
     /// Run a palette command. Every effect is seen in a newer topology;
@@ -794,6 +832,8 @@ impl Workspace {
                 self.close_panel(window, cx);
                 None
             }
+            // Chosen in the palette's own list.
+            C::Theme => None,
             C::Contributed(i) => {
                 if let Some(&at) = self.palette_contributed.get(usize::from(i)) {
                     self.run_contributed(at, window, cx);
@@ -1798,14 +1838,27 @@ impl Render for Workspace {
         });
         let palette = self.palette.clone().map(|p| {
             use crate::palette::Stage;
-            let choosing = matches!(p.stage, Stage::Choose);
-            let (prompt, rows): (String, Vec<(String, bool)>) = match &p.stage {
+            let choosing = matches!(p.stage, Stage::Choose | Stage::Theme(_));
+            type Row = (
+                String,
+                bool,
+                Option<&'static terminal_ghostty::core::schemes::Scheme>,
+            );
+            let (prompt, rows): (String, Vec<Row>) = match &p.stage {
                 Stage::Choose => (
                     p.filter.clone(),
                     p.shown()
                         .iter()
                         .enumerate()
-                        .map(|(i, c)| (p.label_of(*c), i == p.selected))
+                        .map(|(i, c)| (p.label_of(*c), i == p.selected, None))
+                        .collect(),
+                ),
+                Stage::Theme(pick) => (
+                    pick.filter.clone(),
+                    pick.shown()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, s)| (s.title.to_owned(), i == pick.selected, Some(s)))
                         .collect(),
                 ),
                 Stage::Confirm(c) => (
@@ -1827,7 +1880,9 @@ impl Render for Workspace {
                     f.fields
                         .iter()
                         .enumerate()
-                        .map(|(i, (label, value, _))| (format!("{label}: {value}"), i == f.at))
+                        .map(|(i, (label, value, _))| {
+                            (format!("{label}: {value}"), i == f.at, None)
+                        })
                         .collect(),
                 ),
             };
@@ -1863,7 +1918,13 @@ impl Render for Workspace {
                                 .gap_2()
                                 .child(div().text_color(c(t.accent)).child("›"))
                                 .child(if prompt.is_empty() {
-                                    div().text_color(c(t.faint)).child("Type a command")
+                                    div().text_color(c(t.faint)).child(
+                                        if matches!(p.stage, Stage::Theme(_)) {
+                                            "Type a theme · Enter keeps it · Escape puts it back"
+                                        } else {
+                                            "Type a command"
+                                        },
+                                    )
                                 } else {
                                     div().child(prompt)
                                 })
@@ -1874,22 +1935,26 @@ impl Render for Workspace {
                             // A window of rows that keeps the selected one in
                             // view, so a long list never runs off the window.
                             let total = rows.len();
-                            let at = rows.iter().position(|(_, s)| *s).unwrap_or(0);
+                            let at = rows.iter().position(|(_, s, _)| *s).unwrap_or(0);
                             let start = (at + 1).saturating_sub(PALETTE_ROWS);
                             let below = total.saturating_sub(start + PALETTE_ROWS);
                             rows.into_iter()
                                 .skip(start)
                                 .take(PALETTE_ROWS)
-                                .map(|(label, selected)| {
+                                .map(|(label, selected, scheme)| {
                                     div()
                                         .px_2()
                                         .py(px(2.0))
                                         .rounded_sm()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
                                         .when(selected, |d| d.bg(c(t.selected)))
                                         .when(label.starts_with("Kill"), |d| {
                                             d.text_color(c(t.danger))
                                         })
                                         .child(label)
+                                        .children(scheme.map(swatch))
                                 })
                                 .chain((below > 0).then(|| {
                                     div()
@@ -2419,6 +2484,7 @@ mod smoke {
             "smoke: reconnecting resumed the window, and typing reached the host again: BACK-5"
         );
         profiles(any, &ws, cx).await;
+        themes(any, &ws, cx).await;
         std::process::exit(0);
     }
 
@@ -2502,6 +2568,92 @@ mod smoke {
         }
         println!(
             "smoke: a host profile was added, edited, and removed from the palette ({})",
+            path.display()
+        );
+    }
+
+    /// Choosing a theme from the palette: the highlighted theme is written
+    /// to dreamer.yaml for the terminals and drawn in the chrome; Escape
+    /// puts the file back byte for byte; Enter keeps the theme, which is
+    /// then in force.
+    async fn themes(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncApp) {
+        if std::env::var_os("DREAMER_CONFIG_DIR").is_none() {
+            fail("the theme smoke needs a private DREAMER_CONFIG_DIR");
+        }
+        let Some(path) = workspace_config::settings_path() else {
+            fail("no configuration directory");
+        };
+        let original = std::fs::read_to_string(&path).ok();
+        let file = || std::fs::read_to_string(&path).ok();
+        async fn until(cx: &mut AsyncApp, what: &str, ok: impl Fn() -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !ok() {
+                if Instant::now() > deadline {
+                    fail(&format!("never saw: {what}"));
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+            }
+        }
+        // Type into the theme list as keys would, previewing as they do.
+        let choose = |cx: &mut AsyncApp, typed: &str| {
+            let typed = typed.to_owned();
+            let _ = cx.update_window(any, |_, window, cx| {
+                if let Some(ws) = ws.upgrade() {
+                    ws.update(cx, |w, cx| {
+                        w.open_palette(window, cx);
+                        if let Some(p) = w.palette.as_mut() {
+                            "theme".chars().for_each(|c| p.type_char(c));
+                        }
+                        w.palette_enter(window, cx);
+                        if let Some(p) = w.palette.as_mut() {
+                            typed.chars().for_each(|c| p.type_char(c));
+                        }
+                        w.preview_theme(cx);
+                    });
+                }
+            });
+        };
+        let chrome = |cx: &mut AsyncApp| {
+            cx.update(|_| crate::live::with(|l| l.preview.map(|t| t.background)).flatten())
+        };
+        let nord = crate::theme::for_scheme(
+            terminal_ghostty::core::schemes::find("nord").unwrap_or_else(|| fail("no nord")),
+        );
+        choose(cx, "nord");
+        if chrome(cx) != Some(nord.background) {
+            fail("the chrome did not preview the highlighted theme");
+        }
+        until(cx, "the previewed theme in dreamer.yaml", || {
+            file().is_some_and(|t| t.contains("theme: \"nord\""))
+        })
+        .await;
+        let _ = cx.update_window(any, |_, window, cx| {
+            if let Some(ws) = ws.upgrade() {
+                ws.update(cx, |w, cx| w.close_palette(window, cx));
+            }
+        });
+        until(cx, "dreamer.yaml put back as it was", || file() == original).await;
+        if chrome(cx).is_some() {
+            fail("the chrome kept the preview after Escape");
+        }
+        choose(cx, "gruvbox dark");
+        let _ = cx.update_window(any, |_, window, cx| {
+            if let Some(ws) = ws.upgrade() {
+                ws.update(cx, |w, cx| w.palette_enter(window, cx));
+            }
+        });
+        let kept = || crate::live::with(|l| l.scheme.name).unwrap_or_default();
+        until(cx, "the chosen theme in force and in dreamer.yaml", || {
+            kept().starts_with("gruvbox-dark")
+                && file().is_some_and(|t| t.contains(&format!("theme: \"{}\"", kept())))
+        })
+        .await;
+        let name = kept();
+        let _ = workspace_config::edit::restore(&path, original.as_deref());
+        println!(
+            "smoke: a theme was previewed, put back, and chosen from the palette ({name}, {})",
             path.display()
         );
     }
@@ -3507,6 +3659,24 @@ pub(crate) fn dividers(panes: &[api::Pane]) -> Vec<Divider> {
         }
     }
     merged
+}
+
+/// A theme in miniature: its background, holding its foreground and six
+/// ANSI colors (red to cyan) as dots.
+fn swatch(s: &'static terminal_ghostty::core::schemes::Scheme) -> gpui::Div {
+    let hex = |c: terminal_ghostty::core::Rgb| {
+        gpui::rgb((u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b))
+    };
+    let dot = |c| div().size(px(7.0)).rounded_full().bg(hex(c));
+    div()
+        .flex()
+        .gap(px(3.0))
+        .px(px(5.0))
+        .py(px(4.0))
+        .rounded_sm()
+        .bg(hex(s.background))
+        .child(dot(s.foreground))
+        .children(s.ansi[1..7].iter().map(|&c| dot(c)))
 }
 
 #[cfg(test)]

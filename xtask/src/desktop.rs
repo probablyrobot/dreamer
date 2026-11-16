@@ -283,7 +283,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let passed = out.status.success()
             && stdout.contains(&format!("smoke: backend {expected}"))
             && stdout.contains("smoke: reconnecting resumed the window")
-            && stdout.contains("smoke: a host profile was added, edited, and removed");
+            && stdout.contains("smoke: a host profile was added, edited, and removed")
+            && stdout.contains("smoke: a theme was previewed, put back, and chosen");
         println!(
             "linux-desktop: {backend:<7} {:<18} {}",
             "remote",

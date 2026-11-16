@@ -141,6 +141,12 @@ cursor a program gets until it sets its own (and after it resets it with
 - `theme` names a color scheme file. `dream themes` lists them all, with
   a swatch, the configured one marked, and yours labelled. Names are
   case-insensitive, and `_` or a space counts as `-`.
+  - **From the palette:** "Theme…" in the desktop's command palette lists
+    every theme with a swatch, starting at the one in force. Type to
+    narrow it. The highlighted theme is previewed: the window at once, and
+    the terminals a moment later, because it is written to `dreamer.yaml`.
+    Enter keeps it. Escape puts `dreamer.yaml` back exactly as it was.
+    Only the `theme:` line changes; comments and every other setting stay.
   - **Built in:** the scheme files that ship with Dreamer. They are
     compiled into the program, so they are always there.
   - **Yours:** files in `<config dir>/themes/` (see `dream config-dir`),
