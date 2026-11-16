@@ -58,7 +58,7 @@ if [ "$UNINSTALL" = 1 ]; then
   if command -v systemctl >/dev/null 2>&1 && [ -f "$UNIT" ]; then
     systemctl --user disable --now dreamerd >/dev/null 2>&1 || true
   fi
-  for b in dreamer dreamerd dream; do
+  for b in dreamer dreamerd dream dreamer-termapp; do
     if [ -L "$PREFIX/bin/$b" ]; then rm -f "$PREFIX/bin/$b"; fi
   done
   rm -rf "$HOME_DIR" "$FONTS"
@@ -119,7 +119,7 @@ rm -rf "$HOME_DIR/versions/$VER"
 mv "$SRC" "$HOME_DIR/versions/$VER"
 ln -sfn "versions/$VER" "$HOME_DIR/current"
 mkdir -p "$PREFIX/bin"
-for b in dreamer dreamerd dream; do
+for b in dreamer dreamerd dream dreamer-termapp; do
   ln -sfn "$HOME_DIR/current/bin/$b" "$PREFIX/bin/$b"
 done
 
