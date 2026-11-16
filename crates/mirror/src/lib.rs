@@ -172,6 +172,29 @@ pub struct MirrorHost {
     written: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
+/// A fresh file in the daemon's private runtime directory for one paste
+/// buffer's text on its way to or from tmux.
+fn buffer_file() -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    platform::runtime_dir().join(format!(
+        "buffer-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
+/// Write `bytes` to a new file only its owner can read.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(bytes)
+}
+
 /// The most of a paste buffer read or written, in bytes.
 pub const BUFFER_MAX: usize = 4 << 20;
 
@@ -248,44 +271,54 @@ impl MirrorHost {
 
     /// A paste buffer's text (`name`, or the newest), at most
     /// [`BUFFER_MAX`] bytes; `None` when there is no such buffer.
+    ///
+    /// Read through a private file (`save-buffer`), never as command
+    /// output: tmux renders a buffer's control characters in its output
+    /// (on Linux a newline came back as `_`), and only the file is exact.
     pub async fn buffer_get(&self, name: Option<&str>) -> Option<String> {
-        let mut cmd = tmux_backend::TmuxCommand::new("show-buffer");
+        let path = buffer_file();
+        let mut cmd = tmux_backend::TmuxCommand::new("save-buffer");
         if let Some(n) = name {
             cmd = cmd.opt("-b", n);
         }
-        let r = self.conn.execute(cmd).await.ok()?;
-        let lines: Vec<String> = r
-            .first()?
-            .body
-            .iter()
-            .map(|l| String::from_utf8_lossy(l).into_owned())
-            .collect();
-        let mut text = lines.join("\n");
-        if text.len() > BUFFER_MAX {
-            let mut cut = BUFFER_MAX;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            text.truncate(cut);
+        let saved = self
+            .conn
+            .execute(cmd.arg(path.to_string_lossy()))
+            .await
+            .is_ok();
+        let bytes = saved.then(|| std::fs::read(&path).ok()).flatten();
+        let _ = std::fs::remove_file(&path);
+        let mut bytes = bytes?;
+        bytes.truncate(BUFFER_MAX);
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        // A cut in the middle of a character.
+        while text.ends_with('\u{fffd}') && bytes.len() == BUFFER_MAX {
+            text.pop();
         }
         Some(text)
     }
 
     /// Make `text` tmux's newest paste buffer, so tmux's own paste (and
     /// other tmux clients) see it. Dreamer's own write is not reported
-    /// back as a change ([`MirrorHost::is_own_buffer`]).
+    /// back as a change ([`MirrorHost::is_own_buffer`]). Loaded from a
+    /// private file (`load-buffer`), so every byte arrives as written.
     pub async fn buffer_set(&self, text: &str) -> Result<(), String> {
         if text.is_empty() || text.len() > BUFFER_MAX {
             return Err(format!("a paste buffer holds 1 to {BUFFER_MAX} bytes"));
         }
+        let path = buffer_file();
+        write_private(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
         if let Ok(mut w) = self.written.lock() {
             *w = Some(text.to_owned());
         }
-        self.conn
-            .execute(tmux_backend::TmuxCommand::new("set-buffer").arg(text))
+        let r = self
+            .conn
+            .execute(tmux_backend::TmuxCommand::new("load-buffer").arg(path.to_string_lossy()))
             .await
             .map(drop)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        let _ = std::fs::remove_file(&path);
+        r
     }
 
     /// Whether `text` is what Dreamer itself last wrote to a buffer.

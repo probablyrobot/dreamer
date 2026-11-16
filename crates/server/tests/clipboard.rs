@@ -153,7 +153,7 @@ async fn tmux_buffers_and_the_clipboard_meet_in_both_directions() {
     let w = c
         .call(Request::ClipboardWriteTmuxBuffer(api::TmuxBufferWrite {
             endpoint: None,
-            text: "copied in Dreamer\nsecond line".into(),
+            text: "copied in Dreamer\nsecond line\twith a tab".into(),
         }))
         .await;
     assert!(
@@ -162,11 +162,14 @@ async fn tmux_buffers_and_the_clipboard_meet_in_both_directions() {
     );
     assert_eq!(
         s.tmux.run_checked(&["show-buffer"]).expect("show-buffer"),
-        "copied in Dreamer\nsecond line"
+        "copied in Dreamer\nsecond line\twith a tab"
     );
     let echo = buffer_events(&mut rx, Duration::from_secs(2)).await;
     assert!(echo.is_empty(), "Dreamer's own write came back: {echo:?}");
-    assert_eq!(read(&c, None).await.text, "copied in Dreamer\nsecond line");
+    assert_eq!(
+        read(&c, None).await.text,
+        "copied in Dreamer\nsecond line\twith a tab"
+    );
 
     // An empty write is refused.
     assert!(
