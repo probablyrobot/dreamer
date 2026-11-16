@@ -340,7 +340,7 @@ async fn prompt_after(c: &Client, pane: u32, line: &str) {
                 .collect();
             if let [.., before, prompt] = lines.as_slice()
                 && *before == line
-                && prompt.ends_with('$')
+                && prompt.ends_with(['$', '#', '%', '>'])
             {
                 return;
             }
