@@ -33,6 +33,7 @@ mod messages;
 mod query;
 mod scripts;
 mod service;
+mod sessions;
 mod taps;
 mod tiers;
 mod tools;
@@ -292,6 +293,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             collectors: collectors::Collectors::new(state_dir.join("collectors")),
             decorations: decorations::Decorations::default(),
             agents: agents::Agents::default(),
+            sessions: Arc::new(sessions::Sessions::load()),
             apps: apps::Apps::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.
@@ -314,6 +316,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
         state.collectors.save_all();
         state.scripts.stop_all().await;
         state.extensions.stop_all().await;
+        state.sessions.stop_all().await;
         r
     });
     let _ = std::fs::remove_file(&socket);

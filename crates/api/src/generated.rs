@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 42;
+pub const PROTOCOL_MINOR: u32 = 43;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1144,6 +1144,163 @@ mod drawer_want_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| DrawerWant::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AgentSessionState {
+    Unspecified = 0,
+    /// The harness is starting.
+    Starting = 1,
+    /// The harness runs and waits for a prompt.
+    Idle = 2,
+    /// A turn is running.
+    Working = 3,
+    /// A turn waits for an approval.
+    Waiting = 4,
+    /// No harness runs (the daemon restarted, or the harness ended). Sending or resuming starts it again on the harness's own session.
+    Detached = 5,
+    /// Closed; its transcript stays.
+    Closed = 6,
+}
+
+impl AgentSessionState {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Starting => "starting",
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Waiting => "waiting",
+            Self::Detached => "detached",
+            Self::Closed => "closed",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "starting" => Some(Self::Starting),
+            "idle" => Some(Self::Idle),
+            "working" => Some(Self::Working),
+            "waiting" => Some(Self::Waiting),
+            "detached" => Some(Self::Detached),
+            "closed" => Some(Self::Closed),
+            _ => None,
+        }
+    }
+}
+
+mod agent_session_state_json {
+    use super::AgentSessionState;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match AgentSessionState::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| AgentSessionState::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AgentToolStatus {
+    Unspecified = 0,
+    Started = 1,
+    /// Partial output.
+    Updated = 2,
+    Finished = 3,
+    Failed = 4,
+}
+
+impl AgentToolStatus {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Started => "started",
+            Self::Updated => "updated",
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "started" => Some(Self::Started),
+            "updated" => Some(Self::Updated),
+            "finished" => Some(Self::Finished),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+mod agent_tool_status_json {
+    use super::AgentToolStatus;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match AgentToolStatus::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| AgentToolStatus::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AgentStopReason {
+    Unspecified = 0,
+    EndTurn = 1,
+    Cancelled = 2,
+    Error = 3,
+}
+
+impl AgentStopReason {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::EndTurn => "end_turn",
+            Self::Cancelled => "cancelled",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "end_turn" => Some(Self::EndTurn),
+            "cancelled" => Some(Self::Cancelled),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
+mod agent_stop_reason_json {
+    use super::AgentStopReason;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match AgentStopReason::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| AgentStopReason::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -4136,6 +4293,325 @@ pub struct DrawerStatus {
     pub problem: Option<String>,
 }
 
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSessionCreate {
+    /// A harness from the agents settings; default agents.default.
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// The harness's working directory; default the daemon's home directory.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// What the session may do through Dreamer, within the caller's own grant. Default: the terminal tools on every pane at the observe level.
+    #[prost(message, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<Grant>,
+    /// Default agents.<harness>.model, else the harness's own default.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSession {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(string, tag = "2")]
+    pub harness: String,
+    #[prost(string, tag = "3")]
+    pub cwd: String,
+    #[prost(enumeration = "AgentSessionState", tag = "4")]
+    #[serde(with = "agent_session_state_json")]
+    pub state: i32,
+    /// The session's grant: the outer limit for everything its harness does through Dreamer.
+    #[prost(message, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<Grant>,
+    /// The harness's own session id, kept for resume.
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness_session: Option<String>,
+    /// The harness process while it runs.
+    #[prost(uint32, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[prost(uint64, tag = "8")]
+    pub created_unix_ms: u64,
+    /// The newest event's sequence number.
+    #[prost(uint64, tag = "9")]
+    pub last_seq: u64,
+    #[prost(string, optional, tag = "10")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[prost(string, optional, tag = "11")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Why it is detached, or what went wrong at start.
+    #[prost(string, optional, tag = "12")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[prost(string, optional, tag = "13")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness_version: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSessionList {
+    #[prost(message, repeated, tag = "1")]
+    pub sessions: Vec<AgentSession>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSessionRef {
+    #[prost(string, tag = "1")]
+    pub session: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSessionSend {
+    #[prost(string, tag = "1")]
+    pub session: String,
+    /// The prompt. Sent while a turn runs, it waits for that turn to end.
+    #[prost(string, tag = "2")]
+    pub text: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSessionAnswer {
+    #[prost(string, tag = "1")]
+    pub session: String,
+    /// The approval_request event's id.
+    #[prost(string, tag = "2")]
+    pub approval: String,
+    /// For a request with options, the one chosen when approving.
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub option: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSessionEventsQuery {
+    #[prost(string, tag = "1")]
+    pub session: String,
+    /// Events after this sequence number; default from the start of the transcript.
+    #[prost(uint64, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<u64>,
+    /// Keep streaming: the reply carries no events, and `agent.sessions.events` notifications follow, the stored ones first. End it with terminal.unsubscribe.
+    #[prost(bool, tag = "3")]
+    pub follow: bool,
+    /// Without follow, the most events in the reply; default 1000, at most 10000.
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentText {
+    #[prost(string, tag = "1")]
+    pub text: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentToolCall {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(string, tag = "2")]
+    pub name: String,
+    #[prost(enumeration = "AgentToolStatus", tag = "3")]
+    #[serde(with = "agent_tool_status_json")]
+    pub status: i32,
+    /// The tool's input as JSON.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    /// Its output as text: the latest partial output, or the final one.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+/// The harness asks the user before going on. Answer with agent.sessions.approve or agent.sessions.deny.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentApprovalRequest {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(string, tag = "2")]
+    pub title: String,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Choices offered; empty for a yes or no question.
+    #[prost(string, repeated, tag = "4")]
+    pub options: Vec<String>,
+    /// The harness answers by itself after this.
+    #[prost(uint64, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_unix_ms: Option<u64>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentApprovalAnswer {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(bool, tag = "2")]
+    pub allowed: bool,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub option: Option<String>,
+    /// Who answered: owner:N, an app instance, or `dreamer` when the session closed first.
+    #[prost(string, tag = "4")]
+    pub by: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentPlanEntry {
+    #[prost(string, tag = "1")]
+    pub content: String,
+    /// pending, in_progress, or completed.
+    #[prost(string, tag = "2")]
+    pub status: String,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentPlan {
+    #[prost(message, repeated, tag = "1")]
+    pub entries: Vec<AgentPlanEntry>,
+}
+
+/// Tokens of the latest model response, as the harness reports them.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentUsage {
+    #[prost(uint64, tag = "1")]
+    pub input_tokens: u64,
+    #[prost(uint64, tag = "2")]
+    pub output_tokens: u64,
+    #[prost(uint64, tag = "3")]
+    pub cache_read_tokens: u64,
+    #[prost(uint64, tag = "4")]
+    pub cache_write_tokens: u64,
+    /// What the harness says it cost, in millionths of a US dollar.
+    #[prost(uint64, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_micro_usd: Option<u64>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentTurnEnd {
+    #[prost(enumeration = "AgentStopReason", tag = "1")]
+    #[serde(with = "agent_stop_reason_json")]
+    pub stop_reason: i32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentError {
+    #[prost(string, tag = "1")]
+    pub message: String,
+}
+
+/// The session changed state: the harness started, resumed, or ended, or the session closed.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSessionStatus {
+    #[prost(enumeration = "AgentSessionState", tag = "1")]
+    #[serde(with = "agent_session_state_json")]
+    pub state: i32,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness_session: Option<String>,
+}
+
+/// One normalised event, the same whatever the harness. Its shape follows the Agent Client Protocol: text and thinking arrive as deltas, a tool call as started, updated, and finished records with one id.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSessionEvent {
+    /// Its place in the session's transcript, from 1.
+    #[prost(uint64, tag = "1")]
+    pub seq: u64,
+    #[prost(uint64, tag = "2")]
+    pub unix_ms: u64,
+    #[prost(
+        oneof = "agent_session_event::Kind",
+        tags = "10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20"
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<agent_session_event::Kind>,
+}
+
+pub mod agent_session_event {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Clone, PartialEq, ::prost::Oneof, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Kind {
+        #[prost(message, tag = "10")]
+        UserMessage(super::AgentText),
+        #[prost(message, tag = "11")]
+        TextDelta(super::AgentText),
+        #[prost(message, tag = "12")]
+        ThinkingDelta(super::AgentText),
+        #[prost(message, tag = "13")]
+        ToolCall(super::AgentToolCall),
+        #[prost(message, tag = "14")]
+        ApprovalRequest(super::AgentApprovalRequest),
+        #[prost(message, tag = "15")]
+        ApprovalAnswer(super::AgentApprovalAnswer),
+        #[prost(message, tag = "16")]
+        Plan(super::AgentPlan),
+        #[prost(message, tag = "17")]
+        Usage(super::AgentUsage),
+        #[prost(message, tag = "18")]
+        TurnEnd(super::AgentTurnEnd),
+        #[prost(message, tag = "19")]
+        Error(super::AgentError),
+        #[prost(message, tag = "20")]
+        Status(super::AgentSessionStatus),
+    }
+}
+
+/// The reply to agent.sessions.events, and the payload of each `agent.sessions.events` notification.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSessionEvents {
+    #[prost(string, tag = "1")]
+    pub session: String,
+    /// When following.
+    #[prost(uint64, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscription: Option<u64>,
+    #[prost(message, repeated, tag = "3")]
+    pub events: Vec<AgentSessionEvent>,
+    /// Without follow: more events follow the last one; ask again after it.
+    #[prost(bool, tag = "4")]
+    pub more: bool,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -4213,6 +4689,15 @@ pub mod method {
     pub const COLLECT_STOP: &str = "collect.stop";
     pub const DRAWER_TOGGLE: &str = "drawer.toggle";
     pub const DRAWER_STATUS: &str = "drawer.status";
+    pub const AGENT_SESSIONS_CREATE: &str = "agent.sessions.create";
+    pub const AGENT_SESSIONS_SEND: &str = "agent.sessions.send";
+    pub const AGENT_SESSIONS_EVENTS: &str = "agent.sessions.events";
+    pub const AGENT_SESSIONS_CANCEL: &str = "agent.sessions.cancel";
+    pub const AGENT_SESSIONS_APPROVE: &str = "agent.sessions.approve";
+    pub const AGENT_SESSIONS_DENY: &str = "agent.sessions.deny";
+    pub const AGENT_SESSIONS_LIST: &str = "agent.sessions.list";
+    pub const AGENT_SESSIONS_RESUME: &str = "agent.sessions.resume";
+    pub const AGENT_SESSIONS_CLOSE: &str = "agent.sessions.close";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4750,6 +5235,69 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: false,
         doc: "A session's harness drawer: whether it exists, where it is, and whether it is shown and focused.",
     },
+    MethodInfo {
+        name: "agent.sessions.create",
+        params: "AgentSessionCreate",
+        result: "AgentSession",
+        mutation: true,
+        doc: "Start an agent session: a harness process of the daemon, bound to a grant within the caller's.",
+    },
+    MethodInfo {
+        name: "agent.sessions.send",
+        params: "AgentSessionSend",
+        result: "AgentSession",
+        mutation: true,
+        doc: "Send a prompt; events follow on agent.sessions.events. A detached session is resumed first.",
+    },
+    MethodInfo {
+        name: "agent.sessions.events",
+        params: "AgentSessionEventsQuery",
+        result: "AgentSessionEvents",
+        mutation: false,
+        doc: "A session's normalised events from its transcript, and with follow every later one as it happens.",
+    },
+    MethodInfo {
+        name: "agent.sessions.cancel",
+        params: "AgentSessionRef",
+        result: "AgentSession",
+        mutation: true,
+        doc: "Stop the running turn; it ends with stop reason cancelled.",
+    },
+    MethodInfo {
+        name: "agent.sessions.approve",
+        params: "AgentSessionAnswer",
+        result: "AgentSession",
+        mutation: true,
+        doc: "Allow what a pending approval request asks.",
+    },
+    MethodInfo {
+        name: "agent.sessions.deny",
+        params: "AgentSessionAnswer",
+        result: "AgentSession",
+        mutation: true,
+        doc: "Refuse what a pending approval request asks.",
+    },
+    MethodInfo {
+        name: "agent.sessions.list",
+        params: "Empty",
+        result: "AgentSessionList",
+        mutation: false,
+        doc: "Sessions this caller may see, open and closed, from the state directory.",
+    },
+    MethodInfo {
+        name: "agent.sessions.resume",
+        params: "AgentSessionRef",
+        result: "AgentSession",
+        mutation: true,
+        doc: "Start a detached session's harness again on the harness's own session.",
+    },
+    MethodInfo {
+        name: "agent.sessions.close",
+        params: "AgentSessionRef",
+        result: "AgentSession",
+        mutation: true,
+        doc: "End the harness process and close the session; its transcript stays.",
+    },
 ];
 
 /// A typed request for one method.
@@ -4830,6 +5378,15 @@ pub enum Request {
     CollectStop(CollectRef),
     DrawerToggle(DrawerRequest),
     DrawerStatus(DrawerRequest),
+    AgentSessionsCreate(AgentSessionCreate),
+    AgentSessionsSend(AgentSessionSend),
+    AgentSessionsEvents(AgentSessionEventsQuery),
+    AgentSessionsCancel(AgentSessionRef),
+    AgentSessionsApprove(AgentSessionAnswer),
+    AgentSessionsDeny(AgentSessionAnswer),
+    AgentSessionsList(Empty),
+    AgentSessionsResume(AgentSessionRef),
+    AgentSessionsClose(AgentSessionRef),
 }
 
 impl Request {
@@ -4910,6 +5467,15 @@ impl Request {
             Self::CollectStop(_) => "collect.stop",
             Self::DrawerToggle(_) => "drawer.toggle",
             Self::DrawerStatus(_) => "drawer.status",
+            Self::AgentSessionsCreate(_) => "agent.sessions.create",
+            Self::AgentSessionsSend(_) => "agent.sessions.send",
+            Self::AgentSessionsEvents(_) => "agent.sessions.events",
+            Self::AgentSessionsCancel(_) => "agent.sessions.cancel",
+            Self::AgentSessionsApprove(_) => "agent.sessions.approve",
+            Self::AgentSessionsDeny(_) => "agent.sessions.deny",
+            Self::AgentSessionsList(_) => "agent.sessions.list",
+            Self::AgentSessionsResume(_) => "agent.sessions.resume",
+            Self::AgentSessionsClose(_) => "agent.sessions.close",
         }
     }
 
@@ -4991,6 +5557,15 @@ impl Request {
             Self::CollectStop(v) => ::prost::Message::encode_to_vec(v),
             Self::DrawerToggle(v) => ::prost::Message::encode_to_vec(v),
             Self::DrawerStatus(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsCreate(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsSend(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsEvents(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsCancel(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsApprove(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsDeny(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsResume(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsClose(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -5079,6 +5654,27 @@ impl Request {
             "collect.stop" => Ok(Self::CollectStop(::prost::Message::decode(bytes)?)),
             "drawer.toggle" => Ok(Self::DrawerToggle(::prost::Message::decode(bytes)?)),
             "drawer.status" => Ok(Self::DrawerStatus(::prost::Message::decode(bytes)?)),
+            "agent.sessions.create" => {
+                Ok(Self::AgentSessionsCreate(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.send" => Ok(Self::AgentSessionsSend(::prost::Message::decode(bytes)?)),
+            "agent.sessions.events" => {
+                Ok(Self::AgentSessionsEvents(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.cancel" => {
+                Ok(Self::AgentSessionsCancel(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.approve" => {
+                Ok(Self::AgentSessionsApprove(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.deny" => Ok(Self::AgentSessionsDeny(::prost::Message::decode(bytes)?)),
+            "agent.sessions.list" => Ok(Self::AgentSessionsList(::prost::Message::decode(bytes)?)),
+            "agent.sessions.resume" => {
+                Ok(Self::AgentSessionsResume(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.close" => {
+                Ok(Self::AgentSessionsClose(::prost::Message::decode(bytes)?))
+            }
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5160,6 +5756,15 @@ impl Request {
             Self::CollectStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DrawerToggle(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DrawerStatus(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsCreate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsSend(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsEvents(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsApprove(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsDeny(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsResume(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsClose(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -5244,6 +5849,25 @@ impl Request {
             "collect.stop" => Ok(Self::CollectStop(serde_json::from_value(value)?)),
             "drawer.toggle" => Ok(Self::DrawerToggle(serde_json::from_value(value)?)),
             "drawer.status" => Ok(Self::DrawerStatus(serde_json::from_value(value)?)),
+            "agent.sessions.create" => {
+                Ok(Self::AgentSessionsCreate(serde_json::from_value(value)?))
+            }
+            "agent.sessions.send" => Ok(Self::AgentSessionsSend(serde_json::from_value(value)?)),
+            "agent.sessions.events" => {
+                Ok(Self::AgentSessionsEvents(serde_json::from_value(value)?))
+            }
+            "agent.sessions.cancel" => {
+                Ok(Self::AgentSessionsCancel(serde_json::from_value(value)?))
+            }
+            "agent.sessions.approve" => {
+                Ok(Self::AgentSessionsApprove(serde_json::from_value(value)?))
+            }
+            "agent.sessions.deny" => Ok(Self::AgentSessionsDeny(serde_json::from_value(value)?)),
+            "agent.sessions.list" => Ok(Self::AgentSessionsList(serde_json::from_value(value)?)),
+            "agent.sessions.resume" => {
+                Ok(Self::AgentSessionsResume(serde_json::from_value(value)?))
+            }
+            "agent.sessions.close" => Ok(Self::AgentSessionsClose(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5327,6 +5951,15 @@ pub enum Response {
     CollectStop(CollectorStatus),
     DrawerToggle(DrawerStatus),
     DrawerStatus(DrawerStatus),
+    AgentSessionsCreate(AgentSession),
+    AgentSessionsSend(AgentSession),
+    AgentSessionsEvents(AgentSessionEvents),
+    AgentSessionsCancel(AgentSession),
+    AgentSessionsApprove(AgentSession),
+    AgentSessionsDeny(AgentSession),
+    AgentSessionsList(AgentSessionList),
+    AgentSessionsResume(AgentSession),
+    AgentSessionsClose(AgentSession),
 }
 
 impl Response {
@@ -5407,6 +6040,15 @@ impl Response {
             Self::CollectStop(_) => "collect.stop",
             Self::DrawerToggle(_) => "drawer.toggle",
             Self::DrawerStatus(_) => "drawer.status",
+            Self::AgentSessionsCreate(_) => "agent.sessions.create",
+            Self::AgentSessionsSend(_) => "agent.sessions.send",
+            Self::AgentSessionsEvents(_) => "agent.sessions.events",
+            Self::AgentSessionsCancel(_) => "agent.sessions.cancel",
+            Self::AgentSessionsApprove(_) => "agent.sessions.approve",
+            Self::AgentSessionsDeny(_) => "agent.sessions.deny",
+            Self::AgentSessionsList(_) => "agent.sessions.list",
+            Self::AgentSessionsResume(_) => "agent.sessions.resume",
+            Self::AgentSessionsClose(_) => "agent.sessions.close",
         }
     }
 
@@ -5488,6 +6130,15 @@ impl Response {
             Self::CollectStop(v) => ::prost::Message::encode_to_vec(v),
             Self::DrawerToggle(v) => ::prost::Message::encode_to_vec(v),
             Self::DrawerStatus(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsCreate(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsSend(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsEvents(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsCancel(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsApprove(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsDeny(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsResume(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsClose(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -5576,6 +6227,27 @@ impl Response {
             "collect.stop" => Ok(Self::CollectStop(::prost::Message::decode(bytes)?)),
             "drawer.toggle" => Ok(Self::DrawerToggle(::prost::Message::decode(bytes)?)),
             "drawer.status" => Ok(Self::DrawerStatus(::prost::Message::decode(bytes)?)),
+            "agent.sessions.create" => {
+                Ok(Self::AgentSessionsCreate(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.send" => Ok(Self::AgentSessionsSend(::prost::Message::decode(bytes)?)),
+            "agent.sessions.events" => {
+                Ok(Self::AgentSessionsEvents(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.cancel" => {
+                Ok(Self::AgentSessionsCancel(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.approve" => {
+                Ok(Self::AgentSessionsApprove(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.deny" => Ok(Self::AgentSessionsDeny(::prost::Message::decode(bytes)?)),
+            "agent.sessions.list" => Ok(Self::AgentSessionsList(::prost::Message::decode(bytes)?)),
+            "agent.sessions.resume" => {
+                Ok(Self::AgentSessionsResume(::prost::Message::decode(bytes)?))
+            }
+            "agent.sessions.close" => {
+                Ok(Self::AgentSessionsClose(::prost::Message::decode(bytes)?))
+            }
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5657,6 +6329,15 @@ impl Response {
             Self::CollectStop(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DrawerToggle(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DrawerStatus(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsCreate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsSend(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsEvents(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsCancel(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsApprove(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsDeny(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsResume(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsClose(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -5741,6 +6422,25 @@ impl Response {
             "collect.stop" => Ok(Self::CollectStop(serde_json::from_value(value)?)),
             "drawer.toggle" => Ok(Self::DrawerToggle(serde_json::from_value(value)?)),
             "drawer.status" => Ok(Self::DrawerStatus(serde_json::from_value(value)?)),
+            "agent.sessions.create" => {
+                Ok(Self::AgentSessionsCreate(serde_json::from_value(value)?))
+            }
+            "agent.sessions.send" => Ok(Self::AgentSessionsSend(serde_json::from_value(value)?)),
+            "agent.sessions.events" => {
+                Ok(Self::AgentSessionsEvents(serde_json::from_value(value)?))
+            }
+            "agent.sessions.cancel" => {
+                Ok(Self::AgentSessionsCancel(serde_json::from_value(value)?))
+            }
+            "agent.sessions.approve" => {
+                Ok(Self::AgentSessionsApprove(serde_json::from_value(value)?))
+            }
+            "agent.sessions.deny" => Ok(Self::AgentSessionsDeny(serde_json::from_value(value)?)),
+            "agent.sessions.list" => Ok(Self::AgentSessionsList(serde_json::from_value(value)?)),
+            "agent.sessions.resume" => {
+                Ok(Self::AgentSessionsResume(serde_json::from_value(value)?))
+            }
+            "agent.sessions.close" => Ok(Self::AgentSessionsClose(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6112,6 +6812,51 @@ pub trait Service: Sync {
         &self,
         params: DrawerRequest,
     ) -> impl ::core::future::Future<Output = Result<DrawerStatus, RpcError>> + Send;
+    /// Start an agent session: a harness process of the daemon, bound to a grant within the caller's.
+    fn agent_sessions_create(
+        &self,
+        params: AgentSessionCreate,
+    ) -> impl ::core::future::Future<Output = Result<AgentSession, RpcError>> + Send;
+    /// Send a prompt; events follow on agent.sessions.events. A detached session is resumed first.
+    fn agent_sessions_send(
+        &self,
+        params: AgentSessionSend,
+    ) -> impl ::core::future::Future<Output = Result<AgentSession, RpcError>> + Send;
+    /// A session's normalised events from its transcript, and with follow every later one as it happens.
+    fn agent_sessions_events(
+        &self,
+        params: AgentSessionEventsQuery,
+    ) -> impl ::core::future::Future<Output = Result<AgentSessionEvents, RpcError>> + Send;
+    /// Stop the running turn; it ends with stop reason cancelled.
+    fn agent_sessions_cancel(
+        &self,
+        params: AgentSessionRef,
+    ) -> impl ::core::future::Future<Output = Result<AgentSession, RpcError>> + Send;
+    /// Allow what a pending approval request asks.
+    fn agent_sessions_approve(
+        &self,
+        params: AgentSessionAnswer,
+    ) -> impl ::core::future::Future<Output = Result<AgentSession, RpcError>> + Send;
+    /// Refuse what a pending approval request asks.
+    fn agent_sessions_deny(
+        &self,
+        params: AgentSessionAnswer,
+    ) -> impl ::core::future::Future<Output = Result<AgentSession, RpcError>> + Send;
+    /// Sessions this caller may see, open and closed, from the state directory.
+    fn agent_sessions_list(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<AgentSessionList, RpcError>> + Send;
+    /// Start a detached session's harness again on the harness's own session.
+    fn agent_sessions_resume(
+        &self,
+        params: AgentSessionRef,
+    ) -> impl ::core::future::Future<Output = Result<AgentSession, RpcError>> + Send;
+    /// End the harness process and close the session; its transcript stays.
+    fn agent_sessions_close(
+        &self,
+        params: AgentSessionRef,
+    ) -> impl ::core::future::Future<Output = Result<AgentSession, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -6267,6 +7012,42 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::CollectStop(p) => service.collect_stop(p).await.map(Response::CollectStop),
         Request::DrawerToggle(p) => service.drawer_toggle(p).await.map(Response::DrawerToggle),
         Request::DrawerStatus(p) => service.drawer_status(p).await.map(Response::DrawerStatus),
+        Request::AgentSessionsCreate(p) => service
+            .agent_sessions_create(p)
+            .await
+            .map(Response::AgentSessionsCreate),
+        Request::AgentSessionsSend(p) => service
+            .agent_sessions_send(p)
+            .await
+            .map(Response::AgentSessionsSend),
+        Request::AgentSessionsEvents(p) => service
+            .agent_sessions_events(p)
+            .await
+            .map(Response::AgentSessionsEvents),
+        Request::AgentSessionsCancel(p) => service
+            .agent_sessions_cancel(p)
+            .await
+            .map(Response::AgentSessionsCancel),
+        Request::AgentSessionsApprove(p) => service
+            .agent_sessions_approve(p)
+            .await
+            .map(Response::AgentSessionsApprove),
+        Request::AgentSessionsDeny(p) => service
+            .agent_sessions_deny(p)
+            .await
+            .map(Response::AgentSessionsDeny),
+        Request::AgentSessionsList(p) => service
+            .agent_sessions_list(p)
+            .await
+            .map(Response::AgentSessionsList),
+        Request::AgentSessionsResume(p) => service
+            .agent_sessions_resume(p)
+            .await
+            .map(Response::AgentSessionsResume),
+        Request::AgentSessionsClose(p) => service
+            .agent_sessions_close(p)
+            .await
+            .map(Response::AgentSessionsClose),
     }
 }
 
@@ -6286,6 +7067,8 @@ pub mod topic {
     pub const MESSAGES_DELIVER: &str = "messages.deliver";
     /// Output of a taps.subscribe subscription, for one pane.
     pub const TAPS_DATA: &str = "taps.data";
+    /// Events of a followed agent session, in order.
+    pub const AGENT_SESSIONS_EVENTS: &str = "agent.sessions.events";
 }
 
 /// Something the daemon pushed, typed by its topic.
@@ -6298,6 +7081,7 @@ pub enum Notification {
     EventsBatch(EventBatch),
     MessagesDeliver(MessageDelivery),
     TapsData(TapData),
+    AgentSessionsEvents(AgentSessionEvents),
 }
 
 impl Notification {
@@ -6310,6 +7094,7 @@ impl Notification {
             Self::EventsBatch(_) => "events.batch",
             Self::MessagesDeliver(_) => "messages.deliver",
             Self::TapsData(_) => "taps.data",
+            Self::AgentSessionsEvents(_) => "agent.sessions.events",
         }
     }
 
@@ -6322,6 +7107,7 @@ impl Notification {
             Self::EventsBatch(v) => ::prost::Message::encode_to_vec(v),
             Self::MessagesDeliver(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsData(v) => ::prost::Message::encode_to_vec(v),
+            Self::AgentSessionsEvents(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -6334,6 +7120,9 @@ impl Notification {
             "events.batch" => Ok(Self::EventsBatch(::prost::Message::decode(bytes)?)),
             "messages.deliver" => Ok(Self::MessagesDeliver(::prost::Message::decode(bytes)?)),
             "taps.data" => Ok(Self::TapsData(::prost::Message::decode(bytes)?)),
+            "agent.sessions.events" => {
+                Ok(Self::AgentSessionsEvents(::prost::Message::decode(bytes)?))
+            }
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6347,6 +7136,7 @@ impl Notification {
             Self::EventsBatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MessagesDeliver(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsData(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AgentSessionsEvents(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -6359,6 +7149,9 @@ impl Notification {
             "events.batch" => Ok(Self::EventsBatch(serde_json::from_value(value)?)),
             "messages.deliver" => Ok(Self::MessagesDeliver(serde_json::from_value(value)?)),
             "taps.data" => Ok(Self::TapsData(serde_json::from_value(value)?)),
+            "agent.sessions.events" => {
+                Ok(Self::AgentSessionsEvents(serde_json::from_value(value)?))
+            }
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }

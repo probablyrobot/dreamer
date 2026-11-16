@@ -52,7 +52,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn random_hex(bytes: usize) -> Result<String, RpcError> {
+pub(crate) fn random_hex(bytes: usize) -> Result<String, RpcError> {
     let mut buf = vec![0u8; bytes];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut buf))
@@ -61,7 +61,7 @@ fn random_hex(bytes: usize) -> Result<String, RpcError> {
 }
 
 /// Compare without stopping at the first difference.
-fn same(a: &str, b: &str) -> bool {
+pub(crate) fn same(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
@@ -79,7 +79,7 @@ fn parent_of(pid: u32) -> Option<u32> {
 }
 
 /// Whether `pid` is `ancestor` or descends from it.
-fn descends_from(pid: u32, ancestor: u32) -> bool {
+pub(crate) fn descends_from(pid: u32, ancestor: u32) -> bool {
     let mut p = pid;
     for _ in 0..64 {
         if p == ancestor {

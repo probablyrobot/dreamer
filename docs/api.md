@@ -103,5 +103,7 @@ lock refuses removing or retyping a topic within a major version.
 
 `api::LUAU_MODULE` evaluates to a function. The host calls it with its own
 `call(method, params)` function and gets back a frozen `dreamer` table with
-one function per method, for example `dreamer.actions.submit{...}`. Records
+one function per method, for example `dreamer.actions.submit{...}`. A
+method named `service.group.name` sits in a nested table:
+`dreamer.agent.sessions.create{...}`. Records
 are plain tables with the same field names as JSON.

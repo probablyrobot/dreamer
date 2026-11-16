@@ -18,6 +18,34 @@ pub const LUAU_MODULE: &str = include_str!("../generated/dreamer.luau");
 /// `docs/grants.md`.
 pub const MANAGE_FILTERS: &str = "filters.manage";
 
+/// The methods an agent's grant holds at `level` (an [`ActLevel`] number):
+/// the terminal tools that observe at every level, and those that act from
+/// `own` up. See `docs/grants.md`.
+pub fn agent_methods(level: i32) -> Vec<String> {
+    let mut m = vec![
+        method::TMUX_TOPOLOGY,
+        method::TERMINAL_LIST,
+        method::TERMINAL_READ,
+        method::TERMINAL_QUERY,
+        method::TERMINAL_WATCH,
+        method::JOBS_GET,
+        method::JOBS_LIST,
+        method::ACTIONS_GET,
+        method::ACTIONS_LIST,
+        method::AGENTS_RUNS,
+    ];
+    if level >= ActLevel::Own as i32 {
+        m.extend([
+            method::TERMINAL_INPUT,
+            method::TERMINAL_RUN,
+            method::ACTIONS_SUBMIT,
+            method::JOBS_START,
+            method::JOBS_CANCEL,
+        ]);
+    }
+    m.into_iter().map(str::to_owned).collect()
+}
+
 /// Standard JSON-RPC 2.0 codes, plus Dreamer's own in the server range.
 pub mod code {
     pub const PARSE_ERROR: i32 = -32700;

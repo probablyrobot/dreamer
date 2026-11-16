@@ -49,6 +49,7 @@ mod mcp;
 mod profile;
 mod remote;
 mod service;
+mod sessions;
 
 use std::process::ExitCode;
 
@@ -87,6 +88,7 @@ const USAGE: &str = "usage:
   dream agents pi [ARGS...] | dream agents profile init|status|log|diff|revert|commit|check   (its profile)
   dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
   dream agents providers [--json]
+  dream agents sessions [--json] | create [--harness H] [--cwd DIR] | send ID TEXT [--wait] | events ID [--follow] | approve|deny ID APPROVAL | cancel|resume|close ID
   dream agents ask [--provider claude|codex] [--pane %N]... [--all-panes] [--no-tools] [--timeout S] -- PROMPT
   dream jobs [--json] | start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...] | cancel ID | artifacts ID
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME

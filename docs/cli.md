@@ -178,6 +178,18 @@ to run on your own login, and `dream agents ask [options] -- PROMPT` runs
 a prompt on one of them with Dreamer's tools. See
 [providers.md](providers.md).
 
+`dream agents sessions` works with agent sessions in the daemon (see
+[agents.md](agents.md#sessions)):
+
+| Command | What it does |
+| --- | --- |
+| `dream agents sessions [--json]` | List sessions, open and closed |
+| `dream agents sessions create [--harness H] [--cwd DIR] [--model M] [--name N] [--json]` | Start a session; the directory defaults to the current one |
+| `dream agents sessions send ID TEXT [--wait]` | Send a prompt; with `--wait`, print the turn's events until it ends |
+| `dream agents sessions events ID [--after N] [--follow] [--json]` | Print the transcript; with `--follow`, keep printing new events |
+| `dream agents sessions approve ID APPROVAL [--option O]`, `deny ID APPROVAL` | Answer an approval request |
+| `dream agents sessions cancel ID`, `resume ID`, `close ID` | Stop the running turn, start a detached session's harness again, or close the session |
+
 ## Jobs
 
 `dream jobs` lists jobs; `dream jobs start [--cwd DIR] [--name NAME] --

@@ -144,6 +144,59 @@
         ],
         "type": "string"
       },
+      "AgentApprovalAnswer": {
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "by": {
+            "description": "Who answered: owner:N, an app instance, or `dreamer` when the session closed first.",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "option": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentApprovalRequest": {
+        "description": "The harness asks the user before going on. Answer with agent.sessions.approve or agent.sessions.deny.",
+        "properties": {
+          "expires_unix_ms": {
+            "description": "The harness answers by itself after this.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "options": {
+            "description": "Choices offered; empty for a yes or no question.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentError": {
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "AgentEvent": {
         "description": "One provider hook report, as dream hook sends it.",
         "properties": {
@@ -168,6 +221,32 @@
             "type": "string"
           },
           "session_id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentPlan": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/AgentPlanEntry"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "AgentPlanEntry": {
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string"
+          },
+          "status": {
+            "description": "pending, in_progress, or completed.",
             "type": "string"
           }
         },
@@ -272,6 +351,341 @@
           "provider": {
             "description": "claude or codex.",
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSession": {
+        "properties": {
+          "created_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "detail": {
+            "description": "Why it is detached, or what went wrong at start.",
+            "type": "string"
+          },
+          "grant": {
+            "$ref": "#/components/schemas/Grant",
+            "description": "The session's grant: the outer limit for everything its harness does through Dreamer."
+          },
+          "harness": {
+            "type": "string"
+          },
+          "harness_session": {
+            "description": "The harness's own session id, kept for resume.",
+            "type": "string"
+          },
+          "harness_version": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_seq": {
+            "description": "The newest event's sequence number.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pid": {
+            "description": "The harness process while it runs.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AgentSessionState"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSessionAnswer": {
+        "properties": {
+          "approval": {
+            "description": "The approval_request event's id.",
+            "type": "string"
+          },
+          "option": {
+            "description": "For a request with options, the one chosen when approving.",
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSessionCreate": {
+        "properties": {
+          "cwd": {
+            "description": "The harness's working directory; default the daemon's home directory.",
+            "type": "string"
+          },
+          "grant": {
+            "$ref": "#/components/schemas/Grant",
+            "description": "What the session may do through Dreamer, within the caller's own grant. Default: the terminal tools on every pane at the observe level."
+          },
+          "harness": {
+            "description": "A harness from the agents settings; default agents.default.",
+            "type": "string"
+          },
+          "model": {
+            "description": "Default agents.<harness>.model, else the harness's own default.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSessionEvent": {
+        "description": "One normalised event, the same whatever the harness. Its shape follows the Agent Client Protocol: text and thinking arrive as deltas, a tool call as started, updated, and finished records with one id.",
+        "properties": {
+          "kind": {
+            "maxProperties": 1,
+            "minProperties": 1,
+            "properties": {
+              "approval_answer": {
+                "$ref": "#/components/schemas/AgentApprovalAnswer"
+              },
+              "approval_request": {
+                "$ref": "#/components/schemas/AgentApprovalRequest"
+              },
+              "error": {
+                "$ref": "#/components/schemas/AgentError"
+              },
+              "plan": {
+                "$ref": "#/components/schemas/AgentPlan"
+              },
+              "status": {
+                "$ref": "#/components/schemas/AgentSessionStatus"
+              },
+              "text_delta": {
+                "$ref": "#/components/schemas/AgentText"
+              },
+              "thinking_delta": {
+                "$ref": "#/components/schemas/AgentText"
+              },
+              "tool_call": {
+                "$ref": "#/components/schemas/AgentToolCall"
+              },
+              "turn_end": {
+                "$ref": "#/components/schemas/AgentTurnEnd"
+              },
+              "usage": {
+                "$ref": "#/components/schemas/AgentUsage"
+              },
+              "user_message": {
+                "$ref": "#/components/schemas/AgentText"
+              }
+            },
+            "type": "object"
+          },
+          "seq": {
+            "description": "Its place in the session's transcript, from 1.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSessionEvents": {
+        "description": "The reply to agent.sessions.events, and the payload of each `agent.sessions.events` notification.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/AgentSessionEvent"
+            },
+            "type": "array"
+          },
+          "more": {
+            "description": "Without follow: more events follow the last one; ask again after it.",
+            "type": "boolean"
+          },
+          "session": {
+            "type": "string"
+          },
+          "subscription": {
+            "description": "When following.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSessionEventsQuery": {
+        "properties": {
+          "after": {
+            "description": "Events after this sequence number; default from the start of the transcript.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "follow": {
+            "description": "Keep streaming: the reply carries no events, and `agent.sessions.events` notifications follow, the stored ones first. End it with terminal.unsubscribe.",
+            "type": "boolean"
+          },
+          "limit": {
+            "description": "Without follow, the most events in the reply; default 1000, at most 10000.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSessionList": {
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/AgentSession"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSessionRef": {
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSessionSend": {
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "text": {
+            "description": "The prompt. Sent while a turn runs, it waits for that turn to end.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentSessionState": {
+        "enum": [
+          "unspecified",
+          "starting",
+          "idle",
+          "working",
+          "waiting",
+          "detached",
+          "closed"
+        ],
+        "type": "string"
+      },
+      "AgentSessionStatus": {
+        "description": "The session changed state: the harness started, resumed, or ended, or the session closed.",
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "harness_session": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AgentSessionState"
+          }
+        },
+        "type": "object"
+      },
+      "AgentStopReason": {
+        "enum": [
+          "unspecified",
+          "end_turn",
+          "cancelled",
+          "error"
+        ],
+        "type": "string"
+      },
+      "AgentText": {
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AgentToolCall": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "input": {
+            "description": "The tool's input as JSON.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "output": {
+            "description": "Its output as text: the latest partial output, or the final one.",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentToolStatus"
+          }
+        },
+        "type": "object"
+      },
+      "AgentToolStatus": {
+        "enum": [
+          "unspecified",
+          "started",
+          "updated",
+          "finished",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "AgentTurnEnd": {
+        "properties": {
+          "stop_reason": {
+            "$ref": "#/components/schemas/AgentStopReason"
+          }
+        },
+        "type": "object"
+      },
+      "AgentUsage": {
+        "description": "Tokens of the latest model response, as the harness reports them.",
+        "properties": {
+          "cache_read_tokens": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cost_micro_usd": {
+            "description": "What the harness says it cost, in millionths of a US dollar.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "input_tokens": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "output_tokens": {
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -4238,7 +4652,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.42"
+    "version": "1.43"
   },
   "methods": [
     {
@@ -6841,6 +7255,265 @@
       },
       "summary": "A session's harness drawer: whether it exists, where it is, and whether it is shown and focused.",
       "x-mutation": false
+    },
+    {
+      "name": "agent.sessions.create",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "A harness from the agents settings; default agents.default.",
+          "name": "harness",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "The harness's working directory; default the daemon's home directory.",
+          "name": "cwd",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "What the session may do through Dreamer, within the caller's own grant. Default: the terminal tools on every pane at the observe level.",
+          "name": "grant",
+          "schema": {
+            "$ref": "#/components/schemas/Grant"
+          }
+        },
+        {
+          "description": "Default agents.<harness>.model, else the harness's own default.",
+          "name": "model",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "name",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentSession"
+        }
+      },
+      "summary": "Start an agent session: a harness process of the daemon, bound to a grant within the caller's.",
+      "x-mutation": true
+    },
+    {
+      "name": "agent.sessions.send",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "The prompt. Sent while a turn runs, it waits for that turn to end.",
+          "name": "text",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentSession"
+        }
+      },
+      "summary": "Send a prompt; events follow on agent.sessions.events. A detached session is resumed first.",
+      "x-mutation": true
+    },
+    {
+      "name": "agent.sessions.events",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Events after this sequence number; default from the start of the transcript.",
+          "name": "after",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "Keep streaming: the reply carries no events, and `agent.sessions.events` notifications follow, the stored ones first. End it with terminal.unsubscribe.",
+          "name": "follow",
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Without follow, the most events in the reply; default 1000, at most 10000.",
+          "name": "limit",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentSessionEvents"
+        }
+      },
+      "summary": "A session's normalised events from its transcript, and with follow every later one as it happens.",
+      "x-mutation": false
+    },
+    {
+      "name": "agent.sessions.cancel",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentSession"
+        }
+      },
+      "summary": "Stop the running turn; it ends with stop reason cancelled.",
+      "x-mutation": true
+    },
+    {
+      "name": "agent.sessions.approve",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "The approval_request event's id.",
+          "name": "approval",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "For a request with options, the one chosen when approving.",
+          "name": "option",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentSession"
+        }
+      },
+      "summary": "Allow what a pending approval request asks.",
+      "x-mutation": true
+    },
+    {
+      "name": "agent.sessions.deny",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "The approval_request event's id.",
+          "name": "approval",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "For a request with options, the one chosen when approving.",
+          "name": "option",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentSession"
+        }
+      },
+      "summary": "Refuse what a pending approval request asks.",
+      "x-mutation": true
+    },
+    {
+      "name": "agent.sessions.list",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentSessionList"
+        }
+      },
+      "summary": "Sessions this caller may see, open and closed, from the state directory.",
+      "x-mutation": false
+    },
+    {
+      "name": "agent.sessions.resume",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentSession"
+        }
+      },
+      "summary": "Start a detached session's harness again on the harness's own session.",
+      "x-mutation": true
+    },
+    {
+      "name": "agent.sessions.close",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "session",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentSession"
+        }
+      },
+      "summary": "End the harness process and close the session; its transcript stays.",
+      "x-mutation": true
     }
   ],
   "openrpc": "1.3.2",
@@ -6893,6 +7566,13 @@
         "$ref": "#/components/schemas/TapData"
       },
       "summary": "Output of a taps.subscribe subscription, for one pane."
+    },
+    {
+      "name": "agent.sessions.events",
+      "params": {
+        "$ref": "#/components/schemas/AgentSessionEvents"
+      },
+      "summary": "Events of a followed agent session, in order."
     }
   ]
 }

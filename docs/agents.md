@@ -298,12 +298,134 @@ for.
 - `drawer.toggle` is for the user's own clients only: an app or agent
   grant cannot call it.
 
+## Sessions
+
+An agent session is a conversation with a harness that the daemon runs,
+for apps, scripts, and other headless use. It keeps running when no
+client is connected, and its transcript outlives the daemon. The
+`agent.sessions.*` methods of the API work with sessions; `dream agents
+sessions` does the same from a shell ([cli.md](cli.md#agent-runs)).
+
+| Method | What it does |
+| --- | --- |
+| `agent.sessions.create` | Start a session: the harness (default `agents.default`), its directory, a model, a name, and a grant |
+| `agent.sessions.send` | Send a prompt. Sent while a turn runs, it waits for that turn to end. A detached session is resumed first |
+| `agent.sessions.events` | The transcript after a sequence number; with `follow`, then every new event as it happens |
+| `agent.sessions.cancel` | Stop the running turn; it ends with stop reason `cancelled` |
+| `agent.sessions.approve`, `agent.sessions.deny` | Answer an approval request |
+| `agent.sessions.list` | Sessions, open and closed |
+| `agent.sessions.resume` | Start a detached (or closed) session's harness again |
+| `agent.sessions.close` | End the harness process; the transcript stays |
+
+Only pi runs sessions so far. Creating a session on `claude`, `codex`, or
+an ACP harness is refused with that reason.
+
+### Events
+
+Every harness's output becomes the same events, shaped after the Agent
+Client Protocol. Each has a sequence number (`seq`, from 1), a time, and
+one kind:
+
+| Kind | What it holds |
+| --- | --- |
+| `user_message` | A prompt that was sent |
+| `text_delta`, `thinking_delta` | Text and thinking, as they stream |
+| `tool_call` | One tool call's `id` and `name`, with `status` `started` (and its `input` as JSON), `updated` (partial `output`), then `finished` or `failed` (its `output`) |
+| `approval_request` | The harness asks before going on: an `id`, a `title`, a `message`, `options` to choose from (none for yes or no), and when it stops waiting |
+| `approval_answer` | How a request was answered, and by whom |
+| `plan` | The agent's plan entries |
+| `usage` | Tokens of the latest model response, and its cost when the harness reports one |
+| `turn_end` | The turn is over: `end_turn`, `cancelled`, or `error` |
+| `error` | What went wrong, in the harness's words |
+| `status` | The session's state changed (the harness started, resumed, or ended, or the session closed) |
+
+`agent.sessions.events` with `follow` replies first, then pushes
+`agent.sessions.events` notifications: the stored events after `after`,
+then each new one, in order and none missing. It ends with
+`terminal.unsubscribe`, or with a `terminal.end` notification when the
+session closes.
+
+A session's state is `starting`, `idle`, `working`, `waiting` (for an
+approval), `detached` (no harness runs), or `closed`.
+
+### Transcripts and restarts
+
+Each event is written to `<state dir>/sessions/<id>.jsonl`, one JSON
+object per line, before any client sees it. `<id>.json` beside it holds
+the session's harness, directory, model, grant, and the harness's own
+session (pi's session id and file). The state directory is
+`DREAMER_STATE_DIR`, then `$XDG_STATE_HOME/dreamer`, then
+`~/.local/state/dreamer`.
+
+When the daemon stops, it ends every harness, and its sessions become
+`detached` ("the daemon stopped"). After it starts again they are listed
+with their transcripts. Sending to a detached session, or resuming it,
+starts the harness again on its own session, so the conversation goes on
+where it was. pi keeps a session on disk once it has a message; a session
+that never had one starts afresh.
+
+### The harness process
+
+- A child process of the daemon, in its own process group, started in the
+  session's directory. Closing the session closes its input, then sends
+  SIGTERM to its group, then SIGKILL.
+- Its environment is the daemon's, without `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, or `CODEX_API_KEY`, so it uses
+  its own login only. It also gets `DREAMER_RUNTIME_DIR`,
+  `DREAMER_SESSION_ID`, and `DREAMER_SESSION_TICKET` (see below).
+- pi runs as `pi --mode rpc` (plus `--model` when one is set, and
+  `--session <file>` to resume), with `PI_CODING_AGENT_DIR` set to its
+  agent directory and `PI_SKIP_VERSION_CHECK=1`.
+
+**Starting checks the harness.** Dreamer sends pi `get_state` and `abort`
+before the session counts as started. A pi that refuses either, or whose
+`get_state` has no session id, is not used, and the error names the pi
+version and the command it lacks. Dreamer uses these parts of pi's RPC
+mode:
+
+| Direction | Records |
+| --- | --- |
+| To pi | `get_state`, `abort`, `prompt` (with `streamingBehavior: followUp` while a run is going), `extension_ui_response` |
+| From pi | `response`, `agent_start`, `agent_settled`, `message_update` (`text_delta`, `thinking_delta`, `toolcall_end`), `message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `auto_retry_end`, `compaction_end`, `extension_error`, `extension_ui_request` |
+
+pi's `confirm` and `select` dialogs become approval requests. Its `input`
+and `editor` dialogs, which a session has no place for, are dismissed.
+pi has no plan of its own, so pi sessions have no `plan` events.
+
+### Grants
+
+Each session holds a grant (see [grants.md](grants.md)):
+
+- It must be within the grant of the connection that creates it. Without
+  one, it is the terminal tools on every pane at the `observe` level.
+- It never holds the owner grant, `agent.*`, `apps.*`, or `approvals.*`:
+  a harness neither starts sessions nor answers approvals.
+- A program the harness starts reaches Dreamer with that grant: it calls
+  `apps.register` with launch id `session:<id>` and the contents of the
+  file `DREAMER_SESSION_TICKET` names. The daemon checks that the calling
+  process descends from the harness. `dream mcp` does this by itself when
+  those variables are set.
+- A caller that is not the owner sees and acts on only the sessions it
+  created. A session's own connection never answers its approval
+  requests.
+
+The harness runs with your privileges, like any program you start; the
+grant limits what it does through Dreamer, not what it does on its own.
+
+### Contract test
+
+`crates/providers/tests/pi_session.rs` drives the adapter against a
+scripted stand-in for pi (`crates/providers/testdata/fake-pi`), so it
+needs no model or login. Its `pi_contract` test runs against a real pi
+when `DREAMER_PI_CONTRACT` names the executable: the start check, pi's
+version, resuming a kept session with `--session`, and closing. It sends
+no prompt, so it calls no model.
+
 ## Not yet
 
 - The daily check for a newer pi release; `dream agents update` runs it
   by hand.
-- Starting sessions with the configured harness. The settings are parsed
-  and checked, and take effect for sessions started from them;
-  `dream agents pi` starts pi with them by hand.
 - Collector tools follow the daemon's `collect.*` methods; their
   parameters are passed through as the agent gives them.
+- Sessions over Claude Code, Codex, and ACP harnesses.
+- Running the pi contract test in CI against each new pi release.

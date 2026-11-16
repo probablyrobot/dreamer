@@ -361,6 +361,57 @@ impl Service for Fixed {
     async fn hosts_call(&self, _: api::HostCall) -> Result<api::HostReply, RpcError> {
         Ok(api::HostReply::default())
     }
+    async fn agent_sessions_create(
+        &self,
+        _: api::AgentSessionCreate,
+    ) -> Result<api::AgentSession, RpcError> {
+        Ok(api::AgentSession::default())
+    }
+    async fn agent_sessions_send(
+        &self,
+        _: api::AgentSessionSend,
+    ) -> Result<api::AgentSession, RpcError> {
+        Ok(api::AgentSession::default())
+    }
+    async fn agent_sessions_events(
+        &self,
+        _: api::AgentSessionEventsQuery,
+    ) -> Result<api::AgentSessionEvents, RpcError> {
+        Ok(api::AgentSessionEvents::default())
+    }
+    async fn agent_sessions_cancel(
+        &self,
+        _: api::AgentSessionRef,
+    ) -> Result<api::AgentSession, RpcError> {
+        Ok(api::AgentSession::default())
+    }
+    async fn agent_sessions_approve(
+        &self,
+        _: api::AgentSessionAnswer,
+    ) -> Result<api::AgentSession, RpcError> {
+        Ok(api::AgentSession::default())
+    }
+    async fn agent_sessions_deny(
+        &self,
+        _: api::AgentSessionAnswer,
+    ) -> Result<api::AgentSession, RpcError> {
+        Ok(api::AgentSession::default())
+    }
+    async fn agent_sessions_list(&self, _: Empty) -> Result<api::AgentSessionList, RpcError> {
+        Ok(api::AgentSessionList::default())
+    }
+    async fn agent_sessions_resume(
+        &self,
+        _: api::AgentSessionRef,
+    ) -> Result<api::AgentSession, RpcError> {
+        Ok(api::AgentSession::default())
+    }
+    async fn agent_sessions_close(
+        &self,
+        _: api::AgentSessionRef,
+    ) -> Result<api::AgentSession, RpcError> {
+        Ok(api::AgentSession::default())
+    }
 }
 
 #[test]
@@ -436,9 +487,11 @@ fn the_luau_module_routes_every_method_through_the_host_call() {
         .expect("script");
     let mut seen = Vec::new();
     for m in METHODS {
-        let (service, name) = m.name.split_once('.').expect("service.name");
-        let f: mlua::Function = dreamer
-            .get::<mlua::Table>(service)
+        // `service.name`, or `service.group.name` in nested tables.
+        let (path, name) = m.name.rsplit_once('.').expect("service.name");
+        let f: mlua::Function = path
+            .split('.')
+            .try_fold(dreamer.clone(), |t, part| t.get::<mlua::Table>(part))
             .and_then(|t| t.get(name))
             .unwrap_or_else(|_| panic!("{} missing from the Luau module", m.name));
         let r: mlua::Table = f.call(()).expect("call");

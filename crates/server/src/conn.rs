@@ -45,6 +45,7 @@ pub const TOPIC_TOPOLOGY: &str = api::topic::TMUX_TOPOLOGY;
 pub const TOPIC_EVENTS: &str = api::topic::EVENTS_BATCH;
 pub const TOPIC_MESSAGES: &str = api::topic::MESSAGES_DELIVER;
 pub const TOPIC_TAPS: &str = api::topic::TAPS_DATA;
+pub const TOPIC_SESSIONS: &str = api::topic::AGENT_SESSIONS_EVENTS;
 
 /// Connection ids, for the broker; unique within a daemon.
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
@@ -235,6 +236,11 @@ pub async fn connection_as(
                                 failure(req.id, e).encode_to_vec(),
                             ))
                             .await;
+                        return;
+                    }
+                    if req.method.starts_with("agent.sessions.") {
+                        // Sends its own response, and for a follow the stream.
+                        agent_sessions(&state, &conn, req).await;
                         return;
                     }
                     if req.method == api::method::APPS_REGISTER {
@@ -619,6 +625,30 @@ async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire:
         Ok(p) => p,
         Err(e) => return failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string())),
     };
+    // A process an agent session's harness started takes the session's
+    // grant.
+    if p.launch_id.starts_with("session:") {
+        return match state
+            .sessions
+            .register(&p.launch_id, &p.ticket, conn.peer_pid)
+            .await
+        {
+            Ok(r) => {
+                if let (Ok(mut g), Some(narrow)) = (conn.grant.lock(), r.grant.clone()) {
+                    *g = crate::grants::Grant(narrow);
+                }
+                if let Ok(mut me) = conn.identity.lock() {
+                    *me = Some(crate::messages::Identity {
+                        instance: r.instance.clone(),
+                        app_id: Some(r.app_id.clone()),
+                        pane: None,
+                    });
+                }
+                ok(req.id, r.encode_to_vec())
+            }
+            Err(e) => failure(req.id, e),
+        };
+    }
     let state2 = state.clone();
     let pane_pid = |pane: u32| async move {
         let guard = state2.endpoint.lock().await;
@@ -644,6 +674,175 @@ async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire:
         }
         Err(e) => failure(req.id, e),
     }
+}
+
+/// `agent.sessions.*`, answered here because they need the caller: its
+/// grant bounds a new session's, and a narrow caller sees only the
+/// sessions it created. `agent.sessions.events` with `follow` replies, then
+/// pushes `agent.sessions.events` until it is unsubscribed or the session
+/// closes.
+async fn agent_sessions(state: &Arc<State>, conn: &Conn, req: wire::Request) {
+    use api::Request as R;
+    let send = |r: wire::Response| async {
+        let _ = conn
+            .out
+            .send(Out::Frame(
+                Kind::Response,
+                fit(r, conn.max_frame).encode_to_vec(),
+            ))
+            .await;
+    };
+    let request = match api::Request::decode(&req.method, &req.payload) {
+        Ok(r) => r,
+        Err(e) => return send(failure(req.id, e.into())).await,
+    };
+    let caller = crate::sessions::Caller {
+        instance: conn.who().instance,
+        grant: conn.grant.lock().map(|g| g.0.clone()).unwrap_or_default(),
+    };
+    let sessions = &state.sessions;
+    let one = |r: Result<api::AgentSession, RpcError>| match r {
+        Ok(s) => ok(req.id, s.encode_to_vec()),
+        Err(e) => failure(req.id, e),
+    };
+    let response = match request {
+        R::AgentSessionsCreate(p) => one(sessions.create(&caller, p).await),
+        R::AgentSessionsSend(p) => one(sessions.send(&caller, p).await),
+        R::AgentSessionsCancel(p) => one(sessions.cancel(&caller, p).await),
+        R::AgentSessionsApprove(p) => one(sessions.answer(&caller, p, true).await),
+        R::AgentSessionsDeny(p) => one(sessions.answer(&caller, p, false).await),
+        R::AgentSessionsResume(p) => one(sessions.resume(&caller, p).await),
+        R::AgentSessionsClose(p) => one(sessions.close(&caller, p).await),
+        R::AgentSessionsList(_) => ok(req.id, sessions.list(&caller).encode_to_vec()),
+        R::AgentSessionsEvents(q) => {
+            let s = match sessions.get(&caller, &q.session) {
+                Ok(s) => s,
+                Err(e) => return send(failure(req.id, e)).await,
+            };
+            let after = q.after.unwrap_or(0);
+            if !q.follow {
+                let (events, more) = s.read(after, crate::sessions::limit(&q));
+                let r = api::AgentSessionEvents {
+                    session: q.session,
+                    subscription: None,
+                    events,
+                    more,
+                };
+                return send(ok(req.id, r.encode_to_vec())).await;
+            }
+            let id = conn.next_sub.fetch_add(1, Ordering::Relaxed);
+            // Subscribed before the transcript is read, so nothing falls
+            // between the two.
+            let mut live = s.subscribe();
+            let (go, ready) = tokio::sync::oneshot::channel::<()>();
+            let task_conn = conn.clone();
+            let session = q.session.clone();
+            let task = tokio::spawn(async move {
+                if ready.await.is_err() {
+                    return;
+                }
+                let push = |events: Vec<api::AgentSessionEvent>| {
+                    let c = task_conn.clone();
+                    let session = session.clone();
+                    async move {
+                        let b = api::AgentSessionEvents {
+                            session,
+                            subscription: Some(id),
+                            events,
+                            more: false,
+                        };
+                        c.event(TOPIC_SESSIONS, b.encode_to_vec()).await
+                    }
+                };
+                let closed = |e: &api::AgentSessionEvent| {
+                    matches!(&e.kind, Some(api::agent_session_event::Kind::Status(st))
+                        if st.state == api::AgentSessionState::Closed as i32)
+                };
+                let mut last = after;
+                let mut ended = false;
+                // The transcript first, then live events; after falling
+                // behind, the transcript again from where this left off.
+                'stream: loop {
+                    loop {
+                        let (events, more) = s.read(last, 512);
+                        if let Some(e) = events.last() {
+                            last = e.seq;
+                        }
+                        ended |= events.iter().any(closed);
+                        if !events.is_empty() && !push(events).await {
+                            return;
+                        }
+                        if !more {
+                            break;
+                        }
+                    }
+                    if ended {
+                        break;
+                    }
+                    loop {
+                        let first = match live.recv().await {
+                            Ok(e) => e,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                continue 'stream;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break 'stream;
+                            }
+                        };
+                        let mut batch = vec![first];
+                        while batch.len() < 512 {
+                            match live.try_recv() {
+                                Ok(e) => batch.push(e),
+                                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                                    continue 'stream;
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        batch.retain(|e| e.seq > last);
+                        let Some(e) = batch.last() else { continue };
+                        if e.seq != last + batch.len() as u64 {
+                            // A gap: read it from the transcript.
+                            continue 'stream;
+                        }
+                        last = e.seq;
+                        ended = batch.iter().any(closed);
+                        if !push(batch).await {
+                            return;
+                        }
+                        if ended {
+                            break 'stream;
+                        }
+                    }
+                }
+                let end = api::SubscriptionEnd {
+                    subscription: id,
+                    reason: api::EndReason::Unspecified as i32,
+                    detail: Some("the agent session closed".into()),
+                };
+                task_conn.event(TOPIC_END, end.encode_to_vec()).await;
+                task_conn.subs.lock().await.remove(&id);
+            });
+            conn.subs.lock().await.insert(id, task);
+            let r = api::AgentSessionEvents {
+                session: q.session,
+                subscription: Some(id),
+                events: Vec::new(),
+                more: false,
+            };
+            send(ok(req.id, r.encode_to_vec())).await;
+            let _ = go.send(());
+            return;
+        }
+        _ => failure(
+            req.id,
+            RpcError::new(
+                code::METHOD_NOT_FOUND,
+                format!("unknown method {}", req.method),
+            ),
+        ),
+    };
+    send(response).await;
 }
 
 /// A reply that would not fit in one frame becomes an error saying so.

@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 42 }
+version: { major: 1, minor: 43 }
 package: dreamer.v1
 
 types:
@@ -1586,6 +1586,176 @@ types:
       - { n: 9, name: command, type: string, repeated: true, doc: "The program and arguments it was started with; empty unless this call started it." }
       - { n: 10, name: problem, type: string, optional: true, doc: "Why the harness could not start; the pane says the same." }
 
+  # ---- agent sessions -----------------------------------------------------
+
+  - enum: AgentSessionState
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: starting, doc: "The harness is starting." }
+      - { n: 2, name: idle, doc: "The harness runs and waits for a prompt." }
+      - { n: 3, name: working, doc: "A turn is running." }
+      - { n: 4, name: waiting, doc: "A turn waits for an approval." }
+      - { n: 5, name: detached, doc: "No harness runs (the daemon restarted, or the harness ended). Sending or resuming starts it again on the harness's own session." }
+      - { n: 6, name: closed, doc: "Closed; its transcript stays." }
+
+  - message: AgentSessionCreate
+    fields:
+      - { n: 1, name: harness, type: string, optional: true, doc: "A harness from the agents settings; default agents.default." }
+      - { n: 2, name: cwd, type: string, optional: true, doc: "The harness's working directory; default the daemon's home directory." }
+      - { n: 3, name: grant, type: Grant, doc: "What the session may do through Dreamer, within the caller's own grant. Default: the terminal tools on every pane at the observe level." }
+      - { n: 4, name: model, type: string, optional: true, doc: "Default agents.<harness>.model, else the harness's own default." }
+      - { n: 5, name: name, type: string, optional: true }
+
+  - message: AgentSession
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: harness, type: string }
+      - { n: 3, name: cwd, type: string }
+      - { n: 4, name: state, type: AgentSessionState }
+      - { n: 5, name: grant, type: Grant, doc: "The session's grant: the outer limit for everything its harness does through Dreamer." }
+      - { n: 6, name: harness_session, type: string, optional: true, doc: "The harness's own session id, kept for resume." }
+      - { n: 7, name: pid, type: u32, optional: true, doc: "The harness process while it runs." }
+      - { n: 8, name: created_unix_ms, type: u64 }
+      - { n: 9, name: last_seq, type: u64, doc: "The newest event's sequence number." }
+      - { n: 10, name: model, type: string, optional: true }
+      - { n: 11, name: name, type: string, optional: true }
+      - { n: 12, name: detail, type: string, optional: true, doc: "Why it is detached, or what went wrong at start." }
+      - { n: 13, name: harness_version, type: string, optional: true }
+
+  - message: AgentSessionList
+    fields:
+      - { n: 1, name: sessions, type: AgentSession, repeated: true }
+
+  - message: AgentSessionRef
+    fields:
+      - { n: 1, name: session, type: string }
+
+  - message: AgentSessionSend
+    fields:
+      - { n: 1, name: session, type: string }
+      - { n: 2, name: text, type: string, doc: "The prompt. Sent while a turn runs, it waits for that turn to end." }
+
+  - message: AgentSessionAnswer
+    fields:
+      - { n: 1, name: session, type: string }
+      - { n: 2, name: approval, type: string, doc: "The approval_request event's id." }
+      - { n: 3, name: option, type: string, optional: true, doc: "For a request with options, the one chosen when approving." }
+
+  - message: AgentSessionEventsQuery
+    fields:
+      - { n: 1, name: session, type: string }
+      - { n: 2, name: after, type: u64, optional: true, doc: "Events after this sequence number; default from the start of the transcript." }
+      - { n: 3, name: follow, type: bool, doc: "Keep streaming: the reply carries no events, and `agent.sessions.events` notifications follow, the stored ones first. End it with terminal.unsubscribe." }
+      - { n: 4, name: limit, type: u32, optional: true, doc: "Without follow, the most events in the reply; default 1000, at most 10000." }
+
+  - enum: AgentToolStatus
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: started }
+      - { n: 2, name: updated, doc: "Partial output." }
+      - { n: 3, name: finished }
+      - { n: 4, name: failed }
+
+  - enum: AgentStopReason
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: end_turn }
+      - { n: 2, name: cancelled }
+      - { n: 3, name: error }
+
+  - message: AgentText
+    fields:
+      - { n: 1, name: text, type: string }
+
+  - message: AgentToolCall
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: name, type: string }
+      - { n: 3, name: status, type: AgentToolStatus }
+      - { n: 4, name: input, type: string, optional: true, doc: "The tool's input as JSON." }
+      - { n: 5, name: output, type: string, optional: true, doc: "Its output as text: the latest partial output, or the final one." }
+
+  - message: AgentApprovalRequest
+    doc: "The harness asks the user before going on. Answer with agent.sessions.approve or agent.sessions.deny."
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: title, type: string }
+      - { n: 3, name: message, type: string, optional: true }
+      - { n: 4, name: options, type: string, repeated: true, doc: "Choices offered; empty for a yes or no question." }
+      - { n: 5, name: expires_unix_ms, type: u64, optional: true, doc: "The harness answers by itself after this." }
+
+  - message: AgentApprovalAnswer
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: allowed, type: bool }
+      - { n: 3, name: option, type: string, optional: true }
+      - { n: 4, name: by, type: string, doc: "Who answered: owner:N, an app instance, or `dreamer` when the session closed first." }
+
+  - message: AgentPlanEntry
+    fields:
+      - { n: 1, name: content, type: string }
+      - { n: 2, name: status, type: string, doc: "pending, in_progress, or completed." }
+      - { n: 3, name: priority, type: string, optional: true }
+
+  - message: AgentPlan
+    fields:
+      - { n: 1, name: entries, type: AgentPlanEntry, repeated: true }
+
+  - message: AgentUsage
+    doc: "Tokens of the latest model response, as the harness reports them."
+    fields:
+      - { n: 1, name: input_tokens, type: u64 }
+      - { n: 2, name: output_tokens, type: u64 }
+      - { n: 3, name: cache_read_tokens, type: u64 }
+      - { n: 4, name: cache_write_tokens, type: u64 }
+      - { n: 5, name: cost_micro_usd, type: u64, optional: true, doc: "What the harness says it cost, in millionths of a US dollar." }
+
+  - message: AgentTurnEnd
+    fields:
+      - { n: 1, name: stop_reason, type: AgentStopReason }
+
+  - message: AgentError
+    fields:
+      - { n: 1, name: message, type: string }
+
+  - message: AgentSessionStatus
+    doc: "The session changed state: the harness started, resumed, or ended, or the session closed."
+    fields:
+      - { n: 1, name: state, type: AgentSessionState }
+      - { n: 2, name: detail, type: string, optional: true }
+      - { n: 3, name: harness_session, type: string, optional: true }
+
+  - message: AgentSessionEvent
+    doc: >-
+      One normalised event, the same whatever the harness. Its shape follows
+      the Agent Client Protocol: text and thinking arrive as deltas, a tool
+      call as started, updated, and finished records with one id.
+    fields:
+      - { n: 1, name: seq, type: u64, doc: "Its place in the session's transcript, from 1." }
+      - { n: 2, name: unix_ms, type: u64 }
+    oneof:
+      name: kind
+      variants:
+        - { n: 10, name: user_message, type: AgentText }
+        - { n: 11, name: text_delta, type: AgentText }
+        - { n: 12, name: thinking_delta, type: AgentText }
+        - { n: 13, name: tool_call, type: AgentToolCall }
+        - { n: 14, name: approval_request, type: AgentApprovalRequest }
+        - { n: 15, name: approval_answer, type: AgentApprovalAnswer }
+        - { n: 16, name: plan, type: AgentPlan }
+        - { n: 17, name: usage, type: AgentUsage }
+        - { n: 18, name: turn_end, type: AgentTurnEnd }
+        - { n: 19, name: error, type: AgentError }
+        - { n: 20, name: status, type: AgentSessionStatus }
+
+  - message: AgentSessionEvents
+    doc: "The reply to agent.sessions.events, and the payload of each `agent.sessions.events` notification."
+    fields:
+      - { n: 1, name: session, type: string }
+      - { n: 2, name: subscription, type: u64, optional: true, doc: "When following." }
+      - { n: 3, name: events, type: AgentSessionEvent, repeated: true }
+      - { n: 4, name: more, type: bool, doc: "Without follow: more events follow the last one; ask again after it." }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -1662,6 +1832,15 @@ methods:
   - { method: collect.stop, params: CollectRef, result: CollectorStatus, mutation: true, doc: "Stop a collector; its rows stay queryable unless delete is set." }
   - { method: drawer.toggle, params: DrawerRequest, result: DrawerStatus, mutation: true, doc: "Show, focus, hide, or restart a tmux session's harness drawer: a pane running the configured agent harness, kept in a holding session while hidden (owner only)." }
   - { method: drawer.status, params: DrawerRequest, result: DrawerStatus, doc: "A session's harness drawer: whether it exists, where it is, and whether it is shown and focused." }
+  - { method: agent.sessions.create, params: AgentSessionCreate, result: AgentSession, mutation: true, doc: "Start an agent session: a harness process of the daemon, bound to a grant within the caller's." }
+  - { method: agent.sessions.send, params: AgentSessionSend, result: AgentSession, mutation: true, doc: "Send a prompt; events follow on agent.sessions.events. A detached session is resumed first." }
+  - { method: agent.sessions.events, params: AgentSessionEventsQuery, result: AgentSessionEvents, doc: "A session's normalised events from its transcript, and with follow every later one as it happens." }
+  - { method: agent.sessions.cancel, params: AgentSessionRef, result: AgentSession, mutation: true, doc: "Stop the running turn; it ends with stop reason cancelled." }
+  - { method: agent.sessions.approve, params: AgentSessionAnswer, result: AgentSession, mutation: true, doc: "Allow what a pending approval request asks." }
+  - { method: agent.sessions.deny, params: AgentSessionAnswer, result: AgentSession, mutation: true, doc: "Refuse what a pending approval request asks." }
+  - { method: agent.sessions.list, params: Empty, result: AgentSessionList, doc: "Sessions this caller may see, open and closed, from the state directory." }
+  - { method: agent.sessions.resume, params: AgentSessionRef, result: AgentSession, mutation: true, doc: "Start a detached session's harness again on the harness's own session." }
+  - { method: agent.sessions.close, params: AgentSessionRef, result: AgentSession, mutation: true, doc: "End the harness process and close the session; its transcript stays." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the
@@ -1674,3 +1853,4 @@ notifications:
   - { topic: events.batch, payload: EventBatch, doc: "Events of an events.subscribe subscription, after its gap if any." }
   - { topic: messages.deliver, payload: MessageDelivery, doc: "A message for a messages.subscribe subscription." }
   - { topic: taps.data, payload: TapData, doc: "Output of a taps.subscribe subscription, for one pane." }
+  - { topic: agent.sessions.events, payload: AgentSessionEvents, doc: "Events of a followed agent session, in order." }
