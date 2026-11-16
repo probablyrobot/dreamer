@@ -55,8 +55,18 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
         )?;
         let images_changed = e.images.generation != Some(placements_gen);
         let previous = e.last.as_ref().filter(|f| f.size == size);
+        // Read every time: the render state is not marked dirty when only a
+        // color changes (OSC 10/11/4 and their resets, or a new scheme), and
+        // such a change must still reach the frame.
+        let mut raw_colors = GhosttyRenderStateColors {
+            size: size_of::<GhosttyRenderStateColors>(),
+            ..Default::default()
+        };
+        get(e.render, GHOSTTY_RENDER_STATE_DATA_COLORS, &mut raw_colors)?;
+        let colors = convert_colors(&raw_colors);
         if dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE
             && let Some(prev) = previous
+            && *prev.colors == colors
             && prev.render_hold == held
             && prev.view == view
             && e.selection_rev == e.framed_selection_rev
@@ -66,12 +76,6 @@ pub(crate) fn build(e: &mut Engine) -> Result<Arc<FrameSnapshot>, EngineError> {
         }
         let full = dirty == GHOSTTY_RENDER_STATE_DIRTY_FULL || previous.is_none();
 
-        let mut raw_colors = GhosttyRenderStateColors {
-            size: size_of::<GhosttyRenderStateColors>(),
-            ..Default::default()
-        };
-        get(e.render, GHOSTTY_RENDER_STATE_DATA_COLORS, &mut raw_colors)?;
-        let colors = convert_colors(&raw_colors);
         let colors = match previous {
             Some(prev) if *prev.colors == colors => Arc::clone(&prev.colors),
             _ => Arc::new(colors),

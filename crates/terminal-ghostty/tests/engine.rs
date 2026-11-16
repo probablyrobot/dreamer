@@ -495,3 +495,46 @@ fn a_color_scheme_and_default_cursor_travel_in_the_snapshot() {
     assert_eq!(*restored.colors, *colors, "colors differ after restore");
     assert_eq!(restored.cursor.shape, shape);
 }
+
+#[test]
+fn a_programs_own_background_survives_a_scheme_change() {
+    let schemes = terminal_ghostty::core::schemes::find;
+    let (first, second) = (
+        schemes("nord").expect("nord"),
+        schemes("gruvbox-dark").expect("gruvbox"),
+    );
+    let mut canonical = engine();
+    canonical.set_scheme(first).expect("scheme");
+    // The program sets its own background and palette color 1.
+    canonical
+        .feed(b"\x1b]11;rgb:12/34/56\x1b\\\x1b]4;1;rgb:ab/cd/ef\x1b\\x")
+        .expect("feed");
+    canonical.set_scheme(second).expect("scheme");
+    let own = terminal_ghostty::core::Rgb {
+        r: 0x12,
+        g: 0x34,
+        b: 0x56,
+    };
+    let colors = canonical.frame().expect("frame").colors.clone();
+    assert_eq!(colors.background, own, "the program's background was lost");
+    assert_eq!(
+        colors.palette[1],
+        terminal_ghostty::core::Rgb {
+            r: 0xab,
+            g: 0xcd,
+            b: 0xef
+        }
+    );
+    assert_eq!(colors.foreground, second.foreground, "the new default");
+    assert_eq!(colors.palette[2], second.ansi[2]);
+    let snapshot = canonical.snapshot().expect("snapshot");
+    let mut replica = Engine::from_snapshot(&snapshot, &EngineConfig::new(SIZE)).expect("restore");
+    assert_eq!(*replica.frame().expect("frame").colors, *colors);
+    // Resetting it (OSC 111) brings back the scheme's.
+    // With nothing printed after it: a color change alone reaches the frame.
+    canonical.feed(b"\x1b]111\x07").expect("feed");
+    assert_eq!(
+        canonical.frame().expect("frame").colors.background,
+        second.background
+    );
+}
