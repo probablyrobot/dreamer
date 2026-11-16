@@ -2759,6 +2759,7 @@ mod smoke {
         println!("smoke: zoom showed the focused pane alone, and unzoom brought all four back");
         palette_commands(any, &ws, cx).await;
         contributions(any, &ws, &daemon, cx).await;
+        find_in_pane(any, &ws, cx).await;
 
         let painted = click_and_type(any, &ws, cx).await;
         if painted {
@@ -3297,6 +3298,80 @@ source = "windows"
                 });
             }
         });
+    }
+
+    /// Find in a pane: text typed while the bar is open is the query, never
+    /// input for the program; the mirror's match is found (and named by its
+    /// row and cells); Escape closes the bar and its matches.
+    async fn find_in_pane(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncApp) {
+        type_into_first(any, ws, cx, "echo FIND''-ME-7");
+        wait_for(any, ws, cx, "FIND-ME-7 in the first pane", |w, cx| {
+            first_pane_has_line(w, cx, "FIND-ME-7")
+        })
+        .await;
+        let first = |w: &Workspace| w.pane_ids().first().and_then(|id| w.pane_shell(*id));
+        let _ = cx.update_window(any, |_, window, cx| {
+            let Some(ws) = ws.upgrade() else { return };
+            let shell = ws
+                .read(cx)
+                .pane_ids()
+                .first()
+                .and_then(|id| ws.read(cx).pane_shell(*id));
+            if let Some(s) = shell {
+                s.update(cx, |s, cx| {
+                    use gpui::EntityInputHandler;
+                    s.open_find(cx);
+                    s.replace_text_in_range(None, "find-me", window, cx);
+                });
+            }
+        });
+        wait_for(any, ws, cx, "the match found in the mirror", |w, cx| {
+            first(w).is_some_and(|s| {
+                let s = s.read(cx);
+                let Some(f) = &s.find else { return false };
+                let one = f.found.as_ref().is_some_and(|x| x.hits.len() == 1);
+                let Some(hit) = f.current().filter(|_| one) else {
+                    return false;
+                };
+                // The row it names holds the line, at the cells it names.
+                let view = s.frame.view;
+                hit.start_col == 0
+                    && hit.end_col == 7
+                    && hit
+                        .row
+                        .checked_sub(view.offset)
+                        .and_then(|i| s.frame.rows.get(usize::try_from(i).ok()?))
+                        .is_some_and(|r| r.text().starts_with("FIND-ME-7"))
+            })
+        })
+        .await;
+        cx.background_executor()
+            .timer(Duration::from_millis(300))
+            .await;
+        let leaked = read(any, ws, cx, |w: &Workspace, cx: &gpui::App| {
+            first(w).is_some_and(|s| s.read(cx).frame.text_dump().contains("find-me"))
+        });
+        if leaked != Some(false) {
+            fail("text typed into the find bar reached the program");
+        }
+        let _ = cx.update_window(any, |_, _, cx| {
+            let Some(ws) = ws.upgrade() else { return };
+            let shell = ws
+                .read(cx)
+                .pane_ids()
+                .first()
+                .and_then(|id| ws.read(cx).pane_shell(*id));
+            if let Some(s) = shell {
+                s.update(cx, |s, cx| s.close_find(cx));
+            }
+        });
+        wait_for(any, ws, cx, "the find bar closed", |w, cx| {
+            first(w).is_some_and(|s| s.read(cx).find.is_none())
+        })
+        .await;
+        println!(
+            "smoke: find in a pane matched FIND-ME-7 in its mirror, and nothing typed into the bar reached the program"
+        );
     }
 
     /// Every palette command's effect shows up in tmux; a kill needs the

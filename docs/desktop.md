@@ -149,12 +149,13 @@ the program in the pane.
 | Command palette | Cmd-Shift-P | Ctrl-Shift-P |
 | Zoom the focused pane | Cmd-Shift-Enter | Ctrl-Shift-Enter |
 | Sessions sidebar | Cmd-Shift-S | Ctrl-Shift-S |
+| Find in the focused pane | Cmd-F | Ctrl-Shift-F |
 | Full screen | Ctrl-Cmd-F | F11 |
 | Hide, hide others | Cmd-H, Alt-Cmd-H | (window manager) |
 | Minimize | Cmd-M | (window manager) |
 
 On macOS the menu bar has Dreamer (Services, Hide, Hide Others, Show All,
-Quit), Shell (New Window, Close Window), Edit (Copy, Paste), View
+Quit), Shell (New Window, Close Window), Edit (Copy, Paste, Find…), View
 (Command Palette, Sessions Sidebar, Zoom Pane, Enter Full Screen), and
 Window (Minimize, Zoom), each item showing its shortcut.
 
@@ -162,6 +163,39 @@ Closing a window or quitting closes views only: tmux sessions, panes, and
 the daemon keep running. On Linux the app quits when its last window
 closes. On macOS it stays in the Dock, and clicking the icon opens a
 window again.
+
+## Find
+
+Cmd-F (Ctrl-Shift-F on Linux) opens a find bar over the focused pane. It
+searches that pane's history and screen in the window's own mirror. The
+daemon is not asked, and nothing is sent from another machine.
+
+- **Typing** is the query, and the search runs after a short pause. While
+  the bar is open, no key reaches the program.
+- **Case** matters only when the query has a capital letter. Alt-R
+  switches to a regular expression (shown as `.*`), matched in linear time.
+- **Moving:** Enter or Up goes to the previous (older) match, and
+  Shift-Enter or Down to the next. Each move scrolls the match into view.
+  The bar shows `3 of 17`.
+- **Highlights:** matches in view are highlighted, and the current one is
+  outlined in the accent color. They are view state, like a selection:
+  the terminal and what tmux shows are unchanged.
+- **New output:** when output arrives, or the pane is resized or
+  re-checkpointed, the search runs again. The current match is kept if it
+  still exists, without jumping.
+- **Escape** closes the bar and clears the highlights.
+
+**Bounds**
+- The newest 100,000 rows and 16 MiB of text are searched, and at most
+  5,000 matches are kept. When a bound cuts the search short, the count
+  shows `+`.
+- The matching runs on a thread of its own, never on the UI thread or the
+  thread that forwards input. A new query stops the search before it.
+- A pattern the match stage refuses (over 4 KiB, or too large to compile)
+  is shown in the bar as the reason.
+
+Search across panes and hosts is `terminal.query` ([taps.md](taps.md#queries)),
+bounded on the daemon. An inspector pane uses it.
 
 ## Remote hosts
 

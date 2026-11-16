@@ -22,6 +22,7 @@
 
 mod contrib;
 mod fallback;
+mod find;
 mod fonts;
 mod input;
 mod keymap;
@@ -174,6 +175,11 @@ pub(crate) struct Shell {
     marks_shown: bool,
     /// Marks drawn in the last render (smoke evidence).
     pub(crate) marks_drawn: usize,
+    /// Find in this pane, while its bar is open; and the search waiting
+    /// to run or running.
+    pub(crate) find: Option<find::Find>,
+    find_task: Option<gpui::Task<()>>,
+    find_busy: bool,
 }
 
 impl Shell {
@@ -207,7 +213,196 @@ impl Shell {
             marks: Vec::new(),
             marks_shown: true,
             marks_drawn: 0,
+            find: None,
+            find_task: None,
+            find_busy: false,
         }
+    }
+
+    /// Open the find bar (or keep it), with the query as it was.
+    pub(crate) fn open_find(&mut self, cx: &mut Context<Self>) {
+        if self.find.is_none() {
+            self.find = Some(find::Find::default());
+        }
+        cx.notify();
+    }
+
+    /// Close the find bar: matches go, and any search stops.
+    pub(crate) fn close_find(&mut self, cx: &mut Context<Self>) {
+        self.find = None;
+        self.find_task = None;
+        self.find_busy = false;
+        if let Some(feed) = &self.feed {
+            feed.cancel_search();
+        }
+        cx.notify();
+    }
+
+    /// Search again after a short pause; `reveal` brings the current match
+    /// into view when it changes (typing does, new output does not).
+    pub(crate) fn search_soon(&mut self, reveal: bool, cx: &mut Context<Self>) {
+        let (Some(f), Some(feed)) = (self.find.as_ref(), self.feed.clone()) else {
+            return;
+        };
+        if f.query.is_empty() {
+            self.find_task = None;
+            feed.cancel_search();
+            return;
+        }
+        let query = f.query();
+        self.find_busy = true;
+        self.find_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(find::SETTLE).await;
+            let result = feed.search(query).await;
+            let _ = this.update(cx, |s, cx| {
+                s.find_busy = false;
+                let view = s.frame.view;
+                let Some(f) = s.find.as_mut() else { return };
+                match result {
+                    Ok(None) => {}
+                    Err(e) => f.error = Some(e),
+                    Ok(Some(found)) => {
+                        let bottom = (view.offset + view.len).saturating_sub(1);
+                        if let Some(hit) = f.take(found, bottom)
+                            && reveal
+                            && let Some(feed) = &s.feed
+                        {
+                            feed.view(replica::feed::ViewCommand::Reveal(hit.row));
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// A new frame: when the history changed under an open find bar,
+    /// search again.
+    fn frame_changed(&mut self, cx: &mut Context<Self>) {
+        let rows = self.frame.view.total_rows;
+        if let Some(f) = &self.find
+            && f.found.is_some()
+            && f.searched_rows != Some(rows)
+            && !self.find_busy
+        {
+            self.search_soon(false, cx);
+        }
+    }
+
+    /// The open find bar's matches in view, as boxes over their cells (the
+    /// current one stronger), and the bar itself: top right, over the grid.
+    fn find_ui(
+        &self,
+        window: &mut Window,
+        t: &theme::Theme,
+        term: &TermFont,
+    ) -> (Vec<gpui::Div>, Option<gpui::Div>) {
+        let Some(f) = &self.find else {
+            return (Vec::new(), None);
+        };
+        let m = cell_metrics(
+            window,
+            &font(term.family.clone()),
+            px(term.size),
+            term.spacing(),
+        );
+        let view = self.frame.view;
+        let current = f.current();
+        let boxes = f
+            .found
+            .iter()
+            .flat_map(|found| found.hits.iter())
+            .filter(|h| h.row >= view.offset && h.row < view.offset + view.len)
+            .map(|h| {
+                let y = (h.row - view.offset) as f32;
+                let mark = div()
+                    .absolute()
+                    .left(m.width * f32::from(h.start_col))
+                    .top(m.height * y)
+                    .w(m.width * f32::from(h.end_col.saturating_sub(h.start_col).max(1)))
+                    .h(m.height)
+                    .rounded_sm();
+                if Some(*h) == current {
+                    mark.bg(ca((t.accent << 8) | 0x66))
+                        .border_1()
+                        .border_color(c(t.accent))
+                } else {
+                    mark.bg(ca(t.mark))
+                }
+            })
+            .collect();
+        let status = f.status();
+        let bar = div()
+            .absolute()
+            .top(px(6.0))
+            .right(px(10.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py(px(3.0))
+            .rounded_md()
+            .shadow_md()
+            .bg(c(t.raised))
+            .border_1()
+            .border_color(c(t.focus))
+            .font_family(term.family.clone())
+            .text_size(px(term.size * 0.9))
+            .text_color(c(t.text))
+            .child(
+                div()
+                    .text_color(c(t.accent))
+                    .child(if f.regex { ".*" } else { "⌕" }),
+            )
+            .child(if f.query.is_empty() {
+                div().text_color(c(t.faint)).child("Find")
+            } else {
+                div().child(format!("{}▏", f.query))
+            })
+            .when(!status.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_color(if f.error.is_some() {
+                            c(t.danger)
+                        } else {
+                            c(t.muted)
+                        })
+                        .child(status),
+                )
+            });
+        (boxes, Some(bar))
+    }
+
+    /// Keys while the find bar is open; text arrives through the text
+    /// input. Nothing reaches the program.
+    fn find_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        let k = &ev.keystroke;
+        let Some(f) = self.find.as_mut() else { return };
+        let mut step = None;
+        match k.key.as_str() {
+            "escape" => return self.close_find(cx),
+            "enter" => step = Some(!k.modifiers.shift),
+            "up" => step = Some(true),
+            "down" => step = Some(false),
+            "backspace" => {
+                f.query.pop();
+                f.edited();
+                self.search_soon(true, cx);
+            }
+            "r" if k.modifiers.alt => {
+                f.regex = !f.regex;
+                f.edited();
+                self.search_soon(true, cx);
+            }
+            _ => {}
+        }
+        if let Some(older) = step
+            && let Some(hit) = self.find.as_mut().and_then(|f| f.step(older))
+            && let Some(feed) = &self.feed
+        {
+            feed.view(replica::feed::ViewCommand::Reveal(hit.row));
+        }
+        cx.notify();
     }
 
     /// A pane's current marks, and whether to draw them.
@@ -256,6 +451,7 @@ impl Shell {
         };
         self.frame = frame;
         self.live_frames += 1;
+        self.frame_changed(cx);
         self.meta = feed.meta();
         if feed.take_bells() > 0 {
             self.bell(cx);
@@ -309,6 +505,21 @@ impl Shell {
         let Some(feed) = self.feed.clone() else {
             return;
         };
+        if self.find.is_some() {
+            // Text typed into the bar comes through the text input; every
+            // other key the bar uses or drops, so the program never sees it.
+            let printable = ev.keystroke.key_char.is_some()
+                && !(ev.keystroke.modifiers.control
+                    || ev.keystroke.modifiers.platform
+                    || ev.keystroke.modifiers.alt);
+            if !printable {
+                self.find_key(ev, cx);
+                if !(ev.keystroke.modifiers.platform || input::is_palette_shortcut(&ev.keystroke)) {
+                    cx.stop_propagation();
+                }
+            }
+            return;
+        }
         let view = self.frame.view;
         let page = self.frame.size.rows.saturating_sub(1).max(1) as isize;
         if !view.alt_screen
@@ -641,6 +852,15 @@ impl EntityInputHandler for Shell {
         cx: &mut Context<Self>,
     ) {
         self.preedit = None;
+        if let Some(f) = self.find.as_mut() {
+            if !text.is_empty() {
+                f.query.push_str(text);
+                f.edited();
+                self.search_soon(true, cx);
+            }
+            cx.notify();
+            return;
+        }
         if !text.is_empty()
             && let Some(feed) = &self.feed
         {
@@ -820,6 +1040,7 @@ impl Render for Shell {
                 .text_size(px(term.size * 0.85))
                 .child(format!("↑ {back} lines"))
         });
+        let (found, find_bar) = self.find_ui(window, &t, &term);
         let marks = self.visible_marks();
         self.marks_drawn = marks.len();
         let marks: Vec<_> = if marks.is_empty() {
@@ -880,6 +1101,7 @@ impl Render for Shell {
             .track_focus(&self.focus)
             .on_action(cx.listener(|s, _: &keymap::Copy, _, cx| s.copy(cx)))
             .on_action(cx.listener(|s, _: &keymap::Paste, _, cx| s.paste(cx)))
+            .on_action(cx.listener(|s, _: &keymap::Find, _, cx| s.open_find(cx)))
             .on_key_down(cx.listener(Self::key_down))
             .on_modifiers_changed(cx.listener(|s, ev: &gpui::ModifiersChangedEvent, _, cx| {
                 if let (Some(grid), Some(at)) = (s.grid, s.pointer_at) {
@@ -897,6 +1119,8 @@ impl Render for Shell {
                         spacing: term.spacing(),
                     })
                     .children(marks)
+                    .children(found)
+                    .children(find_bar)
                     .children(preedit)
                     .children(scrolled)
                     .children(underline)
@@ -1271,6 +1495,7 @@ fn main() -> ExitCode {
                     let done = window.update(cx, |shell, window, cx| {
                         shell.frame = frame;
                         shell.live_frames += 1;
+                        shell.frame_changed(cx);
                         shell.show_meta(&meta, window);
                         if bells > 0 {
                             shell.bell(cx);

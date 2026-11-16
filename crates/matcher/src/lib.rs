@@ -102,6 +102,24 @@ impl Matcher {
         })
     }
 
+    /// Every match in `line`, in order, not overlapping, at most `limit`;
+    /// an empty match (a pattern like `x*`) is skipped.
+    pub fn find_all(&self, line: &str, limit: usize) -> Vec<Found> {
+        let mut cut = line.len().min(MAX_LINE);
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        self.0
+            .find_iter(&line[..cut])
+            .filter(|m| m.start() < m.end())
+            .take(limit)
+            .map(|m| Found {
+                start: m.start(),
+                end: m.end(),
+            })
+            .collect()
+    }
+
     pub fn is_match(&self, line: &str) -> bool {
         self.find(line).is_some()
     }

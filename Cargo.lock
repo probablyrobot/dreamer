@@ -4792,9 +4792,11 @@ dependencies = [
  "api",
  "async-channel",
  "client",
+ "matcher",
  "prost",
  "terminal-ghostty",
  "tokio",
+ "unicode-width",
  "wire",
 ]
 

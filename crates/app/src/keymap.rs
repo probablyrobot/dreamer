@@ -37,6 +37,8 @@ gpui::actions!(
         /// Show only the focused pane, or all of them again.
         ZoomPane,
         ToggleSidebar,
+        /// Find in the focused pane's history and screen.
+        Find,
     ]
 );
 
@@ -82,6 +84,7 @@ pub(crate) const SHORTCUTS: &[Shortcut] = &[
     shortcut!(CommandPalette, Some("cmd-shift-p"), Some("ctrl-shift-p")),
     shortcut!(ZoomPane, Some("cmd-shift-enter"), Some("ctrl-shift-enter")),
     shortcut!(ToggleSidebar, Some("cmd-shift-s"), Some("ctrl-shift-s")),
+    shortcut!(Find, Some("cmd-f"), Some("ctrl-shift-f")),
 ];
 
 fn bindings(cx: &App) -> Vec<KeyBinding> {
@@ -115,6 +118,8 @@ fn menus() -> Vec<Menu> {
         Menu::new("Edit").items([
             MenuItem::os_action("Copy", Copy, OsAction::Copy),
             MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::separator(),
+            MenuItem::action("Find…", Find),
         ]),
         Menu::new("View").items([
             MenuItem::action("Command Palette", CommandPalette),

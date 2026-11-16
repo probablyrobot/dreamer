@@ -51,7 +51,22 @@ pub enum ViewCommand {
         row: u16,
         reply: tokio::sync::oneshot::Sender<Option<Link>>,
     },
+    /// Search the mirror's history and screen. The owner only copies the
+    /// text; the matching runs on a thread of its own.
+    Search {
+        query: crate::search::Query,
+        ticket: u64,
+        searches: crate::search::Searches,
+        reply: tokio::sync::oneshot::Sender<SearchReply>,
+    },
+    /// Scroll so this row (from the top of history) is in view, near the
+    /// middle.
+    Reveal(u64),
 }
+
+/// A search's outcome: the matches, `None` when a newer search replaced
+/// it, or why the pattern was refused.
+pub type SearchReply = Result<Option<crate::search::Found>, String>;
 
 /// Where a feed stands, for the view to show honestly.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +106,8 @@ pub struct Feed {
     meta: Arc<Mutex<crate::PaneMeta>>,
     bells: Arc<AtomicU64>,
     clipboard: Arc<Mutex<Option<Vec<u8>>>>,
+    /// This view's searches; a new one stops the one before.
+    searches: crate::search::Searches,
     /// One signal means "a newer frame is waiting"; never more than one.
     pub wake: async_channel::Receiver<()>,
 }
@@ -175,6 +192,7 @@ impl Feed {
             meta,
             bells,
             clipboard,
+            searches: crate::search::Searches::default(),
             wake,
         })
     }
@@ -210,6 +228,24 @@ impl Feed {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.view(ViewCommand::Copy(tx));
         rx.await.ok().flatten()
+    }
+
+    /// Search the local mirror's history and screen, never the daemon's.
+    /// A newer search, or [`Feed::cancel_search`], replaces this one.
+    pub async fn search(&self, query: crate::search::Query) -> SearchReply {
+        let ticket = self.searches.begin();
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.view(ViewCommand::Search {
+            query,
+            ticket,
+            searches: self.searches.clone(),
+            reply,
+        });
+        rx.await.unwrap_or(Ok(None))
+    }
+
+    pub fn cancel_search(&self) {
+        self.searches.cancel();
     }
 
     /// The pane's current title and working directory.
@@ -424,6 +460,9 @@ impl Owner {
             match command {
                 ViewCommand::Copy(reply) => drop(reply.send(None)),
                 ViewCommand::Link { reply, .. } => drop(reply.send(None)),
+                ViewCommand::Search { reply, .. } => {
+                    drop(reply.send(Err("the pane is not shown yet".into())));
+                }
                 _ => {}
             }
             return;
@@ -457,6 +496,35 @@ impl Owner {
             ViewCommand::Link { col, row, reply } => {
                 let _ = reply.send(engine.link_at(col, row).ok().flatten());
                 false
+            }
+            ViewCommand::Search {
+                query,
+                ticket,
+                searches,
+                reply,
+            } => {
+                match engine.screen_text() {
+                    Err(e) => drop(reply.send(Err(e.to_string()))),
+                    Ok(text) => {
+                        // Matching never holds up input or frames.
+                        std::thread::spawn(move || {
+                            let found = crate::search::search(&text, &query, &searches, ticket);
+                            let _ = reply.send(found);
+                        });
+                    }
+                }
+                false
+            }
+            ViewCommand::Reveal(row) => {
+                let v = before.view;
+                let top = row.saturating_sub(v.len / 2);
+                let top = top.min(v.total_rows.saturating_sub(v.len));
+                let delta = i64::try_from(top).unwrap_or(i64::MAX)
+                    - i64::try_from(v.offset).unwrap_or(i64::MAX);
+                delta != 0
+                    && engine
+                        .scroll_viewport(Scroll::Delta(delta as isize))
+                        .is_ok()
             }
         };
         if !applied {
