@@ -20,6 +20,7 @@ mod api;
 mod claude;
 mod codex;
 mod mcp;
+pub mod pi;
 mod run;
 
 use std::path::{Path, PathBuf};
@@ -86,7 +87,8 @@ pub async fn probe_api(cfg: &ApiConfig) -> State {
     }
 }
 
-fn locate_in_path(name: &str) -> Option<PathBuf> {
+/// The first file called `name` in a `PATH` directory.
+pub fn locate_in_path(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|d| d.join(name))

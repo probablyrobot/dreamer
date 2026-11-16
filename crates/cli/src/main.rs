@@ -41,6 +41,7 @@ mod bridge;
 mod build;
 mod daemon;
 mod extprobe;
+mod harness;
 mod hosts;
 mod jobrun;
 mod mcp;
@@ -79,6 +80,7 @@ const USAGE: &str = "usage:
   dream extensions [--json] | dream extensions restart NAME
   dream mcp [--level observe|own|elsewhere] [--method M]... [--pane %N]... [--all-panes]
   dream approvals [--json] | allow ID [--pane] | deny ID
+  dream agents status [--json] | update [--version X.Y.Z] | rollback   (the pi Dreamer installs)
   dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
   dream agents providers [--json]
   dream agents ask [--provider claude|codex] [--pane %N]... [--all-panes] [--no-tools] [--timeout S] -- PROMPT
@@ -333,6 +335,9 @@ fn config_check() -> Result<(), String> {
             (None, true) => println!("✓ {}", c.file.display()),
             (None, false) => println!("· {} (absent: defaults)", c.file.display()),
         }
+    }
+    if let Ok(s) = workspace_config::load_settings() {
+        harness::print_check(&s.agents);
     }
     if bad > 0 {
         return Err(format!(
