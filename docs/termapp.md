@@ -13,7 +13,8 @@ with Ratatui. The desktop draws the same model as a native panel; see
 
 ```sh
 dreamer-termapp app.toml            # run it in this terminal
-dreamer-termapp --check app.toml    # validate only
+dreamer-termapp --check app.toml    # validate only (--json: also the grant it needs)
+dreamer-termapp --preview app.toml  # draw it once from fixtures, no daemon
 dream app run panes --method tmux.topology --method actions.submit --all-panes \
     -- dreamer-termapp app.toml      # run it in a new window with a narrow grant
 ```
@@ -26,6 +27,7 @@ id = "local.panes"          # dotted lowercase
 version = "0.1.0"
 title = "Panes"
 capabilities = ["tmux.topology", "actions.submit"]
+# all_panes = true          # grant every pane: to read others, or hear their events
 
 [data.panes]
 method = "tmux.topology"    # a query, never a mutation
@@ -71,6 +73,37 @@ params = { action = { kind = { rename_window = { window = "${selected.window}", 
 Validation is strict: unknown keys, unknown methods, mutations as data
 sources, malformed placeholders, and duplicate or reserved keys are errors,
 each reported with where it is.
+
+## Building an app
+
+Building an app takes five steps, each a `dream app` command
+([cli.md](cli.md#apps)). An agent can do all of them: `dream skills install`
+gives Claude Code and Codex the `dreamer-apps` skill, which walks through
+them.
+
+1. **Write** the package directory: `app.toml`, and for each view's data
+   source a `fixtures/<source>.json` holding what its method returns.
+2. **Check:** `dream app check DIR` lists every problem and the grant the
+   app needs: its `capabilities`, plus `events.subscribe` when a source
+   follows events, on its own pane, its agent's panes, or every pane with
+   `all_panes`.
+3. **Preview:** `dream app preview DIR` draws the app once from its
+   fixtures, through its module's `transform`, with no daemon. The status
+   line says `preview from fixtures`.
+4. **Install:** `dream app install DIR` checks it, previews it when it has
+   fixtures, and copies it to `<config dir>/apps/<id>/`. A package that
+   fails changes nothing. The version it replaces is kept in
+   `apps/.last-good/`, and `dream app rollback NAME` swaps it back.
+5. **Launch:** `dream app launch NAME` runs it in a new tmux window as a
+   registered app with exactly the grant it needs. It keeps running with
+   no desktop window open.
+
+An installed app that is running reloads itself when its files change,
+and an install replaces its files whole. A version that does not validate
+leaves the running one in place.
+
+Events about a pane reach an app only when that pane is in its grant. A
+monitor of jobs, which run in their own panes, sets `all_panes = true`.
 
 ## Modules
 

@@ -38,6 +38,7 @@ mod agents;
 mod app;
 mod ask;
 mod bridge;
+mod build;
 mod daemon;
 mod extprobe;
 mod hosts;
@@ -86,7 +87,8 @@ const USAGE: &str = "usage:
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
   dream service uninstall [--no-stop]
-  dream app run APP_ID [--method M]... [--all-panes] [--session $N] -- PROGRAM [ARGS...]
+  dream app check|preview|install|rollback|list|launch ... (see `dream app`)
+  dream app run APP_ID [--method M]... [--all-panes | --pane %N...] [--session $N] -- PROGRAM [ARGS...]
   dream --version";
 
 fn main() -> ExitCode {
@@ -148,6 +150,15 @@ fn main() -> ExitCode {
                 _ => Err(format!("unexpected arguments {extra:?}\n{USAGE}")),
             })
         }
+        ["app", "check", rest @ ..] => build::check(&to_owned(rest)),
+        ["app", "preview", rest @ ..] => build::preview(&to_owned(rest)),
+        ["app", "install", rest @ ..] => build::install(&to_owned(rest)),
+        ["app", "rollback", rest @ ..] => build::rollback(&to_owned(rest)),
+        ["app", "list"] => build::list(),
+        ["app", "launch", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| build::launch(&d, &extra))
+        }
+        ["app"] => Err(build::USAGE.into()),
         ["app", "run", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| app::run(&d, &extra))
         }
@@ -234,10 +245,16 @@ fn main() -> ExitCode {
 /// Agent skills that ship with Dreamer: instructions an agent (Claude
 /// Code, Codex) reads to help with Dreamer, so people need not edit its
 /// files by hand.
-const SKILLS: &[(&str, &str)] = &[(
-    "dreamer-config",
-    include_str!("../skills/dreamer-config/SKILL.md"),
-)];
+const SKILLS: &[(&str, &str)] = &[
+    (
+        "dreamer-config",
+        include_str!("../skills/dreamer-config/SKILL.md"),
+    ),
+    (
+        "dreamer-apps",
+        include_str!("../skills/dreamer-apps/SKILL.md"),
+    ),
+];
 
 fn skill_description(text: &str) -> &str {
     text.lines()
@@ -577,6 +594,10 @@ fn first_session(tmux: &std::path::Path, socket: &Socket) -> Option<String> {
         .lines()
         .next()
         .map(|s| format!("={s}"))
+}
+
+fn to_owned(args: &[&str]) -> Vec<String> {
+    args.iter().map(|s| (*s).to_owned()).collect()
 }
 
 #[cfg(test)]

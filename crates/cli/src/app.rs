@@ -15,7 +15,7 @@ fn rt() -> Result<tokio::runtime::Runtime, String> {
 }
 
 pub const USAGE: &str = "usage:
-  dream app run APP_ID [--method METHOD]... [--all-panes] [--session $N] [--ttl-ms N]
+  dream app run APP_ID [--method METHOD]... [--all-panes | --pane %N...] [--session $N] [--ttl-ms N]
                 [--name NAME] -- PROGRAM [ARGS...]";
 
 /// `dream app run`.
@@ -36,6 +36,14 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         match flag.as_str() {
             "--method" => grant.methods.push(value()?),
             "--all-panes" => grant.all_panes = true,
+            "--pane" => {
+                let v = value()?;
+                grant.panes.push(
+                    v.trim_start_matches('%')
+                        .parse()
+                        .map_err(|_| format!("`{v}` is not a pane (%N)"))?,
+                );
+            }
             "--session" => {
                 let v = value()?;
                 session_id = Some(

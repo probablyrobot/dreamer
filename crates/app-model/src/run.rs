@@ -265,6 +265,11 @@ async fn rows_of(c: &client::Client, src: &Source) -> Result<Vec<Value>, (bool, 
         to_json(&toml::Value::Table(src.params.clone())),
     )
     .await?;
+    Ok(rows_in(result, src))
+}
+
+/// The rows in a method's `result`, as `src` takes them.
+fn rows_in(result: Value, src: &Source) -> Vec<Value> {
     let data = match &src.path {
         Some(p) => field(&result, p).cloned().unwrap_or(Value::Null),
         None => result,
@@ -275,7 +280,47 @@ async fn rows_of(c: &client::Client, src: &Source) -> Result<Vec<Value>, (bool, 
         other => vec![other],
     };
     rows.truncate(src.limit);
-    Ok(rows)
+    rows
+}
+
+/// The app as it first looks, with no daemon: the view's data source is
+/// read from `fixtures/<source>.json` beside the manifest (the method's
+/// result as the daemon would return it), taken at the source's `path`,
+/// and passed through the module's `transform`. A view with a source
+/// needs its fixture; the error names the file.
+pub async fn preview(path: &Path) -> Result<App, String> {
+    let current: Current = Rc::default();
+    let pkg = load_package(path, &current).await?;
+    let mut app = App::new(pkg.manifest.clone());
+    crate::agent::setup_preview(&mut app);
+    let name = app.manifest.view.source.clone();
+    if let Some(src) = app.manifest.data.get(&name).cloned() {
+        let file = path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("fixtures")
+            .join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&file).map_err(|e| {
+            format!(
+                "data source `{name}` needs a fixture to preview: {}: {e}",
+                file.display()
+            )
+        })?;
+        let result: Value =
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
+        let mut rows = rows_in(result, &src);
+        if let Some(s) = &pkg.script {
+            match s.handle("transform", &Value::Array(rows.clone())).await {
+                Ok(None) => {}
+                Ok(Some(Value::Array(t))) => rows = t,
+                Ok(Some(_)) => return Err("transform must return a list of rows".into()),
+                Err(e) => return Err(format!("transform: {e}")),
+            }
+        }
+        app.set_rows(rows, now_ms());
+    }
+    app.link = Link::Preview;
+    Ok(app)
 }
 
 /// One connection for a package's contributions (spec 12.2.1): its
