@@ -365,12 +365,13 @@ pub async fn ensure_running(launch: &Launch, role: &str) -> Result<(Client, bool
         Err(ClientError::NotRunning(_)) => {}
         Err(e) => return Err(e),
     }
-    start(launch)?;
+    let mut child = start(launch)?;
     let deadline = tokio::time::Instant::now() + launch.wait;
     loop {
         match Client::connect(&launch.socket, role).await {
             Ok(c) => return Ok((c, true)),
             Err(ClientError::NotRunning(_)) if tokio::time::Instant::now() < deadline => {
+                exited(&mut child)?;
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(ClientError::NotRunning(_)) => return Err(start_timeout()),
@@ -391,12 +392,13 @@ pub async fn ensure_running_raw(launch: &Launch) -> Result<(UnixStream, bool), C
     if let Ok(s) = connect().await {
         return Ok((s, false));
     }
-    start(launch)?;
+    let mut child = start(launch)?;
     let deadline = tokio::time::Instant::now() + launch.wait;
     loop {
         match connect().await {
             Ok(s) => return Ok((s, true)),
             Err(_) if tokio::time::Instant::now() < deadline => {
+                exited(&mut child)?;
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             Err(_) => return Err(start_timeout()),
@@ -404,20 +406,51 @@ pub async fn ensure_running_raw(launch: &Launch) -> Result<(UnixStream, bool), C
     }
 }
 
-/// Start a detached daemon: no standard streams of ours, so it outlives
-/// whoever started it (a CLI call, or a bridge under SSH).
-fn start(launch: &Launch) -> Result<(), ClientError> {
+/// Start a detached daemon: no standard input or output of ours, so it
+/// outlives whoever started it (a CLI call, or a bridge under SSH). Its
+/// standard error is kept for the reason if it stops during startup; once
+/// running it writes only to its log.
+fn start(launch: &Launch) -> Result<std::process::Child, ClientError> {
+    for socket in [
+        launch.socket.clone(),
+        launch.socket.with_file_name("dreamerd.rpc.sock"),
+    ] {
+        platform::check_socket_path(&socket).map_err(ClientError::Spawn)?;
+    }
     Command::new(&launch.daemon)
         .arg("--background")
         .args(&launch.args)
         .envs(launch.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .current_dir("/")
         .spawn()
-        .map(drop)
         .map_err(|e| ClientError::Spawn(format!("{}: {e}", launch.daemon.display())))
+}
+
+/// `Err` with the daemon's reason when it has stopped during startup. One
+/// that found another daemon already running (exit 3) is not a failure:
+/// that one answers.
+fn exited(child: &mut std::process::Child) -> Result<(), ClientError> {
+    let Ok(Some(status)) = child.try_wait() else {
+        return Ok(());
+    };
+    if status.success() || status.code() == Some(3) {
+        return Ok(());
+    }
+    let mut err = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        use std::io::Read;
+        let _ = e.read_to_string(&mut err);
+    }
+    let why = err
+        .lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("dreamerd: "))
+        .or_else(|| err.lines().rev().find(|l| !l.trim().is_empty()))
+        .map_or_else(|| format!("it exited with {status}"), str::to_owned);
+    Err(ClientError::Spawn(why))
 }
 
 fn start_timeout() -> ClientError {

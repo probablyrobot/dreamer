@@ -140,10 +140,16 @@ fn main() -> ExitCode {
             }
         };
     }
+    let background = args.background;
     match run(args) {
         Ok(code) => code,
         Err(e) => {
             log::warn(format!("stopped: {e}"));
+            // Whoever started a background daemon reads why it could not
+            // start from its standard error (`client::ensure_running`).
+            if background {
+                eprintln!("dreamerd: {e}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -194,6 +200,8 @@ fn run(args: Args) -> Result<ExitCode, String> {
         log::init(Box::new(std::io::stderr()));
     }
 
+    platform::check_socket_path(&platform::socket_path())?;
+    platform::check_socket_path(&jsonrpc::socket_path())?;
     let Some(lock) = take_lock()? else {
         return Ok(ExitCode::from(ALREADY_RUNNING));
     };

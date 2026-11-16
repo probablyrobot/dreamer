@@ -52,6 +52,24 @@ pub fn rpc_socket_path() -> PathBuf {
     runtime_dir().join("dreamerd.rpc.sock")
 }
 
+/// The longest Unix socket path the system accepts, in bytes (the size of
+/// `sun_path`, less its terminating NUL).
+pub const SOCKET_PATH_MAX: usize = if cfg!(target_os = "macos") { 103 } else { 107 };
+
+/// Refuse a socket path the system could not bind, before trying, with a
+/// reason a person can act on.
+pub fn check_socket_path(p: &Path) -> Result<(), String> {
+    let n = p.as_os_str().len();
+    if n > SOCKET_PATH_MAX {
+        return Err(format!(
+            "the socket path {} is {n} bytes, longer than the {SOCKET_PATH_MAX} this system allows; \
+             use a shorter DREAMER_RUNTIME_DIR",
+            p.display()
+        ));
+    }
+    Ok(())
+}
+
 pub fn lock_path() -> PathBuf {
     runtime_dir().join("dreamerd.lock")
 }

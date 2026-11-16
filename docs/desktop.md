@@ -117,7 +117,8 @@ the coordinator show none: the host's events are not relayed.
   sidebar (sessions)" in the palette opens or closes a narrow sidebar listing the endpoint's sessions. Clicking one shows it
   in this window. This is local: it does not switch any tmux client.
 - **Status.** The tab strip says something only when something is not
-  normal: "connecting…", "reconnecting: why", or "N panes catching up"
+  normal: "connecting…", "reconnecting: why", "could not start dreamerd:
+  why" (see [daemon.md](daemon.md#files)), or "N panes catching up"
   while panes resynchronize.
 - **Saved arrangement.** The window remembers the session it shows,
   whether the sidebar is open, and where it was on screen. It is kept in

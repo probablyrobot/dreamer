@@ -423,3 +423,42 @@ async fn a_daemon_crash_mid_action_is_outcome_unknown_after_restart() {
         .await
         .expect("shutdown");
 }
+
+/// A daemon that cannot start says why, to the client that started it,
+/// instead of the client waiting until it times out (#261).
+#[tokio::test]
+async fn a_daemon_that_cannot_start_gives_the_client_its_reason() {
+    let d = Dirs::new();
+
+    // The client's own socket path is too long: refused before starting.
+    let mut launch = d.launch(&[]);
+    let long = d.root.join("r".repeat(120));
+    launch.socket = long.join("dreamerd.sock");
+    let e = ensure_running(&launch, "test").await.expect_err("refused");
+    assert!(matches!(e, ClientError::Spawn(_)), "{e}");
+    assert!(e.to_string().contains("shorter DREAMER_RUNTIME_DIR"), "{e}");
+
+    // The daemon's runtime directory is too long for its sockets: it stops
+    // at once, and its reason reaches the client.
+    let mut launch = d.launch(&[]);
+    let deep = d.root.join("r".repeat(100));
+    for (k, v) in &mut launch.env {
+        if k == "DREAMER_RUNTIME_DIR" {
+            *v = deep.display().to_string();
+        }
+    }
+    let started = std::time::Instant::now();
+    let e = ensure_running(&launch, "test").await.expect_err("refused");
+    assert!(e.to_string().contains("shorter DREAMER_RUNTIME_DIR"), "{e}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the reason came only after {:?}",
+        started.elapsed()
+    );
+
+    // No daemon executable: the spawn error names it.
+    let mut launch = d.launch(&[]);
+    launch.daemon = d.root.join("no-such-dreamerd");
+    let e = ensure_running(&launch, "test").await.expect_err("refused");
+    assert!(e.to_string().contains("no-such-dreamerd"), "{e}");
+}
