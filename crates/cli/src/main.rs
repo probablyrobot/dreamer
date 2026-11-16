@@ -22,7 +22,7 @@
 //! dream read %PANE [--history N] [--json]
 //!                                       a pane's text from the daemon's mirror
 //! dream mirrors [--json]                mirror state, tier, and journal of every pane
-//! dream tier %PANE hot|warm             set a pane's observation tier
+//! dream tier %PANE hot|warm|cold        set a pane's observation tier
 //! dream bridge --stdio [-L socket | --tmux-socket-path P] [--tmux PATH]
 //!                                       the daemon's protocol over stdin/stdout (for SSH)
 //! dream hosts connect|list|call|disconnect ...
@@ -73,7 +73,7 @@ const USAGE: &str = "usage:
   dream doctor
   dream read %PANE [--history N] [--json]
   dream mirrors [--json]
-  dream tier %PANE hot|warm
+  dream tier %PANE hot|warm|cold
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream rpc [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream extensions [--json] | dream extensions restart NAME

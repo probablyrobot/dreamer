@@ -78,7 +78,13 @@ pub enum MirrorState {
     /// Restored and following the pane's output.
     Live,
     Failed(String),
+    /// The Cold tier: no mirror and no journal; its output is dropped
+    /// unparsed. Any request for the pane's content attaches it again.
+    Cold,
 }
+
+/// The Cold panes of one connection.
+pub(crate) type ColdSet = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<TmuxPaneId>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MirrorStatus {
@@ -116,6 +122,16 @@ pub(crate) enum Control {
     States {
         reply: oneshot::Sender<Vec<(TmuxPaneId, PaneGeneration, MirrorState)>>,
     },
+    /// Into the Cold tier, unless anything follows the pane.
+    Cool {
+        pane: TmuxPaneId,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Out of the Cold tier: `true` if it was Cold and is now attaching.
+    Warm {
+        pane: TmuxPaneId,
+        reply: oneshot::Sender<bool>,
+    },
 }
 
 /// The mirrors of one tmux connection.
@@ -126,7 +142,11 @@ pub struct MirrorHost {
     epoch: ConnectionEpoch,
     retention: Retention,
     host_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    cold: ColdSet,
 }
+
+/// How long a request waits for a Cold pane to be attached again.
+const COLD_WAKE: Duration = Duration::from_secs(5);
 
 pub(crate) fn worker_of(pane: TmuxPaneId, workers: usize) -> usize {
     pane.0 as usize % workers.max(1)
@@ -158,15 +178,19 @@ impl MirrorHost {
             .collect::<std::io::Result<Vec<_>>>()?;
         let (control, control_rx) = mpsc::channel(256);
         let (changes_tx, changes) = watch::channel(0u64);
-        router::spawn(router::Router::new(
-            conn,
-            events,
-            control_rx,
-            control.clone(),
-            workers.clone(),
-            epoch,
-            changes_tx,
-        ))
+        let cold = ColdSet::default();
+        router::spawn(
+            router::Router::new(
+                conn,
+                events,
+                control_rx,
+                control.clone(),
+                workers.clone(),
+                epoch,
+                changes_tx,
+            )
+            .with_cold(cold.clone()),
+        )
         .await;
         Ok((
             MirrorHost {
@@ -175,6 +199,7 @@ impl MirrorHost {
                 epoch,
                 retention: config.retention,
                 host_bytes,
+                cold,
             },
             changes,
         ))
@@ -193,15 +218,56 @@ impl MirrorHost {
         self.host_bytes.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Whether the pane is in the Cold tier.
+    pub fn is_cold(&self, pane: TmuxPaneId) -> bool {
+        self.cold.lock().is_ok_and(|c| c.contains(&pane))
+    }
+
+    /// Bring a Cold pane back before its content is asked for: a fresh
+    /// attach (a cold attach, as for a new pane), waited for
+    /// up to `COLD_WAKE`. Nothing for any other pane, so the hot path costs
+    /// one set lookup.
+    async fn awake(&self, pane: TmuxPaneId) {
+        if !self.is_cold(pane) {
+            return;
+        }
+        let (reply, answer) = oneshot::channel();
+        if self
+            .control
+            .send(Control::Warm { pane, reply })
+            .await
+            .is_ok()
+            && answer.await.unwrap_or(false)
+        {
+            self.wait_live(&[pane], COLD_WAKE).await;
+        }
+    }
+
+    /// Put a pane in the Cold tier: its mirror and journal are dropped, and
+    /// its output is discarded before any VT work. Refused while anything
+    /// follows the pane (a view, a tap, a filter).
+    pub async fn set_cold(&self, pane: TmuxPaneId) -> Result<(), String> {
+        let (reply, answer) = oneshot::channel();
+        self.control
+            .send(Control::Cool { pane, reply })
+            .await
+            .map_err(|_| "the mirror router has stopped".to_owned())?;
+        answer
+            .await
+            .map_err(|_| "the mirror router has stopped".to_owned())?
+    }
+
     /// Subscribe to a live mirror: replay after `resume` when it is still
     /// retained for the same generation, otherwise a checkpoint. Records
-    /// after the starting point arrive on `sink`, in order.
+    /// after the starting point arrive on `sink`, in order. A Cold pane is
+    /// attached again first.
     pub async fn subscribe(
         &self,
         pane: TmuxPaneId,
         resume: Option<(PaneGeneration, u64)>,
         sink: Sink,
     ) -> Result<Started, String> {
+        self.awake(pane).await;
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
         w.urgent(worker::WorkerMsg::Subscribe {
@@ -226,6 +292,7 @@ impl MirrorHost {
         event: worker::InputEvent,
         client: Option<u64>,
     ) -> Result<Vec<u8>, String> {
+        self.awake(pane).await;
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
         w.urgent(worker::WorkerMsg::Encode {
@@ -243,6 +310,7 @@ impl MirrorHost {
 
     /// Set a pane's tier. `false` when the pane has no live mirror.
     pub async fn set_tier(&self, pane: TmuxPaneId, tier: Tier) -> bool {
+        self.awake(pane).await;
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
         if w.urgent(worker::WorkerMsg::SetTier { pane, tier, reply })
@@ -293,6 +361,7 @@ impl MirrorHost {
         pane: TmuxPaneId,
         history: usize,
     ) -> Option<Result<ReadResult, String>> {
+        self.awake(pane).await;
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
         w.urgent(worker::WorkerMsg::Read {
@@ -313,6 +382,7 @@ impl MirrorHost {
         history: usize,
         after: Option<u64>,
     ) -> Option<Result<Option<worker::TailResult>, String>> {
+        self.awake(pane).await;
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
         w.urgent(worker::WorkerMsg::Tail {

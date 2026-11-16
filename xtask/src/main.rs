@@ -2,6 +2,7 @@
 
 mod acceptance;
 mod api;
+mod bench;
 mod bindings;
 mod color_schemes;
 mod deps;
@@ -26,6 +27,7 @@ usage: cargo xtask <command>
 commands:
   doctor                       check the local toolchain and native build prerequisites
   api [--check]                regenerate (or check) API artifacts from crates/api/schema
+  bench headless [--panes N]   the headless benchmark workloads, release build, results in target/bench
   bindings [--check]           regenerate (or check) the libghostty-vt Rust bindings
   deps prepare|path [--target <triple>]
                                fetch, verify, and build pinned native dependencies
@@ -51,6 +53,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("doctor") => doctor::run(&args[1..]),
         Some("api") => api::run(&args[1..]),
+        Some("bench") => bench::run(&args[1..]),
         Some("bindings") => bindings::run(&args[1..]),
         Some("deps") => deps::run(&args[1..]),
         Some("headless") => headless::run(&args[1..]),

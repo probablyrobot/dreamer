@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 36;
+pub const PROTOCOL_MINOR: u32 = 37;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -170,6 +170,8 @@ pub enum MirrorState {
     Attaching = 1,
     Live = 2,
     Failed = 3,
+    /// The Cold tier: no mirror and no output from tmux for this client; asking for its content attaches it again.
+    Cold = 4,
 }
 
 impl MirrorState {
@@ -180,6 +182,7 @@ impl MirrorState {
             Self::Attaching => "attaching",
             Self::Live => "live",
             Self::Failed => "failed",
+            Self::Cold => "cold",
         }
     }
 
@@ -189,6 +192,7 @@ impl MirrorState {
             "attaching" => Some(Self::Attaching),
             "live" => Some(Self::Live),
             "failed" => Some(Self::Failed),
+            "cold" => Some(Self::Cold),
             _ => None,
         }
     }

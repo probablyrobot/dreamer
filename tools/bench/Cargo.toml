@@ -1,0 +1,25 @@
+[package]
+name = "bench"
+description = "The benchmark harness: headless workloads against a real tmux and dreamerd (spec 16.5, 16.6)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "dreamer-bench"
+path = "src/main.rs"
+
+[dependencies]
+api = { path = "../../crates/api" }
+client = { path = "../../crates/client" }
+platform = { path = "../../crates/platform" }
+replica = { path = "../../crates/replica" }
+serde_json = "1.0.154"
+terminal-ghostty = { path = "../../crates/terminal-ghostty" }
+tmux-backend = { path = "../../crates/tmux-backend" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

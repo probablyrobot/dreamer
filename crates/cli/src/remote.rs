@@ -220,13 +220,13 @@ pub fn mirrors(d: &DaemonArgs, json: bool) -> Result<(), String> {
     })
 }
 
-/// `dream tier %PANE hot|warm`.
+/// `dream tier %PANE hot|warm|cold`.
 pub fn tier(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     let [target, tier] = args else {
-        return Err("usage: dream tier %PANE hot|warm".into());
+        return Err("usage: dream tier %PANE hot|warm|cold".into());
     };
     let pane = id(target, '%', "pane")?;
-    let tier = api::Tier::from_name(tier).ok_or("tier must be hot or warm")?;
+    let tier = api::Tier::from_name(tier).ok_or("tier must be hot, warm, or cold")?;
     rt()?.block_on(async {
         let mut c = session(d).await?;
         call(
