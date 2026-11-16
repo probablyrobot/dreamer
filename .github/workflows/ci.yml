@@ -213,11 +213,12 @@ jobs:
           test -f /usr/share/icons/hicolor/256x256/apps/dev.dreamer.Dreamer.png
           test -f /usr/share/icons/hicolor/scalable/apps/dev.dreamer.Dreamer.svg
           # No build-directory paths in the installed binaries.
-          if grep -l "package/arch/src" /usr/bin/dreamer /usr/bin/dreamerd /usr/bin/dream; then
+          if grep -l "package/arch/src" /usr/bin/dreamer /usr/bin/dreamerd /usr/bin/dream /usr/bin/dreamer-termapp; then
             echo "build paths leaked into the binaries above"; exit 1
           fi
           dreamerd --self-check
           dream --version
+          dreamer-termapp --version
           # No display in CI: the app must say so and exit 4.
           set +e; dreamer --smoke; code=$?; set -e
           test "$code" -eq 4
@@ -273,6 +274,7 @@ jobs:
           bin="$home/.local/bin"
           "$bin/dreamerd" --self-check
           "$bin/dream" --version
+          "$bin/dreamer-termapp" --version
           # No display in CI: the app must say so and exit 4.
           set +e; "$bin/dreamer" --smoke; code=$?; set -e
           test "$code" -eq 4
@@ -289,7 +291,7 @@ jobs:
           "$bin/dream" shutdown
           "$tmux_bin" -L ci-tarball kill-server
           HOME="$home" XDG_DATA_HOME= XDG_CONFIG_HOME= sh packaging/install.sh --uninstall
-          test ! -e "$bin/dream" && test ! -e "$home/.local/share/dreamer"
+          test ! -e "$bin/dream" && test ! -e "$bin/dreamer-termapp" && test ! -e "$home/.local/share/dreamer"
           test ! -e "$home/.local/share/icons/hicolor/256x256/apps/dev.dreamer.Dreamer.png"
       - name: Keep the tarball
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

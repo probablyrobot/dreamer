@@ -6,8 +6,10 @@
 | Any Linux (generic) | `cargo xtask package --platform linux` (on Linux) | `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256`, installed into your home directory by `install.sh` |
 | Arch Linux | `cargo xtask package --platform arch` | `target/package/arch/`: source tarball, `PKGBUILD`, and, on Arch, `dreamer-<version>-1-<arch>.pkg.tar.zst` |
 
-Both packages contain the three executables: `dreamer` (desktop app),
-`dreamerd` (daemon), and `dream` (CLI). Launched with no arguments,
+The desktop packages contain four executables: `dreamer` (desktop app),
+`dreamerd` (daemon), `dream` (CLI), and `dreamer-termapp` (the runtime for
+[pane apps](termapp.md) and filter panes, which the app and `dream` start
+from beside themselves). Launched with no arguments,
 `dreamer` follows the active pane of your default tmux server, starting
 `dreamerd` if it isn't running. The default terminal font, JetBrains Mono
 Nerd Font (Mono variant), comes with the package (see
@@ -17,14 +19,16 @@ tested against the tmux baseline in
 
 ## macOS
 
-`Dreamer.app/Contents/MacOS` holds `dreamer`, `dreamerd`, and `dream`. The
+`Dreamer.app/Contents/MacOS` holds `dreamer`, `dreamerd`, `dream`, and
+`dreamer-termapp`. The
 app starts the daemon from there. `Contents/Resources/Fonts` holds the
 default font (four styles and its license), which the app loads itself, so
 nothing has to be installed system-wide. `Contents/Resources/Dreamer.icns`
 is the application icon. Every executable is arm64 with a minimum
 of macOS 15.0. Each helper is signed, then the bundle is ad hoc signed over
 them. `cargo xtask package` verifies all of this, and runs
-`dreamerd --self-check` and `dream --version` from inside the bundle.
+`dreamerd --self-check`, `dream --version`, and `dreamer-termapp --version`
+from inside the bundle.
 
 To install, unzip into `/Applications`. To use the CLI from a shell:
 
@@ -33,7 +37,10 @@ ln -s /Applications/Dreamer.app/Contents/MacOS/dream /usr/local/bin/dream
 ```
 
 The bundle is ad hoc signed, not Developer ID signed or notarized; that is
-a separate release step. For a zip downloaded from elsewhere, Gatekeeper
+a separate release step. Beside the zip, `<zip>.json` records what was
+built and how it is signed: size and SHA-256, the commit, the target and
+minimum macOS, the executables, and the signing kind (`adhoc` or the
+signing authority), team, and whether a notarization ticket is stapled. For a zip downloaded from elsewhere, Gatekeeper
 asks you to confirm the first launch: Control-click the app, choose Open,
 then confirm.
 
@@ -55,7 +62,7 @@ verifies its SHA-256, and installs:
 | Path | Content |
 | --- | --- |
 | `~/.local/share/dreamer/versions/<version>/` | The unpacked release; `~/.local/share/dreamer/current` points to the active one |
-| `~/.local/bin/dreamer`, `dreamerd`, `dream` | Links to the active version |
+| `~/.local/bin/dreamer`, `dreamerd`, `dream`, `dreamer-termapp` | Links to the active version |
 | `~/.local/share/fonts/dreamer/` | JetBrains Mono Nerd Font, for other applications too. Dreamer loads its own copy regardless |
 | `~/.local/share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
 | `~/.local/share/icons/hicolor/*/apps/dev.dreamer.Dreamer.{png,svg}` | Application icon, 16 to 512 px and scalable |

@@ -2,7 +2,7 @@
 //!
 //! - `cargo xtask package --platform macos [--debug]` (or `current` on a
 //!   Mac) writes `target/package/Dreamer.app` with `dreamer`, `dreamerd`,
-//!   and `dream`, plus `dreamer-<version>-aarch64-apple-darwin.zip` and its
+//!   `dream`, and `dreamer-termapp`, plus `dreamer-<version>-aarch64-apple-darwin.zip` and its
 //!   `.sha256`. Bundles are ad hoc signed; Developer ID signing and
 //!   notarization are a separate release step (spec 3.2, 17.5).
 //! - `cargo xtask package --platform linux` (on Linux) writes
@@ -25,8 +25,10 @@ use crate::util::repo_root;
 
 const BUNDLE_ID: &str = "dev.dreamer.Dreamer";
 const MIN_MACOS: &str = "15.0";
-/// Executables in `Contents/MacOS`; the first is the bundle's main one.
-const EXECUTABLES: [&str; 3] = ["dreamer", "dreamerd", "dream"];
+/// Executables in `Contents/MacOS` and the Linux `bin/`; the first is the
+/// bundle's main one. `dreamer-termapp` runs pane apps and filter panes;
+/// the app and `dream` look for it beside themselves.
+const EXECUTABLES: [&str; 4] = ["dreamer", "dreamerd", "dream", "dreamer-termapp"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Profile {
@@ -129,6 +131,8 @@ fn linux_tarball(root: &Path) -> Result<(), String> {
             "dreamer-server",
             "-p",
             "dreamer-cli",
+            "-p",
+            "dreamer-termapp",
         ])
         .env(
             "RUSTFLAGS",
@@ -548,6 +552,8 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
             "dreamer-server",
             "--package",
             "dreamer-cli",
+            "--package",
+            "dreamer-termapp",
         ])
         .current_dir(root);
     if profile == Profile::Release {
@@ -555,7 +561,7 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
     }
     let status = cargo.status().map_err(|e| format!("cargo build: {e}"))?;
     if !status.success() {
-        return Err("cargo build of dreamer, dreamerd, and dream failed".into());
+        return Err("cargo build of dreamer, dreamerd, dream, and dreamer-termapp failed".into());
     }
     let bin_dir = root.join("target").join(if profile == Profile::Release {
         "release"
@@ -694,10 +700,15 @@ pub fn verify_bundle(app: &Path) -> Result<(), String> {
         "dreamerd",
     )?;
     let cli = run_checked(Command::new(macos.join("dream")).arg("--version"), "dream")?;
+    let termapp = run_checked(
+        Command::new(macos.join("dreamer-termapp")).arg("--version"),
+        "dreamer-termapp",
+    )?;
     println!(
-        "package: dreamer, dreamerd, dream: arm64, ad hoc signed, minimum macOS {MIN_MACOS}; {}; {}",
+        "package: dreamer, dreamerd, dream, dreamer-termapp: arm64, ad hoc signed, minimum macOS {MIN_MACOS}; {}; {}; {}",
         daemon.trim(),
-        cli.trim()
+        cli.trim(),
+        termapp.trim()
     );
     Ok(())
 }
@@ -809,7 +820,69 @@ pub fn zip_bundle(app: &Path, out: &Path) -> Result<PathBuf, String> {
         format!("{hash}  {file_name}\n"),
     )
     .map_err(|e| e.to_string())?;
+    record_bundle(app, &zip, hash)?;
     Ok(zip)
+}
+
+/// How the bundle is signed, from `codesign`: the kind (`adhoc`, or the
+/// first signing authority), the team, and whether a notarization ticket
+/// is stapled.
+fn signing_state(app: &Path) -> (String, String, bool) {
+    let out = Command::new("codesign")
+        .args(["-d", "--verbose=2"])
+        .arg(app)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
+        .unwrap_or_default();
+    let field = |k: &str| {
+        out.lines()
+            .find_map(|l| l.strip_prefix(k).map(str::trim))
+            .map(str::to_owned)
+    };
+    let kind = match field("Signature=") {
+        Some(s) if s == "adhoc" => "adhoc".to_owned(),
+        _ => field("Authority=").unwrap_or_else(|| "unsigned".to_owned()),
+    };
+    let team = field("TeamIdentifier=").unwrap_or_else(|| "not set".to_owned());
+    let stapled = Command::new("xcrun")
+        .args(["stapler", "validate", "-q"])
+        .arg(app)
+        .status()
+        .is_ok_and(|s| s.success());
+    (kind, team, stapled)
+}
+
+/// `<zip>.json`: what the zip is, the commit it was built from, and its
+/// signing state, for the release's build report (spec 17.6).
+fn record_bundle(app: &Path, zip: &Path, sha256: &str) -> Result<(), String> {
+    use crate::gate::json_escape as esc;
+    let root = repo_root();
+    let commit = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&root)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default();
+    let bytes = std::fs::metadata(zip).map_or(0, |m| m.len());
+    let (kind, team, stapled) = signing_state(app);
+    let exes: Vec<String> = EXECUTABLES.iter().map(|e| format!("\"{e}\"")).collect();
+    let json = format!(
+        "{{\n  \"artifact\": \"{}\",\n  \"bytes\": {bytes},\n  \"sha256\": \"{}\",\n  \
+         \"target\": \"aarch64-apple-darwin\",\n  \"version\": \"{}\",\n  \"commit\": \"{}\",\n  \
+         \"minimum_macos\": \"{MIN_MACOS}\",\n  \"executables\": [{}],\n  \
+         \"signing\": {{ \"kind\": \"{}\", \"team\": \"{}\", \"notarized\": {stapled} }}\n}}\n",
+        esc(&zip
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()),
+        esc(sha256),
+        esc(&version(&root)?),
+        esc(&commit),
+        exes.join(", "),
+        esc(&kind),
+        esc(&team),
+    );
+    std::fs::write(zip.with_extension("zip.json"), json).map_err(|e| e.to_string())
 }
 
 /// Unpack a bundle zip outside the source tree and launch it from there.

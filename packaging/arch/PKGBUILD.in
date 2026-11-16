@@ -41,18 +41,19 @@ build() {
   export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
   export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$srcdir=/usr/src/debug/$pkgname"
   export CXXFLAGS="${CXXFLAGS:-} -ffile-prefix-map=$srcdir=/usr/src/debug/$pkgname"
-  cargo build --release --locked -p dreamer-app -p dreamer-server -p dreamer-cli
+  cargo build --release --locked -p dreamer-app -p dreamer-server -p dreamer-cli -p dreamer-termapp
 }
 
 check() {
   cd "dreamer-$pkgver"
   ./target/release/dreamerd --self-check
   ./target/release/dream --version
+  ./target/release/dreamer-termapp --version
 }
 
 package() {
   cd "dreamer-$pkgver"
-  install -Dm755 target/release/dreamer target/release/dreamerd target/release/dream -t "$pkgdir/usr/bin"
+  install -Dm755 target/release/dreamer target/release/dreamerd target/release/dream target/release/dreamer-termapp -t "$pkgdir/usr/bin"
   install -Dm644 packaging/linux/dev.dreamer.Dreamer.desktop -t "$pkgdir/usr/share/applications"
   install -Dm644 packaging/icons/dreamer.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.dreamer.Dreamer.svg"
   for png in packaging/icons/linux/*.png; do
