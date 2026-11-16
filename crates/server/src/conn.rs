@@ -218,7 +218,7 @@ pub async fn connection_as(
                 let (service, conn, state) = (service.clone(), conn.clone(), state.clone());
                 tokio::spawn(async move {
                     // The grant decides first, before anything is acted on.
-                    if let Some(refused) = refuse(&conn, &req) {
+                    if let Some(refused) = refuse(&state, &conn, &req) {
                         let _ = conn
                             .out
                             .send(Out::Frame(Kind::Response, refused.encode_to_vec()))
@@ -426,7 +426,7 @@ pub async fn answer(service: &DaemonService, req: wire::Request) -> wire::Respon
 /// The connection's grant refuses this request: the error reply to send.
 /// A request that does not decode is left to the method's own handling,
 /// which reports it; it acts on nothing.
-fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
+fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
     let grant = conn.grant.lock().ok()?.clone();
     if grant.0.owner {
         return None;
@@ -445,10 +445,6 @@ fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
         api::method::SCRIPTS_LOAD,
         api::method::SCRIPTS_RELOAD,
         api::method::SCRIPTS_STOP,
-        api::method::FILTERS_INSTALL,
-        api::method::FILTERS_PAUSE,
-        api::method::FILTERS_RESUME,
-        api::method::FILTERS_REMOVE,
     ]
     .contains(&req.method.as_str())
     {
@@ -459,6 +455,19 @@ fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
                 format!("only the user's own clients may call {}", req.method),
             ),
         ));
+    }
+    if req.method.starts_with("filters.") {
+        return match app_filters(state, &grant, req) {
+            Err(e) => Some(failure(req.id, e)),
+            // An app lists only the filters it may manage.
+            Ok(Some(list)) => Some(wire::Response {
+                id: req.id,
+                payload: api::Response::FiltersList(list).encode(),
+                error_code: None,
+                error_message: String::new(),
+            }),
+            Ok(None) => None,
+        };
     }
     if req.method == api::method::EXTENSIONS_RESTART {
         return Some(failure(
@@ -483,6 +492,86 @@ fn refuse(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
         .check(&req.method, &request)
         .err()
         .map(|e| failure(req.id, e))
+}
+
+/// What an app may do with filters (spec 13.4: a filter pane). Only with
+/// `filters.manage` in its grant, and content read (`terminal.query`,
+/// `terminal.read`, or `taps.subscribe`):
+/// - install a filter that only reads: on panes within the app's own, with
+///   a grant of at most `taps.subscribe` on them, and no output that acts
+///   (`topic`, `recipient`, `input`); it may record events and decorate;
+/// - pause, resume, or remove such a filter, never one the user installed;
+/// - list those filters (answered here: `Some`).
+fn app_filters(
+    state: &State,
+    grant: &crate::grants::Grant,
+    req: &wire::Request,
+) -> Result<Option<api::FilterList>, RpcError> {
+    let no = |why: String| Err(RpcError::new(code::FORBIDDEN, why));
+    if !grant.method_allowed(api::MANAGE_FILTERS) {
+        return no(format!(
+            "`{}` needs `{}` in this connection's grant",
+            req.method,
+            api::MANAGE_FILTERS
+        ));
+    }
+    let reads = [
+        api::method::TERMINAL_QUERY,
+        api::method::TERMINAL_READ,
+        api::method::TAPS_SUBSCRIBE,
+    ];
+    if !reads.iter().any(|m| grant.method_allowed(m)) {
+        return no("managing filters needs content read (`terminal.query`) too".into());
+    }
+    let allowed = api::Grant {
+        owner: false,
+        methods: vec![api::method::TAPS_SUBSCRIBE.into()],
+        panes: grant.0.panes.clone(),
+        all_panes: grant.0.all_panes,
+        expires_unix_ms: grant.0.expires_unix_ms,
+    };
+    let bad = |e: String| RpcError::new(code::INVALID_PARAMS, e);
+    match api::Request::decode(&req.method, &req.payload).map_err(|e| bad(e.to_string()))? {
+        api::Request::FiltersList(_) => Ok(Some(state.filters.list_for_app(&allowed))),
+        api::Request::FiltersInstall(spec) => {
+            if spec.topic.is_some() || spec.recipient.is_some() || spec.input.is_some() {
+                return no(
+                    "an app's filter only reads: it may record events and decorate, \
+                     not publish, send, or type"
+                        .into(),
+                );
+            }
+            let g = spec.grant.clone().unwrap_or_default();
+            let wanted = api::Grant {
+                owner: false,
+                methods: g.methods,
+                panes: g.panes,
+                all_panes: g.all_panes,
+                // An app's filter ends with the app's grant.
+                expires_unix_ms: grant.0.expires_unix_ms,
+            };
+            let watched = api::Grant {
+                panes: spec.panes.clone(),
+                all_panes: spec.every_pane,
+                ..allowed.clone()
+            };
+            crate::grants::within(&allowed, &wanted)
+                .and_then(|()| crate::grants::within(&allowed, &watched))
+                .map(|()| None)
+                .or_else(no)
+        }
+        api::Request::FiltersPause(r)
+        | api::Request::FiltersResume(r)
+        | api::Request::FiltersRemove(r) => state
+            .filters
+            .app_may_manage(&r.name, &allowed)
+            .map(|()| None)
+            .or_else(no),
+        _ => no(format!(
+            "`{}` is not in this connection's grant",
+            req.method
+        )),
+    }
 }
 
 /// `apps.register`: check the ticket and that this connection's process

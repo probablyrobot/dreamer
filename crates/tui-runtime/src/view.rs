@@ -219,6 +219,13 @@ fn draw_agent(app: &App, f: &mut Frame, area: ratatui::layout::Rect, block: Bloc
         "idle"
     };
     let mut watching = String::new();
+    if kind == "filter" {
+        watching = if a.filters.is_empty() {
+            "  no filters yet".to_owned()
+        } else {
+            format!("  filters: {}", a.filters.join(", "))
+        };
+    }
     if !app.manifest.view.source.is_empty() {
         watching = format!(
             "  watching {}: {} rows",

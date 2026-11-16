@@ -37,7 +37,8 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `actions.submit` on a window or session (select, rename, kill, new window) | `all_panes` |
 | `terminal.mirrors`, `daemon.shutdown`, every `hosts.*` method | `all_panes` |
 | Metadata and the caller's own state (`tmux.topology`, `tmux.watch`, `daemon.version`, `actions.get`, `terminal.unsubscribe`, …) | Only the method |
-| `extensions.restart`, `apps.launch`, `scripts.load`, `scripts.reload`, `scripts.stop`, `filters.install`, `filters.pause`, `filters.resume`, `filters.remove` | The owner grant: no app, extension, script, or filter, whatever its grant lists |
+| `extensions.restart`, `apps.launch`, `scripts.load`, `scripts.reload`, `scripts.stop` | The owner grant: no app, extension, script, or filter, whatever its grant lists |
+| `filters.install`, `filters.list`, `filters.pause`, `filters.resume`, `filters.remove` | The owner grant, or `filters.manage` plus content read; see [Filters an app installs](filters.md#filters-an-app-installs) |
 | `messages.*` | Only the method; messages never reach a pane (see [messages.md](messages.md)) |
 | `events.subscribe` | Only the method; it then delivers only events about panes in scope, and events about no pane only with `all_panes` (see [events.md](events.md)) |
 

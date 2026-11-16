@@ -2147,13 +2147,16 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             "check_job",
             "create_pane",
             "find_lines",
+            "list_filters",
             "list_hosts",
             "list_panes",
             "list_runs",
             "move_panes",
             "read_pane",
             "send_input",
-            "start_job"
+            "start_job",
+            "stop_filter",
+            "watch_lines"
         ]
     );
     let panes = m.call("list_panes", serde_json::json!({}));
@@ -2221,6 +2224,34 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             .contains("not in this connection's grant"),
         "{input}"
     );
+    drop(m);
+
+    // A filter pane's grant: content read and filters.manage on pane 0.
+    let mut m = Mcp::start(cli.mcp(&[
+        "--method",
+        "terminal.query",
+        "--method",
+        api::MANAGE_FILTERS,
+        "--pane",
+        "%0",
+    ]));
+    let watch = m.call(
+        "watch_lines",
+        serde_json::json!({ "name": "errs", "text": "ERROR", "panes": [0], "mark": "highlight" }),
+    );
+    assert_ne!(watch["isError"], true, "{watch}");
+    let wide = m.call(
+        "watch_lines",
+        serde_json::json!({ "name": "wide", "text": "ERROR", "panes": [1] }),
+    );
+    assert_eq!(wide["isError"], true, "{wide}");
+    let listed = m.call("list_filters", serde_json::json!({}));
+    assert_eq!(
+        listed["structuredContent"]["filters"][0]["name"], "errs",
+        "{listed}"
+    );
+    let stopped = m.call("stop_filter", serde_json::json!({ "name": "errs" }));
+    assert_ne!(stopped["isError"], true, "{stopped}");
 }
 
 /// Spec 13.2: "run this check on two connected hosts and show each result".

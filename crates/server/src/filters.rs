@@ -37,6 +37,9 @@ struct Filter {
     /// Running (true) or paused, tripped, or removed (false).
     active: watch::Sender<bool>,
     removed: std::sync::atomic::AtomicBool,
+    /// Installed by the user's own client, not by an app with
+    /// `filters.manage`; no app may change it.
+    by_owner: bool,
 }
 
 impl Filter {
@@ -75,6 +78,29 @@ impl Filters {
             .unwrap_or_default();
         filters.sort_by(|a, b| a.name.cmp(&b.name));
         api::FilterList { filters }
+    }
+
+    /// Whether an app holding `allowed` (the most an app's filter may be
+    /// given: `taps.subscribe` on the app's own panes) may pause, resume,
+    /// or remove the filter `name`: one an app installed, within that. An
+    /// unknown name is left to the method, which reports it.
+    pub fn app_may_manage(&self, name: &str, allowed: &api::Grant) -> Result<(), String> {
+        let Ok(f) = self.get(name) else {
+            return Ok(());
+        };
+        if f.by_owner {
+            return Err(format!("filter `{name}` is the user's own"));
+        }
+        crate::grants::within(allowed, &f.grant)
+            .map_err(|why| format!("filter `{name}` reaches beyond this app: {why}"))
+    }
+
+    /// Only the filters an app may manage, for an app's `filters.list`.
+    pub fn list_for_app(&self, allowed: &api::Grant) -> api::FilterList {
+        let mut l = self.list();
+        l.filters
+            .retain(|f| self.app_may_manage(&f.name, allowed).is_ok());
+        l
     }
 
     fn get(&self, name: &str) -> Result<Arc<Filter>, RpcError> {
@@ -198,6 +224,7 @@ pub async fn install(state: &Arc<State>, spec: api::FilterSpec) -> Result<Filter
         grant,
         active,
         removed: std::sync::atomic::AtomicBool::new(false),
+        by_owner: crate::leases::caller().is_none_or(|c| c.owner),
     });
     let (started, ready) = oneshot::channel();
     tokio::spawn(supervise(state.clone(), filter.clone(), started));

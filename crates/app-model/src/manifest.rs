@@ -50,6 +50,9 @@ pub enum AgentKind {
     Monitor,
     /// Plans and performs layout, job, and input actions.
     Operator,
+    /// Installs and edits filters from a description, and shows the lines
+    /// they match. Reads only, plus `filters.manage` (filters that read).
+    Filter,
 }
 
 impl AgentKind {
@@ -58,10 +61,11 @@ impl AgentKind {
             AgentKind::Inspector => "inspector",
             AgentKind::Monitor => "monitor",
             AgentKind::Operator => "operator",
+            AgentKind::Filter => "filter",
         }
     }
 
-    /// Inspectors and monitors only read.
+    /// Inspectors, monitors, and filter panes only read.
     pub fn read_only(self) -> bool {
         !matches!(self, AgentKind::Operator)
     }
@@ -422,7 +426,7 @@ impl Manifest {
                 Some(s) => api::METHODS
                     .iter()
                     .any(|m| m.name.starts_with(&format!("{s}."))),
-                None => method_info(c).is_some(),
+                None => method_info(c).is_some() || c == api::MANAGE_FILTERS,
             };
             if !known {
                 errors.push(format!(
@@ -650,7 +654,25 @@ impl Manifest {
         if a.kind == AgentKind::Monitor && self.view.source.is_empty() {
             errors.push("view.source: a monitor watches a data source".into());
         }
+        let has = |m: &str| a.tools.methods.iter().any(|x| x == m);
+        if a.kind == AgentKind::Filter && !(has(api::MANAGE_FILTERS) && has("terminal.query")) {
+            errors.push(format!(
+                "agent.tools.methods: a filter pane needs `terminal.query` and `{}`",
+                api::MANAGE_FILTERS
+            ));
+        }
         for m in &a.tools.methods {
+            if m == api::MANAGE_FILTERS {
+                if a.kind != AgentKind::Filter {
+                    errors.push(format!("agent.tools.methods: only a filter pane has `{m}`"));
+                }
+                if !self.capabilities.iter().any(|c| c == m) {
+                    errors.push(format!(
+                        "agent.tools.methods: `{m}` is not among the package's capabilities"
+                    ));
+                }
+                continue;
+            }
             let Some(info) = method_info(m) else {
                 errors.push(format!("agent.tools.methods: no method `{m}`"));
                 continue;
@@ -868,6 +890,38 @@ params = { action = { rename_window = { window = "${selected.window}", name = "w
             errors
                 .iter()
                 .any(|e| e.contains("a monitor watches a data source")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_filter_pane_reads_and_manages_filters_and_nothing_else_does() {
+        let pkg = |kind: &str, methods: &str| {
+            format!(
+                "schema_version = 1\nid = \"t.f\"\nversion = \"1\"\ntitle = \"F\"\n\
+                 capabilities = [\"terminal.query\", \"filters.manage\", \"terminal.input\"]\n\
+                 [view]\ntype = \"agent\"\n[agent]\nkind = \"{kind}\"\n\
+                 tools = {{ methods = [{methods}], all_panes = true }}\n"
+            )
+        };
+        let both = "\"terminal.query\", \"filters.manage\"";
+        assert!(Manifest::parse(&pkg("filter", both)).is_ok());
+        let errors = Manifest::parse(&pkg("filter", "\"terminal.query\""))
+            .expect_err("a filter pane without filters.manage");
+        assert!(
+            errors.iter().any(|e| e.contains("a filter pane needs")),
+            "{errors:?}"
+        );
+        let errors = Manifest::parse(&pkg("filter", &format!("{both}, \"terminal.input\"")))
+            .expect_err("a filter pane that types");
+        assert!(
+            errors.iter().any(|e| e.contains("filter panes only read")),
+            "{errors:?}"
+        );
+        let errors =
+            Manifest::parse(&pkg("inspector", both)).expect_err("an inspector with filters");
+        assert!(
+            errors.iter().any(|e| e.contains("only a filter pane has")),
             "{errors:?}"
         );
     }

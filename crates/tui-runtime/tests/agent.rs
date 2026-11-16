@@ -347,3 +347,69 @@ fn an_operator_shows_its_plan_and_every_step_with_its_target_and_state() {
         "{done}"
     );
 }
+
+const FILTER: &str = r#"
+schema_version = 1
+id = "test.filter"
+version = "0.1.0"
+title = "Filter"
+capabilities = ["terminal.query", "tmux.topology", "filters.manage"]
+
+[view]
+type = "agent"
+
+[agent]
+kind = "filter"
+provider = "claude"
+tools = { methods = ["terminal.query", "tmux.topology", "filters.manage"], all_panes = true }
+"#;
+
+/// Spec 13.4: a filter pane with no model watches what is typed as plain
+/// text, shows each line its filter matches in another pane as it happens
+/// (the derived stream), and removes the filter on `stop NAME`.
+#[test]
+fn without_a_provider_a_filter_pane_watches_what_is_typed() {
+    let s = Setup::new("filter");
+    let manifest = s.root.join("app.toml");
+    std::fs::write(&manifest, FILTER).expect("manifest");
+    let other = s
+        .tmux
+        .run_checked(&["new-window", "-d", "-P", "-F", "#{pane_id}", "/bin/sh"])
+        .expect("window")
+        .trim()
+        .to_owned();
+    let pane = s.app(&manifest, Path::new("/nonexistent/claude"));
+    let head = s.wait(&pane, "said it has no model", |t| {
+        t.contains("no model") && t.contains("[live]") && t.contains("no filters yet")
+    });
+    assert!(head.contains("watched as plain text"), "{head}");
+    s.type_line(&pane, "ALARM");
+    s.wait(&pane, "installed the filter", |t| {
+        t.contains("filters: watch-alarm")
+    });
+    // The other pane's mirror may still be starting: say it until seen.
+    let seen = |t: &str| {
+        t.lines()
+            .any(|l| l.contains(&format!("{other} watch-alarm:")) && l.contains("ALARM-7"))
+    };
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let shown = loop {
+        s.tmux
+            .run_checked(&["send-keys", "-t", &other, "echo ALARM''-7", "Enter"])
+            .expect("echo");
+        std::thread::sleep(Duration::from_millis(700));
+        let t = s.screen(&pane);
+        if seen(&t) {
+            break t;
+        }
+        assert!(Instant::now() < deadline, "never showed the match:\n{t}");
+    };
+    assert!(
+        !shown.contains(&format!("{pane} watch-alarm:")),
+        "it showed its own lines:\n{shown}"
+    );
+    s.type_line(&pane, "stop watch-alarm");
+    s.wait(&pane, "removed the filter", |t| {
+        t.contains("no filters yet")
+    });
+}

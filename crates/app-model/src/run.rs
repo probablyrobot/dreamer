@@ -324,8 +324,16 @@ impl Session {
 
 fn source_events(m: &Manifest) -> (Vec<String>, Option<Duration>) {
     let source = m.data.get(&m.view.source);
+    let mut events = source.map(|s| s.events.clone()).unwrap_or_default();
+    // A filter pane shows what its filters match.
+    if m.agent
+        .as_ref()
+        .is_some_and(|a| a.kind == crate::manifest::AgentKind::Filter)
+    {
+        events.extend(["filters.matched".into(), "filters.tripped".into()]);
+    }
     (
-        source.map(|s| s.events.clone()).unwrap_or_default(),
+        events,
         source.and_then(|s| s.refresh_ms).map(Duration::from_millis),
     )
 }
@@ -389,6 +397,11 @@ pub async fn run(
                 };
                 if ended {
                     agent_run = None;
+                    // A filter pane's model may have changed its filters.
+                    if let Some(c) = conn.as_ref() {
+                        let client = c.client.clone();
+                        crate::agent::refresh_filters(&mut app, &client).await;
+                    }
                 }
             }
             ev = inputs.recv() => {
@@ -531,6 +544,9 @@ pub async fn run(
                     if let Ok(api::Notification::EventsBatch(b)) = api::Notification::decode(&topic, &payload)
                         && (b.gap.is_some() || !b.events.is_empty())
                     {
+                        if crate::agent::filter_events(&mut app, &b.events) {
+                            dirty = true;
+                        }
                         refetch = true;
                     }
                 }
@@ -598,6 +614,7 @@ pub async fn run(
                     match connect(&endpoint, &mut registered, &watch, &app.manifest.capabilities).await {
                         Ok(c) => {
                             *current.borrow_mut() = Some(c.client.clone());
+                            crate::agent::refresh_filters(&mut app, &c.client).await;
                             conn = Some(c);
                             app.link = Link::Live;
                             backoff = Duration::from_millis(500);
