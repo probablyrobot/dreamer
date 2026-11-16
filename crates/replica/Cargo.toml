@@ -11,10 +11,12 @@ publish = false
 api = { path = "../api" }
 async-channel = "2.5.0"
 client = { path = "../client" }
+matcher = { path = "../matcher" }
 wire = { path = "../wire" }
 prost = "0.14.5"
 terminal-ghostty = { path = "../terminal-ghostty" }
 tokio = { version = "1.54.1", features = ["time", "sync", "rt", "macros"] }
+unicode-width = "0.2.3"
 
 [lints]
 workspace = true

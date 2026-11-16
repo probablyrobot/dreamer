@@ -20,6 +20,7 @@ pub mod decorations;
 pub mod feed;
 mod follow;
 pub mod hosts;
+pub mod search;
 pub mod topology;
 pub mod via;
 
