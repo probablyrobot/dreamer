@@ -22,7 +22,8 @@ The file is the one place to configure Dreamer, and changes apply live.
   `dreamer.yaml not applied: …` with the reason until the file reads
   again. The daemon logs it and publishes a `config.changed` event with
   state `refused`.
-- **Not live.** Provider settings apply to the next agent run.
+- **Not live.** Provider settings apply to the next agent run, and agent
+  harness settings to the next session.
 
 Two commands help with edits:
 - `dream config schema` lists every key: its kind and range, default,
@@ -229,6 +230,24 @@ tiers:
   host.
 - **Turning it off:** `cold_after: never` and `warm_limit: none` keep
   every pane Warm.
+
+## Agent harnesses
+
+`agents:` chooses the harness a new agent session runs (pi, Claude Code,
+Codex, or an ACP agent) and how each is started, and pins the pi release
+Dreamer installs. See [agents.md](agents.md#settings).
+
+```yaml
+agents:
+  default: pi                  # pi (default), claude, codex, or a name below
+  pi:
+    version: latest            # latest (default) or a release such as 1.5.2
+    model: openai/gpt-5.5      # optional
+    agent_dir: ~/.pi/agent     # optional; default: Dreamer's pi profile
+  gemini:
+    protocol: acp
+    command: [gemini, --experimental-acp]
+```
 
 ## Agent providers
 

@@ -155,6 +155,11 @@ Runtime dependencies on the user's machine, not bundled. See
 | Codex (`codex`) | Not run yet | Documented `exec --json` events |
 | `curl` (API adapters only) | 8.x (macOS 8.7.1 here) | `--config -`, `--no-buffer`, `--write-out` |
 
+pi is installed by Dreamer, not by the user, and follows its newest release
+unless `agents.pi.version` pins one ([agents.md](agents.md#pi-installed-by-dreamer)).
+The install was run against pi 1.5.1 and 1.5.2 (darwin-arm64); it reads
+`pi --version` and `pi auth check --json`. It needs `curl` and `tar`.
+
 ## Pending pins
 
 | Item | Pinned by |

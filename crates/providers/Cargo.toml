@@ -11,6 +11,7 @@ publish = false
 platform = { path = "../platform" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.10.9"
 tokio = { version = "1.54.1", features = ["process", "io-util", "rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
