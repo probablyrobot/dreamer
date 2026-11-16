@@ -346,6 +346,26 @@ pub struct Effects {
     /// Clipboard writes refused: too large, another destination, or a
     /// request to clear.
     pub clipboard_refused: u32,
+    /// Steps of commands the shell reported through shell integration
+    /// (OSC 133), in order.
+    pub commands: Vec<CommandMark>,
+}
+
+/// One step of a command, as the shell reports it through shell
+/// integration (OSC 133). Shells differ in which steps they send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandMark {
+    PromptStart,
+    InputStart,
+    /// The command starts running; `command` is its command line when the
+    /// shell sent one.
+    OutputStart {
+        command: Option<String>,
+    },
+    /// The command finished; `exit_code` when the shell reported it.
+    End {
+        exit_code: Option<i32>,
+    },
 }
 
 impl Effects {

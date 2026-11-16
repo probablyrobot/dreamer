@@ -39,6 +39,7 @@ mod app;
 mod ask;
 mod bridge;
 mod build;
+mod collect;
 mod daemon;
 mod extprobe;
 mod harness;
@@ -86,6 +87,7 @@ const USAGE: &str = "usage:
   dream agents ask [--provider claude|codex] [--pane %N]... [--all-panes] [--no-tools] [--timeout S] -- PROMPT
   dream jobs [--json] | start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...] | cancel ID | artifacts ID
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME
+  dream collect create -f FILE | create NAME ... | list | query NAME ... | stop NAME [--delete]
   dream hosts connect|list|call|disconnect ... (see `dream hosts`)
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
@@ -170,6 +172,9 @@ fn main() -> ExitCode {
         }
         ["jobs", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::jobs(&d, &extra))
+        }
+        ["collect", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| collect::run(&d, &extra))
         }
         ["scripts", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::scripts(&d, &extra))

@@ -149,6 +149,26 @@ fn effects_are_reported_once() {
 }
 
 #[test]
+fn shell_integration_reports_command_steps_and_exit_status() {
+    use terminal_ghostty::core::CommandMark;
+    let mut e = engine();
+    let fx = e
+        .feed(b"\x1b]133;A\x07$ \x1b]133;B\x07false\r\n\x1b]133;C\x07\x1b]133;D;3\x07")
+        .expect("feed");
+    assert_eq!(
+        fx.commands,
+        [
+            CommandMark::PromptStart,
+            CommandMark::InputStart,
+            CommandMark::OutputStart { command: None },
+            CommandMark::End { exit_code: Some(3) },
+        ]
+    );
+    let fx = e.feed(b"\x1b]133;D\x07").expect("feed");
+    assert_eq!(fx.commands, [CommandMark::End { exit_code: None }]);
+}
+
+#[test]
 fn resize_changes_the_frame_grid() {
     let mut e = engine();
     e.feed(b"hello").expect("feed");

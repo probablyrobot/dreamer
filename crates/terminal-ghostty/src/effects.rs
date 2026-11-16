@@ -55,6 +55,7 @@ pub(crate) fn register(
     let title: GhosttyTerminalTitleChangedFn = Some(on_title_changed);
     let pwd: GhosttyTerminalPwdChangedFn = Some(on_pwd_changed);
     let hold: GhosttyTerminalRenderHoldFn = Some(on_render_hold);
+    let prompt: GhosttyTerminalSemanticPromptFn = Some(on_semantic_prompt);
     // SAFETY: `term` is live. USERDATA takes the pointer value itself; it
     // points into a Box owned by the engine that outlives the terminal.
     // Callback options take the function pointer as the value.
@@ -78,6 +79,10 @@ pub(crate) fn register(
         check(
             "set render_hold",
             ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, fn_ptr(hold)),
+        )?;
+        check(
+            "set semantic_prompt",
+            ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, fn_ptr(prompt)),
         )?;
         if state.capture_replies {
             let write: GhosttyTerminalWritePtyFn = Some(on_write_pty);
@@ -131,6 +136,53 @@ unsafe extern "C" fn on_render_hold(_term: GhosttyTerminal, userdata: *mut c_voi
         with_state(userdata, |s| {
             s.held = held;
             s.pending.render_hold.push(held);
+        })
+    }
+}
+
+unsafe extern "C" fn on_semantic_prompt(
+    _term: GhosttyTerminal,
+    userdata: *mut c_void,
+    event: *const GhosttyTerminalSemanticPrompt,
+) {
+    use terminal_core::CommandMark;
+    if event.is_null() {
+        return;
+    }
+    unsafe {
+        with_state(userdata, |s| {
+            // SAFETY: the event and its strings are borrowed for the
+            // duration of the callback; what is kept is copied now.
+            let e = &*event;
+            let mark = match e.kind {
+                GhosttySemanticPromptKind::GHOSTTY_SEMANTIC_PROMPT_PROMPT_START => {
+                    CommandMark::PromptStart
+                }
+                GhosttySemanticPromptKind::GHOSTTY_SEMANTIC_PROMPT_INPUT_START => {
+                    CommandMark::InputStart
+                }
+                GhosttySemanticPromptKind::GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START => {
+                    let command = (!e.command.ptr.is_null() && e.command.len > 0).then(|| {
+                        String::from_utf8_lossy(std::slice::from_raw_parts(
+                            e.command.ptr,
+                            e.command.len,
+                        ))
+                        .into_owned()
+                    });
+                    CommandMark::OutputStart { command }
+                }
+                GhosttySemanticPromptKind::GHOSTTY_SEMANTIC_PROMPT_COMMAND_END => {
+                    CommandMark::End {
+                        exit_code: e.has_exit_code.then_some(e.exit_code),
+                    }
+                }
+                _ => return,
+            };
+            // Bounded: a program flooding marks keeps only the newest.
+            if s.pending.commands.len() >= 64 {
+                s.pending.commands.remove(0);
+            }
+            s.pending.commands.push(mark);
         })
     }
 }

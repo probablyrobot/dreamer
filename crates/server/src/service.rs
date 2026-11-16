@@ -104,6 +104,8 @@ pub struct State {
     pub scripts: crate::scripts::Scripts,
     /// Installed filters.
     pub filters: crate::filters::Filters,
+    /// Collectors and their tables.
+    pub collectors: crate::collectors::Collectors,
     /// Marks filters put on lines, for clients to draw.
     pub decorations: crate::decorations::Decorations,
     /// What provider hooks report about their sessions.
@@ -1302,6 +1304,25 @@ impl api::Service for DaemonService {
 
     async fn filters_install(&self, p: api::FilterSpec) -> Result<api::FilterStatus, RpcError> {
         crate::filters::install(&self.0, p).await
+    }
+
+    async fn collect_create(
+        &self,
+        p: api::CollectorSpec,
+    ) -> Result<api::CollectorStatus, RpcError> {
+        crate::collectors::create(&self.0, p).await
+    }
+
+    async fn collect_list(&self, _: api::Empty) -> Result<api::CollectList, RpcError> {
+        Ok(self.0.collectors.list())
+    }
+
+    async fn collect_query(&self, p: api::CollectQuery) -> Result<api::CollectResult, RpcError> {
+        self.0.collectors.query(&p)
+    }
+
+    async fn collect_stop(&self, p: api::CollectRef) -> Result<api::CollectorStatus, RpcError> {
+        crate::collectors::stop(&self.0, &p.name, p.delete).await
     }
 
     async fn filters_list(&self, _: api::Empty) -> Result<api::FilterList, RpcError> {

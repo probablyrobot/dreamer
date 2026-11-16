@@ -99,6 +99,8 @@ pub struct Effect {
     /// Text the program wrote to the clipboard; kept only in the copy sent
     /// to the pane's focused client.
     pub clipboard: Option<Vec<u8>>,
+    /// Command steps the shell reported (shell integration), in order.
+    pub commands: Vec<terminal_ghostty::core::CommandMark>,
 }
 
 /// A record on its way to a subscriber, with the live effects it produced
@@ -469,7 +471,11 @@ impl Mirror {
                     }
                     // The last write wins when one ingestion holds several.
                     let clipboard = fx.clipboard.into_iter().last();
-                    if fx.bells > 0 || fx.title.is_some() || fx.pwd.is_some() || clipboard.is_some()
+                    if fx.bells > 0
+                        || fx.title.is_some()
+                        || fx.pwd.is_some()
+                        || clipboard.is_some()
+                        || !fx.commands.is_empty()
                     {
                         self.effects += 1;
                         effect = Some(Effect {
@@ -478,6 +484,7 @@ impl Mirror {
                             title: fx.title,
                             cwd: fx.pwd,
                             clipboard,
+                            commands: fx.commands,
                         });
                     }
                 })

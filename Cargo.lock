@@ -1427,6 +1427,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "serde_norway",
  "terminal-core",
  "tmux-backend",
  "tokio",

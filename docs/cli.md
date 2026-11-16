@@ -158,6 +158,25 @@ a prompt on one of them with Dreamer's tools. See
 PROGRAM [ARGS...]`, `cancel ID`, and `artifacts ID` manage them. See
 [jobs.md](jobs.md).
 
+## Collectors
+
+`dream collect create -f FILE` starts a collector from a YAML or JSON
+definition; `dream collect create NAME` takes the same from options:
+
+| Part | Options |
+| --- | --- |
+| Panes (one) | `--all`, `--session NAME`, `--window @N`, `--pane %N` (repeat for more), `--command REGEX` |
+| Trigger (one) | `--line REGEX` [`--ignore-case`], `--command-end`, `--idle MS`, `--bell`, `--exit`, `--every SECONDS` |
+| Capture | `--field NAME=TEMPLATE` (repeat), `--json-line`, `--screen` or `--lines N`, `--before N`, `--after N` |
+| Bounds | `--keep-rows N`, `--keep-for DURATION` (`30s`, `10m`, `2h`, `7d`), `--per-second N` |
+
+`dream collect list [--json]` shows each collector, its state, and its
+counts. `dream collect query NAME [--pane %N]... [--field NAME=VALUE]...
+[--since DURATION] [--after ID] [--limit N] [--group-by FIELD] [--json]`
+prints rows (or counts with `--group-by`). `dream collect stop NAME
+[--delete]` stops one, and with `--delete` removes its rows. See
+[collectors.md](collectors.md).
+
 ## Scripts
 
 `dream scripts` lists loaded scripts; `dream scripts load NAME FILE
