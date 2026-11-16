@@ -311,3 +311,28 @@ async fn titles_and_working_directories_reach_every_view() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// A program's own default colors (OSC 10 and 11) reach the replica's
+/// frame, which the renderer paints the pane with.
+#[tokio::test]
+async fn a_program_s_own_default_colors_reach_the_replica() {
+    let s = Setup::new("own-colors");
+    let feed = s
+        .emit(b"\x1b]11;#402020\x07\x1b]10;#e0d0c0\x07own colors\r\n")
+        .await;
+    let f = frame_until(&feed, "the program's own background", |f| {
+        f.text_dump().contains("own colors")
+    })
+    .await;
+    let rgb = |r, g, b| terminal_ghostty::core::Rgb { r, g, b };
+    let mut f = f;
+    // The color change and the text may arrive in separate frames.
+    if f.colors.background != rgb(0x40, 0x20, 0x20) {
+        f = frame_until(&feed, "the background in a later frame", |f| {
+            f.colors.background == rgb(0x40, 0x20, 0x20)
+        })
+        .await;
+    }
+    assert_eq!(f.colors.background, rgb(0x40, 0x20, 0x20));
+    assert_eq!(f.colors.foreground, rgb(0xe0, 0xd0, 0xc0));
+}
