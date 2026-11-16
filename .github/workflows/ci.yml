@@ -264,6 +264,8 @@ jobs:
           name: dreamer-server-x86_64-unknown-linux-gnu
           path: target/package/server/dreamer-server-*.tar.gz*
           if-no-files-found: error
+      - name: Both archives on fresh ubuntu:24.04 containers (server bare; desktop draws a frame on Xvfb)
+        run: cargo xtask package --fresh --arch amd64
       - name: Install into an empty home, run, uninstall
         run: |
           tmux_bin="$(cargo xtask deps tmux | tail -n 1)"

@@ -93,6 +93,36 @@ sh packaging/install.sh --from target/package/linux/dreamer-x86_64-unknown-linux
 The tarball is built against glibc 2.39 (Ubuntu 24.04), so it runs on
 current distributions, Arch included.
 
+**Runtime packages.** Besides the C and C++ runtimes, the desktop app
+needs xcb and xkbcommon, which it links, and Wayland, Vulkan, and
+fontconfig, which it loads at run time. On Ubuntu 24.04:
+
+```sh
+sudo apt install libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
+  libvulkan1 mesa-vulkan-drivers libfontconfig1
+```
+
+The server archive needs none of them.
+
+**Checked on fresh machines.** Two commands build and check the archives:
+
+```sh
+cargo xtask package --platform linux --container [--arch arm64|amd64]
+cargo xtask package --fresh [--arch arm64|amd64]
+```
+
+- **`--container`** builds the desktop tarball and the server archive in
+  an `ubuntu:24.04` container. On an Apple Silicon Mac this is how the ARM64
+  archives are made.
+- **`--fresh`** checks the archives on fresh `ubuntu:24.04` containers:
+  - the server archive on a bare image with nothing added, where each
+    executable runs;
+  - the desktop tarball, installed by `install.sh` for a new user with
+    only the packages above, then `dreamer --smoke` on X11 (Xvfb, with
+    Mesa's software Vulkan), which must present a frame.
+
+  CI runs it for x86-64 on every pull request.
+
 The repository is private for now. Until it is public, the `curl` line and
 release downloads need GitHub access; use `--from` with a tarball from a CI
 run or from `gh release download`.

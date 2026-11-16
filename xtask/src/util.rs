@@ -7,6 +7,18 @@ pub fn repo_root() -> PathBuf {
     manifest.parent().map(PathBuf::from).unwrap_or(manifest)
 }
 
+/// Where cargo puts what it builds in `root`: `CARGO_TARGET_DIR` (relative
+/// to `root` when relative), else `root/target`. Packaging copies from
+/// here, so a set `CARGO_TARGET_DIR` never packs stale binaries from
+/// `root/target`.
+pub fn cargo_target(root: &std::path::Path) -> PathBuf {
+    match std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from) {
+        Some(d) if d.is_absolute() => d,
+        Some(d) => root.join(d),
+        None => root.join("target"),
+    }
+}
+
 /// Run a program and return trimmed stdout on success, or `None` if it could
 /// not be started or exited unsuccessfully.
 pub fn capture(program: &str, args: &[&str]) -> Option<String> {
