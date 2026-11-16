@@ -77,7 +77,8 @@ const USAGE: &str = "usage:
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream rpc [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream extensions [--json] | dream extensions restart NAME
-  dream mcp [--method M]... [--pane %N]... [--all-panes]
+  dream mcp [--level observe|own|elsewhere] [--method M]... [--pane %N]... [--all-panes]
+  dream approvals [--json] | allow ID [--pane] | deny ID
   dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
   dream agents providers [--json]
   dream agents ask [--provider claude|codex] [--pane %N]... [--all-panes] [--no-tools] [--timeout S] -- PROMPT
@@ -161,6 +162,9 @@ fn main() -> ExitCode {
         ["app"] => Err(build::USAGE.into()),
         ["app", "run", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| app::run(&d, &extra))
+        }
+        ["approvals", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::approvals(&d, &extra))
         }
         ["jobs", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::jobs(&d, &extra))

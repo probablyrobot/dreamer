@@ -122,9 +122,17 @@ one again now. See [extensions.md](extensions.md).
 
 ## MCP
 
-`dream mcp [--method M]... [--pane %N]... [--all-panes]` serves Dreamer's
-tools to an MCP client on standard input and output. See
-[mcp.md](mcp.md).
+`dream mcp [--level observe|own|elsewhere] [--method M]... [--pane %N]...
+[--all-panes]` serves Dreamer's tools to an MCP client on standard input
+and output. See [mcp.md](mcp.md).
+
+## Approvals
+
+`dream approvals [--json]` lists the actions agents are waiting to have
+approved. `dream approvals allow ID` allows one, `dream approvals allow
+ID --pane` allows it and later actions in the same panes (closing still
+asks), and `dream approvals deny ID` refuses it. See
+[grants.md](grants.md#act-levels-and-approvals).
 
 ## Agent runs
 

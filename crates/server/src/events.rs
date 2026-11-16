@@ -56,6 +56,13 @@ pub mod kind {
     /// `subject` the terminal theme in force) or `refused` (and `subject`
     /// why: the settings in force are kept).
     pub const CONFIG: &str = "config.changed";
+    /// An action waits for the user's approval; `subject` is the approval
+    /// id, `pane` the first pane, `state` what it would do. Answer it with
+    /// `approvals.answer`.
+    pub const APPROVAL_REQUESTED: &str = "approvals.requested";
+    /// An approval was answered or timed out; `subject` is its id, `state`
+    /// `once`, `pane`, `deny`, or `timeout`.
+    pub const APPROVAL_ANSWERED: &str = "approvals.answered";
 }
 
 struct Ring {

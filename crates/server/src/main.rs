@@ -12,6 +12,7 @@
 //! startup, and nothing but protocol frames to the socket.
 
 mod agents;
+mod approvals;
 mod apps;
 mod config_watch;
 mod conn;
@@ -32,6 +33,7 @@ mod scripts;
 mod service;
 mod taps;
 mod tiers;
+mod tools;
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek as _, Write as _};
@@ -264,6 +266,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             sizing: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             pastes: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             leases: crate::leases::Leases::default(),
+            approvals: crate::approvals::Approvals::default(),
             terminal: tokio::sync::Mutex::new(match &settings {
                 Ok(s) => {
                     let d = config_watch::defaults(s);

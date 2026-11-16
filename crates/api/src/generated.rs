@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 38;
+pub const PROTOCOL_MINOR: u32 = 39;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -890,6 +890,162 @@ mod job_state_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| JobState::from_name(n).map(|e| e as i32))
+    }
+}
+
+/// How far a grant may act on panes (docs/grants.md). Each level includes the ones before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ActLevel {
+    /// No level: the grant's methods and panes alone decide.
+    Unspecified = 0,
+    /// List, read, search, and watch panes; never type, run, or change the layout.
+    Observe = 1,
+    /// Also act in panes and windows this connection created.
+    Own = 2,
+    /// Also act in other panes, each time the user approves; closing always asks.
+    Elsewhere = 3,
+}
+
+impl ActLevel {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Observe => "observe",
+            Self::Own => "own",
+            Self::Elsewhere => "elsewhere",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "observe" => Some(Self::Observe),
+            "own" => Some(Self::Own),
+            "elsewhere" => Some(Self::Elsewhere),
+            _ => None,
+        }
+    }
+}
+
+mod act_level_json {
+    use super::ActLevel;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match ActLevel::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| ActLevel::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum WatchOutcome {
+    Unspecified = 0,
+    /// The pattern appeared; `text` is the line.
+    Matched = 1,
+    /// The pane wrote nothing for quiet_ms.
+    Quiet = 2,
+    /// The pane's program ended.
+    Exited = 3,
+    /// The pane is gone.
+    Closed = 4,
+    /// None of the conditions happened in time.
+    Timeout = 5,
+}
+
+impl WatchOutcome {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Matched => "matched",
+            Self::Quiet => "quiet",
+            Self::Exited => "exited",
+            Self::Closed => "closed",
+            Self::Timeout => "timeout",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "matched" => Some(Self::Matched),
+            "quiet" => Some(Self::Quiet),
+            "exited" => Some(Self::Exited),
+            "closed" => Some(Self::Closed),
+            "timeout" => Some(Self::Timeout),
+            _ => None,
+        }
+    }
+}
+
+mod watch_outcome_json {
+    use super::WatchOutcome;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match WatchOutcome::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| WatchOutcome::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApprovalDecision {
+    Unspecified = 0,
+    /// Allow this one action.
+    Once = 1,
+    /// Allow it and every later action in the same panes for this connection, except closing.
+    Pane = 2,
+    Deny = 3,
+}
+
+impl ApprovalDecision {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Once => "once",
+            Self::Pane => "pane",
+            Self::Deny => "deny",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "once" => Some(Self::Once),
+            "pane" => Some(Self::Pane),
+            "deny" => Some(Self::Deny),
+            _ => None,
+        }
+    }
+}
+
+mod approval_decision_json {
+    use super::ApprovalDecision;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match ApprovalDecision::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| ApprovalDecision::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -2132,6 +2288,10 @@ pub struct Grant {
     #[prost(uint64, optional, tag = "5")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_unix_ms: Option<u64>,
+    /// How far the grant acts on panes; unspecified leaves it to the methods and panes alone.
+    #[prost(enumeration = "ActLevel", tag = "6")]
+    #[serde(with = "act_level_json")]
+    pub level: i32,
 }
 
 /// Start a program in a new tmux window as a registered app. The daemon writes a single-use ticket to an owner-only file and gives the program only that file's path (DREAMER_LAUNCH_TICKET) and the launch id (DREAMER_LAUNCH_ID). The program registers with them for `grant`.
@@ -2800,6 +2960,10 @@ pub struct TerminalQuery {
     #[prost(string, optional, tag = "10")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Bytes of matching line text returned in all; default 65536, at most 1048576.
+    #[prost(uint32, optional, tag = "11")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -3274,6 +3438,214 @@ pub struct ProcessList {
     pub taken_unix_ms: u64,
 }
 
+/// One pane, with what an agent needs to choose it.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalInfo {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(uint32, tag = "2")]
+    pub session: u32,
+    #[prost(string, tag = "3")]
+    pub session_name: String,
+    #[prost(uint32, tag = "4")]
+    pub window: u32,
+    #[prost(string, tag = "5")]
+    pub window_name: String,
+    #[prost(uint32, tag = "6")]
+    pub window_index: u32,
+    /// The program in the foreground, as tmux reports it.
+    #[prost(string, tag = "7")]
+    pub command: String,
+    /// The last directory the program reported (OSC 7).
+    #[prost(string, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[prost(string, tag = "9")]
+    pub title: String,
+    #[prost(uint32, tag = "10")]
+    pub cols: u32,
+    #[prost(uint32, tag = "11")]
+    pub rows: u32,
+    /// The active pane of its window.
+    #[prost(bool, tag = "12")]
+    pub active: bool,
+    /// Its program has exited; the pane stays with its output.
+    #[prost(bool, tag = "13")]
+    pub dead: bool,
+    #[prost(enumeration = "Tier", tag = "14")]
+    #[serde(with = "tier_json")]
+    pub tier: i32,
+    /// Time since the pane last wrote anything; absent when it is not mirrored.
+    #[prost(uint64, optional, tag = "15")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiet_ms: Option<u64>,
+    /// The calling connection created this pane.
+    #[prost(bool, tag = "16")]
+    pub owned: bool,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalList {
+    #[prost(message, repeated, tag = "1")]
+    pub terminals: Vec<TerminalInfo>,
+}
+
+/// Wait for one of: `pattern` appearing in new output, the pane writing nothing for `quiet_ms`, or (with `exit`) its program ending. At least one condition is needed; the first to happen ends the wait.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalWatch {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// A regular expression (linear time, size-limited), or plain text with `literal`; matched against lines written after the watch starts.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[prost(bool, tag = "3")]
+    pub literal: bool,
+    #[prost(bool, tag = "4")]
+    pub ignore_case: bool,
+    /// How long without output counts as quiet; at least 50.
+    #[prost(uint32, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiet_ms: Option<u32>,
+    /// End when the pane's program ends.
+    #[prost(bool, tag = "6")]
+    pub exit: bool,
+    /// Default 30000, at most 600000.
+    #[prost(uint32, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WatchResult {
+    #[prost(enumeration = "WatchOutcome", tag = "1")]
+    #[serde(with = "watch_outcome_json")]
+    pub outcome: i32,
+    /// The matching line.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Byte offsets of the match in text.
+    #[prost(uint32, tag = "3")]
+    pub match_start: u32,
+    #[prost(uint32, tag = "4")]
+    pub match_end: u32,
+    #[prost(uint64, tag = "5")]
+    pub elapsed_ms: u64,
+    /// When the program was a job and exited.
+    #[prost(int32, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// When the program was a job and a signal ended it.
+    #[prost(int32, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+}
+
+/// Run an exact program as a job, in a new window or a new pane split from `split`, wait for it, and return its status and output. The calling connection owns the new pane.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalRun {
+    /// The exact program and arguments; no shell.
+    #[prost(string, repeated, tag = "1")]
+    pub argv: Vec<String>,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[prost(message, repeated, tag = "3")]
+    pub env: Vec<EnvVar>,
+    /// The session for a new window; default the first session.
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<u32>,
+    /// The new window's name; default the program's name.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Split this pane for the program instead of opening a window; acting on that pane.
+    #[prost(uint32, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split: Option<u32>,
+    /// For split; default vertical.
+    #[prost(enumeration = "SplitDirection", tag = "7")]
+    #[serde(with = "split_direction_json")]
+    pub direction: i32,
+    /// How long to wait; default 60000, at most 600000. The program keeps running after it.
+    #[prost(uint32, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u32>,
+    /// Output lines returned at most, the newest; default 200, at most 2000.
+    #[prost(uint32, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunResult {
+    /// Its state, exit code or signal, and pane.
+    #[prost(message, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job: Option<JobRecord>,
+    /// False when the wait timed out; the program is still running.
+    #[prost(bool, tag = "2")]
+    pub finished: bool,
+    /// The pane's text, oldest first, without trailing blank lines.
+    #[prost(string, repeated, tag = "3")]
+    pub output: Vec<String>,
+    /// Older output was left out.
+    #[prost(bool, tag = "4")]
+    pub truncated: bool,
+}
+
+/// An action waiting for the user: a connection at the elsewhere level acting on panes it did not create.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Approval {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    /// Who asks: an app instance, or owner:N for a narrowed connection of the user's own.
+    #[prost(string, tag = "2")]
+    pub requester: String,
+    #[prost(string, tag = "3")]
+    pub method: String,
+    /// What it would do, in words.
+    #[prost(string, tag = "4")]
+    pub action: String,
+    /// The panes it would act on that the requester did not create.
+    #[prost(uint32, repeated, tag = "5")]
+    pub panes: Vec<u32>,
+    /// It closes panes or ends a program; `pane` approval does not cover it.
+    #[prost(bool, tag = "6")]
+    pub closing: bool,
+    #[prost(uint64, tag = "7")]
+    pub created_unix_ms: u64,
+    /// Unanswered by then, it is denied.
+    #[prost(uint64, tag = "8")]
+    pub expires_unix_ms: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ApprovalList {
+    #[prost(message, repeated, tag = "1")]
+    pub approvals: Vec<Approval>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ApprovalAnswer {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(enumeration = "ApprovalDecision", tag = "2")]
+    #[serde(with = "approval_decision_json")]
+    pub decision: i32,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -3338,6 +3710,11 @@ pub mod method {
     pub const TAPS_SUBSCRIBE: &str = "taps.subscribe";
     pub const TAPS_UNSUBSCRIBE: &str = "taps.unsubscribe";
     pub const APPS_REGISTER: &str = "apps.register";
+    pub const TERMINAL_LIST: &str = "terminal.list";
+    pub const TERMINAL_WATCH: &str = "terminal.watch";
+    pub const TERMINAL_RUN: &str = "terminal.run";
+    pub const APPROVALS_LIST: &str = "approvals.list";
+    pub const APPROVALS_ANSWER: &str = "approvals.answer";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3784,6 +4161,41 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Trade a launch ticket for the app's narrow grant on this connection.",
     },
+    MethodInfo {
+        name: "terminal.list",
+        params: "TopologyParams",
+        result: "TerminalList",
+        mutation: false,
+        doc: "Every pane in scope with its session, window, command, directory, title, size, tier, and activity.",
+    },
+    MethodInfo {
+        name: "terminal.watch",
+        params: "TerminalWatch",
+        result: "WatchResult",
+        mutation: false,
+        doc: "Wait until a pattern appears in a pane, it goes quiet, or its program ends; bounded by a timeout.",
+    },
+    MethodInfo {
+        name: "terminal.run",
+        params: "TerminalRun",
+        result: "RunResult",
+        mutation: true,
+        doc: "Run an exact program as a job in a new window or pane the caller then owns; returns its exit status and output.",
+    },
+    MethodInfo {
+        name: "approvals.list",
+        params: "Empty",
+        result: "ApprovalList",
+        mutation: false,
+        doc: "Actions waiting for the user's approval (owner only).",
+    },
+    MethodInfo {
+        name: "approvals.answer",
+        params: "ApprovalAnswer",
+        result: "Approval",
+        mutation: true,
+        doc: "Allow or deny a waiting action (owner only).",
+    },
 ];
 
 /// A typed request for one method.
@@ -3851,6 +4263,11 @@ pub enum Request {
     TapsSubscribe(TapSubscribe),
     TapsUnsubscribe(Unsubscribe),
     AppsRegister(RegisterApp),
+    TerminalList(TopologyParams),
+    TerminalWatch(TerminalWatch),
+    TerminalRun(TerminalRun),
+    ApprovalsList(Empty),
+    ApprovalsAnswer(ApprovalAnswer),
 }
 
 impl Request {
@@ -3918,6 +4335,11 @@ impl Request {
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
+            Self::TerminalList(_) => "terminal.list",
+            Self::TerminalWatch(_) => "terminal.watch",
+            Self::TerminalRun(_) => "terminal.run",
+            Self::ApprovalsList(_) => "approvals.list",
+            Self::ApprovalsAnswer(_) => "approvals.answer",
         }
     }
 
@@ -3986,6 +4408,11 @@ impl Request {
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalList(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalWatch(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalRun(v) => ::prost::Message::encode_to_vec(v),
+            Self::ApprovalsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::ApprovalsAnswer(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -4057,6 +4484,11 @@ impl Request {
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
+            "terminal.list" => Ok(Self::TerminalList(::prost::Message::decode(bytes)?)),
+            "terminal.watch" => Ok(Self::TerminalWatch(::prost::Message::decode(bytes)?)),
+            "terminal.run" => Ok(Self::TerminalRun(::prost::Message::decode(bytes)?)),
+            "approvals.list" => Ok(Self::ApprovalsList(::prost::Message::decode(bytes)?)),
+            "approvals.answer" => Ok(Self::ApprovalsAnswer(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -4125,6 +4557,11 @@ impl Request {
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalWatch(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalRun(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ApprovalsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ApprovalsAnswer(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -4192,6 +4629,11 @@ impl Request {
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
+            "terminal.list" => Ok(Self::TerminalList(serde_json::from_value(value)?)),
+            "terminal.watch" => Ok(Self::TerminalWatch(serde_json::from_value(value)?)),
+            "terminal.run" => Ok(Self::TerminalRun(serde_json::from_value(value)?)),
+            "approvals.list" => Ok(Self::ApprovalsList(serde_json::from_value(value)?)),
+            "approvals.answer" => Ok(Self::ApprovalsAnswer(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -4262,6 +4704,11 @@ pub enum Response {
     TapsSubscribe(TapSubscription),
     TapsUnsubscribe(Empty),
     AppsRegister(Registration),
+    TerminalList(TerminalList),
+    TerminalWatch(WatchResult),
+    TerminalRun(RunResult),
+    ApprovalsList(ApprovalList),
+    ApprovalsAnswer(Approval),
 }
 
 impl Response {
@@ -4329,6 +4776,11 @@ impl Response {
             Self::TapsSubscribe(_) => "taps.subscribe",
             Self::TapsUnsubscribe(_) => "taps.unsubscribe",
             Self::AppsRegister(_) => "apps.register",
+            Self::TerminalList(_) => "terminal.list",
+            Self::TerminalWatch(_) => "terminal.watch",
+            Self::TerminalRun(_) => "terminal.run",
+            Self::ApprovalsList(_) => "approvals.list",
+            Self::ApprovalsAnswer(_) => "approvals.answer",
         }
     }
 
@@ -4397,6 +4849,11 @@ impl Response {
             Self::TapsSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsRegister(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalList(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalWatch(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalRun(v) => ::prost::Message::encode_to_vec(v),
+            Self::ApprovalsList(v) => ::prost::Message::encode_to_vec(v),
+            Self::ApprovalsAnswer(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -4468,6 +4925,11 @@ impl Response {
             "taps.subscribe" => Ok(Self::TapsSubscribe(::prost::Message::decode(bytes)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(::prost::Message::decode(bytes)?)),
             "apps.register" => Ok(Self::AppsRegister(::prost::Message::decode(bytes)?)),
+            "terminal.list" => Ok(Self::TerminalList(::prost::Message::decode(bytes)?)),
+            "terminal.watch" => Ok(Self::TerminalWatch(::prost::Message::decode(bytes)?)),
+            "terminal.run" => Ok(Self::TerminalRun(::prost::Message::decode(bytes)?)),
+            "approvals.list" => Ok(Self::ApprovalsList(::prost::Message::decode(bytes)?)),
+            "approvals.answer" => Ok(Self::ApprovalsAnswer(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -4536,6 +4998,11 @@ impl Response {
             Self::TapsSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsRegister(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalWatch(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalRun(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ApprovalsList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ApprovalsAnswer(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -4603,6 +5070,11 @@ impl Response {
             "taps.subscribe" => Ok(Self::TapsSubscribe(serde_json::from_value(value)?)),
             "taps.unsubscribe" => Ok(Self::TapsUnsubscribe(serde_json::from_value(value)?)),
             "apps.register" => Ok(Self::AppsRegister(serde_json::from_value(value)?)),
+            "terminal.list" => Ok(Self::TerminalList(serde_json::from_value(value)?)),
+            "terminal.watch" => Ok(Self::TerminalWatch(serde_json::from_value(value)?)),
+            "terminal.run" => Ok(Self::TerminalRun(serde_json::from_value(value)?)),
+            "approvals.list" => Ok(Self::ApprovalsList(serde_json::from_value(value)?)),
+            "approvals.answer" => Ok(Self::ApprovalsAnswer(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -4910,6 +5382,31 @@ pub trait Service: Sync {
         &self,
         params: RegisterApp,
     ) -> impl ::core::future::Future<Output = Result<Registration, RpcError>> + Send;
+    /// Every pane in scope with its session, window, command, directory, title, size, tier, and activity.
+    fn terminal_list(
+        &self,
+        params: TopologyParams,
+    ) -> impl ::core::future::Future<Output = Result<TerminalList, RpcError>> + Send;
+    /// Wait until a pattern appears in a pane, it goes quiet, or its program ends; bounded by a timeout.
+    fn terminal_watch(
+        &self,
+        params: TerminalWatch,
+    ) -> impl ::core::future::Future<Output = Result<WatchResult, RpcError>> + Send;
+    /// Run an exact program as a job in a new window or pane the caller then owns; returns its exit status and output.
+    fn terminal_run(
+        &self,
+        params: TerminalRun,
+    ) -> impl ::core::future::Future<Output = Result<RunResult, RpcError>> + Send;
+    /// Actions waiting for the user's approval (owner only).
+    fn approvals_list(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<ApprovalList, RpcError>> + Send;
+    /// Allow or deny a waiting action (owner only).
+    fn approvals_answer(
+        &self,
+        params: ApprovalAnswer,
+    ) -> impl ::core::future::Future<Output = Result<Approval, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -5043,6 +5540,14 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .await
             .map(Response::TapsUnsubscribe),
         Request::AppsRegister(p) => service.apps_register(p).await.map(Response::AppsRegister),
+        Request::TerminalList(p) => service.terminal_list(p).await.map(Response::TerminalList),
+        Request::TerminalWatch(p) => service.terminal_watch(p).await.map(Response::TerminalWatch),
+        Request::TerminalRun(p) => service.terminal_run(p).await.map(Response::TerminalRun),
+        Request::ApprovalsList(p) => service.approvals_list(p).await.map(Response::ApprovalsList),
+        Request::ApprovalsAnswer(p) => service
+            .approvals_answer(p)
+            .await
+            .map(Response::ApprovalsAnswer),
     }
 }
 

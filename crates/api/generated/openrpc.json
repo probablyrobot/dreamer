@@ -1,6 +1,16 @@
 {
   "components": {
     "schemas": {
+      "ActLevel": {
+        "description": "How far a grant may act on panes (docs/grants.md). Each level includes the ones before it.",
+        "enum": [
+          "unspecified",
+          "observe",
+          "own",
+          "elsewhere"
+        ],
+        "type": "string"
+      },
       "Action": {
         "properties": {
           "kind": {
@@ -262,6 +272,78 @@
           "provider": {
             "description": "claude or codex.",
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Approval": {
+        "description": "An action waiting for the user: a connection at the elsewhere level acting on panes it did not create.",
+        "properties": {
+          "action": {
+            "description": "What it would do, in words.",
+            "type": "string"
+          },
+          "closing": {
+            "description": "It closes panes or ends a program; `pane` approval does not cover it.",
+            "type": "boolean"
+          },
+          "created_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires_unix_ms": {
+            "description": "Unanswered by then, it is denied.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "panes": {
+            "description": "The panes it would act on that the requester did not create.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "requester": {
+            "description": "Who asks: an app instance, or owner:N for a narrowed connection of the user's own.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ApprovalAnswer": {
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ApprovalDecision": {
+        "enum": [
+          "unspecified",
+          "once",
+          "pane",
+          "deny"
+        ],
+        "type": "string"
+      },
+      "ApprovalList": {
+        "properties": {
+          "approvals": {
+            "items": {
+              "$ref": "#/components/schemas/Approval"
+            },
+            "type": "array"
           }
         },
         "type": "object"
@@ -868,6 +950,10 @@
           "expires_unix_ms": {
             "minimum": 0,
             "type": "integer"
+          },
+          "level": {
+            "$ref": "#/components/schemas/ActLevel",
+            "description": "How far the grant acts on panes; unspecified leaves it to the methods and panes alone."
           },
           "methods": {
             "items": {
@@ -2285,6 +2371,30 @@
         },
         "type": "object"
       },
+      "RunResult": {
+        "properties": {
+          "finished": {
+            "description": "False when the wait timed out; the program is still running.",
+            "type": "boolean"
+          },
+          "job": {
+            "$ref": "#/components/schemas/JobRecord",
+            "description": "Its state, exit code or signal, and pane."
+          },
+          "output": {
+            "description": "The pane's text, oldest first, without trailing blank lines.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "description": "Older output was left out.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "ScriptCheck": {
         "properties": {
           "error": {
@@ -2945,6 +3055,73 @@
         },
         "type": "object"
       },
+      "TerminalInfo": {
+        "description": "One pane, with what an agent needs to choose it.",
+        "properties": {
+          "active": {
+            "description": "The active pane of its window.",
+            "type": "boolean"
+          },
+          "cols": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "command": {
+            "description": "The program in the foreground, as tmux reports it.",
+            "type": "string"
+          },
+          "cwd": {
+            "description": "The last directory the program reported (OSC 7).",
+            "type": "string"
+          },
+          "dead": {
+            "description": "Its program has exited; the pane stays with its output.",
+            "type": "boolean"
+          },
+          "owned": {
+            "description": "The calling connection created this pane.",
+            "type": "boolean"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "quiet_ms": {
+            "description": "Time since the pane last wrote anything; absent when it is not mirrored.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rows": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/Tier"
+          },
+          "title": {
+            "type": "string"
+          },
+          "window": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "TerminalInput": {
         "properties": {
           "client": {
@@ -2993,6 +3170,17 @@
         },
         "type": "object"
       },
+      "TerminalList": {
+        "properties": {
+          "terminals": {
+            "items": {
+              "$ref": "#/components/schemas/TerminalInfo"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "TerminalQuery": {
         "description": "Which panes' recent lines match a pattern. Every bound is enforced; a truncated answer says so.",
         "properties": {
@@ -3020,6 +3208,11 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "max_bytes": {
+            "description": "Bytes of matching line text returned in all; default 65536, at most 1048576.",
+            "minimum": 0,
+            "type": "integer"
           },
           "max_matches": {
             "description": "Default 100, at most 1000.",
@@ -3066,6 +3259,56 @@
             "type": "integer"
           },
           "sequence": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "TerminalRun": {
+        "description": "Run an exact program as a job, in a new window or a new pane split from `split`, wait for it, and return its status and output. The calling connection owns the new pane.",
+        "properties": {
+          "argv": {
+            "description": "The exact program and arguments; no shell.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/SplitDirection",
+            "description": "For split; default vertical."
+          },
+          "env": {
+            "items": {
+              "$ref": "#/components/schemas/EnvVar"
+            },
+            "type": "array"
+          },
+          "lines": {
+            "description": "Output lines returned at most, the newest; default 200, at most 2000.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "The new window's name; default the program's name.",
+            "type": "string"
+          },
+          "session": {
+            "description": "The session for a new window; default the first session.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "split": {
+            "description": "Split this pane for the program instead of opening a window; acting on that pane.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timeout_ms": {
+            "description": "How long to wait; default 60000, at most 600000. The program keeps running after it.",
             "minimum": 0,
             "type": "integer"
           }
@@ -3147,6 +3390,40 @@
           },
           "sequence": {
             "description": "Records applied since the mirror attached.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "TerminalWatch": {
+        "description": "Wait for one of: `pattern` appearing in new output, the pane writing nothing for `quiet_ms`, or (with `exit`) its program ending. At least one condition is needed; the first to happen ends the wait.",
+        "properties": {
+          "exit": {
+            "description": "End when the pane's program ends.",
+            "type": "boolean"
+          },
+          "ignore_case": {
+            "type": "boolean"
+          },
+          "literal": {
+            "type": "boolean"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pattern": {
+            "description": "A regular expression (linear time, size-limited), or plain text with `literal`; matched against lines written after the watch starts.",
+            "type": "string"
+          },
+          "quiet_ms": {
+            "description": "How long without output counts as quiet; at least 50.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timeout_ms": {
+            "description": "Default 30000, at most 600000.",
             "minimum": 0,
             "type": "integer"
           }
@@ -3309,6 +3586,50 @@
         },
         "type": "object"
       },
+      "WatchOutcome": {
+        "enum": [
+          "unspecified",
+          "matched",
+          "quiet",
+          "exited",
+          "closed",
+          "timeout"
+        ],
+        "type": "string"
+      },
+      "WatchResult": {
+        "properties": {
+          "elapsed_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "exit_code": {
+            "description": "When the program was a job and exited.",
+            "type": "integer"
+          },
+          "match_end": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "match_start": {
+            "description": "Byte offsets of the match in text.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/WatchOutcome"
+          },
+          "signal": {
+            "description": "When the program was a job and a signal ended it.",
+            "type": "integer"
+          },
+          "text": {
+            "description": "The matching line.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "Window": {
         "properties": {
           "active_pane": {
@@ -3375,7 +3696,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.38"
+    "version": "1.39"
   },
   "methods": [
     {
@@ -4223,6 +4544,13 @@
             "minimum": 0,
             "type": "integer"
           }
+        },
+        {
+          "description": "How far the grant acts on panes; unspecified leaves it to the methods and panes alone.",
+          "name": "level",
+          "schema": {
+            "$ref": "#/components/schemas/ActLevel"
+          }
         }
       ],
       "result": {
@@ -4852,6 +5180,14 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "description": "Bytes of matching line text returned in all; default 65536, at most 1048576.",
+          "name": "max_bytes",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
         }
       ],
       "result": {
@@ -5428,6 +5764,214 @@
         }
       },
       "summary": "Trade a launch ticket for the app's narrow grant on this connection.",
+      "x-mutation": true
+    },
+    {
+      "name": "terminal.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Endpoint name; the default endpoint when absent.",
+          "name": "endpoint",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/TerminalList"
+        }
+      },
+      "summary": "Every pane in scope with its session, window, command, directory, title, size, tier, and activity.",
+      "x-mutation": false
+    },
+    {
+      "name": "terminal.watch",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "pane",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "A regular expression (linear time, size-limited), or plain text with `literal`; matched against lines written after the watch starts.",
+          "name": "pattern",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "literal",
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "ignore_case",
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "How long without output counts as quiet; at least 50.",
+          "name": "quiet_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "End when the pane's program ends.",
+          "name": "exit",
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Default 30000, at most 600000.",
+          "name": "timeout_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WatchResult"
+        }
+      },
+      "summary": "Wait until a pattern appears in a pane, it goes quiet, or its program ends; bounded by a timeout.",
+      "x-mutation": false
+    },
+    {
+      "name": "terminal.run",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "The exact program and arguments; no shell.",
+          "name": "argv",
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "name": "cwd",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "env",
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/EnvVar"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "The session for a new window; default the first session.",
+          "name": "session",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "The new window's name; default the program's name.",
+          "name": "name",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Split this pane for the program instead of opening a window; acting on that pane.",
+          "name": "split",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "For split; default vertical.",
+          "name": "direction",
+          "schema": {
+            "$ref": "#/components/schemas/SplitDirection"
+          }
+        },
+        {
+          "description": "How long to wait; default 60000, at most 600000. The program keeps running after it.",
+          "name": "timeout_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "Output lines returned at most, the newest; default 200, at most 2000.",
+          "name": "lines",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RunResult"
+        }
+      },
+      "summary": "Run an exact program as a job in a new window or pane the caller then owns; returns its exit status and output.",
+      "x-mutation": true
+    },
+    {
+      "name": "approvals.list",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ApprovalList"
+        }
+      },
+      "summary": "Actions waiting for the user's approval (owner only).",
+      "x-mutation": false
+    },
+    {
+      "name": "approvals.answer",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "id",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "decision",
+          "schema": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Approval"
+        }
+      },
+      "summary": "Allow or deny a waiting action (owner only).",
       "x-mutation": true
     }
   ],

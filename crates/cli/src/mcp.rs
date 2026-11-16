@@ -21,6 +21,8 @@ use crate::remote::session;
 
 /// Lines a read returns at most.
 const MAX_LINES: u32 = 500;
+/// The idle time of a lease this server takes.
+const LEASE_MS: u32 = 120_000;
 
 #[derive(Clone)]
 struct Dreamer {
@@ -161,6 +163,140 @@ struct ByName {
 #[derive(Deserialize, schemars::JsonSchema)]
 struct Nothing {}
 
+#[derive(Deserialize, schemars::JsonSchema)]
+struct TerminalRead {
+    /// The pane id (the number in %N).
+    pane: u32,
+    /// Return the last this many lines (history and screen, at most 2000)
+    /// instead of the screen.
+    lines: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct TerminalSearch {
+    /// A regular expression, or plain text with `literal`.
+    pattern: String,
+    #[serde(default)]
+    literal: bool,
+    #[serde(default)]
+    ignore_case: bool,
+    /// The panes to search; empty searches every pane.
+    #[serde(default)]
+    panes: Vec<u32>,
+    /// How many of each pane's newest lines to search (default 200, at
+    /// most 2000).
+    lines: Option<u32>,
+    /// Matches returned at most (default 100, at most 1000).
+    max_matches: Option<u32>,
+    /// Bytes of matching lines returned at most (default 65536).
+    max_bytes: Option<u32>,
+    /// Time budget in ms (default 2000, at most 10000).
+    timeout_ms: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct TerminalWatch {
+    pane: u32,
+    /// Wait for a line matching this regular expression (or plain text with
+    /// `literal`) in output written from now on.
+    pattern: Option<String>,
+    #[serde(default)]
+    literal: bool,
+    #[serde(default)]
+    ignore_case: bool,
+    /// Or until the pane writes nothing for this many ms.
+    quiet_ms: Option<u32>,
+    /// Or until the pane's program ends.
+    #[serde(default)]
+    exit: bool,
+    /// Give up after this many ms (default 30000, at most 600000).
+    timeout_ms: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct TerminalRun {
+    /// The exact program and arguments; no shell. Give this or `command`.
+    #[serde(default)]
+    argv: Vec<String>,
+    /// A shell command line, run with /bin/sh -c. Give this or `argv`.
+    command: Option<String>,
+    cwd: Option<String>,
+    /// Split this pane for it instead of opening a new window.
+    split: Option<u32>,
+    /// For split: "vertical" (default) or "horizontal".
+    direction: Option<String>,
+    /// The new window's name.
+    name: Option<String>,
+    /// How long to wait in ms (default 60000, at most 600000); it keeps
+    /// running after that.
+    timeout_ms: Option<u32>,
+    /// Output lines returned at most, the newest (default 200).
+    lines: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct TerminalSend {
+    pane: u32,
+    /// Text typed exactly as given.
+    text: Option<String>,
+    /// Text pasted (bracketed if the program asked for that).
+    paste: Option<String>,
+    /// Press Enter afterwards.
+    #[serde(default)]
+    enter: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct LayoutSplit {
+    /// The pane to split.
+    pane: u32,
+    /// "vertical" (one above the other, default) or "horizontal".
+    direction: Option<String>,
+    /// The exact program and arguments; empty runs the default shell.
+    #[serde(default)]
+    argv: Vec<String>,
+    cwd: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct PaneOrWindow {
+    /// A pane id; give this or `window`.
+    pane: Option<u32>,
+    /// A window id (the number in @N); give this or `pane`.
+    window: Option<u32>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct LayoutRename {
+    /// A window id; give this or `session`.
+    window: Option<u32>,
+    /// A session id (the number in $N); give this or `window`.
+    session: Option<u32>,
+    name: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct LayoutMove {
+    pane: u32,
+    /// The window to move it into; give this or `new_window`.
+    window: Option<u32>,
+    /// The name of a new window of its own; give this or `window`.
+    new_window: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct OnePane {
+    pane: u32,
+}
+
+fn direction(d: Option<&str>) -> Result<api::SplitDirection, String> {
+    match d {
+        None | Some("vertical") => Ok(api::SplitDirection::Vertical),
+        Some("horizontal") => Ok(api::SplitDirection::Horizontal),
+        Some(other) => Err(format!("direction `{other}`: use horizontal or vertical")),
+    }
+}
+
 fn text(v: Value) -> CallToolResult {
     let mut r = CallToolResult::success(vec![ContentBlock::text(v.to_string())]);
     r.structured_content = Some(v);
@@ -233,6 +369,95 @@ impl Dreamer {
             Ok(_) => failed("hosts.call: unexpected answer".into()),
             Err(e) => failed(format!("{name}: {method}: {e}")),
         })
+    }
+
+    /// One layout action; a tool error unless it completed.
+    async fn act(&self, kind: api::action::Kind) -> Result<CallToolResult, ErrorData> {
+        Ok(match self.submit(kind).await {
+            Ok(r) => {
+                let done = r.state == api::ActionState::Completed as i32;
+                let mut out = text(serde_json::to_value(&r).unwrap_or_default());
+                if !done {
+                    out.is_error = Some(true);
+                }
+                out
+            }
+            Err(e) => failed(e),
+        })
+    }
+
+    /// Send input events to a pane as automation: under this session's
+    /// lease on the pane, taken on first use. A person typing there revokes
+    /// it, and this session then leaves the pane alone.
+    async fn type_into(
+        &self,
+        pane: u32,
+        events: Vec<api::terminal_input::Event>,
+    ) -> CallToolResult {
+        let mut leases = self.leases.lock().await;
+        if leases.taken_over.contains(&pane) {
+            return failed(format!(
+                "a person typed into pane %{pane} while this agent held it; ask the user before typing there again"
+            ));
+        }
+        let mut sent = 0u64;
+        let mut events = events.into_iter().peekable();
+        let mut renewed = false;
+        while let Some(event) = events.peek().cloned() {
+            let lease = match leases.held.get(&pane) {
+                Some(id) => id.clone(),
+                None => match self
+                    .client
+                    .call(api::Request::LeasesAcquire(api::LeaseAcquire {
+                        pane,
+                        // Long enough to outlast waiting for an approval.
+                        ttl_ms: Some(LEASE_MS),
+                    }))
+                    .await
+                {
+                    Ok(api::Response::LeasesAcquire(l)) => {
+                        leases.held.insert(pane, l.id.clone());
+                        l.id
+                    }
+                    Ok(_) => return failed("leases.acquire: unexpected answer".into()),
+                    Err(e) => return failed(format!("leases.acquire: {e}")),
+                },
+            };
+            let r = self
+                .client
+                .call(api::Request::TerminalInput(api::TerminalInput {
+                    pane,
+                    lease: Some(lease),
+                    event: Some(event),
+                    ..api::TerminalInput::default()
+                }))
+                .await;
+            match r {
+                Ok(api::Response::TerminalInput(r)) => {
+                    sent += r.bytes;
+                    events.next();
+                }
+                Ok(_) => return failed("terminal.input: unexpected answer".into()),
+                Err(e) => {
+                    let why = e.to_string();
+                    leases.held.remove(&pane);
+                    if why.contains("a person typed") {
+                        leases.taken_over.insert(pane);
+                        return failed(format!(
+                            "{why}. A person took over pane %{pane}; ask the user before typing there again"
+                        ));
+                    }
+                    // An expired lease is renewed once; anything else is
+                    // the agent's to read.
+                    if !renewed && why.contains("expired") {
+                        renewed = true;
+                        continue;
+                    }
+                    return failed(why);
+                }
+            }
+        }
+        text(serde_json::json!({ "pane": pane, "bytes": sent }))
     }
 
     /// One typed call; its result as JSON, or a tool error saying why.
@@ -366,68 +591,14 @@ impl Dreamer {
         &self,
         Parameters(p): Parameters<SendInput>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Typing as automation: under this session's lease on the pane,
-        // taken on first use. A person typing there revokes it, and this
-        // session then leaves the pane alone.
-        let mut leases = self.leases.lock().await;
-        if leases.taken_over.contains(&p.pane) {
-            return Ok(failed(format!(
-                "a person typed into pane %{} while this agent held it; ask the user before typing there again",
-                p.pane
-            )));
-        }
-        for attempt in 0..2 {
-            let lease = match leases.held.get(&p.pane) {
-                Some(id) => id.clone(),
-                None => match self
-                    .client
-                    .call(api::Request::LeasesAcquire(api::LeaseAcquire {
-                        pane: p.pane,
-                        ttl_ms: None,
-                    }))
-                    .await
-                {
-                    Ok(api::Response::LeasesAcquire(l)) => {
-                        leases.held.insert(p.pane, l.id.clone());
-                        l.id
-                    }
-                    Ok(_) => return Ok(failed("leases.acquire: unexpected answer".into())),
-                    Err(e) => return Ok(failed(format!("leases.acquire: {e}"))),
-                },
-            };
-            let r = self
-                .client
-                .call(api::Request::TerminalInput(api::TerminalInput {
-                    pane: p.pane,
-                    lease: Some(lease),
-                    event: Some(api::terminal_input::Event::Text(api::TextInput {
-                        text: p.text.clone(),
-                    })),
-                    ..api::TerminalInput::default()
-                }))
-                .await;
-            match r {
-                Ok(r) => return Ok(text(r.to_json())),
-                Err(e) => {
-                    let why = e.to_string();
-                    leases.held.remove(&p.pane);
-                    if why.contains("a person typed") {
-                        leases.taken_over.insert(p.pane);
-                        return Ok(failed(format!(
-                            "{why}. A person took over pane %{}; ask the user before typing there again",
-                            p.pane
-                        )));
-                    }
-                    // An expired lease is renewed once; anything else is
-                    // the agent's to read.
-                    if attempt == 0 && why.contains("expired") {
-                        continue;
-                    }
-                    return Ok(failed(why));
-                }
-            }
-        }
-        Ok(failed("send_input: the lease kept expiring".into()))
+        Ok(self
+            .type_into(
+                p.pane,
+                vec![api::terminal_input::Event::Text(api::TextInput {
+                    text: p.text,
+                })],
+            )
+            .await)
     }
 
     #[tool(
@@ -588,6 +759,252 @@ impl Dreamer {
             .await
     }
 
+    #[tool(
+        description = "List every terminal pane: its session, window, command, directory, title, size, tier, how long it has been quiet, and whether you created it (you may act there without asking)."
+    )]
+    async fn terminals_list(&self, _: Parameters<Nothing>) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::TerminalList(api::TopologyParams::default()))
+            .await
+    }
+
+    #[tool(
+        description = "Read a pane as text: its screen, or with `lines` the last that many lines of history and screen."
+    )]
+    async fn terminal_read(
+        &self,
+        Parameters(p): Parameters<TerminalRead>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let history = p.lines.map(|n| n.min(2000));
+        let r = self
+            .client
+            .call(api::Request::TerminalRead(api::ReadParams {
+                pane: p.pane,
+                history,
+                endpoint: None,
+            }))
+            .await;
+        Ok(match r {
+            Ok(api::Response::TerminalRead(t)) => {
+                let mut lines = t.lines;
+                if let Some(n) = history {
+                    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+                        lines.pop();
+                    }
+                    let keep = (n as usize).max(1);
+                    if lines.len() > keep {
+                        lines.drain(..lines.len() - keep);
+                    }
+                } else {
+                    lines.drain(..(t.history_lines as usize).min(lines.len()));
+                }
+                text(serde_json::json!({
+                    "pane": t.pane,
+                    "cols": t.cols,
+                    "rows": t.rows,
+                    "cursor": [t.cursor_x, t.cursor_y],
+                    "lines": lines,
+                }))
+            }
+            Ok(_) => failed("terminal.read: unexpected answer".into()),
+            Err(e) => failed(e.to_string()),
+        })
+    }
+
+    #[tool(
+        description = "Search panes' recent output with a regular expression: one pane or every pane. Bounded in lines, matches, bytes, and time; a cut-short answer says so."
+    )]
+    async fn terminal_search(
+        &self,
+        Parameters(p): Parameters<TerminalSearch>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::TerminalQuery(api::TerminalQuery {
+            pattern: p.pattern,
+            literal: p.literal,
+            ignore_case: p.ignore_case,
+            panes: p.panes,
+            lines: p.lines,
+            max_matches: p.max_matches,
+            max_bytes: p.max_bytes,
+            timeout_ms: p.timeout_ms,
+            ..api::TerminalQuery::default()
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "Wait until a pattern appears in a pane's new output, the pane goes quiet for quiet_ms, or (exit) its program ends; whichever comes first, or the timeout. Returns what happened and the matching line."
+    )]
+    async fn terminal_watch(
+        &self,
+        Parameters(p): Parameters<TerminalWatch>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::TerminalWatch(api::TerminalWatch {
+            pane: p.pane,
+            pattern: p.pattern,
+            literal: p.literal,
+            ignore_case: p.ignore_case,
+            quiet_ms: p.quiet_ms,
+            exit: p.exit,
+            timeout_ms: p.timeout_ms,
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "Run a command in a new window (or a pane split from `split`) that you then own, wait for it, and return its exit status and output. If it outlasts the timeout it keeps running: follow it with terminal_watch (exit) and terminal_read."
+    )]
+    async fn terminal_run(
+        &self,
+        Parameters(p): Parameters<TerminalRun>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let argv = match (p.argv.is_empty(), p.command) {
+            (false, None) => p.argv,
+            (true, Some(c)) => vec!["/bin/sh".into(), "-c".into(), c],
+            _ => return Ok(failed("give either argv or command".into())),
+        };
+        let direction = match direction(p.direction.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return Ok(failed(e)),
+        };
+        self.call(api::Request::TerminalRun(api::TerminalRun {
+            argv,
+            cwd: p.cwd,
+            name: p.name,
+            split: p.split,
+            direction: direction as i32,
+            timeout_ms: p.timeout_ms,
+            lines: p.lines,
+            ..api::TerminalRun::default()
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "Type or paste into a pane, under an interaction lease: a person typing there takes it back, and you then stop. In a pane you did not create this may wait for the user's approval."
+    )]
+    async fn terminal_send(
+        &self,
+        Parameters(p): Parameters<TerminalSend>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use api::terminal_input::Event;
+        let mut events = Vec::new();
+        if let Some(t) = p.text {
+            events.push(Event::Text(api::TextInput { text: t }));
+        }
+        if let Some(t) = p.paste {
+            events.push(Event::Paste(api::PasteInput {
+                data: t.into_bytes(),
+                more: false,
+                id: 1,
+            }));
+        }
+        if p.enter {
+            events.push(Event::Key(api::KeyInput {
+                key: "Enter".into(),
+                ..api::KeyInput::default()
+            }));
+        }
+        if events.is_empty() {
+            return Ok(failed("give text, paste, or enter".into()));
+        }
+        Ok(self.type_into(p.pane, events).await)
+    }
+
+    #[tool(
+        description = "Split a pane, optionally running an exact program in the new pane, which you then own. Returns the action record with the new pane."
+    )]
+    async fn layout_split(
+        &self,
+        Parameters(p): Parameters<LayoutSplit>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let direction = match direction(p.direction.as_deref()) {
+            Ok(d) => d,
+            Err(e) => return Ok(failed(e)),
+        };
+        self.act(api::action::Kind::SplitPane(api::SplitPane {
+            pane: p.pane,
+            direction: direction as i32,
+            argv: p.argv,
+            cwd: p.cwd,
+            ..api::SplitPane::default()
+        }))
+        .await
+    }
+
+    #[tool(description = "Select (focus) a pane, or a window.")]
+    async fn layout_select(
+        &self,
+        Parameters(p): Parameters<PaneOrWindow>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use api::action::Kind;
+        let kind = match (p.pane, p.window) {
+            (Some(pane), None) => Kind::SelectPane(api::SelectPane { pane }),
+            (None, Some(window)) => Kind::SelectWindow(api::SelectWindow { window }),
+            _ => return Ok(failed("give a pane or a window".into())),
+        };
+        self.act(kind).await
+    }
+
+    #[tool(description = "Rename a window or a session.")]
+    async fn layout_rename(
+        &self,
+        Parameters(p): Parameters<LayoutRename>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use api::action::Kind;
+        let kind = match (p.window, p.session) {
+            (Some(window), None) => Kind::RenameWindow(api::RenameWindow {
+                window,
+                name: p.name,
+            }),
+            (None, Some(session)) => Kind::RenameSession(api::RenameSession {
+                session,
+                name: p.name,
+            }),
+            _ => return Ok(failed("give a window or a session".into())),
+        };
+        self.act(kind).await
+    }
+
+    #[tool(
+        description = "Move a pane, with its program, into another window or into a new window of its own."
+    )]
+    async fn layout_move(
+        &self,
+        Parameters(p): Parameters<LayoutMove>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(api::action::Kind::MovePane(api::MovePane {
+            pane: p.pane,
+            window: p.window,
+            new_window: p.new_window,
+        }))
+        .await
+    }
+
+    #[tool(description = "Toggle zoom of a pane: it fills its window, or stops filling it.")]
+    async fn layout_zoom(
+        &self,
+        Parameters(p): Parameters<OnePane>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.act(api::action::Kind::ZoomPane(api::ZoomPane { pane: p.pane }))
+            .await
+    }
+
+    #[tool(
+        description = "Close a pane or a window, ending its programs. Outside what you created, this always asks the user."
+    )]
+    async fn layout_close(
+        &self,
+        Parameters(p): Parameters<PaneOrWindow>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use api::action::Kind;
+        let kind = match (p.pane, p.window) {
+            (Some(pane), None) => Kind::KillPane(api::KillPane { pane }),
+            (None, Some(window)) => Kind::KillWindow(api::KillWindow { window }),
+            _ => return Ok(failed("give a pane or a window".into())),
+        };
+        self.act(kind).await
+    }
+
     #[tool(description = "Cancel a managed job (SIGTERM to its program). Returns its record.")]
     async fn cancel_job(
         &self,
@@ -598,7 +1015,35 @@ impl Dreamer {
     }
 }
 
-/// `dream mcp [--method M]... [--pane %N]... [--all-panes] [tmux options]`.
+/// The methods an agent's grant holds at `level`: observing at every
+/// level, and acting from `own` up.
+pub fn agent_methods(level: i32) -> Vec<String> {
+    let mut m = vec![
+        "tmux.topology",
+        "terminal.list",
+        "terminal.read",
+        "terminal.query",
+        "terminal.watch",
+        "jobs.get",
+        "jobs.list",
+        "actions.get",
+        "actions.list",
+        "agents.runs",
+    ];
+    if level >= api::ActLevel::Own as i32 {
+        m.extend([
+            "terminal.input",
+            "terminal.run",
+            "actions.submit",
+            "jobs.start",
+            "jobs.cancel",
+        ]);
+    }
+    m.into_iter().map(str::to_owned).collect()
+}
+
+/// `dream mcp [--level L] [--method M]... [--pane %N]... [--all-panes]
+/// [tmux options]`.
 pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     let mut grant = api::Grant::default();
     let mut narrow = false;
@@ -616,9 +1061,26 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
                     .map_err(|_| "--pane needs %N".to_owned())?,
             ),
             "--all-panes" => grant.all_panes = true,
+            "--level" => {
+                grant.level = match it.next().map(String::as_str) {
+                    Some("observe") => api::ActLevel::Observe,
+                    Some("own") => api::ActLevel::Own,
+                    Some("elsewhere") => api::ActLevel::Elsewhere,
+                    _ => return Err("--level needs observe, own, or elsewhere".into()),
+                } as i32;
+            }
             other => return Err(format!("unknown option {other}")),
         }
         narrow = true;
+    }
+    if grant.level != api::ActLevel::Unspecified as i32 {
+        // An agent's grant: every pane, at its level.
+        if grant.panes.is_empty() {
+            grant.all_panes = true;
+        }
+        if grant.methods.is_empty() {
+            grant.methods = agent_methods(grant.level);
+        }
     }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

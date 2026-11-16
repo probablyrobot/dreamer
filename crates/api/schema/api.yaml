@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 38 }
+version: { major: 1, minor: 39 }
 package: dreamer.v1
 
 types:
@@ -732,6 +732,7 @@ types:
       - { n: 3, name: panes, type: u32, repeated: true, doc: "Panes in scope; requests naming another pane are refused." }
       - { n: 4, name: all_panes, type: bool, doc: "Every pane is in scope." }
       - { n: 5, name: expires_unix_ms, type: u64, optional: true }
+      - { n: 6, name: level, type: ActLevel, doc: "How far the grant acts on panes; unspecified leaves it to the methods and panes alone." }
 
   - message: LaunchApp
     doc: >-
@@ -1062,6 +1063,7 @@ types:
       - { n: 8, name: hosts, type: string, repeated: true, doc: "Connected hosts to search too (all their panes); `*` means every live host." }
       - { n: 9, name: timeout_ms, type: u32, optional: true, doc: "Default 2000, at most 10000; panes not searched in time are reported." }
       - { n: 10, name: title, type: string, optional: true, doc: "Only panes whose title matches this regular expression." }
+      - { n: 11, name: max_bytes, type: u32, optional: true, doc: "Bytes of matching line text returned in all; default 65536, at most 1048576." }
 
   - message: QueryMatch
     fields:
@@ -1293,6 +1295,124 @@ types:
       - { n: 1, name: processes, type: ProcessRecord, repeated: true }
       - { n: 2, name: taken_unix_ms, type: u64 }
 
+  # ---- terminal tools and act levels -----------------------------------------
+
+  - enum: ActLevel
+    doc: "How far a grant may act on panes (docs/grants.md). Each level includes the ones before it."
+    values:
+      - { n: 0, name: unspecified, doc: "No level: the grant's methods and panes alone decide." }
+      - { n: 1, name: observe, doc: "List, read, search, and watch panes; never type, run, or change the layout." }
+      - { n: 2, name: own, doc: "Also act in panes and windows this connection created." }
+      - { n: 3, name: elsewhere, doc: "Also act in other panes, each time the user approves; closing always asks." }
+
+  - message: TerminalInfo
+    doc: "One pane, with what an agent needs to choose it."
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: session, type: u32 }
+      - { n: 3, name: session_name, type: string }
+      - { n: 4, name: window, type: u32 }
+      - { n: 5, name: window_name, type: string }
+      - { n: 6, name: window_index, type: u32 }
+      - { n: 7, name: command, type: string, doc: "The program in the foreground, as tmux reports it." }
+      - { n: 8, name: cwd, type: string, optional: true, doc: "The last directory the program reported (OSC 7)." }
+      - { n: 9, name: title, type: string }
+      - { n: 10, name: cols, type: u32 }
+      - { n: 11, name: rows, type: u32 }
+      - { n: 12, name: active, type: bool, doc: "The active pane of its window." }
+      - { n: 13, name: dead, type: bool, doc: "Its program has exited; the pane stays with its output." }
+      - { n: 14, name: tier, type: Tier }
+      - { n: 15, name: quiet_ms, type: u64, optional: true, doc: "Time since the pane last wrote anything; absent when it is not mirrored." }
+      - { n: 16, name: owned, type: bool, doc: "The calling connection created this pane." }
+
+  - message: TerminalList
+    fields:
+      - { n: 1, name: terminals, type: TerminalInfo, repeated: true }
+
+  - message: TerminalWatch
+    doc: >-
+      Wait for one of: `pattern` appearing in new output, the pane writing
+      nothing for `quiet_ms`, or (with `exit`) its program ending. At least
+      one condition is needed; the first to happen ends the wait.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: pattern, type: string, optional: true, doc: "A regular expression (linear time, size-limited), or plain text with `literal`; matched against lines written after the watch starts." }
+      - { n: 3, name: literal, type: bool }
+      - { n: 4, name: ignore_case, type: bool }
+      - { n: 5, name: quiet_ms, type: u32, optional: true, doc: "How long without output counts as quiet; at least 50." }
+      - { n: 6, name: exit, type: bool, doc: "End when the pane's program ends." }
+      - { n: 7, name: timeout_ms, type: u32, optional: true, doc: "Default 30000, at most 600000." }
+
+  - enum: WatchOutcome
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: matched, doc: "The pattern appeared; `text` is the line." }
+      - { n: 2, name: quiet, doc: "The pane wrote nothing for quiet_ms." }
+      - { n: 3, name: exited, doc: "The pane's program ended." }
+      - { n: 4, name: closed, doc: "The pane is gone." }
+      - { n: 5, name: timeout, doc: "None of the conditions happened in time." }
+
+  - message: WatchResult
+    fields:
+      - { n: 1, name: outcome, type: WatchOutcome }
+      - { n: 2, name: text, type: string, optional: true, doc: "The matching line." }
+      - { n: 3, name: match_start, type: u32, doc: "Byte offsets of the match in text." }
+      - { n: 4, name: match_end, type: u32 }
+      - { n: 5, name: elapsed_ms, type: u64 }
+      - { n: 6, name: exit_code, type: i32, optional: true, doc: "When the program was a job and exited." }
+      - { n: 7, name: signal, type: i32, optional: true, doc: "When the program was a job and a signal ended it." }
+
+  - message: TerminalRun
+    doc: >-
+      Run an exact program as a job, in a new window or a new pane split
+      from `split`, wait for it, and return its status and output. The
+      calling connection owns the new pane.
+    fields:
+      - { n: 1, name: argv, type: string, repeated: true, doc: "The exact program and arguments; no shell." }
+      - { n: 2, name: cwd, type: string, optional: true }
+      - { n: 3, name: env, type: EnvVar, repeated: true }
+      - { n: 4, name: session, type: u32, optional: true, doc: "The session for a new window; default the first session." }
+      - { n: 5, name: name, type: string, optional: true, doc: "The new window's name; default the program's name." }
+      - { n: 6, name: split, type: u32, optional: true, doc: "Split this pane for the program instead of opening a window; acting on that pane." }
+      - { n: 7, name: direction, type: SplitDirection, doc: "For split; default vertical." }
+      - { n: 8, name: timeout_ms, type: u32, optional: true, doc: "How long to wait; default 60000, at most 600000. The program keeps running after it." }
+      - { n: 9, name: lines, type: u32, optional: true, doc: "Output lines returned at most, the newest; default 200, at most 2000." }
+
+  - message: RunResult
+    fields:
+      - { n: 1, name: job, type: JobRecord, doc: "Its state, exit code or signal, and pane." }
+      - { n: 2, name: finished, type: bool, doc: "False when the wait timed out; the program is still running." }
+      - { n: 3, name: output, type: string, repeated: true, doc: "The pane's text, oldest first, without trailing blank lines." }
+      - { n: 4, name: truncated, type: bool, doc: "Older output was left out." }
+
+  - enum: ApprovalDecision
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: once, doc: "Allow this one action." }
+      - { n: 2, name: pane, doc: "Allow it and every later action in the same panes for this connection, except closing." }
+      - { n: 3, name: deny }
+
+  - message: Approval
+    doc: "An action waiting for the user: a connection at the elsewhere level acting on panes it did not create."
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: requester, type: string, doc: "Who asks: an app instance, or owner:N for a narrowed connection of the user's own." }
+      - { n: 3, name: method, type: string }
+      - { n: 4, name: action, type: string, doc: "What it would do, in words." }
+      - { n: 5, name: panes, type: u32, repeated: true, doc: "The panes it would act on that the requester did not create." }
+      - { n: 6, name: closing, type: bool, doc: "It closes panes or ends a program; `pane` approval does not cover it." }
+      - { n: 7, name: created_unix_ms, type: u64 }
+      - { n: 8, name: expires_unix_ms, type: u64, doc: "Unanswered by then, it is denied." }
+
+  - message: ApprovalList
+    fields:
+      - { n: 1, name: approvals, type: Approval, repeated: true }
+
+  - message: ApprovalAnswer
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: decision, type: ApprovalDecision }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -1356,6 +1476,11 @@ methods:
   - { method: taps.subscribe, params: TapSubscribe, result: TapSubscription, doc: "Follow panes at one level; `taps.data` events follow. A tap never slows the panes it reads: one that falls behind gets a gap." }
   - { method: taps.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: apps.register, params: RegisterApp, result: Registration, mutation: true, doc: "Trade a launch ticket for the app's narrow grant on this connection." }
+  - { method: terminal.list, params: TopologyParams, result: TerminalList, doc: "Every pane in scope with its session, window, command, directory, title, size, tier, and activity." }
+  - { method: terminal.watch, params: TerminalWatch, result: WatchResult, doc: "Wait until a pattern appears in a pane, it goes quiet, or its program ends; bounded by a timeout." }
+  - { method: terminal.run, params: TerminalRun, result: RunResult, mutation: true, doc: "Run an exact program as a job in a new window or pane the caller then owns; returns its exit status and output." }
+  - { method: approvals.list, params: Empty, result: ApprovalList, doc: "Actions waiting for the user's approval (owner only)." }
+  - { method: approvals.answer, params: ApprovalAnswer, result: Approval, mutation: true, doc: "Allow or deny a waiting action (owner only)." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the

@@ -225,6 +225,18 @@ pub async fn connection_as(
                             .await;
                         return;
                     }
+                    // Then the act level: acting on panes this connection
+                    // did not create may wait here for the user's approval.
+                    if let Err(e) = act_level(&state, &conn, &req).await {
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(
+                                Kind::Response,
+                                failure(req.id, e).encode_to_vec(),
+                            ))
+                            .await;
+                        return;
+                    }
                     if req.method == api::method::APPS_REGISTER {
                         let response = register(&state, &conn, &req).await;
                         let _ = conn
@@ -360,6 +372,7 @@ pub async fn connection_as(
         task.abort();
     }
     state.leases.drop_conn(conn.id);
+    state.approvals.drop_conn(conn.id);
     let sizers: Vec<u64> = conn.sizers.lock().await.drain().collect();
     crate::service::release_sizing(&state, &sizers).await;
     drop(conn);
@@ -441,10 +454,13 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
     }
     // Likewise for starting and stopping extensions and scripts, which
     // hands out their grants.
+    // Approvals are the user's to answer: an agent never approves itself.
     if [
         api::method::SCRIPTS_LOAD,
         api::method::SCRIPTS_RELOAD,
         api::method::SCRIPTS_STOP,
+        api::method::APPROVALS_LIST,
+        api::method::APPROVALS_ANSWER,
     ]
     .contains(&req.method.as_str())
     {
@@ -488,10 +504,28 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         ));
     }
     let request = api::Request::decode(&req.method, &req.payload).ok()?;
+    // Panes this connection created are in its scope too.
     grant
-        .check(&req.method, &request)
+        .check_owning(&req.method, &request, |p| state.approvals.owns(conn.id, p))
         .err()
         .map(|e| failure(req.id, e))
+}
+
+/// The act level of the connection's grant, for a request that acts on
+/// panes (see approvals.rs). A request that does not decode acts on
+/// nothing.
+async fn act_level(state: &State, conn: &Conn, req: &wire::Request) -> Result<(), RpcError> {
+    let Some(grant) = conn.grant.lock().ok().map(|g| g.0.clone()) else {
+        return Ok(());
+    };
+    if grant.owner || grant.level == api::ActLevel::Unspecified as i32 {
+        return Ok(());
+    }
+    let Ok(request) = api::Request::decode(&req.method, &req.payload) else {
+        return Ok(());
+    };
+    let requester = conn.who().instance;
+    crate::approvals::gate(state, conn.id, &requester, &grant, &req.method, &request).await
 }
 
 /// What an app may do with filters (spec 13.4: a filter pane). Only with
@@ -529,6 +563,7 @@ fn app_filters(
         panes: grant.0.panes.clone(),
         all_panes: grant.0.all_panes,
         expires_unix_ms: grant.0.expires_unix_ms,
+        level: 0,
     };
     let bad = |e: String| RpcError::new(code::INVALID_PARAMS, e);
     match api::Request::decode(&req.method, &req.payload).map_err(|e| bad(e.to_string()))? {
@@ -549,6 +584,7 @@ fn app_filters(
                 all_panes: g.all_panes,
                 // An app's filter ends with the app's grant.
                 expires_unix_ms: grant.0.expires_unix_ms,
+                level: 0,
             };
             let watched = api::Grant {
                 panes: spec.panes.clone(),

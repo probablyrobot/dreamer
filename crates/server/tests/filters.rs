@@ -568,6 +568,7 @@ async fn an_app_manages_only_read_only_filters_within_its_own_panes() {
             panes: vec![pane],
             all_panes: false,
             expires_unix_ms: None,
+            level: 0,
         })
     };
     call(&app, narrow(&["terminal.query", api::MANAGE_FILTERS]))

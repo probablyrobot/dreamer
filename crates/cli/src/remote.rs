@@ -800,6 +800,55 @@ pub fn jobs(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     })
 }
 
+/// `dream approvals`: actions agents wait to have approved, and answers.
+pub fn approvals(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage:
+  dream approvals [--json]
+  dream approvals allow ID [--pane]
+  dream approvals deny ID";
+    let answer = |id: &String, decision: api::ApprovalDecision| {
+        Request::ApprovalsAnswer(api::ApprovalAnswer {
+            id: id.clone(),
+            decision: decision as i32,
+        })
+    };
+    let request = match args {
+        [] => Request::ApprovalsList(api::Empty {}),
+        [j] if j == "--json" => Request::ApprovalsList(api::Empty {}),
+        [v, id] if v == "allow" => answer(id, api::ApprovalDecision::Once),
+        [v, id, p] if v == "allow" && p == "--pane" => answer(id, api::ApprovalDecision::Pane),
+        [v, id] if v == "deny" => answer(id, api::ApprovalDecision::Deny),
+        _ => return Err(USAGE.into()),
+    };
+    let json = args.first().is_some_and(|a| a == "--json");
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        match call(&mut c, request).await? {
+            Response::ApprovalsList(l) if json => println!(
+                "{}",
+                serde_json::to_string_pretty(&l).map_err(|e| e.to_string())?
+            ),
+            Response::ApprovalsList(l) => {
+                if l.approvals.is_empty() {
+                    println!("nothing waits for approval");
+                }
+                for a in &l.approvals {
+                    println!(
+                        "{} {}: {}{}",
+                        a.id,
+                        a.requester,
+                        a.action,
+                        if a.closing { " (closes)" } else { "" }
+                    );
+                }
+            }
+            Response::ApprovalsAnswer(a) => println!("{} answered: {}", a.id, a.action),
+            _ => return Err("unexpected reply".into()),
+        }
+        Ok(())
+    })
+}
+
 fn print_job(j: &api::JobRecord) {
     let state = api::JobState::try_from(j.state).map_or("unknown", api::JobState::name);
     let how = match (j.exit_code, j.signal) {

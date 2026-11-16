@@ -69,6 +69,7 @@ match a pattern right now, here and on connected hosts.
 | `panes` | The panes to search; empty means every mirrored pane |
 | `lines` | How many of each pane's newest lines, screen included (default 200, at most 2000) |
 | `max_matches` | Default 100, at most 1000 |
+| `max_bytes` | Bytes of matching line text in the answer; default 65536, at most 1048576 |
 | `hosts` | Connected hosts whose panes are searched too; `*` means every live host |
 | `timeout_ms` | Default 2000, at most 10000 |
 | `title` | Only panes whose title matches this regular expression |
@@ -76,7 +77,7 @@ match a pattern right now, here and on connected hosts.
 The answer lists each match (host, pane, line index in the window, the
 line, and the match's byte offsets) and how many panes were searched.
 When a bound cut it short, `truncated` is set and `notes` says which
-(`max_matches`, `timeout`, a host that did not answer). A host that cannot
+(`max_matches`, `max_bytes`, `timeout`, a host that did not answer). A host that cannot
 be reached is a note, not a failure.
 
 Patterns run in Rust, in time linear in the input (no backtracking). A

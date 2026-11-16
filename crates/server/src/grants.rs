@@ -24,6 +24,12 @@ fn targets(r: &Request) -> Targets {
         Request::TerminalSubscribe(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalInput(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalSetTier(p) => Targets::Panes(vec![p.pane]),
+        Request::TerminalWatch(p) => Targets::Panes(vec![p.pane]),
+        Request::TerminalRun(p) => match p.split {
+            Some(pane) => Targets::Panes(vec![pane]),
+            // A run without a pane to split gets a window of its own.
+            None => Targets::Everything,
+        },
         Request::LeasesAcquire(p) => Targets::Panes(vec![p.pane]),
         Request::TerminalQuery(p) if p.panes.is_empty() || !p.hosts.is_empty() => {
             Targets::Everything
@@ -96,6 +102,9 @@ pub fn within(current: &api::Grant, wanted: &api::Grant) -> Result<(), String> {
     {
         return Err("the grant cannot outlast the current one".into());
     }
+    if !crate::approvals::level_within(current.level, wanted.level) {
+        return Err("the act level is above this connection's".into());
+    }
     Ok(())
 }
 
@@ -151,11 +160,29 @@ impl Grant {
 
     /// Whether this request may run: the method, the panes it names, and
     /// the expiry. The request is already decoded for its own method.
+    #[cfg(test)]
     pub fn check(&self, method: &str, request: &Request) -> Result<(), RpcError> {
-        self.check_at(method, request, now_ms())
+        self.check_at(method, request, now_ms(), |_| false)
     }
 
-    fn check_at(&self, method: &str, request: &Request, now: u64) -> Result<(), RpcError> {
+    /// As [`Grant::check`], with the panes the connection created (`owns`)
+    /// in its scope too.
+    pub fn check_owning(
+        &self,
+        method: &str,
+        request: &Request,
+        owns: impl Fn(u32) -> bool,
+    ) -> Result<(), RpcError> {
+        self.check_at(method, request, now_ms(), owns)
+    }
+
+    fn check_at(
+        &self,
+        method: &str,
+        request: &Request,
+        now: u64,
+        owns: impl Fn(u32) -> bool,
+    ) -> Result<(), RpcError> {
         let g = &self.0;
         if g.owner {
             return Ok(());
@@ -173,12 +200,14 @@ impl Grant {
         }
         match targets(request) {
             Targets::Nothing => Ok(()),
-            Targets::Panes(panes) => match panes.iter().find(|p| !g.panes.contains(p)) {
-                Some(p) => Err(forbidden(format!(
-                    "pane %{p} is outside this connection's grant"
-                ))),
-                None => Ok(()),
-            },
+            Targets::Panes(panes) => {
+                match panes.iter().find(|p| !g.panes.contains(p) && !owns(**p)) {
+                    Some(p) => Err(forbidden(format!(
+                        "pane %{p} is outside this connection's grant"
+                    ))),
+                    None => Ok(()),
+                }
+            }
             Targets::Everything => Err(forbidden(format!(
                 "`{method}` reaches beyond this connection's panes"
             ))),
@@ -197,6 +226,7 @@ mod tests {
             panes: panes.to_vec(),
             all_panes: false,
             expires_unix_ms: None,
+            level: 0,
         })
     }
 
@@ -290,12 +320,23 @@ mod tests {
     }
 
     #[test]
+    fn panes_a_connection_created_are_in_its_scope() {
+        let g = narrow(&["terminal.read"], &[3]);
+        let owns = |p: u32| p == 7;
+        assert!(g.check_owning("terminal.read", &read(7), owns).is_ok());
+        assert!(g.check_owning("terminal.read", &read(8), owns).is_err());
+    }
+
+    #[test]
     fn an_expired_grant_refuses_everything() {
         let mut g = narrow(&["terminal.read"], &[3]);
         g.0.expires_unix_ms = Some(1_000);
-        assert!(g.check_at("terminal.read", &read(3), 999).is_ok());
+        assert!(
+            g.check_at("terminal.read", &read(3), 999, |_| false)
+                .is_ok()
+        );
         let e = g
-            .check_at("terminal.read", &read(3), 1_000)
+            .check_at("terminal.read", &read(3), 1_000, |_| false)
             .expect_err("expired");
         assert!(e.message.contains("expired"), "{e}");
     }
