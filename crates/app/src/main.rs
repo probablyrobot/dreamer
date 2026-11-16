@@ -33,6 +33,7 @@ mod theme;
 mod theme_pick;
 
 use theme::{c, ca};
+mod bench_gui;
 mod workspace;
 
 use std::process::ExitCode;
@@ -148,7 +149,7 @@ pub(crate) struct Shell {
     live_frames: u64,
     pub(crate) focus: FocusHandle,
     /// Where key presses and text go (live panes only).
-    feed: Option<Arc<Feed>>,
+    pub(crate) feed: Option<Arc<Feed>>,
     /// IME composition in progress: drawn at the cursor, never sent.
     preedit: Option<String>,
     /// Window activation becomes focus in or out for the pane.
@@ -1329,7 +1330,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(a)
 }
 
+/// When the process started (the GUI benchmark's launch time).
+pub(crate) static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
 fn main() -> ExitCode {
+    STARTED.get_or_init(std::time::Instant::now);
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let args = match parse(&raw) {
         Ok(a) => a,
@@ -1420,6 +1425,7 @@ fn main() -> ExitCode {
         // configuration applies at once, an invalid one is shown and waits.
         live::apply(cx, &settings, live::themes());
         live::watch(cx);
+
         if workspace_mode {
             let launch = client::Launch::new(args.daemon.clone());
             if let Some(host) = &args.host {
