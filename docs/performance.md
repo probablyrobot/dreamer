@@ -142,18 +142,18 @@ first, then a release `dreamer`, which measures itself
 - **Needs a display.** It must be awake and unlocked, with the window in
   front.
 
-Revision: branch `m7-05-gui-bench`.
+Revision: branch `m7-05-launch-and-tabs`.
 
 | Measure | 1 pane | 16 panes | 64 panes | 256 panes | Target |
 | --- | --- | --- | --- | --- | --- |
 | Visible panes | 1 | 16 | 16 | 16 | — |
-| Launch to every visible pane painted (daemon running) | 230 ms | 199 ms | 191 ms | 196 ms | Under 150 ms: **not met** |
+| Launch to every visible pane painted (daemon running) | 181 ms | 181 ms | 190 ms | 205 ms | Under 150 ms: **not met**; see below |
 | Terminal paints over 3 s with nothing changing | 0 | 0 | 0 | 0 | Zero: met |
-| Key to echo including paint, idle, p50 / p95 | 2.1 / 3.0 ms | 2.1 / 4.2 ms | 2.1 / 4.2 ms | 2.9 / 6.5 ms | p95 under 30 ms: met |
-| Key to echo including paint, 15 busy panes, p50 / p95 | — | 2.1 / 3.3 ms | 2.1 / 3.4 ms | 2.1 / 3.5 ms | One-pane budget plus 10 ms: met |
-| Terminal paint time per frame, 15 busy panes, p95 | — | 1.6 ms | 1.3 ms | 1.5 ms | Under 8 ms: met |
-| Time between frames, 15 busy panes, p95 | — | 25 ms | 17 ms | 17 ms | — |
-| Tab switch to every pane painted, p50 / p95 | — | — | 59 / 65 ms | 67 / 80 ms | p95 under 50 ms: **not met** |
+| Key to echo including paint, idle, p50 / p95 | 2.1 / 3.2 ms | 2.1 / 3.7 ms | 2.1 / 4.4 ms | 2.1 / 4.3 ms | p95 under 30 ms: met |
+| Key to echo including paint, 15 busy panes, p50 / p95 | — | 2.1 / 3.5 ms | 2.1 / 3.4 ms | 2.1 / 3.7 ms | One-pane budget plus 10 ms: met |
+| Terminal paint time per frame, 15 busy panes, p95 | — | 1.5 ms | 1.7 ms | 1.6 ms | Under 8 ms: met |
+| Time between frames, 15 busy panes, p95 | — | 17 ms | 25 ms | 25 ms | — |
+| Tab switch to every pane painted, p50 / p95 | — | — | 8.9 / 12.8 ms | 8.7 / 9.9 ms | p95 under 50 ms: met |
 
 ## Findings
 
@@ -190,22 +190,27 @@ Revision: branch `m7-05-gui-bench`.
 - **Warm panes with long histories are expensive.** 1,000 Warm panes with
   2,000 lines each take 1.9 GB. Demoting panes nobody watches to Cold is
   what keeps a large daemon small.
-- **Launch spent 1.2 s listing fonts.** Choosing the terminal font asked
-  GPUI for every installed font name, twice, and on macOS each listing
-  takes about 0.6 s. Looking up only the wanted family brought launch
-  from 1.33 s to 0.2 s.
-  - The remaining 200 ms is spread out: GPUI's platform start (65 ms),
-    loading the bundled fonts (45 ms), opening the window (40 ms), and the
-    first frame (60 ms).
-  - The target is still not met. Candidates: loading the fonts while the
-    window opens, and painting the first frame before the topology
-    arrives.
-- **A tab switch is a tmux round trip and new subscriptions.**
-  - Selecting a tab goes through tmux. When the topology comes back,
-    each pane of the new tab starts a feed and waits for its checkpoint.
-  - The spec wants the cached last frame painted at once, then a catch-up.
-    The desktop does not keep frames for hidden tabs yet. That is the
-    change that would meet 50 ms (#66).
+- **Launch: 1.33 s, then 0.2 s, now about 185 ms.**
+  - **Fonts.** Choosing the terminal font asked GPUI for every installed
+    font name, twice, at about 0.6 s each on macOS. It now resolves the
+    wanted family alone. It also parsed all five shipped families (46 MB)
+    to use one; only the configured family's files are read now, on a
+    thread started at launch, while GPUI starts up.
+  - **Daemon and themes.** The daemon connection and the first topology
+    start at process start too. The theme list, which only the palette's
+    Theme command needs, is read after the window opens.
+  - **What remains.** Most of it is outside Dreamer's code: GPUI's
+    platform start (about 58 ms) and the window's first frame (about
+    60–70 ms: Metal setup, first layout, and shaping).
+  - **Revised target: 200 ms** with the daemon running. 150 ms would take
+    changes to GPUI's startup.
+- **Tab switch: 65–80 ms, now about 10 ms.**
+  - **Before.** A switch waited for tmux's confirmation, then subscribed
+    every pane of the tab again.
+  - **Now.** Panes in hidden tabs keep their views: up to 48 of them, the
+    spec's Warm client tier. A clicked tab is shown at once from those
+    last frames while tmux confirms. tmux stays authoritative: if it
+    reports another window as active, that is what is shown.
 - **Attaching many panes at once failed some of them.** Each attach is a
   few command batches on the daemon's one tmux control connection, whose
   queue holds 256. Creating hundreds of panes together overflowed it, and

@@ -187,6 +187,11 @@ thread_local! {
         std::cell::RefCell::new(std::collections::VecDeque::with_capacity(256));
 }
 
+/// Forget which frames were painted: what is painted from now on counts.
+pub fn forget_painted() {
+    PAINTED.with(|p| p.borrow_mut().clear());
+}
+
 /// Whether `frame` was among the last 256 frames painted on this thread.
 pub fn was_painted(frame: &Arc<FrameSnapshot>) -> bool {
     let at = Arc::as_ptr(frame) as usize;

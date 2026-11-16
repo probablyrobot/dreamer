@@ -54,6 +54,71 @@ pub struct ChosenFont {
 
 /// Load shipped fonts, then pick the configured family if any source has
 /// it (shipped files or the system), else the platform's monospace font.
+type Read = Option<(PathBuf, Vec<Cow<'static, [u8]>>)>;
+
+/// Font files being read on another thread since launch, for a family.
+static PREFETCH: std::sync::Mutex<Option<(String, std::thread::JoinHandle<Read>)>> =
+    std::sync::Mutex::new(None);
+
+/// Start reading `family`'s shipped files now, off the main thread, so
+/// that is done by the time the text system takes them (launch overlaps it
+/// with GPUI's own startup).
+pub fn prefetch(family: &str) {
+    let wanted = family.to_owned();
+    let for_thread = wanted.clone();
+    if let Ok(handle) = std::thread::Builder::new()
+        .name("dreamer-fonts".into())
+        .spawn(move || read_family(&for_thread))
+        && let Ok(mut p) = PREFETCH.lock()
+    {
+        *p = Some((wanted, handle));
+    }
+}
+
+/// The first shipped font directory that has fonts, and the files of
+/// `wanted` in it: by name (`JetBrainsMono Nerd Font Mono` is
+/// `JetBrainsMonoNerdFontMono-*.ttf`), since the shipped families are
+/// 46 MB and parsing them all cost launch about 40 ms; every file when none
+/// matches, so a family named otherwise is still found.
+fn read_family(wanted: &str) -> Read {
+    let stem: String = wanted.chars().filter(|c| !c.is_whitespace()).collect();
+    for dir in font_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "ttf" || x == "otf"))
+            .collect();
+        if files.is_empty() {
+            continue;
+        }
+        let matching: Vec<&PathBuf> = files
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(&format!("{stem}-")))
+            })
+            .collect();
+        let chosen: Vec<&PathBuf> = if matching.is_empty() {
+            files.iter().collect()
+        } else {
+            matching
+        };
+        let fonts: Vec<Cow<'static, [u8]>> = chosen
+            .into_iter()
+            .filter_map(|p| std::fs::read(p).ok())
+            .map(Cow::Owned)
+            .collect();
+        if !fonts.is_empty() {
+            return Some((dir, fonts));
+        }
+    }
+    None
+}
+
 /// Whether `family` resolves to itself, not to a fallback. One family
 /// lookup: listing every installed font (`all_font_names`) takes over half
 /// a second on macOS, and launch has 150 ms (spec 16.6).
@@ -68,21 +133,17 @@ pub fn choose(cx: &mut App, settings: &Settings) -> ChosenFont {
     let wanted = settings.font.family.clone();
     let on_system = available(cx, &wanted);
     let mut loaded_from = None;
-    for dir in font_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        let fonts: Vec<Cow<'static, [u8]>> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "ttf" || x == "otf"))
-            .filter_map(|p| std::fs::read(p).ok())
-            .map(Cow::Owned)
-            .collect();
-        if !fonts.is_empty() && cx.text_system().add_fonts(fonts).is_ok() {
-            loaded_from = Some(dir);
-            break;
-        }
+    let prefetched = PREFETCH
+        .lock()
+        .ok()
+        .and_then(|mut p| p.take())
+        .filter(|(family, _)| *family == wanted)
+        .and_then(|(_, handle)| handle.join().ok());
+    let found = prefetched.unwrap_or_else(|| read_family(&wanted));
+    if let Some((dir, fonts)) = found
+        && cx.text_system().add_fonts(fonts).is_ok()
+    {
+        loaded_from = Some(dir);
     }
     if on_system || available(cx, &wanted) {
         let source = match loaded_from {

@@ -335,10 +335,12 @@ pub(crate) async fn run(
         for i in 0..20 {
             let target = if i % 2 == 0 { other } else { home };
             let from: Vec<u32> = read(any, &ws, cx, |w, _| w.pane_ids()).unwrap_or_default();
+            // Frames shown before the switch do not count as painted by it.
+            cx.update(|_| terminal_render::forget_painted());
             let t0 = Instant::now();
-            let _ = cx.update_window(any, |_, _, cx| {
+            let _ = cx.update_window(any, |_, window, cx| {
                 if let Some(ws) = ws.upgrade() {
-                    ws.update(cx, |w, cx| w.click_tab_for_smoke(target, cx));
+                    ws.update(cx, |w, cx| w.click_tab_for_smoke(target, window, cx));
                 }
             });
             until(
