@@ -1,7 +1,9 @@
-# Draft a GitHub release for a version tag with the generic Linux tarball,
-# which packaging/install.sh downloads. The macOS zip is built and checked
-# on the development Mac (no macOS runners) and uploaded with
-# `gh release upload`; see docs/packaging.md.
+# Draft a GitHub release for a version tag with the x86-64 Linux archives:
+# the generic desktop tarball (which packaging/install.sh downloads) and
+# the headless server archive, each checked on fresh ubuntu:24.04
+# containers first. The macOS zip and the ARM64 archives are built and
+# checked on the development Mac (no macOS or ARM64 runners) and added by
+# `cargo xtask release`, with the build report; see docs/packaging.md.
 name: release
 
 on:
@@ -12,10 +14,10 @@ permissions:
   contents: write
 
 jobs:
-  linux-tarball:
-    name: release linux tarball (x86-64)
+  linux-x86-64:
+    name: release linux archives (x86-64)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned toolchain
@@ -25,10 +27,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
-            libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev
+            libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev \
+            libevent-dev libncurses-dev bison
       - run: cargo xtask deps prepare --locked
       - run: cargo xtask package --platform linux
-      - name: Draft the release with the tarball
+      - run: cargo xtask package --platform server
+      - name: Both archives on fresh ubuntu:24.04 containers
+        run: cargo xtask package --fresh --arch amd64
+      - name: Draft the release with the archives
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -37,4 +43,7 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" --clobber \
             target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz \
             target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+            target/package/server/dreamer-server-*-x86_64-unknown-linux-gnu.tar.gz \
+            target/package/server/dreamer-server-*-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+            target/package/fresh-amd64.json \
             packaging/install.sh
