@@ -19,7 +19,13 @@ pub enum TopologyStatus {
     Following,
     /// Lost the daemon or tmux; retrying.
     Reconnecting(String),
+    /// The daemon could not start, and why (its own reason, or the spawn
+    /// error). Starting is tried again every few seconds.
+    CannotStart(String),
 }
+
+/// How often a daemon that could not start is started again.
+const RESTART_EVERY: Duration = Duration::from_secs(5);
 
 /// What the view asks the daemon for.
 #[derive(Debug)]
@@ -175,10 +181,21 @@ impl Owner {
         launch: Option<client::Launch>,
         mut actions: tokio::sync::mpsc::UnboundedReceiver<Command>,
     ) {
-        if let Some(l) = &launch
-            && let Err(e) = client::ensure_running(l, "gui").await
-        {
-            self.set(TopologyStatus::Reconnecting(e.to_string()));
+        // Why the daemon could not start, and when that was last tried.
+        let mut cannot_start: Option<(String, tokio::time::Instant)> = None;
+        let start = |l: &client::Launch| {
+            let l = l.clone();
+            async move {
+                match client::ensure_running(&l, "gui").await {
+                    Err(e @ client::ClientError::Spawn(_)) => {
+                        Some((e.to_string(), tokio::time::Instant::now()))
+                    }
+                    _ => None,
+                }
+            }
+        };
+        if let Some(l) = &launch {
+            cannot_start = start(l).await;
         }
         let mut seen = 0u64;
         let mut backoff = Duration::from_millis(100);
@@ -186,11 +203,19 @@ impl Owner {
             if actions.is_closed() {
                 return;
             }
+            if let (Some(l), Some((_, at))) = (&launch, &cannot_start)
+                && at.elapsed() >= RESTART_EVERY
+            {
+                cannot_start = start(l).await;
+            }
             let why = match self.follow(&socket, &mut actions, &mut seen).await {
                 Ok(()) => return,
                 Err(e) => e,
             };
-            self.set(TopologyStatus::Reconnecting(why));
+            match &cannot_start {
+                Some((reason, _)) => self.set(TopologyStatus::CannotStart(reason.clone())),
+                None => self.set(TopologyStatus::Reconnecting(why)),
+            }
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(2));
         }

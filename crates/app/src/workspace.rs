@@ -1526,6 +1526,7 @@ impl Render for Workspace {
             use replica::topology::TopologyStatus;
             match self.topology.status() {
                 TopologyStatus::Reconnecting(why) => Some(format!("reconnecting: {why}")),
+                TopologyStatus::CannotStart(why) => Some(why),
                 TopologyStatus::Connecting => Some("connecting…".to_owned()),
                 TopologyStatus::Following => {
                     let behind = self

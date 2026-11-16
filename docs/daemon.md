@@ -53,6 +53,20 @@ Both directories are created with mode 0700. The daemon refuses to start if
 an existing directory belongs to another user or is open to other users. It
 never loosens or takes over such a directory.
 
+Socket paths are limited to 103 bytes on macOS and 107 on Linux. A runtime
+directory whose `dreamerd.rpc.sock` would be longer is refused, with that
+reason, before anything binds.
+
+**When the daemon cannot start,** whoever started it hears why:
+
+- `dream` and the desktop start it in the background and read its
+  standard error during startup.
+- If it stops before serving, its reason becomes the error: an open or
+  foreign directory, a socket path that is too long, or a missing
+  `dreamerd` beside the app.
+- `dream` prints the reason. The desktop's tab strip shows it and tries
+  again every 5 s, so fixing the cause is enough.
+
 ## Lifecycle
 
 - **One instance:** the daemon takes the startup lock before it touches the
