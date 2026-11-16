@@ -5,7 +5,63 @@ What works end to end through the full path: application → tmux 3.8 →
 listed as supported only when its request and response paths both pass
 through tmux in a test. Ghostty parsing a sequence is not enough.
 
-This page grows with each milestone. Entries cite the test that proves them.
+Entries cite the test that proves them. A feature with no passing end-to-end
+test is not listed as supported.
+
+## Output: what a program writes
+
+**The path.** A program in a real tmux pane writes the sequence. tmux
+carries it in control mode to the daemon's mirror. A client replica
+restores the mirror's checkpoint and follows its stream, and the replica's
+frame must show the feature (`crates/server/tests/protocols.rs`, on the
+live path). A pane that wrote before the daemon followed it starts from
+tmux's own capture instead; what survives that is in
+[`tmux-bootstrap.md`](tmux-bootstrap.md).
+
+**The Drawn column** is what the desktop's renderer paints. It is checked
+by the `matrix` gate stage's fixtures (`crates/terminal-render/fixtures`).
+
+| Feature | Sequence | Mirror and replica | Drawn | Evidence |
+| --- | --- | --- | --- | --- |
+| 16, 256, and 24-bit colors, foreground and background | SGR 30–37, 38;5;N, 38;2;R;G;B, 48;… | Yes | Yes | `colors_and_text_attributes_reach_the_replica` |
+| Bold, italic, faint, inverse, strikethrough | SGR 1, 3, 2, 7, 9 | Yes | Yes | Same test; `decorations.vt` |
+| Overline | SGR 53 | Yes | No: kept in the terminal state, not painted | Same test |
+| Underline: single, curly | SGR 4, 4:3 | Yes | Yes (curly as a wave) | Same test; `decorations.vt` |
+| Underline: double, dotted, dashed | SGR 4:2, 4:4, 4:5 | Yes | Painted as a single underline | Same test; `decorations.vt` |
+| Underline color | SGR 58;2;R;G;B | Yes | Yes | Same test |
+| Wide CJK characters and emoji | UTF-8 | Yes: one wide cell and its spacer | Yes | `wide_characters_emoji_and_combining_marks_keep_their_cells`; `text-matrix.vt` |
+| Combining marks | UTF-8 | Yes: joined to their base cell | Yes | Same tests |
+| Flags and other multi-codepoint emoji | UTF-8, with mode 2027 set by the program | Yes: one wide cell | Not pixel-tested | Same test. Without mode 2027 each regional indicator is its own cell |
+| Cursor shapes and blink | DECSCUSR `CSI N SP q` | Yes | Yes (block, bar, underline, hidden) | `cursor_shapes_the_alternate_screen_and_hyperlinks_reach_the_replica`; `cursor-*.vt` |
+| Hyperlinks | OSC 8 | Yes: hit-tested over their cells | Not pixel-tested | Same test; `osc8_links_are_hit_tested_over_their_cells_and_wraps` |
+| Alternate screen | `CSI ? 1049 h` | Yes: no history while it is active | Yes | Same test |
+| Window title, working directory | OSC 2, OSC 7 | Yes: pane state in every view (OSC 7 as the URI written) | The window title | `titles_and_working_directories_reach_every_view` |
+| Synchronized output | `CSI ? 2026 h`/`l` | Held until the end, or shown after the limit | Yes | `a_synchronized_output_hold_is_shown_after_the_limit` |
+| Bell | BEL | A live effect to current viewers, never replayed | A brief flash | `a_bell_reaches_each_live_subscriber_once_and_is_never_replayed` |
+| Clipboard write | OSC 52 | To the pane's focused client only | Applied under `clipboard.write` | See [Reply ownership](#reply-ownership) |
+
+**Not supported end to end:**
+- **Kitty graphics** work in the engine and the renderer: placements,
+  crops, z-order, and deletes, with file and shared-memory transmissions
+  refused (`crates/terminal-ghostty/tests/images.rs`, the `image-*.vt`
+  fixtures). They are not claimed through tmux, which needs
+  `allow-passthrough` and has no test here.
+- **Sixel graphics, the kitty keyboard protocol, and OSC 4 palette
+  queries** have no tested path through tmux 3.8.
+
+## Input: what the program receives
+
+The daemon encodes input against the pane's current modes, and tmux
+delivers it (`crates/server/tests/input.rs`).
+
+| Feature | Behavior | Evidence |
+| --- | --- | --- |
+| Keys in normal and application cursor mode | `CSI A` and `SS3 A` as the mode says | `keys_are_encoded_against_the_pane_s_current_modes` |
+| Bracketed paste | Markers exactly once, only when the program enabled them | `bracketed_paste_markers_appear_exactly_once` |
+| Large pastes | 1 MiB arrives byte for byte | `a_one_mib_paste_arrives_byte_for_byte` |
+| Mouse | SGR-encoded, and only to programs that track the mouse | `mouse_reaches_only_programs_that_track_it` |
+| Input for a replaced process | Refused, never typed into the new process | `input_for_a_replaced_process_is_refused` |
+| Automation and a person typing | A person typing takes over from leased automation | `a_person_typing_takes_over_from_leased_automation` |
 
 ## Reply ownership
 

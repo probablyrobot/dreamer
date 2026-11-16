@@ -318,6 +318,41 @@ async fn decorations(c: &Client, pane: u32) -> Vec<api::Decoration> {
     }
 }
 
+/// Wait until the pane's last lines are `line` and then an idle prompt.
+async fn prompt_after(c: &Client, pane: u32, line: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(Response::TerminalRead(t)) = call(
+            c,
+            Request::TerminalRead(api::ReadParams {
+                pane,
+                history: Some(5),
+                endpoint: None,
+            }),
+        )
+        .await
+        {
+            let lines: Vec<&str> = t
+                .lines
+                .iter()
+                .map(|l| l.trim_end())
+                .filter(|l| !l.is_empty())
+                .collect();
+            if let [.., before, prompt] = lines.as_slice()
+                && *before == line
+                && prompt.ends_with(['$', '#', '%', '>'])
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never back at the prompt after {line}: {lines:?}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn wait_marks(c: &Client, pane: u32, n: usize) -> Vec<api::Decoration> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -400,6 +435,10 @@ async fn a_view_finds_a_mark_on_its_own_copy_of_the_line() {
     let socket = s.root.join("rt/dreamerd.sock");
     // History above the line, so its row counts from well above the screen.
     s.tmux(&["send-keys", "-t", &target, "seq 1 80", "Enter"]);
+    // Only once the shell is back at its prompt: keys typed while `seq`
+    // runs would be read after the prompt is printed, putting the output on
+    // the prompt's line (`$ MARKED here`), which `^MARKED` never matches.
+    prompt_after(&c, pane, "80").await;
     let marks = replica::decorations::DecorationsFeed::start(socket.clone()).expect("feed");
     marks.watch([pane]);
     call(
