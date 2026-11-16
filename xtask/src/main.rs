@@ -8,6 +8,7 @@ mod color_schemes;
 mod deps;
 mod desktop;
 mod doctor;
+mod fresh;
 mod gate;
 mod headless;
 mod hooks;

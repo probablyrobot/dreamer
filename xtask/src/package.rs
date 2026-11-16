@@ -42,6 +42,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut source_only = false;
     let mut nodeps = false;
     let mut target: Option<String> = None;
+    let mut container = false;
+    let mut fresh = false;
+    let mut arch = crate::fresh::native_arch().to_owned();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -50,8 +53,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "--source-only" => source_only = true,
             "--nodeps" => nodeps = true,
             "--target" => target = Some(iter.next().ok_or("--target needs a value")?.clone()),
+            "--container" => container = true,
+            "--fresh" => fresh = true,
+            "--arch" => arch = iter.next().ok_or("--arch needs a value")?.clone(),
             other => return Err(format!("unknown package argument `{other}`")),
         }
+    }
+    if fresh {
+        return crate::fresh::fresh_check(&arch);
+    }
+    if container {
+        if platform != "linux" {
+            return Err("--container builds the Linux archives: use --platform linux".into());
+        }
+        return crate::fresh::build_in_container(&arch);
     }
     match platform.as_str() {
         "arch" => return arch_package(&repo_root(), source_only, nodeps),
@@ -166,7 +181,7 @@ fn linux_tarball(root: &Path) -> Result<(), String> {
     };
     for exe in EXECUTABLES {
         copy(
-            &root.join("target/release").join(exe),
+            &crate::util::cargo_target(root).join("release").join(exe),
             &stage.join("bin").join(exe),
         )?;
     }
@@ -277,7 +292,9 @@ pub fn server_archive(root: &Path, target: Option<String>) -> Result<PathBuf, St
     {
         return Err(format!("release build for {triple} failed"));
     }
-    let built = root.join("target").join(&triple).join("release");
+    let built = crate::util::cargo_target(root)
+        .join(&triple)
+        .join("release");
     let out = root.join("target/package/server");
     let name = format!("dreamer-server-{version}-{triple}");
     let stage = out.join(&name);
@@ -563,7 +580,7 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
     if !status.success() {
         return Err("cargo build of dreamer, dreamerd, dream, and dreamer-termapp failed".into());
     }
-    let bin_dir = root.join("target").join(if profile == Profile::Release {
+    let bin_dir = crate::util::cargo_target(root).join(if profile == Profile::Release {
         "release"
     } else {
         "debug"
