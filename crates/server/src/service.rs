@@ -110,6 +110,8 @@ pub struct State {
     pub decorations: crate::decorations::Decorations,
     /// What provider hooks report about their sessions.
     pub agents: crate::agents::Agents,
+    /// Agent sessions over harnesses the daemon runs.
+    pub sessions: Arc<crate::sessions::Sessions>,
 }
 
 #[derive(Debug, Clone)]
@@ -1497,6 +1499,66 @@ impl api::Service for DaemonService {
     async fn drawer_status(&self, p: api::DrawerRequest) -> Result<api::DrawerStatus, RpcError> {
         self.check_endpoint(p.endpoint.as_deref())?;
         crate::drawer::run(&self.0, p, false).await
+    }
+
+    async fn agent_sessions_create(
+        &self,
+        _: api::AgentSessionCreate,
+    ) -> Result<api::AgentSession, RpcError> {
+        Err(for_a_connection("agent.sessions.create"))
+    }
+
+    async fn agent_sessions_send(
+        &self,
+        _: api::AgentSessionSend,
+    ) -> Result<api::AgentSession, RpcError> {
+        Err(for_a_connection("agent.sessions.send"))
+    }
+
+    async fn agent_sessions_events(
+        &self,
+        _: api::AgentSessionEventsQuery,
+    ) -> Result<api::AgentSessionEvents, RpcError> {
+        Err(for_a_connection("agent.sessions.events"))
+    }
+
+    async fn agent_sessions_cancel(
+        &self,
+        _: api::AgentSessionRef,
+    ) -> Result<api::AgentSession, RpcError> {
+        Err(for_a_connection("agent.sessions.cancel"))
+    }
+
+    async fn agent_sessions_approve(
+        &self,
+        _: api::AgentSessionAnswer,
+    ) -> Result<api::AgentSession, RpcError> {
+        Err(for_a_connection("agent.sessions.approve"))
+    }
+
+    async fn agent_sessions_deny(
+        &self,
+        _: api::AgentSessionAnswer,
+    ) -> Result<api::AgentSession, RpcError> {
+        Err(for_a_connection("agent.sessions.deny"))
+    }
+
+    async fn agent_sessions_list(&self, _: api::Empty) -> Result<api::AgentSessionList, RpcError> {
+        Err(for_a_connection("agent.sessions.list"))
+    }
+
+    async fn agent_sessions_resume(
+        &self,
+        _: api::AgentSessionRef,
+    ) -> Result<api::AgentSession, RpcError> {
+        Err(for_a_connection("agent.sessions.resume"))
+    }
+
+    async fn agent_sessions_close(
+        &self,
+        _: api::AgentSessionRef,
+    ) -> Result<api::AgentSession, RpcError> {
+        Err(for_a_connection("agent.sessions.close"))
     }
 }
 

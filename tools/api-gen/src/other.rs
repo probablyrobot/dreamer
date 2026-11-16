@@ -280,12 +280,16 @@ pub fn luau(s: &Schema) -> String {
         o.push('\n');
     }
     o.push_str("export type Call = (method: string, params: any) -> any\n\nreturn function(call: Call)\n\tlocal dreamer = {}\n");
+    // A table for each service, and for each group within one
+    // (`agent.sessions.create` lives in `dreamer.agent.sessions`).
     let mut services: Vec<&str> = Vec::new();
     for m in &s.methods {
-        let service = m.method.split('.').next().unwrap_or_default();
-        if !services.contains(&service) {
-            services.push(service);
-            let _ = writeln!(o, "\tdreamer.{service} = {{}}");
+        for (end, _) in m.method.match_indices('.') {
+            let table = &m.method[..end];
+            if !services.contains(&table) {
+                services.push(table);
+                let _ = writeln!(o, "\tdreamer.{table} = {{}}");
+            }
         }
     }
     for m in &s.methods {
@@ -296,7 +300,8 @@ pub fn luau(s: &Schema) -> String {
             m.method, m.params, m.result, m.method
         );
     }
-    for service in &services {
+    // Groups before the services that hold them.
+    for service in services.iter().rev() {
         let _ = writeln!(o, "\ttable.freeze(dreamer.{service})");
     }
     o.push_str("\treturn table.freeze(dreamer)\nend\n");

@@ -1015,31 +1015,19 @@ impl Dreamer {
     }
 }
 
-/// The methods an agent's grant holds at `level`: observing at every
-/// level, and acting from `own` up.
-pub fn agent_methods(level: i32) -> Vec<String> {
-    let mut m = vec![
-        "tmux.topology",
-        "terminal.list",
-        "terminal.read",
-        "terminal.query",
-        "terminal.watch",
-        "jobs.get",
-        "jobs.list",
-        "actions.get",
-        "actions.list",
-        "agents.runs",
-    ];
-    if level >= api::ActLevel::Own as i32 {
-        m.extend([
-            "terminal.input",
-            "terminal.run",
-            "actions.submit",
-            "jobs.start",
-            "jobs.cancel",
-        ]);
-    }
-    m.into_iter().map(str::to_owned).collect()
+pub use api::agent_methods;
+
+/// Inside an agent session's harness: the registration that gives this
+/// connection the session's grant (`DREAMER_SESSION_ID` and the ticket
+/// file `DREAMER_SESSION_TICKET`, set by the daemon).
+fn session_registration() -> Option<api::Request> {
+    let id = std::env::var("DREAMER_SESSION_ID").ok()?;
+    let path = std::env::var("DREAMER_SESSION_TICKET").ok()?;
+    let ticket = std::fs::read_to_string(path).ok()?;
+    Some(api::Request::AppsRegister(api::RegisterApp {
+        launch_id: format!("session:{id}"),
+        ticket: ticket.trim().to_owned(),
+    }))
 }
 
 /// `dream mcp [--level L] [--method M]... [--pane %N]... [--all-panes]
@@ -1088,6 +1076,13 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     rt.block_on(async {
         let c = session(d).await?;
+        // Started by an agent session's harness: take the session's grant
+        // first, so nothing here can exceed it.
+        if let Some(register) = session_registration() {
+            c.call(register)
+                .await
+                .map_err(|e| format!("the agent session's grant: {e}"))?;
+        }
         if narrow {
             c.call(api::Request::GrantsNarrow(grant))
                 .await

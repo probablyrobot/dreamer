@@ -253,9 +253,9 @@ impl Schema {
         let mut methods = BTreeSet::new();
         for m in &self.methods {
             let parts: Vec<&str> = m.method.split('.').collect();
-            if parts.len() != 2 || !parts.iter().all(|p| is_snake(p)) {
+            if !(2..=3).contains(&parts.len()) || !parts.iter().all(|p| is_snake(p)) {
                 errors.push(format!(
-                    "method `{}` must be `service.name` in snake_case",
+                    "method `{}` must be `service.name` (or `service.group.name`) in snake_case",
                     m.method
                 ));
             }
@@ -267,13 +267,21 @@ impl Schema {
                     errors.push(format!("method `{}`: `{ty}` is not a message", m.method));
                 }
             }
+            // A method is never also the group of other methods.
+            let group = format!("{}.", m.method);
+            if self.methods.iter().any(|o| o.method.starts_with(&group)) {
+                errors.push(format!(
+                    "method `{}` is also a group of other methods",
+                    m.method
+                ));
+            }
         }
         let mut topics = BTreeSet::new();
         for n in &self.notifications {
             let parts: Vec<&str> = n.topic.split('.').collect();
-            if parts.len() != 2 || !parts.iter().all(|p| is_snake(p)) {
+            if !(2..=3).contains(&parts.len()) || !parts.iter().all(|p| is_snake(p)) {
                 errors.push(format!(
-                    "notification `{}` must be `service.name` in snake_case",
+                    "notification `{}` must be `service.name` (or `service.group.name`) in snake_case",
                     n.topic
                 ));
             }

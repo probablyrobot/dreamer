@@ -47,6 +47,7 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `extensions.restart`, `apps.launch`, `scripts.load`, `scripts.reload`, `scripts.stop` | The owner grant: no app, extension, script, or filter, whatever its grant lists |
 | `filters.install`, `filters.list`, `filters.pause`, `filters.resume`, `filters.remove` | The owner grant, or `filters.manage` plus content read; see [Filters an app installs](filters.md#filters-an-app-installs) |
 | `messages.*` | Only the method; messages never reach a pane (see [messages.md](messages.md)) |
+| `agent.sessions.*` | Only the method. A new session's grant must be within the caller's, and a caller other than the owner sees only the sessions it created (see [agents.md](agents.md#grants)) |
 | `events.subscribe` | Only the method; it then delivers only events about panes in scope, and events about no pane only with `all_panes` (see [events.md](events.md)) |
 
 Panes the connection created itself (a split, a new window, a job, a

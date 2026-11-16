@@ -22,7 +22,9 @@ mod codex;
 mod mcp;
 pub mod pi;
 pub mod pi_profile;
+pub mod pi_rpc;
 mod run;
+pub mod session;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -418,7 +420,7 @@ fn classify(text: &str) -> Failure {
 }
 
 /// Keep long tool output short in events.
-fn clip(s: &str) -> String {
+pub(crate) fn clip(s: &str) -> String {
     const MAX: usize = 2000;
     if s.len() <= MAX {
         return s.to_owned();
