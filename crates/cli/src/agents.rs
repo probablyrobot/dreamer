@@ -130,9 +130,9 @@ pub fn merge(existing: &mut Value, ours: &Value) -> Result<usize, String> {
     Ok(added)
 }
 
-/// `dream agents status|update|rollback|hooks|runs|providers|ask`.
+/// `dream agents status|update|rollback|hooks|runs|providers|ask|delegate`.
 pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
-    let usage = "usage:\n  dream agents status [--harness pi] [--json]\n  dream agents update [--harness pi] [--version X.Y.Z]\n  dream agents rollback [--harness pi]\n  dream agents pi [PI ARGUMENTS...]\n  dream agents profile init|status|log|diff|revert|commit|check ... (see `dream agents profile`)\n  dream agents runs [--host NAME]... [--json]\n  dream agents hooks [--write SETTINGS_FILE]\n  dream agents sessions [--json] | create | send | events | approve | deny | cancel | resume | close\n  dream agents providers [--json]\n  dream agents ask [options] -- PROMPT";
+    let usage = "usage:\n  dream agents status [--harness pi] [--json]\n  dream agents update [--harness pi] [--version X.Y.Z]\n  dream agents rollback [--harness pi]\n  dream agents pi [PI ARGUMENTS...]\n  dream agents profile init|status|log|diff|revert|commit|check ... (see `dream agents profile`)\n  dream agents runs [--host NAME]... [--json]\n  dream agents hooks [--write SETTINGS_FILE]\n  dream agents sessions [--json] | create | send | events | approve | deny | cancel | resume | close\n  dream agents providers [--json]\n  dream agents ask [options] -- PROMPT\n  dream agents delegate --to claude|codex [--cwd DIR] [--timeout SECONDS] [--json] [--result FILE] -- PROMPT";
     match args.first().map(String::as_str) {
         Some("status") => crate::harness::status(&args[1..]),
         Some("update") => crate::harness::update(&args[1..]),
@@ -141,6 +141,13 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         Some("pi") => crate::profile::launch(&args[1..]),
         Some("providers") => crate::ask::providers(&args[1..]),
         Some("sessions") => crate::sessions::run(d, &args[1..]),
+        Some("delegate") => {
+            if crate::delegate::delegate(&args[1..])? == std::process::ExitCode::SUCCESS {
+                Ok(())
+            } else {
+                std::process::exit(1)
+            }
+        }
         Some("ask") => {
             let code = crate::ask::ask(d, &args[1..])?;
             if code == std::process::ExitCode::SUCCESS {

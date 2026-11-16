@@ -262,8 +262,9 @@ agents:
   default: pi                  # pi (default), claude, codex, or a name below
   pi:
     version: latest            # latest (default) or a release such as 1.5.2
-    model: openai/gpt-5.5      # optional
+    model: openai-codex/gpt-5.5  # optional; default: the profile's provider and its default model
     agent_dir: ~/.pi/agent     # optional; default: Dreamer's pi profile
+    delegates: [claude, codex] # default; the CLIs pi may hand tasks to, [] for none
   gemini:
     protocol: acp
     command: [gemini, --experimental-acp]

@@ -41,6 +41,7 @@ mod bridge;
 mod build;
 mod collect;
 mod daemon;
+mod delegate;
 mod extprobe;
 mod harness;
 mod hosts;
@@ -89,6 +90,7 @@ const USAGE: &str = "usage:
   dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
   dream agents providers [--json]
   dream agents sessions [--json] | create [--harness H] [--cwd DIR] | send ID TEXT [--wait] | events ID [--follow] | approve|deny ID APPROVAL | cancel|resume|close ID
+  dream agents delegate --to claude|codex [--cwd DIR] [--timeout S] [--json] [--result FILE] -- PROMPT
   dream agents ask [--provider claude|codex] [--pane %N]... [--all-panes] [--no-tools] [--timeout S] -- PROMPT
   dream jobs [--json] | start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...] | cancel ID | artifacts ID
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME

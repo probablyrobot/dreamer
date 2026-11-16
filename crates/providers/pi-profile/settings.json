@@ -1,4 +1,4 @@
 {
   "$schema": "https://pi.dev/schemas/settings.schema.json",
-  "defaultProvider": "openai"
+  "defaultProvider": "openai-codex"
 }

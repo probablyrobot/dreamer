@@ -7,6 +7,7 @@
 //!   pi:
 //!     version: latest           # or 1.5.2
 //!     model: openai/gpt-5.5
+//!     delegates: [claude, codex]
 //!   gemini:
 //!     protocol: acp
 //!     command: [gemini, --experimental-acp]
@@ -23,6 +24,9 @@ use serde_norway::Value;
 
 /// The harnesses Dreamer knows without configuration.
 pub const BUILT_IN: [&str; 3] = ["pi", "claude", "codex"];
+
+/// The CLIs pi's Dreamer extension can hand tasks to.
+pub const DELEGATES: [&str; 2] = ["claude", "codex"];
 
 /// The harness used when `agents.default` is not set.
 pub const DEFAULT_HARNESS: &str = "pi";
@@ -73,6 +77,15 @@ impl AgentSettings {
             .and_then(|h| h.version.clone())
             .unwrap_or(PiVersion::Latest)
     }
+
+    /// The CLIs pi may delegate to (`agents.pi.delegates`): both unless
+    /// configured.
+    pub fn pi_delegates(&self) -> Vec<String> {
+        self.harnesses
+            .get("pi")
+            .and_then(|h| h.delegates.clone())
+            .unwrap_or_else(|| DELEGATES.iter().map(|d| (*d).to_owned()).collect())
+    }
 }
 
 /// One harness block.
@@ -90,6 +103,9 @@ pub struct Harness {
     pub agent_dir: Option<PathBuf>,
     /// Custom harnesses only: how Dreamer talks to it.
     pub protocol: Option<Protocol>,
+    /// pi only: the CLIs (`claude`, `codex`) its delegation tools may run;
+    /// unset means both.
+    pub delegates: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +131,7 @@ struct HarnessFile {
     version: Option<Value>,
     agent_dir: Option<String>,
     protocol: Option<Protocol>,
+    delegates: Option<Vec<String>>,
 }
 
 /// A release number: `X.Y.Z`, optionally with a `-pre.release` suffix.
@@ -230,6 +247,22 @@ pub fn parse(value: &Value) -> Result<AgentSettings, Problem> {
                 )
             })?);
         }
+        if let Some(list) = file.delegates {
+            if name != "pi" {
+                return Err(p(&at("delegates"), "applies to pi only".into()));
+            }
+            let mut seen: Vec<String> = Vec::new();
+            for d in list {
+                if !DELEGATES.contains(&d.as_str()) {
+                    return Err(p(&at("delegates"), format!("`{d}` is not claude or codex")));
+                }
+                if seen.contains(&d) {
+                    return Err(p(&at("delegates"), format!("`{d}` is listed twice")));
+                }
+                seen.push(d);
+            }
+            h.delegates = Some(seen);
+        }
         if let Some(proto) = file.protocol {
             if built_in {
                 return Err(p(
@@ -297,6 +330,34 @@ mod tests {
         let names: Vec<String> = a.all().into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["pi", "claude", "codex"]);
         assert!(a.harness("gemini").is_none());
+        assert_eq!(a.pi_delegates(), ["claude", "codex"]);
+    }
+
+    #[test]
+    fn delegates_choose_the_clis_pi_may_hand_tasks_to() {
+        assert_eq!(
+            agents("pi: {delegates: [codex]}")
+                .expect("one")
+                .pi_delegates(),
+            ["codex"]
+        );
+        assert!(
+            agents("pi: {delegates: []}")
+                .expect("none")
+                .pi_delegates()
+                .is_empty()
+        );
+        for (yaml, why) in [
+            ("pi: {delegates: [gemini]}", "not claude or codex"),
+            ("pi: {delegates: [claude, claude]}", "twice"),
+            ("claude: {delegates: [codex]}", "pi only"),
+        ] {
+            let (path, msg) = agents(yaml).expect_err(yaml);
+            assert!(path.ends_with(".delegates"), "{yaml}: {path}");
+            assert!(msg.contains(why), "{yaml}: {msg}");
+        }
+        let (path, _) = agents("pi: {delegates: claude}").expect_err("not a list");
+        assert_eq!(path, "agents.pi");
     }
 
     #[test]

@@ -33,7 +33,9 @@ by `agents:` in `dreamer.yaml`; see [agents.md](agents.md).
   [`dream mcp`](mcp.md), scoped by the grant you give it. Claude Code gets
   only that server (`--strict-mcp-config`) and no built-in tools
   (`--tools ""`): it cannot run shell commands or edit files on its own.
-  Codex runs with `--sandbox read-only`.
+  A delegated task ([agents.md](agents.md#delegation-to-claude-code-and-codex))
+  also gets the read-only `Read`, `Grep`, and `Glob`. Codex runs with
+  `--sandbox read-only`.
 - **One contract.** Every provider streams the same events: started, text,
   tool call, tool result, limit, usage, and then exactly one of done or
   failed. Each can be cancelled. Cancelling, or a timeout, ends the CLI's

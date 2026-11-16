@@ -1,5 +1,6 @@
 // Dreamer's extension for pi: the terminals, layout, and collectors of the
-// Dreamer daemon as native pi tools, and the profile's history.
+// Dreamer daemon as native pi tools, delegation to Claude Code and Codex,
+// and the profile's history.
 //
 // Each tool is one call to the daemon over its JSON-RPC socket, on a
 // connection that has narrowed itself to an agent's grant
@@ -15,7 +16,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { COLLECTOR_PRESETS, Session, collectorQuery, collectorSpec, inputEvents, readResult } from "./daemon.ts";
+import { COLLECTOR_PRESETS, DELEGATES, Session, collectorQuery, collectorSpec, delegates, inputEvents, readResult } from "./daemon.ts";
 
 type Ui = { notify(message: string, kind?: "info" | "warning" | "error"): void; setStatus(key: string, text: string | undefined): void };
 
@@ -200,6 +201,41 @@ export default function (pi: ExtensionAPI) {
 			return session.layout(p.action, p);
 		},
 	});
+
+	// Delegation: hand a task to Claude Code or Codex, run headless on the
+	// CLI's own login by `dream agents delegate`, as a job in a window this
+	// session owns so the user can watch it. `agents.pi.delegates` chooses
+	// which (DREAMER_PI_DELEGATES). At the observe level an agent runs
+	// nothing, so there are none.
+	for (const to of session.level === "observe" ? [] : delegates()) {
+		const d = DELEGATES[to];
+		pi.registerTool({
+			name: d.tool,
+			label: d.label,
+			description: `Hand a self-contained task to ${d.label}, run headless on its own login in a new window you own (the user can watch it there), and get back its final answer and a summary of the tools it used. It can read files under cwd but not change them. Give it everything it needs in the task: it does not see this conversation. If ${d.label} is not installed or not logged in, this says so; it never falls back to an API key.`,
+			parameters: Type.Object({
+				task: Type.String({ description: `What ${d.label} should do or answer, with all the context it needs.` }),
+				cwd: Type.Optional(Type.String({ description: "The directory it works in; default pi's working directory." })),
+				timeout_s: Type.Optional(Type.Integer({ minimum: 1, maximum: 7200, description: "Stop it after this long; default 1800." })),
+			}),
+			async execute(_id: string, params: any, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
+				if (ctx?.hasUI) ui = ctx.ui;
+				const r: any = await session.delegate(
+					dream,
+					to,
+					params.task,
+					{ cwd: params.cwd ?? process.cwd(), timeout_s: params.timeout_s },
+					signal,
+				);
+				if (r.ok !== true) throw new Error(`${r.error ?? "the run failed"} (pane %${r.pane})`);
+				const tools = r.tools?.summary ?? "none";
+				return {
+					content: [{ type: "text" as const, text: `${r.answer}\n\n[${d.label} in pane %${r.pane}${r.model ? `, ${r.model}` : ""}; tools: ${tools}]` }],
+					details: r,
+				};
+			},
+		});
+	}
 
 	const registerCollectors = () => {
 		if (collectorTools) return;

@@ -52,7 +52,7 @@ fn agent_dir(h: &Harness) -> PathBuf {
 }
 
 /// A configured program: a path as given, a bare name from `PATH`.
-fn resolve(program: &str) -> Option<PathBuf> {
+pub(crate) fn resolve(program: &str) -> Option<PathBuf> {
     if program.contains('/') {
         Some(PathBuf::from(program)).filter(|p| p.is_file())
     } else {
@@ -110,7 +110,7 @@ pub fn status(args: &[String]) -> Result<(), String> {
     };
     let login_hint = program.as_ref().map(|p| {
         format!(
-            "PI_CODING_AGENT_DIR={} {} auth login openai   (or /login inside pi)",
+            "PI_CODING_AGENT_DIR={} {} auth login openai-codex   (or /login inside pi)",
             shell_word(&dir.display().to_string()),
             shell_word(&p.display().to_string())
         )

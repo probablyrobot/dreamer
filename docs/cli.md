@@ -190,6 +190,12 @@ a prompt on one of them with Dreamer's tools. See
 | `dream agents sessions approve ID APPROVAL [--option O]`, `deny ID APPROVAL` | Answer an approval request |
 | `dream agents sessions cancel ID`, `resume ID`, `close ID` | Stop the running turn, start a detached session's harness again, or close the session |
 
+`dream agents delegate --to claude|codex [--cwd DIR] [--timeout SECONDS]
+[--json] [--result FILE] -- PROMPT` hands one task to Claude Code or Codex,
+headless on its own login, and prints its answer (with `--json`, the
+result as JSON). It is what pi's `claude_code` and `codex` tools run. See
+[agents.md](agents.md#delegation-to-claude-code-and-codex).
+
 ## Jobs
 
 `dream jobs` lists jobs; `dream jobs start [--cwd DIR] [--name NAME] --

@@ -8,6 +8,7 @@
 // an agent: it can never answer approvals, and acting outside the panes it
 // created waits for the user (docs/grants.md).
 
+import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 
@@ -46,8 +47,8 @@ export function level(env: Record<string, string | undefined> = process.env): Le
 export const COLLECTOR_PRESETS = ["errors", "test-failures", "commands", "urls", "paths"];
 
 /** The methods of the agent's grant at `level`: the same set `dream mcp
- * --level` uses (collectors only read panes, so every level keeps them),
- * plus the event stream (approvals and collector rows). */
+ * --level` uses (collectors only read panes, so every level may create
+ * and query them; stopping one is an action), plus the event stream (approvals and collector rows). */
 export function agentMethods(l: Level): string[] {
 	const m = [
 		"tmux.topology",
@@ -63,11 +64,10 @@ export function agentMethods(l: Level): string[] {
 		"collect.create",
 		"collect.list",
 		"collect.query",
-		"collect.stop",
 		"events.subscribe",
 	];
 	if (l !== "observe") {
-		m.push("terminal.input", "terminal.run", "actions.submit", "jobs.start", "jobs.cancel");
+		m.push("terminal.input", "terminal.run", "actions.submit", "jobs.start", "jobs.cancel", "collect.stop");
 	}
 	return m;
 }
@@ -283,6 +283,42 @@ export function layoutKind(op: string, p: any): Record<string, unknown> {
 	}
 }
 
+/** The CLIs a task can be handed to: pi tool name, `dream agents delegate
+ * --to` value, and who it is. */
+export const DELEGATES = {
+	claude: { tool: "claude_code", label: "Claude Code" },
+	codex: { tool: "codex", label: "Codex" },
+} as const;
+
+export type Delegate = keyof typeof DELEGATES;
+
+/** `DREAMER_PI_DELEGATES` (set by `dream agents pi` from
+ * `agents.pi.delegates`): a comma-separated list; unset means both. */
+export function delegates(env: Record<string, string | undefined> = process.env): Delegate[] {
+	const v = env.DREAMER_PI_DELEGATES;
+	if (v === undefined) return ["claude", "codex"];
+	return v
+		.split(",")
+		.map((x) => x.trim())
+		.filter((x): x is Delegate => x === "claude" || x === "codex");
+}
+
+/** The program and arguments that hand `task` to `to`: Dreamer's
+ * `dream agents delegate`, which runs the CLI headless on its own login
+ * with API keys removed and writes its result to the job's artifacts. */
+export function delegateArgv(dream: string, to: Delegate, task: string, opts: { cwd?: string; timeout_s?: number } = {}): string[] {
+	if (task.trim() === "") throw new Error("give the task");
+	const argv = [dream, "agents", "delegate", "--to", to];
+	if (opts.cwd) argv.push("--cwd", opts.cwd);
+	if (opts.timeout_s !== undefined) argv.push("--timeout", String(opts.timeout_s));
+	argv.push("--", task);
+	return argv;
+}
+
+/** How long one wait for a delegated run lasts before its state is read
+ * again. */
+const DELEGATE_WAIT_MS = 15_000;
+
 /** Long enough to outlast waiting for an approval. */
 const LEASE_MS = 120_000;
 
@@ -452,6 +488,60 @@ export class Session {
 			throw new Error(`${op}: ${r?.state ?? "no answer"}${r?.reason ? `: ${r.reason}` : ""}`);
 		}
 		return r;
+	}
+
+	/** Hand `task` to `to` as a job in a new window this session owns (so
+	 * the user can watch it), wait for it to end, and return the result it
+	 * wrote: the answer, or why there is none (a missing or logged-out CLI
+	 * is reported, never replaced). `signal` cancels the job. */
+	async delegate(
+		dream: string,
+		to: Delegate,
+		task: string,
+		opts: { cwd?: string; timeout_s?: number } = {},
+		signal?: AbortSignal,
+	): Promise<Record<string, unknown>> {
+		const argv = delegateArgv(dream, to, task, opts);
+		const r = await this.acting_on(undefined, () =>
+			this.call("terminal.run", {
+				argv,
+				...(opts.cwd ? { cwd: opts.cwd } : {}),
+				name: DELEGATES[to].tool,
+				timeout_ms: DELEGATE_WAIT_MS,
+				lines: 40,
+			}),
+		);
+		const job = r?.job;
+		if (!job || typeof job.pane !== "number") throw new Error("terminal.run started no job");
+		let output: string[] = Array.isArray(r.output) ? r.output : [];
+		let finished = r.finished === true;
+		while (!finished) {
+			if (signal?.aborted) {
+				await this.call("jobs.cancel", { id: job.id }).catch(() => {});
+				throw new Error(`cancelled; the ${DELEGATES[to].label} run in pane %${job.pane} was stopped`);
+			}
+			const j = await this.call("jobs.get", { id: job.id });
+			if (j?.state !== "running") break;
+			const w = await this.call("terminal.watch", { pane: job.pane, exit: true, timeout_ms: DELEGATE_WAIT_MS });
+			if (w?.outcome === "closed") break;
+		}
+		let result: Record<string, unknown>;
+		const file = job.artifacts ? path.join(job.artifacts, "delegate.json") : "";
+		try {
+			result = JSON.parse(fs.readFileSync(file, "utf8"));
+		} catch {
+			if (!finished) {
+				try {
+					output = readResult(await this.call("terminal.read", { pane: job.pane, history: 40 }), 40).lines as string[];
+				} catch {
+					// The pane may be gone.
+				}
+			}
+			throw new Error(
+				`${DELEGATES[to].label} left no result (pane %${job.pane}); its last output:\n${output.slice(-20).join("\n")}`,
+			);
+		}
+		return { ...result, pane: job.pane };
 	}
 
 	close() {

@@ -237,6 +237,11 @@ pub struct Request {
     pub model: Option<String>,
     /// Stopped (as cancelled by time) after this long.
     pub timeout: Option<Duration>,
+    /// Let the CLI read files under its working directory with its own
+    /// read-only tools: Claude Code's `Read`, `Grep`, and `Glob` (otherwise
+    /// it has none of its own). Codex always runs in its read-only
+    /// sandbox, which reads files either way.
+    pub read_files: bool,
     /// Let a run go on when the CLI reports an API key.
     pub allow_metered: bool,
     /// More environment for the CLI and the tools it starts (for example
