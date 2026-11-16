@@ -29,6 +29,9 @@ Register it with an MCP client as a stdio server whose command is
 | `find_lines` | Which panes' recent lines contain some text, with the lines, here and on connected hosts (`hosts`) | `terminal.query` |
 | `check_action` | An action's record and outcome | `actions.get` |
 | `cancel_job` | Stop a managed job | `jobs.cancel` |
+| `watch_lines` | Install a filter that reports (and optionally marks) lines matching some text in panes, from now on | `filters.manage`, content read |
+| `list_filters` | The filters this session may manage, with their counts | `filters.manage` |
+| `stop_filter` | Remove a filter an app installed | `filters.manage` |
 
 Each tool is one call to the daemon over an ordinary connection. The
 daemon checks the connection's grant and the target exactly as for any

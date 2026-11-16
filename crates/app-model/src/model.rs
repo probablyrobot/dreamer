@@ -81,6 +81,8 @@ pub struct AgentState {
     /// Tool calls of the current run awaiting their results: (id, name,
     /// input).
     pub calls: Vec<(String, String, Value)>,
+    /// A filter pane's filters (those it may manage), by name.
+    pub filters: Vec<String>,
 }
 
 /// One thing an operator did: an action or job it started, or a tool call

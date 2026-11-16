@@ -134,6 +134,31 @@ struct FindLines {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+struct WatchLines {
+    /// The filter's name: letters, digits, `-`, `_`, or `.`; unique.
+    name: String,
+    /// Plain text to match (case-insensitive), unless `regex` is set.
+    text: String,
+    /// Treat `text` as a regular expression.
+    #[serde(default)]
+    regex: bool,
+    /// The panes to watch; empty watches every pane the grant allows.
+    #[serde(default)]
+    panes: Vec<u32>,
+    /// Mark matched lines in the panes: "highlight", "dim", "fold", or
+    /// "badge" (with `badge`). Without one, lines are only reported.
+    mark: Option<String>,
+    /// The badge's text, for mark "badge".
+    badge: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct ByName {
+    /// The filter's name.
+    name: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 struct Nothing {}
 
 fn text(v: Value) -> CallToolResult {
@@ -492,6 +517,66 @@ impl Dreamer {
             ..api::TerminalQuery::default()
         }))
         .await
+    }
+
+    #[tool(
+        description = "Install a filter: watch panes for lines that match, from now on, and report each one (and mark it in the pane, if asked). It only reads; it never changes what a program wrote. Returns its status; list_filters shows its counts."
+    )]
+    async fn watch_lines(
+        &self,
+        Parameters(p): Parameters<WatchLines>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use api::DecorationStyle as D;
+        let decorate = match p.mark.as_deref() {
+            None => D::Unspecified,
+            Some("highlight") => D::Highlight,
+            Some("dim") => D::Dim,
+            Some("fold") => D::Fold,
+            Some("badge") => D::Badge,
+            Some(other) => {
+                return Ok(failed(format!(
+                    "mark `{other}` is not highlight, dim, fold, or badge"
+                )));
+            }
+        };
+        let every = p.panes.is_empty();
+        self.call(api::Request::FiltersInstall(api::FilterSpec {
+            name: p.name,
+            panes: p.panes.clone(),
+            every_pane: every,
+            pattern: p.text,
+            literal: !p.regex,
+            ignore_case: true,
+            event: true,
+            decorate: decorate as i32,
+            badge: p.badge,
+            grant: Some(api::ScriptGrant {
+                methods: vec![api::method::TAPS_SUBSCRIBE.into()],
+                panes: p.panes,
+                all_panes: every,
+            }),
+            ..api::FilterSpec::default()
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "The filters you may manage, with their state and counts (matched, dropped)."
+    )]
+    async fn list_filters(
+        &self,
+        Parameters(_): Parameters<Nothing>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::FiltersList(api::Empty {})).await
+    }
+
+    #[tool(description = "Remove a filter you installed.")]
+    async fn stop_filter(
+        &self,
+        Parameters(p): Parameters<ByName>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::FiltersRemove(api::FilterRef { name: p.name }))
+            .await
     }
 
     #[tool(description = "The record of an action: its state and what was observed.")]

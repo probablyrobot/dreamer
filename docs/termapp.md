@@ -156,7 +156,7 @@ type = "agent"
 # source = "runs"                 # a monitor shows the data source it watches
 
 [agent]
-kind = "inspector"                # inspector, monitor, or operator
+kind = "inspector"                # inspector, monitor, filter, or operator
 provider = "claude"               # claude or codex; default: the first ready CLI
 instructions = "Reply in one short line."
 tools = { methods = ["tmux.topology", "terminal.query"], all_panes = true }   # or panes = [3, 4]
@@ -178,15 +178,46 @@ timeout_s = 300                   # a run is stopped after this (default 300)
   Code also gets none of its own tools (see [providers.md](providers.md)).
 - **Bounded context:** context is retrieved by those tool calls, bounded
   by the tools themselves. Nothing streams other terminals to a model.
-- **Read-only kinds:** an inspector or monitor may not list a method that
-  changes things, nor `terminal.input`. Such a manifest does not validate.
-  An operator may list actions.
+- **Read-only kinds:** an inspector, monitor, or filter pane may not list
+  a method that changes things, nor `terminal.input`. Such a manifest does
+  not validate. An operator may list actions.
 - **No model:** with no provider ready, the header says why.
   - An inspector then answers in a scripted mode: the prompt is searched
     as plain text in the newest lines of the panes it may read
     (`terminal.query`), and the matching lines are listed.
   - A monitor keeps showing its data source, which needs no model.
+  - A filter pane watches what is typed as plain text (see below).
   - An operator says that it needs a provider.
+
+### Filter panes
+
+A filter pane turns a description into [filters](filters.md) and shows
+the lines they match as they happen: the derived stream.
+
+```toml
+capabilities = ["terminal.query", "tmux.topology", "filters.manage"]
+
+[agent]
+kind = "filter"
+tools = { methods = ["terminal.query", "tmux.topology", "filters.manage"], all_panes = true }
+```
+
+- **Grant:** `terminal.query` and `filters.manage` are required, and
+  `filters.manage` belongs to filter panes only. The filters it installs
+  only read: they [record and mark lines](filters.md#filters-an-app-installs)
+  on the panes in its grant, and never publish, send, or type.
+- **With a model:** the model uses `watch_lines`, `list_filters`, and
+  `stop_filter` ([mcp.md](mcp.md)), and `find_lines` to try a pattern
+  first. "Show me errors from the build panes" becomes a filter.
+- **No model:** what you type is watched as plain text, case-insensitive,
+  on every pane in the grant except this one, and matched lines are
+  highlighted. `stop NAME` removes a filter.
+- **Header:** the filters it manages. Each match appears in the
+  transcript as `%PANE FILTER: line`. Lines in the filter pane itself are
+  never shown, so its own output cannot feed back. A filter whose circuit
+  breaker trips says so.
+- Filters keep running after the pane quits, so their marks stay; remove
+  them with `stop NAME`, or `filters.remove`.
 
 ### Operator panes
 

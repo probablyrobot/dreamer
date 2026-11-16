@@ -32,6 +32,23 @@ it makes, like any connection's. `filters.list` shows each filter's state
 and counts, and `filters.pause`, `filters.resume`, and `filters.remove` (the
 user only) control it.
 
+## Filters an app installs
+
+A [filter pane](termapp.md#filter-panes) installs filters itself. An app
+may call the `filters.*` methods only with `filters.manage` in its grant
+(a grant entry, not a method) and content read (`terminal.query`,
+`terminal.read`, or `taps.subscribe`). Its filters only read:
+- they watch panes within the app's own (`every_pane` needs the app to
+  have `all_panes`), with a grant of at most `taps.subscribe` on them;
+- they may record events (`event`) and decorate, but not publish, send,
+  or type (`topic`, `recipient`, and `input` are refused);
+- they end with the app's grant, if it expires.
+
+An app pauses, resumes, and removes only filters an app installed within
+its own panes, never one the user installed, and `filters.list` shows it
+only those. A filter keeps running after the app quits; the user removes
+it with `filters.remove`.
+
 ## Loops
 
 A filter whose output produces its own match would run forever. Three

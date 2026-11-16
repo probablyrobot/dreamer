@@ -13,6 +13,11 @@ pub use generated::*;
 /// The Luau module scripts receive; call it with the host's `call` function.
 pub const LUAU_MODULE: &str = include_str!("../generated/dreamer.luau");
 
+/// Not a method: the grant entry that lets an app (a filter pane) install
+/// and manage filters that only read, within its own panes. See
+/// `docs/grants.md`.
+pub const MANAGE_FILTERS: &str = "filters.manage";
+
 /// Standard JSON-RPC 2.0 codes, plus Dreamer's own in the server range.
 pub mod code {
     pub const PARSE_ERROR: i32 = -32700;

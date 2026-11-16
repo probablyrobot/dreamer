@@ -485,3 +485,126 @@ async fn a_view_finds_a_mark_on_its_own_copy_of_the_line() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// A filter pane (spec 13.4): an app with `filters.manage` and content read
+/// installs filters that only read, on its own panes, and manages only
+/// those; the user's filters are out of its reach.
+#[tokio::test]
+async fn an_app_manages_only_read_only_filters_within_its_own_panes() {
+    let s = Setup::new();
+    let owner = s.client().await;
+    let pane = pane0(&owner).await;
+    s.tmux(&["split-window", "-t", "main"]);
+    let other = loop {
+        let Ok(Response::TmuxTopology(t)) = call(
+            &owner,
+            Request::TmuxTopology(api::TopologyParams::default()),
+        )
+        .await
+        else {
+            panic!("topology")
+        };
+        if let Some(p) = t.panes.iter().find(|p| p.id != pane) {
+            break p.id;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let spec = |name: &str, panes: &[u32]| api::FilterSpec {
+        name: name.into(),
+        panes: panes.to_vec(),
+        pattern: "ERR".into(),
+        event: true,
+        grant: grant(&["taps.subscribe"], panes),
+        ..api::FilterSpec::default()
+    };
+    call(&owner, Request::FiltersInstall(spec("users", &[pane])))
+        .await
+        .expect("the user's filter");
+
+    let app = s.client().await;
+    let narrow = |methods: &[&str]| {
+        Request::GrantsNarrow(api::Grant {
+            owner: false,
+            methods: methods.iter().map(|m| (*m).to_owned()).collect(),
+            panes: vec![pane],
+            all_panes: false,
+            expires_unix_ms: None,
+        })
+    };
+    call(&app, narrow(&["terminal.query", api::MANAGE_FILTERS]))
+        .await
+        .expect("narrow");
+    let forbidden = |r: Result<Response, client::ClientError>, what: &str| match r {
+        Err(client::ClientError::Rpc(e)) if e.code == api::code::FORBIDDEN => e.message,
+        other => panic!("{what}: expected a refusal, got {other:?}"),
+    };
+
+    call(&app, Request::FiltersInstall(spec("apps", &[pane])))
+        .await
+        .expect("a read-only filter on its own pane");
+    let why = forbidden(
+        call(&app, Request::FiltersInstall(spec("wide", &[other]))).await,
+        "another pane",
+    );
+    assert!(why.contains("outside"), "{why}");
+    let mut publishing = spec("loud", &[pane]);
+    publishing.topic = Some("filter.loud".into());
+    publishing.grant = grant(&["taps.subscribe", "messages.publish"], &[pane]);
+    let why = forbidden(
+        call(&app, Request::FiltersInstall(publishing)).await,
+        "publishing",
+    );
+    assert!(why.contains("only reads"), "{why}");
+
+    let Ok(Response::FiltersList(l)) = call(&app, Request::FiltersList(api::Empty {})).await else {
+        panic!("list")
+    };
+    let names: Vec<_> = l.filters.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["apps"],
+        "an app sees only the filters it may manage"
+    );
+    let mine = || api::FilterRef {
+        name: "users".into(),
+    };
+    forbidden(
+        call(&app, Request::FiltersRemove(mine())).await,
+        "the user's filter",
+    );
+    forbidden(
+        call(&app, Request::FiltersPause(mine())).await,
+        "the user's filter",
+    );
+    let apps = || api::FilterRef {
+        name: "apps".into(),
+    };
+    call(&app, Request::FiltersPause(apps()))
+        .await
+        .expect("pause");
+    call(&app, Request::FiltersRemove(apps()))
+        .await
+        .expect("remove");
+    assert_eq!(
+        status(&owner, "users").await.state,
+        api::FilterState::Running as i32
+    );
+
+    // Without filters.manage, or without content read, nothing.
+    let plain = s.client().await;
+    call(&plain, narrow(&["terminal.query"]))
+        .await
+        .expect("narrow");
+    forbidden(
+        call(&plain, Request::FiltersList(api::Empty {})).await,
+        "no filters.manage",
+    );
+    let blind = s.client().await;
+    call(&blind, narrow(&[api::MANAGE_FILTERS]))
+        .await
+        .expect("narrow");
+    forbidden(
+        call(&blind, Request::FiltersInstall(spec("blind", &[pane]))).await,
+        "no content read",
+    );
+}

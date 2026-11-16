@@ -51,6 +51,9 @@ pub(crate) async fn setup(app: &mut App) {
     if app.agent.provider.is_none() {
         app.agent.mode = match spec.kind {
             AgentKind::Inspector => format!("no model ({why}); scripted search"),
+            AgentKind::Filter => {
+                format!("no model ({why}); what you type is watched as plain text")
+            }
             _ => format!("no model ({why})"),
         };
     }
@@ -143,6 +146,9 @@ fn preamble(spec: &AgentSpec) -> String {
         }
         AgentKind::Monitor => {
             "You are a monitor pane in Dreamer, a terminal. Explain the state of what you watch using only the Dreamer tools. You cannot type into panes or change anything."
+        }
+        AgentKind::Filter => {
+            "You are a filter pane in Dreamer, a terminal. Turn the user's description into filters with watch_lines: plain text, or a regular expression when one is needed, on the panes they mean. To change a filter, stop it with stop_filter and install it again; list_filters shows what runs. Filters only read and mark lines; they never change what a program wrote. Use find_lines to try a pattern on recent output first. Say in one line what each filter watches. Matched lines appear in this pane as they happen."
         }
         AgentKind::Operator => {
             "You are an operator pane in Dreamer, a terminal. Carry out the user's request with the Dreamer tools. Before acting, say in one line what you will do and to which panes or windows. After each action, check its outcome. If an action fails, name the action and its actual target."
@@ -477,6 +483,10 @@ pub(crate) async fn scripted(app: &mut App, c: &client::Client, prompt: &str) {
     let Some(spec) = app.manifest.agent.clone() else {
         return;
     };
+    if spec.kind == AgentKind::Filter {
+        scripted_filter(app, c, &spec, prompt).await;
+        return;
+    }
     if spec.kind != AgentKind::Inspector {
         app.agent.say(
             Said::Failed,
@@ -531,5 +541,168 @@ pub(crate) async fn scripted(app: &mut App, c: &client::Client, prompt: &str) {
                 &format!("{} matching lines in {searched} panes{cut}", matches.len()),
             );
         }
+    }
+}
+
+/// This pane's own id, from tmux.
+fn own_pane() -> Option<u32> {
+    std::env::var("TMUX_PANE")
+        .ok()
+        .and_then(|p| p.trim_start_matches('%').parse().ok())
+}
+
+/// No-model filter pane: `stop NAME` removes a filter; anything else is
+/// watched as plain text (case-insensitive) on the panes the package may
+/// read, never this one, with each matched line marked and shown here.
+async fn scripted_filter(app: &mut App, c: &client::Client, spec: &AgentSpec, prompt: &str) {
+    let prompt = prompt.trim();
+    if let Some(name) = prompt.strip_prefix("stop ") {
+        let name = name.trim();
+        match crate::run::call(c, "filters.remove", json!({ "name": name })).await {
+            Ok(_) => app.agent.say(Said::Note, &format!("stopped {name}")),
+            Err((_, e)) => app.agent.say(Said::Failed, &format!("filters.remove: {e}")),
+        }
+        refresh_filters(app, c).await;
+        return;
+    }
+    let own = own_pane();
+    let panes: Vec<u32> = if spec.tools.all_panes {
+        match crate::run::call(c, "tmux.topology", json!({})).await {
+            Ok(t) => t["panes"]
+                .as_array()
+                .map(|ps| {
+                    ps.iter()
+                        .filter_map(|p| p["id"].as_u64())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|p| u32::try_from(p).ok())
+                .collect(),
+            Err((_, e)) => {
+                app.agent.say(Said::Failed, &format!("tmux.topology: {e}"));
+                return;
+            }
+        }
+    } else {
+        spec.tools.panes.clone()
+    };
+    // Never this pane: what it shows are earlier matches, which would
+    // match again.
+    let panes: Vec<u32> = panes.into_iter().filter(|p| Some(*p) != own).collect();
+    if panes.is_empty() {
+        app.agent.say(Said::Failed, "no panes to watch");
+        return;
+    }
+    let name = filter_name(prompt);
+    let params = json!({
+        "name": name,
+        "panes": panes,
+        "pattern": prompt,
+        "literal": true,
+        "ignore_case": true,
+        "event": true,
+        "decorate": "highlight",
+        "grant": { "methods": ["taps.subscribe"], "panes": panes },
+    });
+    match crate::run::call(c, "filters.install", params).await {
+        Ok(_) => app.agent.say(
+            Said::Note,
+            &format!(
+                "{name} watches {} panes for \"{prompt}\"; `stop {name}` removes it",
+                panes.len()
+            ),
+        ),
+        Err((_, e)) => app
+            .agent
+            .say(Said::Failed, &format!("filters.install: {e}")),
+    }
+    refresh_filters(app, c).await;
+}
+
+/// A filter name from what was typed: `watch-` and its letters and digits.
+fn filter_name(prompt: &str) -> String {
+    let mut slug = String::new();
+    for ch in prompt.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+        if slug.len() >= 24 {
+            break;
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "watch".into()
+    } else {
+        format!("watch-{slug}")
+    }
+}
+
+/// The filters this pane may manage, for its header and for which matches
+/// it shows.
+pub(crate) async fn refresh_filters(app: &mut App, c: &client::Client) {
+    if app
+        .manifest
+        .agent
+        .as_ref()
+        .is_none_or(|a| a.kind != AgentKind::Filter)
+    {
+        return;
+    }
+    if let Ok(l) = crate::run::call(c, "filters.list", json!({})).await {
+        app.agent.filters = l["filters"]
+            .as_array()
+            .map(|fs| {
+                fs.iter()
+                    .filter_map(|f| f["name"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+}
+
+/// A filter pane's derived stream: each line its filters matched (never
+/// in this pane), and a filter that tripped. Whether anything was shown.
+pub(crate) fn filter_events(app: &mut App, events: &[api::DaemonEvent]) -> bool {
+    let own = own_pane();
+    let mut shown = false;
+    for e in events {
+        let (Some(subject), state) = (e.subject.as_deref(), e.state.as_deref().unwrap_or(""))
+        else {
+            continue;
+        };
+        if !app.agent.filters.iter().any(|f| f == subject) {
+            continue;
+        }
+        match e.kind.as_str() {
+            "filters.matched" if e.pane.is_none_or(|p| Some(p) != own) => {
+                let pane = e.pane.map(|p| format!("%{p} ")).unwrap_or_default();
+                app.agent.say(
+                    Said::Result { ok: true },
+                    &format!("{pane}{subject}: {state}"),
+                );
+                shown = true;
+            }
+            "filters.tripped" => {
+                app.agent
+                    .say(Said::Failed, &format!("{subject} stopped: {state}"));
+                shown = true;
+            }
+            _ => {}
+        }
+    }
+    shown
+}
+
+#[cfg(test)]
+mod filter_tests {
+    #[test]
+    fn a_filter_name_comes_from_what_was_typed() {
+        assert_eq!(super::filter_name("ERROR: disk"), "watch-error-disk");
+        assert_eq!(super::filter_name("!!"), "watch");
+        assert!(super::filter_name(&"x".repeat(100)).len() <= 30);
     }
 }
