@@ -87,6 +87,7 @@ fn grant_of(x: &Extension) -> api::Grant {
         panes: x.grant.panes.clone(),
         all_panes: x.grant.all_panes,
         expires_unix_ms: None,
+        level: 0,
     }
 }
 

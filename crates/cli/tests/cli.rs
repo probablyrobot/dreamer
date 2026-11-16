@@ -2147,6 +2147,12 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             "check_job",
             "create_pane",
             "find_lines",
+            "layout_close",
+            "layout_move",
+            "layout_rename",
+            "layout_select",
+            "layout_split",
+            "layout_zoom",
             "list_filters",
             "list_hosts",
             "list_panes",
@@ -2156,6 +2162,12 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             "send_input",
             "start_job",
             "stop_filter",
+            "terminal_read",
+            "terminal_run",
+            "terminal_search",
+            "terminal_send",
+            "terminal_watch",
+            "terminals_list",
             "watch_lines"
         ]
     );
@@ -2224,6 +2236,35 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             .contains("not in this connection's grant"),
         "{input}"
     );
+    drop(m);
+
+    // An agent's server at the observe level reads every pane and acts on
+    // none.
+    let mut m = Mcp::start(cli.mcp(&["--level", "observe"]));
+    let listed = m.call("terminals_list", serde_json::json!({}));
+    assert_ne!(listed["isError"], true, "{listed}");
+    assert_eq!(
+        listed["structuredContent"]["terminals"]
+            .as_array()
+            .map(Vec::len),
+        Some(2),
+        "{listed}"
+    );
+    let read = m.call(
+        "terminal_read",
+        serde_json::json!({ "pane": 0, "lines": 20 }),
+    );
+    assert!(
+        read["structuredContent"]["lines"]
+            .to_string()
+            .contains("via-mcp"),
+        "{read}"
+    );
+    let typed = m.call(
+        "terminal_send",
+        serde_json::json!({ "pane": 0, "text": "x" }),
+    );
+    assert_eq!(typed["isError"], true, "{typed}");
     drop(m);
 
     // A filter pane's grant: content read and filters.manage on pane 0.

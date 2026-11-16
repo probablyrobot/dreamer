@@ -177,6 +177,7 @@ pub async fn install(state: &Arc<State>, spec: api::FilterSpec) -> Result<Filter
         panes: g.panes,
         all_panes: g.all_panes,
         expires_unix_ms: None,
+        level: 0,
     };
     let checker = crate::grants::Grant(grant.clone());
     let need = |method: &str, why: &str| {

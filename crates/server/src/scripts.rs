@@ -169,6 +169,7 @@ pub async fn load(state: &Arc<State>, p: api::ScriptLoad) -> Result<ScriptStatus
         panes: g.panes,
         all_panes: g.all_panes,
         expires_unix_ms: None,
+        level: 0,
     };
     if !p.events.is_empty()
         && !crate::grants::Grant(grant.clone()).method_allowed(api::method::EVENTS_SUBSCRIBE)

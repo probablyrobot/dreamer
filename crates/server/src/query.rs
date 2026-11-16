@@ -3,8 +3,8 @@
 //!
 //! Lines come from the canonical mirrors through the same cheap tail read
 //! taps use, a few panes at a time, so a query never holds up input or
-//! output. Every bound (lines per pane, matches, time) is enforced, and a
-//! truncated answer says what was cut.
+//! output. Every bound (lines per pane, matches, bytes, time) is enforced,
+//! and a truncated answer says what was cut.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +17,26 @@ use crate::service::State;
 
 /// Panes read at once.
 const CONCURRENT: usize = 8;
+
+/// Bytes of matching text one answer carries at most.
+struct Budget {
+    max: usize,
+    used: usize,
+}
+
+impl Budget {
+    fn take(&mut self, n: usize) -> bool {
+        if self.used + n > self.max {
+            return false;
+        }
+        self.used += n;
+        true
+    }
+}
+
+fn bytes_used(out: &QueryResult) -> usize {
+    out.matches.iter().map(|m| m.text.len()).sum()
+}
 
 fn matcher(
     pattern: &str,
@@ -46,6 +66,11 @@ pub async fn query(
         .transpose()?;
     let lines = p.lines.unwrap_or(200).clamp(1, 2000) as usize;
     let max = p.max_matches.unwrap_or(100).clamp(1, 1000) as usize;
+    let max_bytes = p.max_bytes.unwrap_or(64 << 10).clamp(1, 1 << 20) as usize;
+    let mut budget = Budget {
+        max: max_bytes,
+        used: 0,
+    };
     let timeout = Duration::from_millis(u64::from(p.timeout_ms.unwrap_or(2000).clamp(1, 10_000)));
     let deadline = tokio::time::Instant::now() + timeout;
     let mut out = QueryResult::default();
@@ -68,6 +93,7 @@ pub async fn query(
             title.as_ref(),
             lines,
             max,
+            &mut budget,
             deadline,
             &mut out,
         )
@@ -91,8 +117,9 @@ pub async fn query(
     };
     for name in hosts {
         let left = max.saturating_sub(out.matches.len());
+        let left_bytes = max_bytes.saturating_sub(bytes_used(&out));
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if left == 0 || remaining.is_zero() {
+        if left == 0 || left_bytes == 0 || remaining.is_zero() {
             out.truncated = true;
             out.notes
                 .push(format!("host {name}: not searched (a bound was reached)"));
@@ -102,6 +129,7 @@ pub async fn query(
             panes: Vec::new(),
             hosts: Vec::new(),
             max_matches: Some(left as u32),
+            max_bytes: Some(left_bytes as u32),
             timeout_ms: Some(remaining.as_millis().max(1) as u32),
             ..p.clone()
         };
@@ -135,6 +163,11 @@ pub async fn query(
         out.matches.truncate(max);
         out.truncated = true;
     }
+    // Hosts each keep to what was left, but say so anyway.
+    while bytes_used(&out) > max_bytes {
+        out.matches.pop();
+        out.truncated = true;
+    }
     Ok(out)
 }
 
@@ -146,6 +179,7 @@ async fn search_here(
     title: Option<&Matcher>,
     lines: usize,
     max: usize,
+    budget: &mut Budget,
     deadline: tokio::time::Instant,
     out: &mut QueryResult,
 ) {
@@ -185,6 +219,14 @@ async fn search_here(
                             out.truncated = true;
                             if !out.notes.iter().any(|n| n.starts_with("max_matches")) {
                                 out.notes.push(format!("max_matches: stopped at {max}"));
+                            }
+                            break;
+                        }
+                        if !budget.take(text.len()) {
+                            out.truncated = true;
+                            if !out.notes.iter().any(|n| n.starts_with("max_bytes")) {
+                                out.notes
+                                    .push(format!("max_bytes: stopped at {} bytes", budget.max));
                             }
                             break;
                         }

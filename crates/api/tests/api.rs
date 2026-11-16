@@ -190,6 +190,21 @@ impl Service for Fixed {
     async fn apps_register(&self, _: api::RegisterApp) -> Result<api::Registration, RpcError> {
         Ok(api::Registration::default())
     }
+    async fn terminal_list(&self, _: api::TopologyParams) -> Result<api::TerminalList, RpcError> {
+        Ok(api::TerminalList::default())
+    }
+    async fn terminal_watch(&self, _: api::TerminalWatch) -> Result<api::WatchResult, RpcError> {
+        Ok(api::WatchResult::default())
+    }
+    async fn terminal_run(&self, _: api::TerminalRun) -> Result<api::RunResult, RpcError> {
+        Ok(api::RunResult::default())
+    }
+    async fn approvals_list(&self, _: Empty) -> Result<api::ApprovalList, RpcError> {
+        Ok(api::ApprovalList::default())
+    }
+    async fn approvals_answer(&self, _: api::ApprovalAnswer) -> Result<api::Approval, RpcError> {
+        Ok(api::Approval::default())
+    }
     async fn events_subscribe(
         &self,
         _: api::EventSubscribe,

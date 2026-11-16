@@ -217,6 +217,16 @@ fn env_name_ok(n: &str) -> bool {
 }
 
 pub async fn start(state: &Arc<State>, p: api::JobStart) -> Result<JobRecord, RpcError> {
+    start_at(state, p, None).await
+}
+
+/// Start a job in a new window, or with `split`, in a new pane split from
+/// that pane.
+pub async fn start_at(
+    state: &Arc<State>,
+    p: api::JobStart,
+    split: Option<(u32, tmux_backend::ops::Split)>,
+) -> Result<JobRecord, RpcError> {
     if p.argv.is_empty() || p.argv[0].is_empty() {
         return Err(RpcError::new(code::INVALID_PARAMS, "a job needs a program"));
     }
@@ -261,36 +271,52 @@ pub async fn start(state: &Arc<State>, p: api::JobStart) -> Result<JobRecord, Rp
         let ep = guard
             .as_ref()
             .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "tmux is not connected"))?;
-        let session = match p.session {
-            Some(s) => s,
-            None => workspace_host::topology(&ep.name, &ep.tracker)
-                .sessions
-                .first()
-                .map(|s| s.id)
-                .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "tmux has no session"))?,
-        };
-        let name = p.name.clone().unwrap_or_else(|| {
-            Path::new(&p.argv[0])
-                .file_name()
-                .map_or_else(|| p.argv[0].clone(), |n| n.to_string_lossy().into_owned())
-        });
         let launch = tmux_backend::ops::Launch {
             argv,
             cwd: p.cwd.clone(),
             env,
             background: true,
         };
-        let pane = tmux_backend::ops::new_window(
-            &ep.conn,
-            domain::TmuxSessionId(session),
-            Some(&name),
-            &launch,
-        )
-        .await
-        .map_err(|e| RpcError::new(code::INVALID_PARAMS, tmux_backend::ops::failure_message(&e)))?;
-        // Its last output stays readable after it exits.
-        let _ = tmux_backend::ops::keep_on_exit(&ep.conn, pane).await;
-        pane
+        let failed =
+            |e| RpcError::new(code::INVALID_PARAMS, tmux_backend::ops::failure_message(&e));
+        if let Some((target, direction)) = split {
+            let pane = tmux_backend::ops::split_pane(
+                &ep.conn,
+                domain::TmuxPaneId(target),
+                direction,
+                None,
+                &launch,
+            )
+            .await
+            .map_err(failed)?;
+            let _ = tmux_backend::ops::keep_on_exit(&ep.conn, pane).await;
+            pane
+        } else {
+            let session = match p.session {
+                Some(s) => s,
+                None => workspace_host::topology(&ep.name, &ep.tracker)
+                    .sessions
+                    .first()
+                    .map(|s| s.id)
+                    .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "tmux has no session"))?,
+            };
+            let name = p.name.clone().unwrap_or_else(|| {
+                Path::new(&p.argv[0])
+                    .file_name()
+                    .map_or_else(|| p.argv[0].clone(), |n| n.to_string_lossy().into_owned())
+            });
+            let pane = tmux_backend::ops::new_window(
+                &ep.conn,
+                domain::TmuxSessionId(session),
+                Some(&name),
+                &launch,
+            )
+            .await
+            .map_err(failed)?;
+            // Its last output stays readable after it exits.
+            let _ = tmux_backend::ops::keep_on_exit(&ep.conn, pane).await;
+            pane
+        }
     };
     let job = json!({
         "id": id,

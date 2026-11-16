@@ -78,6 +78,8 @@ pub struct State {
     pub pastes: Mutex<std::collections::HashMap<(u32, u64), Vec<u8>>>,
     /// Interaction leases for automated input.
     pub leases: crate::leases::Leases,
+    /// Panes each connection created, and actions waiting for approval.
+    pub approvals: crate::approvals::Approvals,
     /// The terminal defaults in force (theme, cursor). The terminal's
     /// colors are the daemon's to set: it owns the canonical mirrors, and
     /// views get them through checkpoints. Changed live by the
@@ -575,6 +577,9 @@ impl api::Service for DaemonService {
             }
         }
         let r = actions.submit(ep, p).await?;
+        if let (Some(new), Some(c)) = (r.new_pane, crate::leases::caller()) {
+            self.0.approvals.created(c.conn, new);
+        }
         self.0.events.action(&r, pane);
         log::info(format!(
             "action {} {}{}",
@@ -1179,7 +1184,11 @@ impl api::Service for DaemonService {
     }
 
     async fn jobs_start(&self, p: api::JobStart) -> Result<api::JobRecord, RpcError> {
-        crate::jobs::start(&self.0, p).await
+        let r = crate::jobs::start(&self.0, p).await?;
+        if let Some(c) = crate::leases::caller() {
+            self.0.approvals.created(c.conn, r.pane);
+        }
+        Ok(r)
     }
 
     async fn jobs_get(&self, p: api::JobRef) -> Result<api::JobRecord, RpcError> {
@@ -1390,6 +1399,31 @@ impl api::Service for DaemonService {
         Ok(api::ActionList {
             actions: self.0.actions.lock().await.list(limit),
         })
+    }
+
+    async fn terminal_list(&self, p: api::TopologyParams) -> Result<api::TerminalList, RpcError> {
+        let host = self.mirror_host(p.endpoint.as_deref()).await.ok();
+        crate::tools::list(&self.0, host).await
+    }
+
+    async fn terminal_watch(&self, p: api::TerminalWatch) -> Result<api::WatchResult, RpcError> {
+        let host = self.mirror_host(None).await?;
+        crate::tools::watch(&self.0, host, p).await
+    }
+
+    async fn terminal_run(&self, p: api::TerminalRun) -> Result<api::RunResult, RpcError> {
+        let host = self.mirror_host(None).await?;
+        crate::tools::run(&self.0, host, p).await
+    }
+
+    async fn approvals_list(&self, _: api::Empty) -> Result<api::ApprovalList, RpcError> {
+        Ok(self.0.approvals.list())
+    }
+
+    async fn approvals_answer(&self, p: api::ApprovalAnswer) -> Result<api::Approval, RpcError> {
+        let decision = api::ApprovalDecision::try_from(p.decision)
+            .unwrap_or(api::ApprovalDecision::Unspecified);
+        self.0.approvals.answer(&self.0, &p.id, decision)
     }
 }
 

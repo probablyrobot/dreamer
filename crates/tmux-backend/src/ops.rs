@@ -29,8 +29,8 @@ pub struct Launch {
     pub cwd: Option<String>,
     /// Environment for the new pane's program (`-e NAME=VALUE`).
     pub env: Vec<(String, String)>,
-    /// Create a window without making it current (`-d`), so attached
-    /// clients keep what they are looking at.
+    /// Create a window or pane without making it current (`-d`), so
+    /// attached clients keep what they are looking at.
     pub background: bool,
 }
 
@@ -73,7 +73,8 @@ pub fn failure_message(e: &CommandError) -> String {
     }
 }
 
-/// Split `target`; the new pane becomes active, as in tmux. Returns its id.
+/// Split `target`; the new pane becomes active, as in tmux, unless the
+/// launch is in the background. Returns its id.
 pub async fn split_pane(
     conn: &Connection,
     target: TmuxPaneId,
@@ -81,11 +82,14 @@ pub async fn split_pane(
     size: Option<Size>,
     launch: &Launch,
 ) -> Result<TmuxPaneId, CommandError> {
-    let mut cmd = TmuxCommand::new("split-window")
-        .flag(match split {
-            Split::Horizontal => "-h",
-            Split::Vertical => "-v",
-        })
+    let mut cmd = TmuxCommand::new("split-window").flag(match split {
+        Split::Horizontal => "-h",
+        Split::Vertical => "-v",
+    });
+    if launch.background {
+        cmd = cmd.flag("-d");
+    }
+    let mut cmd = cmd
         .flag("-P")
         .opt_format("-F", "#{pane_id}")
         .opt("-t", pane(target));

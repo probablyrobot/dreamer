@@ -19,6 +19,8 @@ output; read that with `terminal.read` or `terminal.subscribe`.
 | `decorations.changed` | A pane's decorations were added or dropped | `pane`; list them with `decorations.list` |
 | `jobs.state` | A job started, or ended while this daemon ran | `subject`: the job id; `state`: `running`, `succeeded`, `failed`, `killed`, or `lost`; `pane` |
 | `config.changed` | The configuration directory changed | `state`: `applied` (`subject`: the terminal theme in force) or `refused` (`subject`: why; the settings in force are kept) |
+| `approvals.requested` | An agent's action waits for the user's approval ([grants.md](grants.md#act-levels-and-approvals)) | `subject`: the approval id; `pane`: the first pane it would act on; `state`: what it would do |
+| `approvals.answered` | An approval was answered, or nobody answered in time | `subject`: the approval id; `pane`; `state`: `once`, `pane`, `deny`, or `timeout` |
 
 Every event also has a `sequence` and `time_unix_ms`. Sequences start at 1
 when the daemon starts and increase by one per event.
