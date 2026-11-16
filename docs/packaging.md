@@ -155,17 +155,55 @@ builds `aarch64-apple-darwin`.
 
 ## Releases
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`. It builds the
-Linux tarball and attaches it, its `.sha256`, and `install.sh` to a draft
-GitHub release.
-
-There are no macOS runners, so the macOS zip is built on the Mac and added
-by hand:
+One command on the development Mac makes a release with both lanes'
+artifacts and the build report:
 
 ```sh
-cargo xtask package --platform macos
-gh release upload vX.Y.Z target/package/dreamer-*-aarch64-apple-darwin.zip*
+cargo xtask release vX.Y.Z
 ```
+
+It refuses to start unless:
+- you are on `main`, at `origin/main`, with no uncommitted changes;
+- the workspace version is `X.Y.Z`;
+- the tag does not exist yet;
+- this tree has passed the full macOS gate (`cargo xtask gate --full`, which
+  pushing runs).
+
+Then:
+
+1. **The Mac's artifacts, built from nothing.**
+   - The macOS zip, with its `.sha256` and signing record.
+   - The ARM64 desktop tarball and server archive, built in an ARM64
+     container.
+   - Both ARM64 archives run on fresh containers (`--fresh`).
+2. **The tag,** created on GitHub. It starts
+   `.github/workflows/release.yml`, which builds the x86-64 desktop tarball
+   and server archive, runs them on fresh containers, and drafts the
+   release with them and `install.sh`.
+3. **The report.**
+   - It waits for that run and takes its x86-64 archives back.
+   - It writes the build report with the run attached.
+   - It adds the Mac's artifacts, the fresh-check records, and the report
+     to the draft.
+
+The release stays a draft until you publish it. Every file has a `.sha256`
+beside it, and the license and notices are inside every archive.
+
+**The build report** (`cargo xtask build-report [--ci-run ID]`, spec
+17.6) is written to `target/package/build-report.md` and `.json`. It
+covers:
+- the commit and tree, and whether the work tree was clean;
+- the Rust toolchain, Zig, and macOS SDK;
+- the pinned libghostty-vt and tmux baseline;
+- the compatibility baseline;
+- each artifact: size, SHA-256 (checked against its `.sha256` file),
+  target, signing state, and runtime check;
+- the macOS gate for this tree, stage by stage;
+- the CI run's jobs;
+- everything not run.
+
+An artifact with no matching check is listed as not checked. A tree with no
+full macOS gate report is marked "macOS runtime verification incomplete".
 
 ## Arch Linux
 

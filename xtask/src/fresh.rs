@@ -151,7 +151,20 @@ pub fn fresh_check(arch: &str) -> Result<(), String> {
         "the desktop tarball",
     )?;
     println!("fresh: both archives ran on fresh {arch} containers");
-    Ok(())
+    // For the build report: which archives, by checksum, passed.
+    let record = format!(
+        "{{\n  \"arch\": \"{arch}\",\n  \"image\": \"ubuntu:24.04\",\n  \"unix_time\": {},\n  \
+         \"checked\": [\n    {{ \"artifact\": \"{}\", \"sha256\": \"{}\", \"check\": \"bare image; dreamerd --self-check, dream and dreamer-termapp --version\" }},\n    \
+         {{ \"artifact\": \"{}\", \"sha256\": \"{}\", \"check\": \"install.sh for a new user with the documented runtime packages; dreamer --smoke presented a frame on X11 (Xvfb, Mesa software Vulkan)\" }}\n  ]\n}}\n",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        server,
+        crate::util::sha256_file(&out.join("server").join(&server))?,
+        desktop.trim_start_matches("linux/"),
+        crate::util::sha256_file(&out.join(&desktop))?,
+    );
+    std::fs::write(out.join(format!("fresh-{arch}.json")), record).map_err(|e| e.to_string())
 }
 
 /// The architecture docker runs natively here.

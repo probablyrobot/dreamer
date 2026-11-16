@@ -1,0 +1,247 @@
+//! `cargo xtask release vX.Y.Z`: one command sequence for a release with
+//! artifacts from both lanes and the build report (spec 17.5, 17.6).
+//!
+//! Run on the development Mac, from a clean `main` at `origin/main` whose
+//! version is `X.Y.Z` and whose tree has passed the full macOS gate:
+//!
+//! 1. Build the macOS zip, and the ARM64 Linux desktop tarball and server
+//!    archive in an ARM64 container; run the ARM64 archives on fresh
+//!    containers.
+//! 2. Create the tag on GitHub, which starts `release.yml`: it builds the
+//!    x86-64 archives, runs them on fresh containers, and drafts the
+//!    release with them.
+//! 3. Wait for that run, take its x86-64 archives and fresh-check record
+//!    back from the draft, write the build report with the run attached,
+//!    and add the Mac's artifacts and the report to the draft.
+//!
+//! The release stays a draft: publishing it is the owner's decision.
+
+use std::path::Path;
+use std::process::Command;
+
+use crate::util::repo_root;
+
+fn sh(root: &Path, program: &str, args: &[&str]) -> Result<String, String> {
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("{program}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{program} {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+fn step(root: &Path, args: &[&str]) -> Result<(), String> {
+    println!("release: cargo xtask {}", args.join(" "));
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let ok = Command::new(exe)
+        .args(args)
+        .current_dir(root)
+        .status()
+        .map_err(|e| e.to_string())?
+        .success();
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("`cargo xtask {}` failed", args.join(" ")))
+    }
+}
+
+pub fn run(args: &[String]) -> Result<(), String> {
+    let tag = match args {
+        [t] if t.starts_with('v') => t.clone(),
+        _ => return Err("usage: cargo xtask release vX.Y.Z".into()),
+    };
+    if !cfg!(target_os = "macos") {
+        return Err("the release runs on the development Mac (it builds the macOS zip)".into());
+    }
+    let root = repo_root();
+
+    // Preconditions: nothing about them is assumed.
+    let version = crate::package::version(&root)?;
+    if tag != format!("v{version}") {
+        return Err(format!(
+            "the workspace version is {version}; bump it first, or release v{version}"
+        ));
+    }
+    if sh(&root, "git", &["branch", "--show-current"])? != "main" {
+        return Err("release from main".into());
+    }
+    if !sh(
+        &root,
+        "git",
+        &["status", "--porcelain", "--untracked-files=no"],
+    )?
+    .is_empty()
+    {
+        return Err("the work tree has uncommitted changes".into());
+    }
+    sh(&root, "git", &["fetch", "-q", "origin", "main"])?;
+    let commit = sh(&root, "git", &["rev-parse", "HEAD"])?;
+    if commit != sh(&root, "git", &["rev-parse", "origin/main"])? {
+        return Err("main is not at origin/main; pull or push first".into());
+    }
+    if sh(&root, "git", &["ls-remote", "--tags", "origin", &tag])?.contains(&tag) {
+        return Err(format!("{tag} already exists on GitHub"));
+    }
+    let tree = sh(&root, "git", &["rev-parse", "HEAD^{tree}"])?;
+    let gate = root.join(format!("target/gate/mac/{tree}-full.json"));
+    let passed = std::fs::read_to_string(&gate)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|g| g["result"] == "passed");
+    if !passed {
+        return Err(format!(
+            "no passed full macOS gate for tree {tree}; run `cargo xtask gate --full` first"
+        ));
+    }
+
+    // 1. The Mac's artifacts, from nothing.
+    let out = root.join("target/package");
+    let _ = std::fs::remove_dir_all(&out);
+    step(&root, &["package", "--platform", "macos"])?;
+    step(
+        &root,
+        &[
+            "package",
+            "--platform",
+            "linux",
+            "--container",
+            "--arch",
+            "arm64",
+        ],
+    )?;
+    step(&root, &["package", "--fresh", "--arch", "arm64"])?;
+
+    // 2. The tag, through the API: the push hook runs only for pushes.
+    println!("release: tagging {commit} as {tag}");
+    sh(
+        &root,
+        "gh",
+        &[
+            "api",
+            "repos/{owner}/{repo}/git/refs",
+            "-f",
+            &format!("ref=refs/tags/{tag}"),
+            "-f",
+            &format!("sha={commit}"),
+        ],
+    )?;
+
+    // 3. The x86-64 lane.
+    let mut run = String::new();
+    for _ in 0..60 {
+        run = sh(
+            &root,
+            "gh",
+            &[
+                "run",
+                "list",
+                "--workflow",
+                "release.yml",
+                "--commit",
+                &commit,
+                "--json",
+                "databaseId",
+                "--jq",
+                ".[0].databaseId",
+            ],
+        )?;
+        if !run.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+    if run.is_empty() {
+        return Err(format!("release.yml never started for {tag}"));
+    }
+    println!("release: waiting for release.yml run {run}");
+    let ok = Command::new("gh")
+        .args(["run", "watch", &run, "--exit-status", "--interval", "30"])
+        .current_dir(&root)
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?
+        .success();
+    if !ok {
+        return Err(format!(
+            "release.yml run {run} failed; the draft has no x86-64 archives"
+        ));
+    }
+    let out_s = out.display().to_string();
+    for (pattern, dir) in [
+        (
+            "dreamer-x86_64-unknown-linux-gnu.tar.gz*",
+            format!("{out_s}/linux"),
+        ),
+        (
+            "dreamer-server-*-x86_64-unknown-linux-gnu.tar.gz*",
+            format!("{out_s}/server"),
+        ),
+        ("fresh-amd64.json", out_s.clone()),
+    ] {
+        sh(
+            &root,
+            "gh",
+            &[
+                "release",
+                "download",
+                &tag,
+                "--clobber",
+                "--pattern",
+                pattern,
+                "--dir",
+                &dir,
+            ],
+        )?;
+    }
+    step(&root, &["build-report", "--ci-run", &run])?;
+
+    let mut upload: Vec<String> = Vec::new();
+    for (dir, keep) in [
+        (
+            out.clone(),
+            &[
+                "aarch64-apple-darwin.zip",
+                "build-report.",
+                "fresh-arm64.json",
+            ][..],
+        ),
+        (out.join("linux"), &["aarch64-unknown-linux-gnu.tar.gz"][..]),
+        (
+            out.join("server"),
+            &["aarch64-unknown-linux-gnu.tar.gz"][..],
+        ),
+    ] {
+        for e in std::fs::read_dir(&dir)
+            .map_err(|e| e.to_string())?
+            .flatten()
+        {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.path().is_file() && keep.iter().any(|k| name.contains(k)) {
+                upload.push(e.path().display().to_string());
+            }
+        }
+    }
+    upload.sort();
+    let mut args = vec!["release", "upload", tag.as_str(), "--clobber"];
+    args.extend(upload.iter().map(String::as_str));
+    sh(&root, "gh", &args)?;
+    let url = sh(
+        &root,
+        "gh",
+        &["release", "view", &tag, "--json", "url", "--jq", ".url"],
+    )?;
+    println!("release: draft {url}");
+    println!(
+        "release: {} files added from the Mac; review the build report, then publish",
+        upload.len()
+    );
+    Ok(())
+}

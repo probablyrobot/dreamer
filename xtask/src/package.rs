@@ -533,7 +533,7 @@ fn arch_package(root: &Path, source_only: bool, nodeps: bool) -> Result<(), Stri
     Ok(())
 }
 
-fn version(root: &Path) -> Result<String, String> {
+pub fn version(root: &Path) -> Result<String, String> {
     let text = std::fs::read_to_string(root.join("Cargo.toml")).map_err(|e| e.to_string())?;
     text.lines()
         .skip_while(|l| l.trim() != "[workspace.package]")
