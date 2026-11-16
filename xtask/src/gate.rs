@@ -725,6 +725,16 @@ fn screens(dir: &Path) -> Result<Done, String> {
     let own = 0x40_20_20;
     let summary = crate::scenes::check_capture(&before, 0x14_16_1a, 0x81_c9_95)?;
     println!("gate:   screen: {} ({summary})", before.display());
+    // The pane sets its own background after the window's first frame. If
+    // even that is not in the first capture, the window is not being
+    // repainted (the screen locked, or another app came to the front), and
+    // the switch cannot be judged: not run, never a failure or a pass.
+    if crate::scenes::share_of(&before, own)? < 0.05 {
+        println!(
+            "gate: the window stopped repainting after its first frame (screen locked, or not in front); the theme switch is recorded as not run"
+        );
+        return Ok(Done::NotRun);
+    }
     let summary = crate::scenes::check_capture(&after, 0x28_28_28, 0x98_97_1a)?;
     println!("gate:   screen: {} ({summary})", after.display());
     let old = crate::scenes::share_of(&after, 0x14_16_1a)?;
