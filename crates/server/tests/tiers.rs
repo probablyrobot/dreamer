@@ -404,3 +404,70 @@ async fn the_tier_policy_demotes_quiet_unfollowed_panes_and_keeps_followed_ones(
     .await;
     drop(feed);
 }
+
+/// A program's own default colors (OSC 10/11) set while its pane is Cold
+/// survive the attach that wakes it: tmux keeps them and the attach
+/// restores them, unlike a window style, which stays tmux's.
+#[tokio::test]
+async fn colors_a_program_set_while_cold_survive_the_attach() {
+    let s = Setup::new();
+    let c = s.client().await;
+    let Ok(Response::TmuxTopology(t)) = c
+        .call(Request::TmuxTopology(api::TopologyParams::default()))
+        .await
+    else {
+        panic!("topology")
+    };
+    let pane = t.panes[0].id;
+    until_state(&c, pane, api::MirrorState::Live, "the pane's mirror").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while let Err(e) = c.call(tier(pane, api::Tier::Cold)).await {
+        assert!(Instant::now() < deadline, "never went cold: {e}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    until_state(&c, pane, api::MirrorState::Cold, "cold").await;
+    s.tmux
+        .run_checked(&[
+            "send-keys",
+            "-t",
+            &format!("%{pane}"),
+            "printf '\\033]11;#402020\\007'",
+            "Enter",
+        ])
+        .expect("type");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while s
+        .tmux
+        .run_checked(&[
+            "display-message",
+            "-p",
+            "-t",
+            &format!("%{pane}"),
+            "#{pane_bg}",
+        ])
+        .unwrap_or_default()
+        .trim()
+        != "#402020"
+    {
+        assert!(Instant::now() < deadline, "tmux never took the color");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // A view wakes it.
+    let feed = replica::feed::Feed::start(s.root.join("rt/dreamerd.sock"), Some(pane), None)
+        .expect("feed");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(f) = feed.take() {
+            let bg = f.colors.background;
+            if (bg.r, bg.g, bg.b) == (0x40, 0x20, 0x20) {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the view never showed the program's own background"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

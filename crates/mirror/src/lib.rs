@@ -487,8 +487,24 @@ impl MirrorHost {
             .collect()
     }
 
-    /// Wait until every listed pane's mirror is live (tests, diagnostics).
+    /// Wait until every listed pane's mirror is live. A Cold pane among
+    /// them is attached again first: a request handler waits here before
+    /// it subscribes, sends input, or taps, and each of those asks for the
+    /// pane's content.
     pub async fn wait_live(&self, panes: &[TmuxPaneId], timeout: Duration) -> bool {
+        for p in panes {
+            if self.is_cold(*p) {
+                let (reply, answer) = oneshot::channel();
+                if self
+                    .control
+                    .send(Control::Warm { pane: *p, reply })
+                    .await
+                    .is_ok()
+                {
+                    let _ = answer.await;
+                }
+            }
+        }
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let s = self.status().await;
