@@ -3304,6 +3304,7 @@ name = "mirror"
 version = "0.1.0"
 dependencies = [
  "domain",
+ "platform",
  "terminal-ghostty",
  "tmux-backend",
  "tmux-protocol",

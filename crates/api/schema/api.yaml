@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 37 }
+version: { major: 1, minor: 38 }
 package: dreamer.v1
 
 types:
@@ -65,6 +65,7 @@ types:
       - { n: 6, name: endpoints, type: EndpointStatus, repeated: true }
       - { n: 7, name: version, type: VersionInfo }
       - { n: 8, name: clients, type: u32, doc: "Connected API clients, including the caller." }
+      - { n: 9, name: heap_in_use, type: u64, optional: true, doc: "Bytes the daemon's allocator has handed out and not had back, without the freed memory it keeps for reuse; absent where the platform cannot tell." }
 
   - message: ShutdownResult
     fields:
