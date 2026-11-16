@@ -77,7 +77,18 @@ See [remote.md](remote.md) for what runs where.
 
 ## Apps
 
-`dream app run APP_ID [--method METHOD]... [--all-panes] [--session $N]
+Building an app package ([termapp.md](termapp.md#building-an-app)):
+
+| Command | Does |
+| --- | --- |
+| `dream app check PATH [--json]` | Validate a package (its directory or `app.toml`) and say what grant it needs |
+| `dream app preview PATH [--size WxH]` | Draw it once from `fixtures/`, with no daemon, as text |
+| `dream app install PATH [--name NAME]` | Check, preview, and copy it into `<config dir>/apps/`; the version it replaces is kept |
+| `dream app rollback NAME` | Put the kept version back (and keep the one it replaces) |
+| `dream app list` | Installed packages, and which have a kept version |
+| `dream app launch NAME [--session $N]` | Run an installed package in a new tmux window with the grant it declares |
+
+`dream app run APP_ID [--method METHOD]... [--all-panes | --pane %N...] [--session $N]
 [--ttl-ms N] [--name NAME] -- PROGRAM [ARGS...]` starts a program in a new
 tmux window as a registered app. The program gets a single-use ticket, and
 once it registers it may call only the listed methods, on its own pane
@@ -170,6 +181,6 @@ files directly; see [workspaces.md](workspaces.md).
 | `dream themes` | Every theme, built in and yours, with a swatch and the one in force |
 | `dream skills` | The agent skills that ship with Dreamer |
 | `dream skills show NAME` | Print a skill |
-| `dream skills install [--claude] [--codex]` | Write the skills to `~/.claude/skills/` and `~/.codex/skills/` (both by default) |
+| `dream skills install [--claude] [--codex]` | Write the skills to `~/.claude/skills/` and `~/.codex/skills/` (both by default): `dreamer-config` (configuring Dreamer) and `dreamer-apps` (building pane apps) |
 
 See [settings.md](settings.md#live-and-checked).

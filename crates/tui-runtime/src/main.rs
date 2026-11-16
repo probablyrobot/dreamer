@@ -3,8 +3,9 @@
 //! works through any plain tmux attach.
 //!
 //! ```text
-//! dreamer-termapp MANIFEST       run it
-//! dreamer-termapp --check FILE   validate only
+//! dreamer-termapp MANIFEST                     run it
+//! dreamer-termapp --check FILE [--json]        validate only
+//! dreamer-termapp --preview FILE [--size WxH]  draw it once from fixtures
 //! ```
 //!
 //! A package may have a Luau module beside its manifest (sandboxed, with
@@ -43,6 +44,36 @@ fn main() -> ExitCode {
             println!("{}", version_line());
             ExitCode::SUCCESS
         }
+        ["--check", path, "--json"] => {
+            match load(path).and_then(|m| check_module(path, &m).map(|()| m)) {
+                Ok(m) => {
+                    let n = m.needs();
+                    let out = serde_json::json!({
+                        "ok": true,
+                        "id": m.id,
+                        "version": m.version,
+                        "title": m.title,
+                        "needs": { "methods": n.methods, "panes": n.panes, "all_panes": n.all_panes },
+                    });
+                    println!("{out}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    println!("{}", serde_json::json!({ "ok": false, "error": e }));
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        ["--preview", path, rest @ ..] => match preview(path, rest) {
+            Ok(text) => {
+                print!("{text}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        },
         ["--check", path] => match load(path).and_then(|m| check_module(path, &m).map(|()| m)) {
             Ok(m) => {
                 println!("ok: {} {} ({})", m.id, m.version, m.title);
@@ -67,10 +98,53 @@ fn main() -> ExitCode {
             }
         },
         _ => {
-            eprintln!("usage: dreamer-termapp MANIFEST | --check MANIFEST | --version");
+            eprintln!(
+                "usage: dreamer-termapp MANIFEST | --check MANIFEST [--json] | --preview MANIFEST [--size WxH] | --version"
+            );
             ExitCode::from(2)
         }
     }
+}
+
+/// Draw the package once, as it first looks, from its fixtures and with
+/// no daemon; the screen as text, one line per row, trailing blanks
+/// trimmed.
+fn preview(path: &str, args: &[&str]) -> Result<String, String> {
+    let (mut w, mut h) = (80u16, 24u16);
+    match args {
+        [] => {}
+        ["--size", size] => {
+            let (a, b) = size.split_once('x').ok_or("--size is WIDTHxHEIGHT")?;
+            w = a.parse().map_err(|_| "--size is WIDTHxHEIGHT")?;
+            h = b.parse().map_err(|_| "--size is WIDTHxHEIGHT")?;
+            if !(20..=500).contains(&w) || !(5..=200).contains(&h) {
+                return Err("--size is 20x5 to 500x200".into());
+            }
+        }
+        _ => return Err("usage: dreamer-termapp --preview MANIFEST [--size WxH]".into()),
+    }
+    let manifest = load(path)?;
+    check_module(path, &manifest)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let app = rt.block_on(app_model::preview(std::path::Path::new(path)))?;
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h))
+        .map_err(|e| e.to_string())?;
+    terminal
+        .draw(|f| view::draw(&app, f))
+        .map_err(|e| e.to_string())?;
+    let buf = terminal.backend().buffer();
+    let mut out = String::new();
+    for y in 0..h {
+        let line: String = (0..w)
+            .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()))
+            .collect();
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// Puts the terminal back however the app ends.

@@ -20,6 +20,10 @@ pub struct Manifest {
     /// Methods the app needs; shown when its grant lacks one.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// The app's grant covers every pane, not only its own: to read other
+    /// panes, or to hear events about them (a job's, a filter's).
+    #[serde(default)]
+    pub all_panes: bool,
     #[serde(default)]
     pub data: BTreeMap<String, Source>,
     /// A Luau module beside the manifest, for logic the manifest cannot
@@ -391,7 +395,38 @@ fn method_info(name: &str) -> Option<&'static api::MethodInfo> {
     api::METHODS.iter().find(|m| m.name == name)
 }
 
+/// What a launch must grant a package for it to work: its capabilities,
+/// event subscription when it follows events, and its agent's panes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Needs {
+    pub methods: Vec<String>,
+    pub panes: Vec<u32>,
+    pub all_panes: bool,
+}
+
 impl Manifest {
+    /// What a launch must grant this package.
+    pub fn needs(&self) -> Needs {
+        let mut methods = self.capabilities.clone();
+        let follows = self.data.values().any(|s| !s.events.is_empty())
+            || self
+                .agent
+                .as_ref()
+                .is_some_and(|a| a.kind == AgentKind::Filter);
+        if follows {
+            methods.extend(["events.subscribe".into(), "events.unsubscribe".into()]);
+        }
+        let (panes, all_panes) = match &self.agent {
+            Some(a) => (a.tools.panes.clone(), a.tools.all_panes || self.all_panes),
+            None => (Vec::new(), self.all_panes),
+        };
+        Needs {
+            methods,
+            panes,
+            all_panes,
+        }
+    }
+
     /// Parse and validate; every problem, each with where it is.
     pub fn parse(text: &str) -> Result<Manifest, Vec<String>> {
         let m: Manifest = toml::from_str(text).map_err(|e| vec![e.to_string()])?;

@@ -2345,3 +2345,92 @@ exec /bin/sh -c "exec $3"
     assert_eq!(nowhere["isError"], true, "{nowhere}");
     assert!(nowhere.to_string().contains("nowhere"), "{nowhere}");
 }
+
+/// Spec 13.3 (the small-app builder): a generated monitor package is
+/// checked, previewed from its fixtures with no daemon, installed (the
+/// version it replaces kept as the last good one), and launched in a real
+/// tmux pane with the grant it declares, where it follows live data with
+/// no GUI. A broken version is refused and changes nothing.
+#[test]
+fn a_generated_monitor_package_is_built_installed_and_runs_in_a_pane() {
+    let cli = Cli::new();
+    let pkg = cli.root.join("jobs-monitor");
+    std::fs::create_dir_all(pkg.join("fixtures")).expect("package");
+    let manifest = r#"schema_version = 1
+id = "local.jobs-monitor"
+version = "0.1.0"
+title = "Jobs"
+capabilities = ["jobs.list"]
+all_panes = true                # job events are about the jobs' panes
+
+[data.jobs]
+method = "jobs.list"
+path = "jobs"
+events = ["jobs.state"]
+
+[view]
+type = "table"
+source = "jobs"
+row_key = "id"
+columns = ["argv", "state"]
+"#;
+    std::fs::write(pkg.join("app.toml"), manifest).expect("manifest");
+    std::fs::write(
+        pkg.join("fixtures/jobs.json"),
+        r#"{"jobs":[{"id":"a","argv":["fixture-build"],"state":"running"}]}"#,
+    )
+    .expect("fixture");
+    let path = pkg.display().to_string();
+    let checked = cli.run(&["app", "check", &path]);
+    assert!(checked.status.success(), "{checked:?}");
+    let said = String::from_utf8_lossy(&checked.stdout);
+    assert!(said.contains("needs jobs.list, events.subscribe"), "{said}");
+    let preview = cli.run(&["app", "preview", &path, "--size", "60x8"]);
+    let drawn = String::from_utf8_lossy(&preview.stdout);
+    assert!(
+        preview.status.success() && drawn.contains("fixture-build") && drawn.contains("preview"),
+        "{preview:?}"
+    );
+    assert!(cli.run(&["app", "install", &path]).status.success());
+
+    // A broken update: refused, and the installed version is untouched.
+    let broken = cli.root.join("broken");
+    std::fs::create_dir_all(&broken).expect("broken");
+    std::fs::write(
+        broken.join("app.toml"),
+        manifest.replace("type = \"table\"", "type = \"tabel\""),
+    )
+    .expect("broken manifest");
+    let refused = cli.run(&[
+        "app",
+        "install",
+        &broken.display().to_string(),
+        "--name",
+        "local.jobs-monitor",
+    ]);
+    assert!(!refused.status.success(), "{refused:?}");
+    let installed = cli.root.join("config/apps/local.jobs-monitor/app.toml");
+    assert_eq!(
+        std::fs::read_to_string(&installed).expect("installed"),
+        manifest
+    );
+    // A second good install keeps the first as the last good one.
+    assert!(cli.run(&["app", "install", &path]).status.success());
+    let listed = String::from_utf8_lossy(&cli.run(&["app", "list"]).stdout).into_owned();
+    assert!(
+        listed.contains("local.jobs-monitor 0.1.0  Jobs  (last good kept)"),
+        "{listed}"
+    );
+
+    let out = cli.ok(&["app", "launch", "local.jobs-monitor"]);
+    let (pane, _) = launched(&out);
+    cli.wait_pane(&pane, "[live]");
+    // Live data, followed by events: a job started now shows up.
+    cli.ok(&["jobs", "start", "--", "/bin/sh", "-c", "echo from-the-test"]);
+    let shown = cli.wait_pane(&pane, "from-the-test");
+    assert!(
+        !shown.contains("fixture-build"),
+        "fixtures are for previews:\n{shown}"
+    );
+    cli.wait_pane(&pane, "succeeded");
+}

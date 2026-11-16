@@ -11,6 +11,8 @@ use crate::manifest::{FieldKind, Manifest, field};
 pub enum Link {
     Connecting,
     Live,
+    /// Drawn from the package's fixtures, with no daemon.
+    Preview,
     /// Since when (unix ms), and why.
     Stale(u64, String),
 }
@@ -289,6 +291,7 @@ impl App {
         let link = match &self.link {
             Link::Connecting => "connecting".to_owned(),
             Link::Live => "live".to_owned(),
+            Link::Preview => "preview from fixtures".to_owned(),
             Link::Stale(_, why) => format!("stale: {why}"),
         };
         if self.manifest.view.kind == crate::manifest::ViewKind::Agent {

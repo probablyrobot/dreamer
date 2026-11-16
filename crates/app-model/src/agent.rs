@@ -697,6 +697,14 @@ pub(crate) fn filter_events(app: &mut App, events: &[api::DaemonEvent]) -> bool 
     shown
 }
 
+/// An agentic pane in a preview: the header without probing providers.
+pub(crate) fn setup_preview(app: &mut App) {
+    if let Some(spec) = app.manifest.agent.clone() {
+        app.agent.mode = "preview".into();
+        app.agent.grant = grant_text(&spec);
+    }
+}
+
 #[cfg(test)]
 mod filter_tests {
     #[test]
