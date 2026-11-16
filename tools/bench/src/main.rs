@@ -4,8 +4,15 @@
 //! which builds it in release mode with the daemon.
 //!
 //! ```text
-//! dreamer-bench headless [--panes N] [--json FILE]
+//! dreamer-bench headless [--panes N] [--history LINES] [--json FILE]
+//! dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]
 //! ```
+//!
+//! `busy` is the typing-under-load part of `headless` on its own, with the
+//! time split between tmux and the daemon: `N` panes (63 by default) run
+//! `yes` while a `cat` pane is typed into, timed both through the daemon
+//! and through tmux alone. `--idle M` adds `M` idle shells first;
+//! `--set` sets a global tmux option before anything starts.
 //!
 //! Each measure says what it timed. Results are printed as a table and,
 //! with `--json`, written for the record together with the machine they
@@ -25,7 +32,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("headless") => headless(&args[1..]),
-        _ => Err("usage: dreamer-bench headless [--panes N] [--json FILE]".into()),
+        Some("busy") => busy(&args[1..]),
+        _ => Err(
+            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]"
+                .into(),
+        ),
     };
     if let Err(e) = r {
         eprintln!("dreamer-bench: {e}");
@@ -182,6 +193,19 @@ fn cpu_seconds(pid: u32) -> Result<f64, String> {
     Ok(days * 86400.0 + secs)
 }
 
+/// The daemon's heap in use, in KiB: what it really holds, without the
+/// freed memory its allocator keeps (which resident size counts).
+async fn heap_kib(c: &Client) -> Result<f64, String> {
+    match c.call(Request::DaemonStatus(api::Empty {})).await {
+        Ok(Response::DaemonStatus(s)) => s
+            .heap_in_use
+            .map(|b| b as f64 / 1024.0)
+            .ok_or_else(|| "the daemon cannot report its heap on this platform".into()),
+        Ok(_) => Err("unexpected reply".into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 async fn mirrors(c: &Client) -> Result<Vec<api::MirrorStatus>, String> {
     match c
         .call(Request::TerminalMirrors(api::TopologyParams::default()))
@@ -325,6 +349,200 @@ async fn key_to_echo(rig: &Rig, c: &Client, samples: usize) -> Result<Vec<f64>, 
     Ok(out)
 }
 
+/// Key to echo inside tmux alone: `send-keys` into a `cat` pane, then
+/// `capture-pane` until the character is in tmux's grid. Each sample
+/// includes two tmux client round trips, so compare it with the same
+/// measure taken unloaded.
+fn tmux_echo(rig: &Rig, samples: usize) -> Result<Vec<f64>, String> {
+    let pane = rig
+        .tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "cat"])?
+        .trim()
+        .to_owned();
+    let count = || -> Result<usize, String> {
+        Ok(rig
+            .tmux(&["capture-pane", "-p", "-t", &pane])?
+            .matches('k')
+            .count())
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    let mut out = Vec::with_capacity(samples);
+    for i in 0..samples {
+        if i > 0 && i % 40 == 0 {
+            rig.tmux(&["send-keys", "-t", &pane, "Enter"])?;
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let before = count()?;
+        let sent = Instant::now();
+        rig.tmux(&["send-keys", "-t", &pane, "-l", "k"])?;
+        loop {
+            if count()? > before {
+                out.push(ms(sent.elapsed()));
+                break;
+            }
+            if sent.elapsed() > Duration::from_secs(5) {
+                return Err(format!("tmux never showed keystroke {i}"));
+            }
+        }
+    }
+    let _ = rig.tmux(&["kill-pane", "-t", &pane]);
+    out.sort_by(f64::total_cmp);
+    Ok(out)
+}
+
+/// CPU used by a set of processes, as a percent of one core, while `f`
+/// runs.
+fn cpu_during<T>(pids: &[u32], f: impl FnOnce() -> T) -> (T, Vec<f64>) {
+    let a: Vec<f64> = pids
+        .iter()
+        .map(|p| cpu_seconds(*p).unwrap_or(0.0))
+        .collect();
+    let t = Instant::now();
+    let r = f();
+    let secs = t.elapsed().as_secs_f64().max(1e-3);
+    let b: Vec<f64> = pids
+        .iter()
+        .map(|p| cpu_seconds(*p).unwrap_or(0.0))
+        .collect();
+    (
+        r,
+        a.iter()
+            .zip(&b)
+            .map(|(a, b)| (b - a) / secs * 100.0)
+            .collect(),
+    )
+}
+
+fn busy(args: &[String]) -> Result<(), String> {
+    let mut panes = 63usize;
+    let mut idle = 0usize;
+    let mut options: Vec<(String, String)> = Vec::new();
+    let mut json_out: Option<PathBuf> = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--panes" => {
+                panes = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--panes needs a number")?;
+            }
+            "--set" => {
+                let n = it.next().ok_or("--set needs an option and a value")?;
+                let v = it.next().ok_or("--set needs an option and a value")?;
+                options.push((n.clone(), v.clone()));
+            }
+            "--idle" => {
+                idle = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--idle needs a number")?;
+            }
+            "--json" => json_out = Some(PathBuf::from(it.next().ok_or("--json needs a file")?)),
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let result = rt.block_on(run_busy(panes, idle, &options))?;
+    let report = json!({ "workload": "busy", "panes": panes, "idle": idle, "tmux_options": options, "hardware": hardware(), "results": result });
+    print_table(&report);
+    if let Some(p) = json_out {
+        write_json(&p, &report)?;
+    }
+    Ok(())
+}
+
+async fn run_busy(
+    panes: usize,
+    idle: usize,
+    options: &[(String, String)],
+) -> Result<Vec<Value>, String> {
+    let mut out = Vec::new();
+    let mut put = |measure: &str, value: f64, unit: &str| {
+        eprintln!("bench: {measure}: {value:.2} {unit}");
+        out.push(json!({ "measure": measure, "value": value, "unit": unit }));
+    };
+    let rig = Rig::start()?;
+    for (n, v) in options {
+        rig.tmux(&["set-option", "-g", n, v])?;
+        rig.tmux(&["set-option", "-gw", n, v]).ok();
+    }
+    let c = rig.client().await?;
+    wait_live(&c, 1, Duration::from_secs(15)).await?;
+    let pid = rig.pid()?;
+    let tmux_pid: u32 = rig
+        .tmux(&["display-message", "-p", "#{pid}"])?
+        .trim()
+        .parse()
+        .map_err(|_| "no tmux pid")?;
+    if idle > 0 {
+        rig.windows(idle, "/bin/sh")?;
+        wait_live(&c, idle + 1, Duration::from_secs(600)).await?;
+    }
+    let base = idle + 1;
+    for load in [0usize, panes] {
+        if load > 0 {
+            rig.windows(
+                load,
+                "yes 'busy output for the benchmark, one line after another'",
+            )?;
+            wait_live(&c, base + load + 1, Duration::from_secs(60)).await?;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+        let tag = if load == 0 {
+            "no load".to_owned()
+        } else {
+            format!("{load} busy panes")
+        };
+        let echo = key_to_echo(&rig, &c, 200).await?;
+        put(
+            &format!("key to echo, {tag}, p50"),
+            percentile(&echo, 0.5),
+            "ms",
+        );
+        put(
+            &format!("key to echo, {tag}, p95"),
+            percentile(&echo, 0.95),
+            "ms",
+        );
+        let (t, cpu) = cpu_during(&[pid, tmux_pid], || tmux_echo(&rig, 100));
+        let t = t?;
+        put(
+            &format!("key to tmux grid (send-keys, capture-pane), {tag}, p50"),
+            percentile(&t, 0.5),
+            "ms",
+        );
+        put(
+            &format!("key to tmux grid (send-keys, capture-pane), {tag}, p95"),
+            percentile(&t, 0.95),
+            "ms",
+        );
+        put(&format!("daemon CPU, {tag}"), cpu[0], "% of a core");
+        put(&format!("tmux CPU, {tag}"), cpu[1], "% of a core");
+    }
+    // The same load with no control client: is tmux's cost its own, or
+    // the daemon's client's?
+    let _ = Command::new("kill").arg(pid.to_string()).status();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let (t, cpu) = cpu_during(&[tmux_pid], || tmux_echo(&rig, 100));
+    let t = t?;
+    let tag = format!("{panes} busy panes, daemon stopped");
+    put(
+        &format!("key to tmux grid (send-keys, capture-pane), {tag}, p50"),
+        percentile(&t, 0.5),
+        "ms",
+    );
+    put(
+        &format!("key to tmux grid (send-keys, capture-pane), {tag}, p95"),
+        percentile(&t, 0.95),
+        "ms",
+    );
+    put(&format!("tmux CPU, {tag}"), cpu[0], "% of a core");
+    Ok(out)
+}
+
 fn hardware() -> Value {
     let sh = |cmd: &str, args: &[&str]| {
         Command::new(cmd)
@@ -367,6 +585,7 @@ fn hardware() -> Value {
 
 fn headless(args: &[String]) -> Result<(), String> {
     let mut panes = 1000usize;
+    let mut history = 0usize;
     let mut json_out: Option<PathBuf> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -377,6 +596,12 @@ fn headless(args: &[String]) -> Result<(), String> {
                     .and_then(|v| v.parse().ok())
                     .ok_or("--panes needs a number")?;
             }
+            "--history" => {
+                history = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--history needs a number")?;
+            }
             "--json" => json_out = Some(PathBuf::from(it.next().ok_or("--json needs a file")?)),
             other => return Err(format!("unknown option {other}")),
         }
@@ -385,8 +610,8 @@ fn headless(args: &[String]) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let result = rt.block_on(run_headless(panes))?;
-    let report = json!({ "workload": "headless", "panes": panes, "hardware": hardware(), "results": result });
+    let result = rt.block_on(run_headless(panes, history))?;
+    let report = json!({ "workload": "headless", "panes": panes, "history": history, "hardware": hardware(), "results": result });
     print_table(&report);
     if let Some(p) = json_out {
         write_json(&p, &report)?;
@@ -417,7 +642,7 @@ fn print_table(report: &Value) {
     }
 }
 
-async fn run_headless(panes: usize) -> Result<Vec<Value>, String> {
+async fn run_headless(panes: usize, history: usize) -> Result<Vec<Value>, String> {
     let mut out = Vec::new();
     let mut put = |measure: &str, value: f64, unit: &str| {
         eprintln!("bench: {measure}: {value:.2} {unit}");
@@ -430,6 +655,8 @@ async fn run_headless(panes: usize) -> Result<Vec<Value>, String> {
     tokio::time::sleep(Duration::from_secs(2)).await;
     let base = rss_kib(pid)?;
     put("daemon RSS, 1 pane", base as f64 / 1024.0, "MiB");
+    let heap_base = heap_kib(&c).await?;
+    put("daemon heap in use, 1 pane", heap_base / 1024.0, "MiB");
 
     // The one-pane typing budget, before any load.
     let echo = key_to_echo(&rig, &c, 200).await?;
@@ -438,7 +665,14 @@ async fn run_headless(panes: usize) -> Result<Vec<Value>, String> {
 
     // N idle panes, all Warm.
     let started = Instant::now();
-    rig.windows(panes.saturating_sub(2), "/bin/sh")?;
+    let shell = if history > 0 {
+        format!(
+            "seq -f 'line %g of the pane history, long enough to fill some of the width' {history}; exec /bin/sh"
+        )
+    } else {
+        "/bin/sh".to_owned()
+    };
+    rig.windows(panes.saturating_sub(2), &shell)?;
     wait_live(&c, panes, Duration::from_secs(600)).await?;
     put(
         &format!("mirror {panes} panes from creation"),
@@ -453,8 +687,14 @@ async fn run_headless(panes: usize) -> Result<Vec<Value>, String> {
         "MiB",
     );
     put(
-        "memory per Warm pane",
+        "RSS per Warm pane",
         (warm.saturating_sub(base)) as f64 / panes.max(1) as f64,
+        "KiB",
+    );
+    let heap_warm = heap_kib(&c).await?;
+    put(
+        "heap per Warm pane",
+        (heap_warm - heap_base).max(0.0) / panes.max(1) as f64,
         "KiB",
     );
     put(
@@ -492,8 +732,14 @@ async fn run_headless(panes: usize) -> Result<Vec<Value>, String> {
         "MiB",
     );
     put(
-        "memory per Cold pane (RSS after demotion; the allocator may keep freed pages)",
+        "RSS per Cold pane (counts freed pages the allocator keeps)",
         (colder.saturating_sub(base)) as f64 / cold.len().max(1) as f64,
+        "KiB",
+    );
+    let heap_cold = heap_kib(&c).await?;
+    put(
+        "heap per Cold pane",
+        (heap_cold - heap_base).max(0.0) / cold.len().max(1) as f64,
         "KiB",
     );
     put(

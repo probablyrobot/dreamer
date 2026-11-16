@@ -4,7 +4,7 @@
 //! they ran on to `target/bench/`.
 //!
 //! ```text
-//! cargo xtask bench headless [--panes N] [--linux]
+//! cargo xtask bench headless|busy [OPTIONS] [--linux]
 //! ```
 //!
 //! `--linux` runs the same workload in an ARM64 Linux container (the one
@@ -16,8 +16,8 @@ use std::process::Command;
 pub fn run(args: &[String]) -> Result<(), String> {
     let root = crate::util::repo_root();
     let (workload, rest) = match args {
-        [w, rest @ ..] if w == "headless" => (w.as_str(), rest),
-        _ => return Err("usage: cargo xtask bench headless [--panes N] [--linux]".into()),
+        [w, rest @ ..] if w == "headless" || w == "busy" => (w.as_str(), rest),
+        _ => return Err("usage: cargo xtask bench headless|busy [OPTIONS] [--linux]".into()),
     };
     if rest.iter().any(|a| a == "--linux") {
         let rest: Vec<String> = rest.iter().filter(|a| *a != "--linux").cloned().collect();

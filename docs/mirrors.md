@@ -137,6 +137,10 @@ in tmux's own grid.
   output off for one control client (`refresh-client -A '%N:off'`). But
   when every client has done so, tmux stops reading the pane. With the
   daemon as the only client, a program writing to a Cold pane would stall.
+- **Memory:** shortly after panes go Cold, the daemon hands the freed
+  memory back to the system. A Cold pane then holds about 3 KiB, while a
+  Warm pane holds about 1 KiB for each line of history it keeps (see
+  [performance.md](performance.md)).
 
 `dream mirrors` shows a Cold pane with state `cold` and tier `cold`, and
 no sequence or journal. Nothing demotes a pane on its own yet; the

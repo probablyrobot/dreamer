@@ -102,6 +102,9 @@ pub fn status(json: bool) -> Result<(), String> {
         println!("  socket   {}", s.socket_path);
         println!("  log      {}", s.log_path);
         println!("  clients  {}", s.clients);
+        if let Some(h) = s.heap_in_use {
+            println!("  heap     {:.1} MiB in use", h as f64 / (1024.0 * 1024.0));
+        }
         if let Some(v) = &s.version {
             println!(
                 "  version  {} (protocol {}.{}, {})",

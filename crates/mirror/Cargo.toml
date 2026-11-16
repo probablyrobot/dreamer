@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 domain = { path = "../domain" }
+platform = { path = "../platform" }
 terminal-ghostty = { path = "../terminal-ghostty" }
 tmux-backend = { path = "../tmux-backend" }
 tmux-protocol = { path = "../tmux-protocol" }

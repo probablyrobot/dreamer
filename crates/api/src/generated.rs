@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 37;
+pub const PROTOCOL_MINOR: u32 = 38;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -973,6 +973,10 @@ pub struct DaemonStatus {
     /// Connected API clients, including the caller.
     #[prost(uint32, tag = "8")]
     pub clients: u32,
+    /// Bytes the daemon's allocator has handed out and not had back, without the freed memory it keeps for reuse; absent where the platform cannot tell.
+    #[prost(uint64, optional, tag = "9")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heap_in_use: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]

@@ -153,9 +153,110 @@ pub fn session_of(pid: u32) -> Option<u32> {
         .map(|s| s.as_raw_nonzero().get() as u32)
 }
 
+/// Hand memory that the allocator holds but no longer uses back to the
+/// system: glibc's `malloc_trim`, or macOS's malloc pressure relief. A
+/// daemon that has just dropped many terminal mirrors calls this so its
+/// resident size shrinks with them. Elsewhere it does nothing.
+#[allow(unsafe_code)]
+pub fn release_free_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        // SAFETY: malloc_trim takes a plain size and only touches the
+        // allocator's own free lists, under its own lock.
+        unsafe {
+            malloc_trim(0);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: a null zone means every zone and a goal of 0 means as
+        // much as possible; the call only releases free pages.
+        unsafe {
+            malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        }
+    }
+}
+
+/// Bytes the allocator has handed out and not had back, without the freed
+/// memory it keeps for reuse: what a process really holds, where resident
+/// size also counts retained free pages. `None` where it cannot tell.
+#[allow(unsafe_code)]
+pub fn heap_in_use() -> Option<u64> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        #[repr(C)]
+        struct Mallinfo2 {
+            arena: usize,
+            ordblks: usize,
+            smblks: usize,
+            hblks: usize,
+            hblkhd: usize,
+            usmblks: usize,
+            fsmblks: usize,
+            uordblks: usize,
+            fordblks: usize,
+            keepcost: usize,
+        }
+        unsafe extern "C" {
+            fn mallinfo2() -> Mallinfo2;
+        }
+        // SAFETY: mallinfo2 (glibc 2.33+) takes nothing and returns a
+        // plain struct by value.
+        let m = unsafe { mallinfo2() };
+        Some((m.uordblks + m.hblkhd) as u64)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        #[repr(C)]
+        #[derive(Default)]
+        struct MallocStatistics {
+            blocks_in_use: u32,
+            size_in_use: usize,
+            max_size_in_use: usize,
+            size_allocated: usize,
+        }
+        unsafe extern "C" {
+            fn malloc_zone_statistics(zone: *mut std::ffi::c_void, stats: *mut MallocStatistics);
+        }
+        let mut s = MallocStatistics::default();
+        // SAFETY: a null zone sums every zone into the struct we own.
+        unsafe { malloc_zone_statistics(std::ptr::null_mut(), &mut s) };
+        Some(s.size_in_use as u64)
+    }
+    #[cfg(not(any(all(target_os = "linux", target_env = "gnu"), target_os = "macos")))]
+    {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The allocator statistics are read through hand-written C structs; a
+    /// wrong layout would read the wrong field.
+    #[test]
+    fn heap_in_use_follows_a_large_allocation() {
+        let Some(before) = heap_in_use() else {
+            return;
+        };
+        let block = vec![1u8; 16 << 20];
+        let during = heap_in_use().unwrap_or(0);
+        assert!(
+            during >= before + (16 << 20),
+            "{before} then {during} with 16 MiB more held"
+        );
+        drop(block);
+        release_free_memory();
+        let after = heap_in_use().unwrap_or(u64::MAX);
+        assert!(after < during, "{during} then {after} after freeing 16 MiB");
+    }
 
     #[test]
     fn private_dirs_are_created_closed_and_open_ones_refused() {

@@ -106,7 +106,13 @@ pub(crate) struct Router {
     /// Panes attaching now, and those waiting for a turn, in order.
     attaching: std::collections::HashSet<TmuxPaneId>,
     queued: std::collections::VecDeque<(TmuxPaneId, PaneGeneration)>,
+    /// When to hand freed memory back to the system: shortly after the
+    /// last pane went Cold, once for a whole batch of demotions.
+    release_at: Option<tokio::time::Instant>,
 }
+
+/// How long after the last demotion freed memory is released.
+const RELEASE_AFTER: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub(crate) async fn spawn(router: Router) {
     tokio::spawn(router.run());
@@ -142,6 +148,7 @@ impl Router {
             cold: crate::ColdSet::default(),
             attaching: std::collections::HashSet::new(),
             queued: std::collections::VecDeque::new(),
+            release_at: None,
         }
     }
 
@@ -183,6 +190,12 @@ impl Router {
             let held = !self.backlog.is_empty();
             tokio::select! {
                 () = tokio::time::sleep(BACKLOG_TICK), if held => self.drain(),
+                () = tokio::time::sleep_until(self.release_at.unwrap_or_else(tokio::time::Instant::now)),
+                    if self.release_at.is_some() =>
+                {
+                    self.release_at = None;
+                    tokio::task::spawn_blocking(platform::release_free_memory);
+                }
                 c = self.control.recv() => match c {
                     Some(c) => self.on_control(c).await,
                     None => break,
@@ -293,6 +306,8 @@ impl Router {
                                     self.backlog.remove(&pane);
                                     self.flows.insert(pane, Flow::Cold { generation });
                                     self.set_cold(pane, true);
+                                    self.release_at =
+                                        Some(tokio::time::Instant::now() + RELEASE_AFTER);
                                     self.changed();
                                     Ok(())
                                 }

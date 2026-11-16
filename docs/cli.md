@@ -52,7 +52,7 @@ refused (the output says why), and 3 when the outcome is unknown. See
 | Command | Effect |
 | --- | --- |
 | `dream ensure-running [tmux options]` | Start `dreamerd` unless it is running |
-| `dream status [--json]` | Process, socket, log, clients, version, and tmux endpoint state |
+| `dream status [--json]` | Process, socket, log, clients, heap in use, version, and tmux endpoint state |
 | `dream version` | Client and daemon versions and build family |
 | `dream shutdown` | Stop `dreamerd`. tmux keeps running |
 | `dream doctor` | Diagnostics: directories and their permissions, socket, startup lock, ledger summary, daemon, and tmux link. Never starts the daemon |

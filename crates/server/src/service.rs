@@ -438,6 +438,7 @@ impl api::Service for DaemonService {
             }],
             version: Some(version_info(&s.identity)),
             clients: s.clients.load(Ordering::Relaxed),
+            heap_in_use: platform::heap_in_use(),
         })
     }
 
