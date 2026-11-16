@@ -115,10 +115,32 @@ up" instead of looping.
 
 ## Tiers
 
-Every mirrored pane is **Warm** (mirrored and journaled, not shown) or
-**Hot** (visible in a client). In the daemon both tiers keep a live mirror
-and a journal; clients set Hot for the panes they show. **Cold** (metadata
-only, with tmux output switched off for the pane) is not implemented yet.
+Every pane is in one tier:
+
+| Tier | In the daemon | Set by |
+| --- | --- | --- |
+| **Hot** | Live mirror and journal | Clients, for the panes they show |
+| **Warm** | Live mirror and journal | The default for a mirrored pane |
+| **Cold** | Pane metadata only: no mirror and no journal. The pane's output still arrives from tmux and is dropped before any terminal parsing | `dream tier %N cold` (`terminal.set_tier`) |
+
+The pane keeps running in tmux while it is Cold, and what it writes stays
+in tmux's own grid.
+
+- **Going Cold** is refused while anything follows the pane: a view, a
+  tap, or a filter. The error names how many subscribers there are.
+- **Leaving Cold:** any request for the pane's content brings it back
+  before answering. That includes a subscription, a read, a query, input,
+  or a tier change. The pane is attached from a fresh capture, as a new
+  pane is: a cold attach (see [tmux-bootstrap.md](tmux-bootstrap.md)). The
+  request waits up to 5 s for it. Output alone does not bring a pane back.
+- **Why tmux keeps sending the output:** tmux 3.8 can switch a pane's
+  output off for one control client (`refresh-client -A '%N:off'`). But
+  when every client has done so, tmux stops reading the pane. With the
+  daemon as the only client, a program writing to a Cold pane would stall.
+
+`dream mirrors` shows a Cold pane with state `cold` and tier `cold`, and
+no sequence or journal. Nothing demotes a pane on its own yet; the
+policy and the budgets come from the measurements.
 
 ## Reading mirrors
 
@@ -126,11 +148,11 @@ only, with tmux output switched off for the pane) is not implemented yet.
 | --- | --- | --- |
 | `dream read %PANE [--history N] [--json]` | `terminal.read` | Up to N scrollback lines, then the screen; size, cursor, generation, epoch, and the number of records applied |
 | `dream mirrors [--json]` | `terminal.mirrors` | Each pane's state, tier, size, records, bytes ingested, retained journal range and size, and worker; host journal totals and limits |
-| `dream tier %PANE hot\|warm` | `terminal.set_tier` | Sets a pane's tier |
+| `dream tier %PANE hot\|warm\|cold` | `terminal.set_tier` | Sets a pane's tier |
 
 ## Not yet
 
-- **Cold tier** and demotion through tmux's per-pane output control.
+- **Automatic demotion** to Cold (an idle policy and per-host budgets).
 - **Scrollback depth:** a mirror keeps as much scrollback as tmux's
   `history-limit`.
 - **Pixel size:** the canonical cell pixel size is fixed (10×20) until

@@ -16,6 +16,7 @@ use crate::util::repo_root;
 pub const PACKAGES: &[&str] = &[
     "api",
     "app-model",
+    "bench",
     "client",
     "dreamer-server",
     "dreamer-cli",

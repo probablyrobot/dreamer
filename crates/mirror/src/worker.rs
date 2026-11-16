@@ -17,8 +17,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::journal::{Journal, Retention};
 
-/// Observation tier (spec 16.6). In the daemon both keep a live mirror and
-/// a journal; Hot panes are visible in a client, Warm ones are not.
+/// Observation tier (spec 16.6) of a pane that has a mirror. In the daemon
+/// both keep a live mirror and a journal; Hot panes are visible in a
+/// client, Warm ones are not. A Cold pane has no mirror at all (see
+/// `MirrorState::Cold`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tier {
     Hot,
@@ -252,6 +254,12 @@ pub enum WorkerMsg {
     Wake,
     Drop {
         pane: TmuxPaneId,
+    },
+    /// Drop the mirror for the Cold tier, unless anything follows it (a
+    /// view, a tap, a filter): then it stays, and the reply says why.
+    Retire {
+        pane: TmuxPaneId,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     SetTier {
         pane: TmuxPaneId,
@@ -711,6 +719,29 @@ pub fn spawn(
                     WorkerMsg::Drop { pane } => {
                         mirrors.remove(&pane);
                         failed.remove(&pane);
+                    }
+                    WorkerMsg::Retire { pane, reply } => {
+                        let followed = mirrors.get(&pane).map(|m| {
+                            m.subscribers
+                                .iter()
+                                .filter(|s| {
+                                    !s.records.is_closed()
+                                        && s.ended.load(Ordering::SeqCst) == end::RUNNING
+                                })
+                                .count()
+                        });
+                        let r = match followed {
+                            Some(0) | None => {
+                                mirrors.remove(&pane);
+                                failed.remove(&pane);
+                                Ok(())
+                            }
+                            Some(n) => Err(format!(
+                                "pane %{} has {n} subscriber(s) (a view, tap, or filter); it stays warm",
+                                pane.0
+                            )),
+                        };
+                        let _ = reply.send(r);
                     }
                     WorkerMsg::Subscribe {
                         pane,

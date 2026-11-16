@@ -656,7 +656,9 @@ impl api::Service for DaemonService {
                     mirror::MirrorState::Attaching => (api::MirrorState::Attaching, None),
                     mirror::MirrorState::Live => (api::MirrorState::Live, None),
                     mirror::MirrorState::Failed(e) => (api::MirrorState::Failed, Some(e.clone())),
+                    mirror::MirrorState::Cold => (api::MirrorState::Cold, None),
                 };
+                let cold = m.state == mirror::MirrorState::Cold;
                 api::MirrorStatus {
                     pane: m.pane.0,
                     generation: m.generation.0,
@@ -669,6 +671,7 @@ impl api::Service for DaemonService {
                     rows: m.live.as_ref().map_or(0, |l| u32::from(l.rows)),
                     detail,
                     tier: match m.live.as_ref().map(|l| l.tier) {
+                        _ if cold => api::Tier::Cold,
                         Some(mirror::Tier::Hot) => api::Tier::Hot,
                         Some(mirror::Tier::Warm) => api::Tier::Warm,
                         None => api::Tier::Unspecified,
@@ -699,10 +702,21 @@ impl api::Service for DaemonService {
         let tier = match api::Tier::try_from(p.tier) {
             Ok(api::Tier::Hot) => mirror::Tier::Hot,
             Ok(api::Tier::Warm) => mirror::Tier::Warm,
+            Ok(api::Tier::Cold) => {
+                let host = self.0.mirrors.read().await.clone();
+                let Some(h) = host else {
+                    return Err(RpcError::new(code::UNAVAILABLE, "no tmux connection"));
+                };
+                return h
+                    .set_cold(domain::TmuxPaneId(p.pane))
+                    .await
+                    .map(|()| api::Empty {})
+                    .map_err(|e| RpcError::new(code::PRECONDITION, e));
+            }
             _ => {
                 return Err(RpcError::new(
                     code::INVALID_PARAMS,
-                    "only hot and warm can be set; cold (metadata only) is not available yet",
+                    "the tier is hot, warm, or cold",
                 ));
             }
         };
