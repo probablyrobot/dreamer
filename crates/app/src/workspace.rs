@@ -52,6 +52,17 @@ pub(crate) struct Workspace {
     current: Option<api::Topology>,
     session: Option<u32>,
     panes: HashMap<u32, PaneView>,
+    /// Views of panes shown lately and hidden now (another tab, or zoomed
+    /// away), still following their feeds: the Warm client tier of spec
+    /// 16.6. Showing one again paints its last frame at once instead of
+    /// waiting for a new checkpoint. At most `HIDDEN_VIEWS`, the oldest
+    /// hidden going first.
+    hidden: HashMap<u32, (PaneView, std::time::Instant)>,
+    /// A tab clicked here and not yet confirmed by tmux: shown at once (its
+    /// panes' last frames, when hidden views have them), until the
+    /// topology reports it active or `SELECT_GRACE` passes. tmux stays
+    /// authoritative: whatever it reports then is what the window shows.
+    selecting: Option<(u32, std::time::Instant)>,
     /// The pane keyboard input goes to (local; tmux is told on a click).
     focused: Option<u32>,
     pub(crate) focus: FocusHandle,
@@ -133,6 +144,8 @@ impl Workspace {
             current: None,
             session: None,
             panes: HashMap::new(),
+            hidden: HashMap::new(),
+            selecting: None,
             focused: None,
             focus: cx.focus_handle(),
             title: String::new(),
@@ -1333,6 +1346,15 @@ impl Workspace {
     fn active_window(&self) -> Option<&api::Window> {
         let t = self.current.as_ref()?;
         let s = t.sessions.iter().find(|s| Some(s.id) == self.session)?;
+        if let Some((w, at)) = self.selecting
+            && at.elapsed() < SELECT_GRACE
+            && let Some(w) = t
+                .windows
+                .iter()
+                .find(|x| x.id == w && x.sessions.contains(&s.id))
+        {
+            return Some(w);
+        }
         t.windows.iter().find(|w| Some(w.id) == s.active_window)
     }
 
@@ -1384,28 +1406,25 @@ impl Workspace {
             self.session = t.sessions.first().map(|s| s.id);
         }
         let first_save = self.current.is_none();
-        self.current = Some(t);
-        let visible = self.visible();
-        self.panes
-            .retain(|id, _| visible.iter().any(|p| p.id == *id));
-        for p in &visible {
-            if !self.panes.contains_key(&p.id)
-                && let Some(view) = self.open_pane(p.id, window, cx)
-            {
-                self.panes.insert(p.id, view);
+        // tmux confirmed the clicked tab, or the grace ran out: from here
+        // on its own active window is shown.
+        if let Some((w, at)) = self.selecting {
+            let confirmed = t
+                .sessions
+                .iter()
+                .find(|s| Some(s.id) == self.session)
+                .is_some_and(|s| s.active_window == Some(w));
+            if confirmed || at.elapsed() >= SELECT_GRACE {
+                self.selecting = None;
             }
         }
+        self.current = Some(t);
+        self.sync_panes(window, cx);
         self.follow_decorations(window, cx);
         self.follow_contributions(window, cx);
         if first_save {
             // Record the server incarnation the session id now belongs to.
             self.save_state(cx);
-        }
-        // Keep focus on a visible pane: tmux's active one if ours is gone.
-        if self.focused.is_none_or(|f| !self.panes.contains_key(&f)) {
-            let active = self.active_window().and_then(|w| w.active_pane);
-            let target = active.filter(|a| self.panes.contains_key(a));
-            self.set_focus(target.or_else(|| visible.first().map(|p| p.id)), window, cx);
         }
         cx.notify();
     }
@@ -1488,11 +1507,73 @@ impl Workspace {
         )
     }
 
-    pub(crate) fn click_tab_for_smoke(&mut self, window_id: u32, cx: &mut Context<Self>) {
-        self.click_tab(window_id, cx);
+    /// Views for the panes shown now; hidden ones keep theirs for a while.
+    fn sync_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let visible = self.visible();
+        // Panes no longer shown keep their views for a while (hidden);
+        // panes that no longer exist lose them.
+        let exists = |id: &u32, t: &Option<api::Topology>| {
+            t.as_ref()
+                .is_some_and(|t| t.panes.iter().any(|p| p.id == *id))
+        };
+        let gone: Vec<u32> = self
+            .panes
+            .keys()
+            .copied()
+            .filter(|id| !visible.iter().any(|p| p.id == *id))
+            .collect();
+        let now = std::time::Instant::now();
+        for id in gone {
+            if let Some(view) = self.panes.remove(&id)
+                && exists(&id, &self.current)
+            {
+                self.hidden.insert(id, (view, now));
+            }
+        }
+        let current = self.current.clone();
+        self.hidden.retain(|id, _| exists(id, &current));
+        while self.hidden.len() > HIDDEN_VIEWS {
+            let Some(oldest) = self
+                .hidden
+                .iter()
+                .min_by_key(|(_, (_, at))| *at)
+                .map(|(id, _)| *id)
+            else {
+                break;
+            };
+            self.hidden.remove(&oldest);
+        }
+        for p in &visible {
+            if self.panes.contains_key(&p.id) {
+                continue;
+            }
+            if let Some((view, _)) = self.hidden.remove(&p.id) {
+                self.panes.insert(p.id, view);
+            } else if let Some(view) = self.open_pane(p.id, window, cx) {
+                self.panes.insert(p.id, view);
+            }
+        }
+        // Keep focus on a visible pane: tmux's active one if ours is gone.
+        if self.focused.is_none_or(|f| !self.panes.contains_key(&f)) {
+            let active = self.active_window().and_then(|w| w.active_pane);
+            let target = active.filter(|a| self.panes.contains_key(a));
+            self.set_focus(target.or_else(|| visible.first().map(|p| p.id)), window, cx);
+        }
     }
 
-    fn click_tab(&mut self, window_id: u32, cx: &mut Context<Self>) {
+    pub(crate) fn click_tab_for_smoke(
+        &mut self,
+        window_id: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.click_tab(window_id, window, cx);
+    }
+
+    /// Show the tab at once, and ask tmux to select it.
+    fn click_tab(&mut self, window_id: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.selecting = Some((window_id, std::time::Instant::now()));
+        self.sync_panes(window, cx);
         self.topology
             .act(api::action::Kind::SelectWindow(api::SelectWindow {
                 window: window_id,
@@ -1516,6 +1597,13 @@ impl Workspace {
         }
     }
 }
+
+/// How many hidden panes keep their views (and their feeds): enough for a
+/// few full tabs, a bounded cost however many panes exist.
+const HIDDEN_VIEWS: usize = 48;
+
+/// How long a clicked tab is shown before tmux confirms it.
+const SELECT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Each window frame's start and the terminal paint time so far, while
 /// the GUI benchmark records them (`crate::bench_gui`).
@@ -1632,7 +1720,7 @@ impl Render for Workspace {
                     .child(format!("{}:{}", w.index, w.name))
                     // A tab press is not a window drag.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |ws, _, _, cx| ws.click_tab(id, cx)))
+                    .on_click(cx.listener(move |ws, _, window, cx| ws.click_tab(id, window, cx)))
             }))
             .child(div().flex_1())
             .children(self.contributed.outcome.clone().map(|o| {
@@ -2184,6 +2272,12 @@ pub(crate) fn open(
     open_via(cx, launch, replica::Via::Local, smoke, open_at_start).map(drop)
 }
 
+/// The local topology feed, started when the process starts so the
+/// daemon connection and the first topology overlap GPUI's own startup.
+/// The first local window takes it; later windows start their own.
+pub(crate) static EARLY_TOPOLOGY: std::sync::Mutex<Option<Arc<TopologyFeed>>> =
+    std::sync::Mutex::new(None);
+
 /// Run the remote smoke in a window opened with [`open_via`].
 pub(crate) fn smoke_remote(
     cx: &mut gpui::App,
@@ -2207,10 +2301,16 @@ pub(crate) fn open_via(
     let socket = launch.socket.clone();
     let daemon_args = launch.args.clone();
     let bench_daemon = daemon_args.clone();
-    let topology = Arc::new(
-        TopologyFeed::start_via(socket.clone(), via.clone(), Some(launch))
-            .map_err(|e| format!("cannot follow the tmux topology: {e}"))?,
-    );
+    let early = (via == replica::Via::Local)
+        .then(|| EARLY_TOPOLOGY.lock().ok().and_then(|mut t| t.take()))
+        .flatten();
+    let topology = match early {
+        Some(t) => t,
+        None => Arc::new(
+            TopologyFeed::start_via(socket.clone(), via.clone(), Some(launch))
+                .map_err(|e| format!("cannot follow the tmux topology: {e}"))?,
+        ),
+    };
     // The saved arrangement. A smoke run uses one only in a private
     // directory it was given, never the user's. A host's window does not
     // save one: the arrangement is the local tmux's.
@@ -2812,9 +2912,9 @@ mod smoke {
         })
         .flatten()
         .unwrap_or_else(|| fail("no second window"));
-        let _ = cx.update_window(any, |_, _, cx| {
+        let _ = cx.update_window(any, |_, window, cx| {
             if let Some(ws) = ws.upgrade() {
-                ws.update(cx, |w, cx| w.click_tab_for_smoke(second, cx));
+                ws.update(cx, |w, cx| w.click_tab_for_smoke(second, window, cx));
             }
         });
         wait_for(

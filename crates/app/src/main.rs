@@ -1398,6 +1398,17 @@ fn main() -> ExitCode {
         None => None,
     };
 
+    // A local workspace window: connect to the daemon (starting it if
+    // need be) and ask for the topology now, while GPUI starts up.
+    if workspace_mode && args.host.is_none() {
+        let launch = client::Launch::new(args.daemon.clone());
+        if let Ok(t) = replica::topology::TopologyFeed::start(launch.socket.clone(), Some(launch))
+            && let Ok(mut early) = workspace::EARLY_TOPOLOGY.lock()
+        {
+            *early = Some(Arc::new(t));
+        }
+    }
+
     let settings = match workspace_config::load_settings() {
         Ok(s) => s,
         Err(e) => {
@@ -1406,6 +1417,7 @@ fn main() -> ExitCode {
         }
     };
 
+    fonts::prefetch(&settings.font.family);
     let app = gpui_platform::application();
     // macOS: clicking the Dock icon with no window open opens one.
     app.on_reopen(|cx| {
@@ -1423,7 +1435,11 @@ fn main() -> ExitCode {
         });
         // The settings in force, then kept live: a valid change to the
         // configuration applies at once, an invalid one is shown and waits.
-        live::apply(cx, &settings, live::themes());
+        // Every theme file is read off the launch path: only the palette's
+        // Theme command lists them.
+        live::apply(cx, &settings, Vec::new());
+        cx.background_spawn(async { live::set_themes(live::themes()) })
+            .detach();
         live::watch(cx);
 
         if workspace_mode {

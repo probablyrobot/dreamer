@@ -54,6 +54,16 @@ pub(crate) fn themes() -> Vec<&'static Scheme> {
         .collect()
 }
 
+/// The theme list (for the palette's Theme command), once it is read: at
+/// launch it is read in the background, after the window opens.
+pub(crate) fn set_themes(themes: Vec<&'static Scheme>) {
+    if let Ok(mut l) = LIVE.write()
+        && let Some(l) = l.as_mut()
+    {
+        l.themes = themes;
+    }
+}
+
 /// Draw the chrome in `scheme` until this is called with `None`; the
 /// terminals follow when the file says so.
 pub(crate) fn preview(cx: &mut App, scheme: Option<&'static Scheme>) {
