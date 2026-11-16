@@ -1,6 +1,6 @@
 ---
 name: dreamer-apps
-description: Build small terminal apps for the Dreamer terminal: monitors, dashboards, lists, forms, and agentic panes that run in a real tmux pane. Use when the user asks for a pane that shows or watches something (jobs, panes, agent runs, filter matches), or a small tool inside Dreamer. Writes a declarative app package, checks it, previews it from sample data, installs it, and launches it.
+description: "Build small terminal apps for the Dreamer terminal: monitors, dashboards, lists, forms, and agentic panes that run in a real tmux pane. Use when the user asks for a pane that shows or watches something (jobs, panes, agent runs, filter matches), or a small tool inside Dreamer. Writes a declarative app package, checks it, previews it from sample data, installs it, and launches it."
 ---
 
 # Building Dreamer apps

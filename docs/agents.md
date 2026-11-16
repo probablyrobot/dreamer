@@ -104,10 +104,10 @@ Dreamer's pi profile, `<data dir>/pi-profile`, unless `agents.pi.agent_dir`
 names another, such as your own `~/.pi/agent`.
 
 `dream agents status` asks pi itself, with
-`pi auth check --provider P --no-refresh --json`, for the `openai` (a
-ChatGPT subscription signs in here) and `anthropic` providers. API key
-variables in the environment are left out of that check, so only pi's own
-login counts. When none is ready, it prints the command that logs in:
+`pi auth check --provider P --no-refresh --json`, for the `openai`,
+`openai-codex`, and `anthropic` providers. API key variables in the
+environment are left out of that check, so only pi's own login counts.
+When none is ready, it prints the command that logs in:
 
 ```sh
 PI_CODING_AGENT_DIR=~/.local/share/dreamer/pi-profile \
@@ -116,9 +116,160 @@ PI_CODING_AGENT_DIR=~/.local/share/dreamer/pi-profile \
 
 or run `/login` inside pi.
 
+What pi's `/login` offers for subscriptions, in pi 1.5.2:
+
+| pi provider | `/login` entry | Subscription |
+| --- | --- | --- |
+| `openai` | OpenAI, "Sign in with ChatGPT" | ChatGPT; pi's preferred way to use OpenAI's models on a subscription |
+| `openai-codex` | OpenAI Codex ("OpenAI (ChatGPT Plus/Pro)") | ChatGPT Plus or Pro, through the Codex backend |
+| `anthropic` | Anthropic ("Claude Pro/Max") | Claude Pro or Max |
+
+`openai` and `anthropic` also take API keys; `dream agents pi` does not
+pass `OPENAI_API_KEY`, `CODEX_API_KEY`, `ANTHROPIC_API_KEY`, or
+`ANTHROPIC_AUTH_TOKEN` to pi, so only a login you made in pi is used.
+
+## Dreamer's pi profile
+
+pi reads its settings, extensions, skills, and prompt templates from an
+agent directory (`PI_CODING_AGENT_DIR`). Dreamer's pi sessions use one
+that Dreamer owns, `<data dir>/pi-profile/`, not your `~/.pi`. Setting
+`agents.pi.agent_dir` uses that directory instead (then Dreamer adds its
+extension with `--extension` and leaves the directory alone).
+
+### What Dreamer puts in it
+
+| Path | What it is |
+| --- | --- |
+| `extensions/dreamer/` | Dreamer's extension: the terminal tools as native pi tools (below) |
+| `skills/dreamer-config/`, `skills/dreamer-apps/` | The skills `dream skills` also installs for Claude Code and Codex |
+| `skills/dreamer-pi-profile/` | How the agent changes its own profile |
+| `prompts/panes.md`, `prompts/collect.md`, `prompts/apps.md` | `/panes` (what is running), `/collect` (gather output over time), `/apps` (build a pane app) |
+| `APPEND_SYSTEM.md` | Added to pi's system prompt: the terminals, the approval rules, conciseness |
+| `settings.json` | `defaultProvider: openai`; no model, so pi picks that provider's default. `/login` and `/model` change it |
+| `.gitignore` | Keeps only the profile's resources in git |
+
+These files are embedded in `dream`, so laying out the profile needs no
+source tree. `dream agents profile init` lays it out, and so does
+`dream agents update` when the profile is not there yet.
+
+### Dreamer's tools inside pi
+
+The extension registers these pi tools. Each is one call to the daemon
+over its JSON-RPC socket ([api.md](api.md#json-rpc-endpoint)), the same
+API as `dream mcp` ([mcp.md](mcp.md#terminal-tools)):
+
+| Tool | API |
+| --- | --- |
+| `terminals_list` | `terminal.list` |
+| `terminal_read` | `terminal.read` |
+| `terminal_search` | `terminal.query` |
+| `terminal_watch` | `terminal.watch` |
+| `terminal_run` | `terminal.run` |
+| `terminal_send` | `leases.acquire`, `terminal.input` |
+| `layout` (`split`, `select`, `rename`, `move`, `zoom`, `close`) | `actions.submit` |
+| `collector_create`, `collector_query`, `collector_list`, `collector_stop` | `collect.*`; registered only when the daemon offers `collect.list` |
+| `dreamer_profile_commit` | `dream agents profile commit` (below) |
+
+It also adds the commands `/dreamer` (whether the daemon is reachable,
+the level, the profile) and `/dreamer-reload` (commit, then reload).
+
+- **Socket.** `DREAMER_RPC_SOCKET`; else `dreamerd.rpc.sock` beside
+  `DREAMER_SOCKET`; else in the runtime directory, found as the daemon
+  finds it (`DREAMER_RUNTIME_DIR`, `XDG_RUNTIME_DIR`, `TMPDIR`).
+  `dream agents pi` sets `DREAMER_RPC_SOCKET`.
+- **Grant.** On first use the extension narrows its connection to an
+  agent's grant ([grants.md](grants.md#act-levels-and-approvals)): every
+  pane, the level from `DREAMER_AGENT_LEVEL` (`observe`, `own`, or
+  `elsewhere`, the default), and the tools' methods plus
+  `events.subscribe`. It connects when a session starts or a tool first
+  runs, never when pi only loads it.
+- **Approvals.** When an action waits for your approval, the extension
+  shows it in pi (a notice and a status line, with the `dream approvals`
+  command that answers it) and records it in the session as a
+  `dreamer-approval` entry. It never answers: an agent's grant cannot
+  call `approvals.answer`, so you answer in Dreamer or with
+  `dream approvals allow|deny ID`. This keeps an agent from approving its
+  own actions through Dreamer. It is not an OS sandbox: pi's own `bash`
+  tool runs with your privileges.
+
+### History
+
+When `git` is installed, the profile is a git repository, and every
+change is a commit:
+
+- **Dreamer's files:** "dreamer base VERSION" when Dreamer writes or
+  updates them.
+- **The agent's changes:** the extension commits after each of the
+  agent's turns and when pi reloads or quits, with the pi session id as a
+  `Pi-Session:` trailer. The agent can also commit with a message of its
+  own (`dreamer_profile_commit`), which checks the result too.
+- **Anything else:** changes found when pi next starts, as "changes
+  outside a pi session".
+
+`.gitignore` keeps only `extensions/`, `skills/`, `prompts/`, `themes/`,
+`settings.json`, `keybindings.json`, `APPEND_SYSTEM.md`, `SYSTEM.md`,
+`AGENTS.md`, and `.dreamer/`, and within them leaves out `auth.json`,
+`.env` files, keys, and `node_modules/`. So `auth.json`, sessions,
+caches, `models.json`, and `mcp.json` (which can hold keys) are never
+committed. Dreamer never reads them.
+
+Without git the profile works the same, without history: the commands
+that need it say so.
+
+### Updates
+
+The base layer updates with Dreamer. `.dreamer/base.json` records what
+Dreamer last wrote. When a newer `dream` starts pi:
+
+- a shipped file nobody changed is replaced;
+- a shipped file the agent changed is kept as the agent left it, and
+  reported when Dreamer's version changed too
+  (`dream agents profile status` lists such files);
+- a shipped file the agent removed stays removed;
+- a file Dreamer no longer ships is removed if unchanged;
+- everything the agent added is left alone.
+
+### The check, and automatic restore
+
+`dream agents profile check` starts pi once on the profile
+(`pi --mode rpc --no-session --no-approve`, with API key variables left
+out) and asks it for its commands. pi exits with an error, before
+answering, when an extension fails to load (a syntax error, or an
+exception while it registers); an unreadable `settings.json` makes it
+start with defaults, which the check also counts as failing. When pi
+does not start even with an empty agent directory, the problem is pi,
+not the profile, and nothing is restored. Skills and prompt templates
+pi skipped (for example invalid front matter) are listed but do not fail
+the check.
+
+A commit that loads is marked good (`refs/dreamer/good/<commit>`). When
+the check fails, Dreamer restores the files of the newest good commit as
+a new commit ("restore COMMIT: pi did not load: ..."), so the broken
+change stays in the history, and checks again. `dream agents pi` runs
+this before every start, so a change that stops pi loading is undone at
+the next start.
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `dream agents pi [ARGS...]` | Update and check the profile (restoring it if needed), then run pi with `PI_CODING_AGENT_DIR`, `DREAMER_RPC_SOCKET`, `DREAMER_DREAM_BIN`, `agents.pi.model` as `--model`, and `ARGS` |
+| `dream agents profile init` | Lay out the profile, or bring Dreamer's files up to date |
+| `dream agents profile status [--json]` | Where it is, Dreamer's version of the files, the newest and last good commits, shipped files the agent changed, and uncommitted changes |
+| `dream agents profile log [-n N]` | The newest commits; `[loads]` marks good ones |
+| `dream agents profile diff [REV]` | A commit's change, or what is not committed yet |
+| `dream agents profile revert REV` | Undo one commit with a new one, then check. Refused, with nothing changed, when a later commit depends on it |
+| `dream agents profile commit [-m MSG] [--session ID] [--no-check]` | Commit every change, then check and mark it good when pi loads it |
+| `dream agents profile check [--no-restore]` | Update Dreamer's files, commit stray changes, check, and restore the last good commit on failure; `--no-restore` only reports |
+
+Each `profile` command takes `--dir DIR` for another profile directory.
+
 ## Not yet
 
 - The daily check for a newer pi release; `dream agents update` runs it
   by hand.
 - Starting sessions with the configured harness. The settings are parsed
-  and checked, and take effect for sessions started from them.
+  and checked, and take effect for sessions started from them;
+  `dream agents pi` starts pi with them by hand.
+- Collector tools follow the daemon's `collect.*` methods; their
+  parameters are passed through as the agent gives them.

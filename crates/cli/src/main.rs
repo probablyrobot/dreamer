@@ -46,6 +46,7 @@ mod harness;
 mod hosts;
 mod jobrun;
 mod mcp;
+mod profile;
 mod remote;
 mod service;
 
@@ -82,6 +83,7 @@ const USAGE: &str = "usage:
   dream mcp [--level observe|own|elsewhere] [--method M]... [--pane %N]... [--all-panes]
   dream approvals [--json] | allow ID [--pane] | deny ID
   dream agents status [--json] | update [--version X.Y.Z] | rollback   (the pi Dreamer installs)
+  dream agents pi [ARGS...] | dream agents profile init|status|log|diff|revert|commit|check   (its profile)
   dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
   dream agents providers [--json]
   dream agents ask [--provider claude|codex] [--pane %N]... [--all-panes] [--no-tools] [--timeout S] -- PROMPT
@@ -255,26 +257,20 @@ fn main() -> ExitCode {
 /// one marked. Swatches use 24-bit color only on a terminal.
 /// Agent skills that ship with Dreamer: instructions an agent (Claude
 /// Code, Codex) reads to help with Dreamer, so people need not edit its
-/// files by hand.
-const SKILLS: &[(&str, &str)] = &[
-    (
-        "dreamer-config",
-        include_str!("../skills/dreamer-config/SKILL.md"),
-    ),
-    (
-        "dreamer-apps",
-        include_str!("../skills/dreamer-apps/SKILL.md"),
-    ),
-];
+/// files by hand. The same files are part of Dreamer's pi profile.
+fn skills() -> Vec<(&'static str, &'static str)> {
+    providers::pi_profile::shared_skills()
+}
 
 fn skill_description(text: &str) -> &str {
     text.lines()
         .find_map(|l| l.strip_prefix("description: "))
+        .map(|d| d.trim_matches('"'))
         .unwrap_or_default()
 }
 
 fn skills_list() -> Result<(), String> {
-    for (name, text) in SKILLS {
+    for (name, text) in skills() {
         println!("{name}\n    {}", skill_description(text));
     }
     println!("\nInstall for your agents with `dream skills install` (Claude Code and Codex).");
@@ -282,8 +278,8 @@ fn skills_list() -> Result<(), String> {
 }
 
 fn skills_show(name: &str) -> Result<(), String> {
-    let (_, text) = SKILLS
-        .iter()
+    let (_, text) = skills()
+        .into_iter()
         .find(|(n, _)| *n == name)
         .ok_or_else(|| format!("no skill `{name}`; see `dream skills`"))?;
     print!("{text}");
@@ -314,7 +310,7 @@ fn skills_install(args: &[&str]) -> Result<(), String> {
         targets = vec![home.join(".claude/skills"), home.join(".codex/skills")];
     }
     for dir in targets {
-        for (name, text) in SKILLS {
+        for (name, text) in skills() {
             let d = dir.join(name);
             std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
             let f = d.join("SKILL.md");

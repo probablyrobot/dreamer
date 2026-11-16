@@ -11,11 +11,11 @@ pub const USAGE: &str = "usage:
   dream agents update [--harness pi] [--version X.Y.Z]
   dream agents rollback [--harness pi]";
 
-/// pi's providers whose login `status` reports: OpenAI (a ChatGPT
-/// subscription signs in here) and Anthropic.
-const LOGIN_PROVIDERS: [&str; 2] = ["openai", "anthropic"];
+/// pi's providers whose login `status` reports: OpenAI and OpenAI Codex
+/// (a ChatGPT subscription signs in to either) and Anthropic.
+const LOGIN_PROVIDERS: [&str; 3] = ["openai", "openai-codex", "anthropic"];
 
-fn agent_settings() -> Result<AgentSettings, String> {
+pub(crate) fn agent_settings() -> Result<AgentSettings, String> {
     workspace_config::load_settings()
         .map(|s| s.agents)
         .map_err(|e| e.to_string())
@@ -61,7 +61,7 @@ fn resolve(program: &str) -> Option<PathBuf> {
 }
 
 /// The pi program sessions would run, and where it comes from.
-fn pi_program(h: &Harness, install: &Install) -> (Option<PathBuf>, String) {
+pub(crate) fn pi_program(h: &Harness, install: &Install) -> (Option<PathBuf>, String) {
     match &h.command {
         Some(argv) => (resolve(&argv[0]), format!("agents.pi.command {argv:?}")),
         None => {
@@ -219,6 +219,19 @@ pub fn update(args: &[String]) -> Result<(), String> {
         );
     }
     println!("  {}", install.command().display());
+    let profile = providers::pi_profile::Profile::default_dir();
+    if !profile.exists() {
+        let s = profile.sync_base(crate::profile::VERSION)?;
+        println!(
+            "laid out Dreamer's pi profile in {}{}",
+            profile.dir.display(),
+            if s.commit.is_some() {
+                ""
+            } else {
+                " (no history: git is not installed)"
+            }
+        );
+    }
     if settings.harness("pi").is_some_and(|h| h.command.is_some()) {
         println!("note: agents.pi.command is set, so sessions run that command, not this install");
     }

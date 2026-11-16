@@ -132,11 +132,13 @@ pub fn merge(existing: &mut Value, ours: &Value) -> Result<usize, String> {
 
 /// `dream agents status|update|rollback|hooks|runs|providers|ask`.
 pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
-    let usage = "usage:\n  dream agents status [--harness pi] [--json]\n  dream agents update [--harness pi] [--version X.Y.Z]\n  dream agents rollback [--harness pi]\n  dream agents runs [--host NAME]... [--json]\n  dream agents hooks [--write SETTINGS_FILE]\n  dream agents providers [--json]\n  dream agents ask [options] -- PROMPT";
+    let usage = "usage:\n  dream agents status [--harness pi] [--json]\n  dream agents update [--harness pi] [--version X.Y.Z]\n  dream agents rollback [--harness pi]\n  dream agents pi [PI ARGUMENTS...]\n  dream agents profile init|status|log|diff|revert|commit|check ... (see `dream agents profile`)\n  dream agents runs [--host NAME]... [--json]\n  dream agents hooks [--write SETTINGS_FILE]\n  dream agents providers [--json]\n  dream agents ask [options] -- PROMPT";
     match args.first().map(String::as_str) {
         Some("status") => crate::harness::status(&args[1..]),
         Some("update") => crate::harness::update(&args[1..]),
         Some("rollback") => crate::harness::rollback(&args[1..]),
+        Some("profile") => crate::profile::run(&args[1..]),
+        Some("pi") => crate::profile::launch(&args[1..]),
         Some("providers") => crate::ask::providers(&args[1..]),
         Some("ask") => {
             let code = crate::ask::ask(d, &args[1..])?;

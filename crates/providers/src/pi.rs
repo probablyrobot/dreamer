@@ -29,7 +29,7 @@ pub const DOWNLOAD_URL: &str = "https://github.com/earendil-works/pi/releases/do
 
 /// Environment variables that would let pi bill an API account instead of
 /// the user's own login; they are not passed to the login check.
-const SCRUBBED: [&str; 4] = [
+pub const SCRUBBED: [&str; 4] = [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY",
@@ -452,7 +452,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 
 /// A pi command with the environment Dreamer runs it in: quiet about its
 /// own updates (Dreamer manages those) and with no automatic network use.
-fn pi_command(program: &Path) -> Command {
+pub(crate) fn pi_command(program: &Path) -> Command {
     let mut c = Command::new(program);
     c.env("PI_SKIP_VERSION_CHECK", "1").env("PI_OFFLINE", "1");
     c
