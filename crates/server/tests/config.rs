@@ -144,4 +144,36 @@ async fn a_theme_changed_in_the_file_reaches_every_view_and_a_broken_file_change
             "kept the theme in force"
         );
     }
+
+    // A theme of the user's own, from a file: in force once chosen.
+    let themes = s.root.join("config/themes");
+    std::fs::create_dir_all(&themes).expect("themes");
+    let mine = themes.join("mine");
+    let palette: String = (0..16)
+        .map(|i| format!("palette = {i}=#{:06x}\n", 0x101010 * (i % 15 + 1)))
+        .collect();
+    std::fs::write(
+        &mine,
+        format!("background = #102030\nforeground = #e0e0e0\n{palette}"),
+    )
+    .expect("theme");
+    s.write("terminal:\n  theme: mine\n");
+    wait_background(&feed, 0x102030, "after choosing a theme file").await;
+
+    // That file broken while in force: refused, and the last good one stays.
+    let refusals = s.log().matches("configuration not applied").count();
+    std::fs::write(&mine, "background = #ff0000\n").expect("broken theme");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while s.log().matches("configuration not applied").count() == refusals {
+        assert!(Instant::now() < deadline, "never refused:\n{}", s.log());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    if let Some(f) = feed.take() {
+        assert_eq!(
+            hex(f.colors.background),
+            0x102030,
+            "kept the last good theme"
+        );
+    }
 }
