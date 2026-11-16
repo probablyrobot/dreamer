@@ -53,10 +53,25 @@ async fn wait_for_text(conn: &Connection, pane: &str, text: &str) -> String {
         if shown.contains(text) {
             return shown;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "pane {pane} never showed `{text}`:\n{shown}"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            // What the pane runs now, to tell a respawn that never ran
+            // from output that never reached the grid (#236).
+            let state = conn
+                .execute(
+                    TmuxCommand::new("display-message")
+                        .flag("-p")
+                        .opt("-t", pane)
+                        .arg(
+                            "dead=#{pane_dead} status=#{pane_dead_status} pid=#{pane_pid} \
+                     command=#{pane_current_command} start=#{pane_start_command} \
+                     history=#{history_size} cursor=#{cursor_x},#{cursor_y}",
+                        ),
+                )
+                .await
+                .map(|r| lines(&r[0]).join(" "))
+                .unwrap_or_else(|e| format!("display-message failed: {e}"));
+            panic!("pane {pane} never showed `{text}`: {state}\n{shown}");
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
