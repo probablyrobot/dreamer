@@ -35,7 +35,7 @@ by the `matrix` gate stage's fixtures (`crates/terminal-render/fixtures`).
 | Cursor shapes and blink | DECSCUSR `CSI N SP q` | Yes | Yes (block, bar, underline, hidden) | `cursor_shapes_the_alternate_screen_and_hyperlinks_reach_the_replica`; `cursor-*.vt` |
 | Hyperlinks | OSC 8 | Yes: hit-tested over their cells | Not pixel-tested | Same test; `osc8_links_are_hit_tested_over_their_cells_and_wraps` |
 | Alternate screen | `CSI ? 1049 h` | Yes: no history while it is active | Yes | Same test |
-| A program's own default colors | OSC 10, OSC 11 (set) | Yes, once the pane is attached: kept across theme changes. Not yet restored when set before the daemon attached (an attach starts from tmux's capture) | Yes | `a_program_s_own_default_colors_reach_the_replica`; the gate's theme-switch screenshots |
+| A program's own default colors | OSC 10, OSC 11 (set) | Yes: kept across theme changes, and restored by an attach from tmux's `pane_fg`/`pane_bg` unless the pane's `window-style` sets that color | Yes | `a_program_s_own_default_colors_reach_the_replica`, `colors_a_program_set_while_cold_survive_the_attach`; the gate's theme-switch screenshots |
 | Window title, working directory | OSC 2, OSC 7 | Yes: pane state in every view (OSC 7 as the URI written) | The window title | `titles_and_working_directories_reach_every_view` |
 | Synchronized output | `CSI ? 2026 h`/`l` | Held until the end, or shown after the limit | Yes | `a_synchronized_output_hold_is_shown_after_the_limit` |
 | Bell | BEL | A live effect to current viewers, never replayed | A brief flash | `a_bell_reaches_each_live_subscriber_once_and_is_never_replayed` |

@@ -35,9 +35,10 @@ const STATE_FORMAT: &str = "#{pane_width}|#{pane_height}|#{history_size}|#{alter
 #{scroll_region_upper}|#{scroll_region_lower}|#{insert_flag}|#{keypad_cursor_flag}|\
 #{keypad_flag}|#{wrap_flag}|#{origin_flag}|#{mouse_standard_flag}|#{mouse_button_flag}|\
 #{mouse_any_flag}|#{mouse_sgr_flag}|#{bracket_paste_flag}|#{cursor_shape}|\
-#{cursor_blinking}|#{pane_tabs}|#{pane_output_generation}|#{history_limit}";
+#{cursor_blinking}|#{pane_tabs}|#{pane_output_generation}|#{history_limit}|\
+#{pane_fg}|#{pane_bg}|#{window-style}|#{window-active-style}";
 
-const STATE_FIELDS: usize = 26;
+const STATE_FIELDS: usize = 30;
 
 /// Pane state reported by tmux at capture time.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +68,23 @@ pub struct PaneState {
     pub output_generation: u64,
     /// The pane's scrollback limit in lines (`history-limit`).
     pub history_limit: u32,
+    /// Default colors the program set itself (OSC 10, OSC 11), as
+    /// `#rrggbb`. tmux reports them through `pane_fg`/`pane_bg`, which also
+    /// reflect the pane's `window-style`; a color the style sets is the
+    /// user's tmux styling, not the program's, and is left out.
+    pub own_fg: Option<String>,
+    pub own_bg: Option<String>,
+}
+
+/// A program's own default color: a hex value no window style explains.
+fn own_color(value: &str, key: &str, styles: &[&str]) -> Option<String> {
+    let hex = value.len() == 7
+        && value.starts_with('#')
+        && value[1..].chars().all(|c| c.is_ascii_hexdigit());
+    let styled = styles
+        .iter()
+        .any(|s| s.split(',').any(|part| part.trim().starts_with(key)));
+    (hex && !styled).then(|| value.to_owned())
 }
 
 impl PaneState {
@@ -125,6 +143,8 @@ impl PaneState {
             tabs,
             output_generation: n(24)?,
             history_limit: u32::try_from(n(25)?).unwrap_or(u32::MAX),
+            own_fg: own_color(f[26], "fg=", &[f[28], f[29]]),
+            own_bg: own_color(f[27], "bg=", &[f[28], f[29]]),
         })
     }
 
@@ -440,6 +460,12 @@ pub use terminal_ghostty::core::family::CONTINUATION_MAX_BYTES;
 /// fresh engine of the pane's size.
 pub fn restore_bytes(state: &PaneState, captures: &Captures) -> Vec<u8> {
     let mut out = Vec::new();
+    // The program's own default colors, which the capture does not carry.
+    for (n, color) in [(10, &state.own_fg), (11, &state.own_bg)] {
+        if let Some(c) = color {
+            out.extend_from_slice(format!("\x1b]{n};{c}\x07").as_bytes());
+        }
+    }
     // Tab stops first: captured lines can contain literal tabs, which tmux
     // keeps in its grid and which must land on the same stops.
     if let Some(tabs) = &state.tabs {
@@ -531,7 +557,8 @@ mod tests {
     fn state_line(overrides: &[(usize, &str)]) -> String {
         let mut f: Vec<String> = [
             "20", "4", "0", "0", "0", "0", "3", "1", "1", "0", "3", "0", "0", "0", "1", "0", "0",
-            "0", "0", "0", "0", "block", "0", "8,16", "42", "2000",
+            "0", "0", "0", "0", "block", "0", "8,16", "42", "2000", "default", "default",
+            "default", "default",
         ]
         .iter()
         .map(|s| (*s).to_owned())
@@ -553,6 +580,31 @@ mod tests {
         assert_eq!(s.tabs, Some(vec![4, 9]));
         assert!(PaneState::parse("1|2|3").is_err());
         assert!(PaneState::parse(&state_line(&[(6, "x")])).is_err());
+    }
+
+    #[test]
+    fn a_program_s_own_colors_are_restored_but_not_the_window_style() {
+        let s = PaneState::parse(&state_line(&[(26, "#e0d0c0"), (27, "#402020")])).expect("parse");
+        assert_eq!(s.own_fg.as_deref(), Some("#e0d0c0"));
+        assert_eq!(s.own_bg.as_deref(), Some("#402020"));
+        let mut e = Engine::new(EngineConfig::new(s.size())).expect("engine");
+        e.feed(&restore_bytes(&s, &Captures::default()))
+            .expect("feed");
+        let bg = e.frame().expect("frame").colors.background;
+        assert_eq!((bg.r, bg.g, bg.b), (0x40, 0x20, 0x20));
+        // The window style sets the background: tmux's styling, not the
+        // program's. The foreground still is the program's.
+        let s = PaneState::parse(&state_line(&[
+            (26, "#e0d0c0"),
+            (27, "#402020"),
+            (28, "bg=#402020"),
+        ]))
+        .expect("parse");
+        assert_eq!(s.own_bg, None);
+        assert_eq!(s.own_fg.as_deref(), Some("#e0d0c0"));
+        // Named colors come from styles, never from OSC 10/11.
+        let s = PaneState::parse(&state_line(&[(27, "colour52")])).expect("parse");
+        assert_eq!(s.own_bg, None);
     }
 
     #[test]

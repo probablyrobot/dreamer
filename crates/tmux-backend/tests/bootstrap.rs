@@ -401,3 +401,20 @@ fn failed_capture_resumes_the_pane() {
     let mut b = bootstrap(&mut client, pane);
     assert_matches_tmux(&server, "main", &mut b.engine);
 }
+
+#[test]
+fn a_program_s_own_default_colors_are_restored() {
+    let script = "printf '\\033]11;#402020\\007\\033]10;#e0d0c0\\007colors set'; sleep 60";
+    let (server, mut client, pane) = start(30, 6, script);
+    wait_for("the color in tmux", || {
+        server
+            .format("main", "#{pane_bg}")
+            .unwrap_or_default()
+            .trim()
+            == "#402020"
+    });
+    let mut b = bootstrap(&mut client, pane);
+    assert_eq!(b.state.own_bg.as_deref(), Some("#402020"), "{:?}", b.state);
+    let bg = b.engine.frame().expect("frame").colors.background;
+    assert_eq!((bg.r, bg.g, bg.b), (0x40, 0x20, 0x20));
+}
