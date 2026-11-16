@@ -162,7 +162,18 @@ pub struct MirrorHost {
     retention: Retention,
     host_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     cold: ColdSet,
+    /// The control connection, for tmux's paste buffers.
+    conn: Connection,
+    /// Bumped with the buffer's name whenever tmux reports a paste buffer
+    /// changed (a copy in tmux, `set-buffer`, or Dreamer's own write).
+    buffers: watch::Receiver<(u64, String)>,
+    /// What Dreamer itself last wrote to a buffer, so its own write is not
+    /// reported back as a change from tmux.
+    written: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
+
+/// The most of a paste buffer read or written, in bytes.
+pub const BUFFER_MAX: usize = 4 << 20;
 
 /// How long a request waits for a Cold pane to be attached again.
 const COLD_WAKE: Duration = Duration::from_secs(5);
@@ -197,7 +208,9 @@ impl MirrorHost {
             .collect::<std::io::Result<Vec<_>>>()?;
         let (control, control_rx) = mpsc::channel(256);
         let (changes_tx, changes) = watch::channel(0u64);
+        let (buffers_tx, buffers) = watch::channel((0u64, String::new()));
         let cold = ColdSet::default();
+        let tmux = conn.clone();
         router::spawn(
             router::Router::new(
                 conn,
@@ -208,7 +221,8 @@ impl MirrorHost {
                 epoch,
                 changes_tx,
             )
-            .with_cold(cold.clone()),
+            .with_cold(cold.clone())
+            .with_buffers(buffers_tx),
         )
         .await;
         Ok((
@@ -219,9 +233,66 @@ impl MirrorHost {
                 retention: config.retention,
                 host_bytes,
                 cold,
+                conn: tmux,
+                buffers,
+                written: std::sync::Arc::default(),
             },
             changes,
         ))
+    }
+
+    /// Follow tmux's paste buffers: the receiver moves whenever one changes.
+    pub fn buffers(&self) -> watch::Receiver<(u64, String)> {
+        self.buffers.clone()
+    }
+
+    /// A paste buffer's text (`name`, or the newest), at most
+    /// [`BUFFER_MAX`] bytes; `None` when there is no such buffer.
+    pub async fn buffer_get(&self, name: Option<&str>) -> Option<String> {
+        let mut cmd = tmux_backend::TmuxCommand::new("show-buffer");
+        if let Some(n) = name {
+            cmd = cmd.opt("-b", n);
+        }
+        let r = self.conn.execute(cmd).await.ok()?;
+        let lines: Vec<String> = r
+            .first()?
+            .body
+            .iter()
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .collect();
+        let mut text = lines.join("\n");
+        if text.len() > BUFFER_MAX {
+            let mut cut = BUFFER_MAX;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.truncate(cut);
+        }
+        Some(text)
+    }
+
+    /// Make `text` tmux's newest paste buffer, so tmux's own paste (and
+    /// other tmux clients) see it. Dreamer's own write is not reported
+    /// back as a change ([`MirrorHost::is_own_buffer`]).
+    pub async fn buffer_set(&self, text: &str) -> Result<(), String> {
+        if text.is_empty() || text.len() > BUFFER_MAX {
+            return Err(format!("a paste buffer holds 1 to {BUFFER_MAX} bytes"));
+        }
+        if let Ok(mut w) = self.written.lock() {
+            *w = Some(text.to_owned());
+        }
+        self.conn
+            .execute(tmux_backend::TmuxCommand::new("set-buffer").arg(text))
+            .await
+            .map(drop)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Whether `text` is what Dreamer itself last wrote to a buffer.
+    pub fn is_own_buffer(&self, text: &str) -> bool {
+        self.written
+            .lock()
+            .is_ok_and(|w| w.as_deref() == Some(text))
     }
 
     pub fn epoch(&self) -> ConnectionEpoch {

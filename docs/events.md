@@ -16,6 +16,7 @@ output; read that with `terminal.read` or `terminal.subscribe`.
 | `scripts.failed` | A script instance was terminated (a budget overrun, or its connection ended) | `subject`: the script; `state`: why |
 | `filters.matched` | A filter with `event` matched | `subject`: the filter; `pane`; `state`: the line (at most 512 bytes) |
 | `filters.tripped` | A filter's circuit breaker stopped it | `subject`: the filter; `state`: why |
+| `clipboard.tmux_buffer` | A tmux paste buffer changed, other than by Dreamer's own write | `subject` is the buffer's name; read its text with `clipboard.read_tmux_buffer`. The text is never in the event |
 | `decorations.changed` | A pane's decorations were added or dropped | `pane`; list them with `decorations.list` |
 | `jobs.state` | A job started, or ended while this daemon ran | `subject`: the job id; `state`: `running`, `succeeded`, `failed`, `killed`, or `lost`; `pane` |
 | `config.changed` | The configuration directory changed | `state`: `applied` (`subject`: the terminal theme in force) or `refused` (`subject`: why; the settings in force are kept) |

@@ -196,6 +196,7 @@ impl State {
             host.sync(tracker.inventory().server.clone(), mirrored_panes(&tracker))
                 .await;
             *self.mirrors.write().await = Some(host.clone());
+            tokio::spawn(follow_buffers(Arc::downgrade(self), host.clone()));
             tokio::spawn(reconcile(Arc::downgrade(self), host, changes));
             *guard = Some(Endpoint {
                 name: cfg.name.clone(),
@@ -204,6 +205,25 @@ impl State {
             });
         }
         Ok(guard)
+    }
+}
+
+/// Report each change to tmux's paste buffers as a `clipboard.tmux_buffer`
+/// event, except Dreamer's own writes, for as long as the host lives.
+async fn follow_buffers(state: std::sync::Weak<State>, host: mirror::MirrorHost) {
+    let mut rx = host.buffers();
+    while rx.changed().await.is_ok() {
+        let name = rx.borrow_and_update().1.clone();
+        let Some(state) = state.upgrade() else {
+            return;
+        };
+        let own = host
+            .buffer_get(Some(&name))
+            .await
+            .is_some_and(|text| host.is_own_buffer(&text));
+        if !own {
+            state.events.tmux_buffer(&name);
+        }
     }
 }
 
@@ -457,6 +477,28 @@ impl api::Service for DaemonService {
                      Start it again with `dream ensure-running`."
                     .into(),
         })
+    }
+
+    async fn clipboard_read_tmux_buffer(
+        &self,
+        p: api::TmuxBufferRead,
+    ) -> Result<api::TmuxBuffer, RpcError> {
+        let host = self.mirror_host(p.endpoint.as_deref()).await?;
+        Ok(match host.buffer_get(p.name.as_deref()).await {
+            Some(text) => api::TmuxBuffer { found: true, text },
+            None => api::TmuxBuffer::default(),
+        })
+    }
+
+    async fn clipboard_write_tmux_buffer(
+        &self,
+        p: api::TmuxBufferWrite,
+    ) -> Result<api::Empty, RpcError> {
+        let host = self.mirror_host(p.endpoint.as_deref()).await?;
+        host.buffer_set(&p.text)
+            .await
+            .map(|()| api::Empty {})
+            .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))
     }
 
     async fn tmux_topology(&self, p: api::TopologyParams) -> Result<api::Topology, RpcError> {

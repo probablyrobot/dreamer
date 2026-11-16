@@ -26,6 +26,10 @@ pub(crate) struct Live {
     pub theme: Theme,
     pub links: LinkSettings,
     pub clipboard: ClipboardWrite,
+    /// tmux buffers and the clipboard, copy on select, middle click.
+    pub clipboard_tmux: workspace_config::ClipboardTmux,
+    pub copy_on_select: bool,
+    pub middle_click: workspace_config::MiddleClick,
     pub fallback: Vec<String>,
     /// The scheme in force, and every theme there is to choose from.
     pub scheme: &'static Scheme,
@@ -91,6 +95,9 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
         theme: crate::theme::for_scheme(settings.scheme()),
         links: settings.links.clone(),
         clipboard: settings.clipboard.write,
+        clipboard_tmux: settings.clipboard.tmux,
+        copy_on_select: settings.clipboard.copy_on_select,
+        middle_click: settings.clipboard.middle_click,
         fallback: settings.fallback.launch.clone(),
         scheme: settings.scheme(),
         themes,

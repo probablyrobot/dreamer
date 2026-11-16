@@ -112,6 +112,28 @@ impl AppPanel {
         let _ = self.inputs.send(Input::Key(name.to_owned()));
     }
 
+    /// Copy what the panel has selected: the selected row (a table's
+    /// columns separated by tabs), the focused form field, or an agent
+    /// view's latest answer.
+    fn copy(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.shown.as_ref().and_then(copy_text) {
+            crate::to_tmux_buffer(&text);
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Type the clipboard's text into the focused field or prompt, one
+    /// character at a time as the model takes keys; line breaks become
+    /// spaces, other control characters are dropped.
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+            return;
+        };
+        for k in paste_keys(&text) {
+            self.key(&k);
+        }
+    }
+
     fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(name) = key_name(&ev.keystroke) {
             self.key(&name);
@@ -164,6 +186,51 @@ fn key_name(k: &gpui::Keystroke) -> Option<String> {
     }
 }
 
+/// The text Copy takes from a panel's model, if any.
+fn copy_text(app: &App) -> Option<String> {
+    let v = &app.manifest.view;
+    match v.kind {
+        ViewKind::Form => app.form.get(app.focus).cloned(),
+        ViewKind::Agent => app
+            .agent
+            .transcript
+            .iter()
+            .rev()
+            .find(|e| e.who == app_model::Said::Agent)
+            .map(|e| e.text.clone()),
+        ViewKind::Table if !v.columns.is_empty() => {
+            let row = app.rows.get(app.selected)?;
+            Some(
+                v.columns
+                    .iter()
+                    .map(|c| field(row, c).map(text).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("\t"),
+            )
+        }
+        _ => {
+            let row = app.rows.get(app.selected)?;
+            Some(match &v.field {
+                Some(p) => field(row, p).map(text).unwrap_or_default(),
+                None => text(row),
+            })
+        }
+    }
+    .filter(|t| !t.is_empty())
+}
+
+/// Pasted text as the keys the model takes: one per character, line
+/// breaks as spaces, other control characters dropped.
+fn paste_keys(text: &str) -> Vec<String> {
+    text.chars()
+        .filter_map(|ch| match ch {
+            '\r' | '\n' | '\t' => Some(" ".to_owned()),
+            c if c.is_control() => None,
+            c => Some(c.to_string()),
+        })
+        .collect()
+}
+
 /// The rows shown: up to `MAX_ROWS`, around the selection (or the newest,
 /// for a log), with the index of the first.
 fn window(app: &App) -> (usize, &[serde_json::Value]) {
@@ -190,6 +257,8 @@ impl Render for AppPanel {
         let root = div()
             .id("app-panel")
             .track_focus(&self.focus)
+            .on_action(cx.listener(|p, _: &crate::keymap::Copy, _, cx| p.copy(cx)))
+            .on_action(cx.listener(|p, _: &crate::keymap::Paste, _, cx| p.paste(cx)))
             .on_key_down(cx.listener(Self::key_down))
             .on_click(cx.listener(|p, _, window, cx| {
                 window.focus(&p.focus, cx);
@@ -483,6 +552,14 @@ mod tests {
 
     fn keystroke(s: &'static str) -> gpui::Keystroke {
         gpui::Keystroke::parse(s).expect("keystroke")
+    }
+
+    #[test]
+    fn pasted_text_becomes_one_key_per_character() {
+        assert_eq!(
+            paste_keys("a b\r\nc\u{7}é"),
+            ["a", " ", "b", " ", " ", "c", "é"]
+        );
     }
 
     #[test]

@@ -109,6 +109,8 @@ pub(crate) struct Router {
     /// When to hand freed memory back to the system: shortly after the
     /// last pane went Cold, once for a whole batch of demotions.
     release_at: Option<tokio::time::Instant>,
+    /// tmux's paste-buffer changes, for the host's followers.
+    buffers: Option<watch::Sender<(u64, String)>>,
 }
 
 /// How long after the last demotion freed memory is released.
@@ -149,12 +151,19 @@ impl Router {
             attaching: std::collections::HashSet::new(),
             queued: std::collections::VecDeque::new(),
             release_at: None,
+            buffers: None,
         }
     }
 
     /// Share the Cold panes with the host.
     pub(crate) fn with_cold(mut self, cold: crate::ColdSet) -> Router {
         self.cold = cold;
+        self
+    }
+
+    /// Report paste-buffer changes on `tx`.
+    pub(crate) fn with_buffers(mut self, tx: watch::Sender<(u64, String)>) -> Router {
+        self.buffers = Some(tx);
         self
     }
 
@@ -632,6 +641,14 @@ impl Router {
             }
             Notification::SubscriptionChanged { name, .. } if name == PID_SUBSCRIPTION => {
                 self.changed()
+            }
+            Notification::PasteBufferChanged { name } => {
+                if let Some(tx) = &self.buffers {
+                    tx.send_modify(|(n, last)| {
+                        *n += 1;
+                        *last = name;
+                    });
+                }
             }
             _ => {}
         }

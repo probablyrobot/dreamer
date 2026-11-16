@@ -212,9 +212,50 @@ pub enum ClipboardWrite {
     Deny,
 }
 
+/// How tmux's paste buffers and the system clipboard follow each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardTmux {
+    /// Both ways (default): a copy in tmux reaches the clipboard (under
+    /// `write`), and a copy in Dreamer becomes tmux's newest buffer.
+    #[default]
+    Sync,
+    /// Only tmux's copies reach the clipboard.
+    FromTmux,
+    /// Only Dreamer's copies become tmux buffers.
+    ToTmux,
+    /// Neither.
+    Off,
+}
+
+impl ClipboardTmux {
+    pub fn from_tmux(self) -> bool {
+        matches!(self, ClipboardTmux::Sync | ClipboardTmux::FromTmux)
+    }
+    pub fn to_tmux(self) -> bool {
+        matches!(self, ClipboardTmux::Sync | ClipboardTmux::ToTmux)
+    }
+}
+
+/// What the middle mouse button does in a terminal pane that does not
+/// track the mouse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MiddleClick {
+    /// Paste tmux's newest buffer, as tmux does (default).
+    #[default]
+    Paste,
+    Off,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ClipboardSettings {
     pub write: ClipboardWrite,
+    pub tmux: ClipboardTmux,
+    /// A finished mouse selection also goes to the system clipboard, not
+    /// only to tmux's buffer.
+    pub copy_on_select: bool,
+    pub middle_click: MiddleClick,
 }
 
 /// Which hyperlink schemes a modifier-click may open.
@@ -373,6 +414,9 @@ struct FallbackFile {
 #[serde(deny_unknown_fields)]
 struct ClipboardFile {
     write: Option<ClipboardWrite>,
+    tmux: Option<ClipboardTmux>,
+    copy_on_select: Option<bool>,
+    middle_click: Option<MiddleClick>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -474,6 +518,15 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     }
     if let Some(w) = file.clipboard.write {
         s.clipboard.write = w;
+    }
+    if let Some(t) = file.clipboard.tmux {
+        s.clipboard.tmux = t;
+    }
+    if let Some(c) = file.clipboard.copy_on_select {
+        s.clipboard.copy_on_select = c;
+    }
+    if let Some(m) = file.clipboard.middle_click {
+        s.clipboard.middle_click = m;
     }
     if let Some(a) = file.appearance {
         s.appearance = a;
@@ -789,6 +842,17 @@ mod tests {
     #[test]
     fn clipboard_writes_default_to_the_focused_window() {
         assert_eq!(Settings::default().clipboard.write, ClipboardWrite::Focused);
+        assert_eq!(Settings::default().clipboard.tmux, ClipboardTmux::Sync);
+        let c = parse_settings(
+            "clipboard:\n  tmux: from_tmux\n  copy_on_select: true\n  middle_click: off\n",
+            None,
+        )
+        .expect("clipboard")
+        .clipboard;
+        assert!(c.tmux.from_tmux() && !c.tmux.to_tmux());
+        assert!(c.copy_on_select);
+        assert_eq!(c.middle_click, MiddleClick::Off);
+        assert!(parse_settings("clipboard:\n  tmux: sometimes\n", None).is_err());
         let s = parse_settings("clipboard: { write: deny }", None).expect("deny");
         assert_eq!(s.clipboard.write, ClipboardWrite::Deny);
         assert!(parse_settings("clipboard: { write: sometimes }", None).is_err());
