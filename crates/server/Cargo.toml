@@ -19,6 +19,7 @@ memory = { path = "../memory" }
 procreg = { path = "../procreg" }
 script-runtime = { path = "../script-runtime" }
 serde_json = "1.0.154"
+view-tree = { path = "../view-tree" }
 domain = { path = "../domain" }
 mirror = { path = "../mirror" }
 platform = { path = "../platform" }

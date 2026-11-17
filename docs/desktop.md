@@ -331,11 +331,20 @@ pane and its layout. A plain tmux client attached to the same session
 sees the app's text interface in that pane.
 
 The desktop runs none of the package. Each app pane's view has a thread
-of its own that reads the model the pane's host publishes through the
-daemon ([topology.md](topology.md#app-panes)), and sends the keys typed
+of its own that follows the view tree the pane's host publishes through
+the daemon, the whole tree once and then only what changed
+([topology.md](topology.md#app-panes)), and sends the keys typed
 while the pane has focus (click it) back to the host, where they act
 exactly as keys typed in the pane. Cmd and Alt shortcuts stay with the
 desktop.
+
+The desktop draws the tree's layout ([termapp.md](termapp.md#view-trees))
+natively: splits by their sizes with a divider, tabs with the active
+page, titled nodes in a frame that is highlighted while the node has
+the focus. Each table, list, and scroll node keeps its scroll position
+by its key when the tree changes, and a table or list scrolls to its
+selection only when the selection moves. A host that publishes no tree
+(an older one) is drawn from its model as before.
 
 When the host stops (the pane stays open, for example with
 `remain-on-exit`), or the daemon cannot be reached, the pane keeps

@@ -1,141 +1,283 @@
-//! Drawing an app's model with Ratatui, as a terminal app in a pane.
+//! Drawing an app with Ratatui, as a terminal app in a pane: its view
+//! tree (every app but an agentic pane), or an agentic pane's prompt and
+//! transcript.
 
-use app_model::manifest::{FieldKind, ViewKind, field};
-use app_model::{App, text};
+use std::collections::HashMap;
+
+use app_model::App;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Direction as Axis, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{
-    Block, Gauge, List, ListItem, ListState, Paragraph, Row, Sparkline, Table, TableState, Wrap,
+    Block, Gauge, List, ListItem, ListState, Paragraph, Row, Sparkline, Table, TableState, Tabs,
+    Wrap,
 };
-use serde_json::Value;
+use view_tree::{Direction, Frame as Tree, Kind, Node};
 
+/// What the terminal keeps per node key between draws, so an update to
+/// the tree does not lose it: how far each table, list, and scroll node
+/// is scrolled.
+#[derive(Debug, Default)]
+pub struct ViewState {
+    offsets: HashMap<String, usize>,
+}
+
+/// Draw `app` once, with nothing kept from an earlier draw.
 pub fn draw(app: &App, f: &mut Frame) {
+    draw_with(app, &mut ViewState::default(), f);
+}
+
+/// Draw `app`, keeping scroll positions in `state` across draws.
+pub fn draw_with(app: &App, state: &mut ViewState, f: &mut Frame) {
+    match app.frame() {
+        Some(tree) => draw_tree(&tree, state, f),
+        None => {
+            let [main, status] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
+            let title = if app.version > 1 {
+                format!(" {} (reloaded {}) ", app.manifest.title, app.version - 1)
+            } else {
+                format!(" {} ", app.manifest.title)
+            };
+            draw_agent(app, f, main, Block::bordered().title(title));
+            f.render_widget(Paragraph::new(Line::from(app.status_text())), status);
+        }
+    }
+}
+
+/// Draw a view tree in the whole frame: its title around the tree, and
+/// its status line below.
+pub fn draw_tree(tree: &Tree, state: &mut ViewState, f: &mut Frame) {
     let [main, status] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
-    let title = if app.version > 1 {
-        format!(" {} (reloaded {}) ", app.manifest.title, app.version - 1)
-    } else {
-        format!(" {} ", app.manifest.title)
+    let block = Block::bordered().title(format!(" {} ", tree.title));
+    let inner = block.inner(main);
+    f.render_widget(block, main);
+    draw_node(&tree.root, tree, state, f, inner);
+    f.render_widget(Paragraph::new(Line::from(tree.status.clone())), status);
+}
+
+fn highlight() -> Style {
+    Style::default().add_modifier(Modifier::REVERSED)
+}
+
+/// The rows a node wants, to share a column or a scroll.
+fn natural(n: &Node) -> u16 {
+    let border = if n.title.is_some() { 2 } else { 0 };
+    let count = |k: usize| u16::try_from(k).unwrap_or(u16::MAX);
+    let own = match &n.kind {
+        Kind::Column | Kind::Scroll => n.children.iter().map(natural).fold(0, u16::saturating_add),
+        Kind::Row | Kind::Split { .. } => n.children.iter().map(natural).max().unwrap_or(0),
+        Kind::Tabs { .. } => 1 + n.shown().iter().map(natural).max().unwrap_or(0),
+        Kind::Table { .. } => count(n.children.len()).saturating_add(1),
+        Kind::List { .. } | Kind::Log => count(n.children.len()),
+        Kind::Item { .. } => 1,
+        Kind::Text { text } => count(text.lines().count().max(1)),
+        Kind::Gauge { .. } => 1,
+        Kind::Chart { .. } => 3,
+        Kind::Form { fields, .. } => count(fields.len()),
     };
-    let block = Block::bordered().title(title);
-    let v = &app.manifest.view;
-    let highlight = Style::default().add_modifier(Modifier::REVERSED);
-    match v.kind {
-        ViewKind::Agent => draw_agent(app, f, main, block),
-        ViewKind::Table => {
-            let header =
-                Row::new(v.columns.clone()).style(Style::default().add_modifier(Modifier::BOLD));
-            let rows = app.rows.iter().map(|r| {
-                Row::new(
-                    v.columns
-                        .iter()
-                        .map(|c| field(r, c).map(text).unwrap_or_default())
-                        .collect::<Vec<_>>(),
+    own.saturating_add(border)
+}
+
+/// How a child shares a column: text and gauges take what they need, the
+/// rest share what is left.
+fn share(n: &Node) -> Constraint {
+    match n.kind {
+        Kind::Text { .. } | Kind::Gauge { .. } => Constraint::Length(natural(n)),
+        _ => Constraint::Fill(1),
+    }
+}
+
+fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: Rect) {
+    let focused = tree.focus.as_deref() == Some(n.key.as_str());
+    let area = match &n.title {
+        Some(t) => {
+            let mut block = Block::bordered().title(format!(" {t} "));
+            if focused {
+                block = block.border_style(Style::default().add_modifier(Modifier::BOLD));
+            }
+            let inner = block.inner(area);
+            f.render_widget(block, area);
+            inner
+        }
+        None => area,
+    };
+    match &n.kind {
+        Kind::Column | Kind::Row => {
+            let (axis, constraints): (Axis, Vec<Constraint>) = if n.kind == Kind::Column {
+                (Axis::Vertical, n.children.iter().map(share).collect())
+            } else {
+                (
+                    Axis::Horizontal,
+                    vec![Constraint::Fill(1); n.children.len()],
                 )
-            });
-            let widths = vec![Constraint::Fill(1); v.columns.len()];
+            };
+            let areas = Layout::default()
+                .direction(axis)
+                .constraints(constraints)
+                .split(area);
+            for (c, a) in n.children.iter().zip(areas.iter()) {
+                draw_node(c, tree, state, f, *a);
+            }
+        }
+        Kind::Split { direction, sizes } => {
+            let total: u32 = if sizes.len() == n.children.len() {
+                sizes.iter().map(|s| u32::from(*s)).sum()
+            } else {
+                0
+            };
+            let constraints: Vec<Constraint> = if total == 0 {
+                vec![Constraint::Fill(1); n.children.len()]
+            } else {
+                sizes
+                    .iter()
+                    .map(|s| Constraint::Ratio(u32::from(*s), total))
+                    .collect()
+            };
+            let axis = match direction {
+                Direction::Row => Axis::Horizontal,
+                Direction::Column => Axis::Vertical,
+            };
+            let areas = Layout::default()
+                .direction(axis)
+                .constraints(constraints)
+                .split(area);
+            for (c, a) in n.children.iter().zip(areas.iter()) {
+                draw_node(c, tree, state, f, *a);
+            }
+        }
+        Kind::Tabs { active } => {
+            let [bar, body] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+            let titles: Vec<String> = n
+                .children
+                .iter()
+                .map(|c| c.title.clone().unwrap_or_else(|| c.key.clone()))
+                .collect();
+            f.render_widget(
+                Tabs::new(titles)
+                    .select(*active)
+                    .highlight_style(highlight()),
+                bar,
+            );
+            if let Some(page) = n.shown().first() {
+                // The page's own title is its tab's name.
+                let mut page = page.clone();
+                page.title = None;
+                draw_node(&page, tree, state, f, body);
+            }
+        }
+        Kind::Scroll => {
+            // Scrolled by whole children, to keep the focused one in view.
+            let heights: Vec<u16> = n.children.iter().map(natural).collect();
+            let mut first = state.offsets.get(&n.key).copied().unwrap_or(0);
+            first = first.min(n.children.len().saturating_sub(1));
+            let holding = tree
+                .focus
+                .as_deref()
+                .and_then(|k| n.children.iter().position(|c| c.find(k).is_some()));
+            if let Some(i) = holding {
+                if i < first {
+                    first = i;
+                }
+                while first < i
+                    && heights[first..=i]
+                        .iter()
+                        .map(|h| u32::from(*h))
+                        .sum::<u32>()
+                        > u32::from(area.height)
+                {
+                    first += 1;
+                }
+            }
+            state.offsets.insert(n.key.clone(), first);
+            let mut y = area.y;
+            let bottom = area.y.saturating_add(area.height);
+            for (c, h) in n.children.iter().zip(&heights).skip(first) {
+                if y >= bottom {
+                    break;
+                }
+                let h = (*h).min(bottom - y);
+                draw_node(c, tree, state, f, Rect::new(area.x, y, area.width, h));
+                y += h;
+            }
+        }
+        Kind::Table { columns, .. } => {
+            let header =
+                Row::new(columns.clone()).style(Style::default().add_modifier(Modifier::BOLD));
+            let rows = n.children.iter().map(|r| Row::new(r.cells().to_vec()));
+            let widths = vec![Constraint::Fill(1); columns.len()];
             let table = Table::new(rows, widths)
                 .header(header)
-                .block(block)
-                .row_highlight_style(highlight);
-            let mut state = TableState::default().with_selected(Some(app.selected));
-            f.render_stateful_widget(table, main, &mut state);
+                .row_highlight_style(highlight());
+            let mut s = TableState::default()
+                .with_offset(state.offsets.get(&n.key).copied().unwrap_or(0))
+                .with_selected(n.selected_index());
+            f.render_stateful_widget(table, area, &mut s);
+            state.offsets.insert(n.key.clone(), s.offset());
         }
-        ViewKind::List | ViewKind::Log => {
-            let items: Vec<ListItem> = app
-                .rows
+        Kind::List { .. } | Kind::Log => {
+            let items: Vec<ListItem> = n
+                .children
                 .iter()
-                .map(|r| {
-                    ListItem::new(match &v.field {
-                        Some(p) => field(r, p).map(text).unwrap_or_default(),
-                        None => text(r),
-                    })
-                })
+                .map(|r| ListItem::new(r.cells().first().cloned().unwrap_or_default()))
                 .collect();
-            let list = List::new(items).block(block).highlight_style(highlight);
-            let selected = if v.kind == ViewKind::Log {
+            let list = List::new(items).highlight_style(highlight());
+            let selected = if n.kind == Kind::Log {
                 // A log follows its newest line.
-                app.rows.len().checked_sub(1)
+                n.children.len().checked_sub(1)
             } else {
-                Some(app.selected)
+                n.selected_index()
             };
-            let mut state = ListState::default().with_selected(selected);
-            f.render_stateful_widget(list, main, &mut state);
+            let mut s = ListState::default()
+                .with_offset(state.offsets.get(&n.key).copied().unwrap_or(0))
+                .with_selected(selected);
+            f.render_stateful_widget(list, area, &mut s);
+            state.offsets.insert(n.key.clone(), s.offset());
         }
-        ViewKind::Gauge => {
-            let row = app.rows.first();
-            let value = row
-                .and_then(|r| match &v.field {
-                    Some(p) => field(r, p).and_then(Value::as_f64),
-                    None => r.as_f64(),
-                })
-                .unwrap_or(0.0);
-            let ratio = if value > 1.0 { value / 100.0 } else { value }.clamp(0.0, 1.0);
-            let label = row
-                .and_then(|r| v.label.as_deref().and_then(|p| field(r, p)))
-                .map(text)
-                .unwrap_or_else(|| format!("{:.0}%", ratio * 100.0));
+        Kind::Item { .. } => {}
+        Kind::Text { text } => {
             f.render_widget(
-                Gauge::default().block(block).ratio(ratio).label(label),
-                main,
+                Paragraph::new(text.clone()).wrap(Wrap { trim: false }),
+                area,
             );
         }
-        ViewKind::Chart => {
-            let data: Vec<u64> = app
-                .rows
-                .iter()
-                .map(|r| {
-                    match &v.field {
-                        Some(p) => field(r, p).and_then(Value::as_f64),
-                        None => r.as_f64(),
-                    }
-                    .unwrap_or(0.0)
-                    .max(0.0)
-                    .round() as u64
-                })
-                .collect();
-            f.render_widget(Sparkline::default().block(block).data(&data), main);
+        Kind::Gauge { ratio, label } => {
+            f.render_widget(
+                Gauge::default()
+                    .ratio(ratio.clamp(0.0, 1.0))
+                    .label(label.clone()),
+                area,
+            );
         }
-        ViewKind::Form => {
-            let lines: Vec<Line> = v
-                .fields
+        Kind::Chart { values } => {
+            let data: Vec<u64> = values.iter().map(|v| v.max(0.0).round() as u64).collect();
+            f.render_widget(Sparkline::default().data(&data), area);
+        }
+        Kind::Form { fields, focus } => {
+            let lines: Vec<Line> = fields
                 .iter()
-                .zip(&app.form)
                 .enumerate()
-                .map(|(i, (field, value))| {
-                    let label = field.label.clone().unwrap_or_else(|| field.name.clone());
-                    let shown = match field.kind {
-                        FieldKind::Toggle if value == "true" => "[x]".to_owned(),
-                        FieldKind::Toggle => "[ ]".to_owned(),
-                        _ => value.clone(),
+                .map(|(i, field)| {
+                    let shown = match (field.toggle, field.value.as_str()) {
+                        (true, "true") => "[x]".to_owned(),
+                        (true, _) => "[ ]".to_owned(),
+                        (false, v) => v.to_owned(),
                     };
                     let star = if field.required { "*" } else { "" };
-                    let line = Line::from(format!("{label}{star}: {shown}"));
-                    if i == app.focus {
-                        line.style(highlight)
+                    let line = Line::from(format!("{}{star}: {shown}", field.label));
+                    if focused && i == *focus {
+                        line.style(highlight())
                     } else {
                         line
                     }
                 })
                 .collect();
-            f.render_widget(Paragraph::new(lines).block(block), main);
-        }
-        ViewKind::Text => {
-            let body = app.rows.first().map(|r| match &v.field {
-                Some(p) => field(r, p).map(text).unwrap_or_default(),
-                None => text(r),
-            });
-            f.render_widget(
-                Paragraph::new(body.unwrap_or_default())
-                    .block(block)
-                    .wrap(Wrap { trim: false }),
-                main,
-            );
+            f.render_widget(Paragraph::new(lines), area);
         }
     }
-    f.render_widget(Paragraph::new(Line::from(app.status_text())), status);
 }
 
 /// An agentic pane: who it is and what it may do, the transcript (newest
@@ -323,5 +465,192 @@ mod tests {
         );
         let bars = shown.chars().filter(|c| "▁▂▃▄▅▆▇█".contains(*c)).count();
         assert!(bars >= 7, "{shown}");
+    }
+
+    /// A nested tree: a table beside tabs holding a list and a gauge.
+    const TREE: &str = r#"
+schema_version = 2
+id = "t.tree"
+version = "1"
+title = "Tree"
+root = "main"
+
+[data.panes]
+method = "tmux.topology"
+path = "panes"
+
+[data.windows]
+method = "tmux.topology"
+path = "windows"
+
+[nodes.main]
+type = "split"
+sizes = [60, 40]
+children = ["left", "side"]
+
+[nodes.left]
+type = "table"
+title = "Panes"
+source = "panes"
+row_key = "id"
+columns = ["id", "cmd"]
+
+[nodes.side]
+type = "column"
+children = ["note", "names"]
+
+[nodes.note]
+type = "text"
+source = "windows"
+field = "name"
+
+[nodes.names]
+type = "list"
+title = "Windows"
+source = "windows"
+row_key = "id"
+field = "name"
+"#;
+
+    fn screen(t: &ratatui::Terminal<ratatui::backend::TestBackend>) -> Vec<String> {
+        let buf = t.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    /// Where `what` is drawn: (column, row) in characters.
+    fn at(lines: &[String], what: &str) -> (usize, usize) {
+        lines
+            .iter()
+            .enumerate()
+            .find_map(|(y, l)| l.find(what).map(|b| (l[..b].chars().count(), y)))
+            .unwrap_or_else(|| panic!("`{what}` is not drawn:\n{}", lines.join("\n")))
+    }
+
+    /// The host's tree reaches a desktop as the desktop reads it (the whole
+    /// tree, then patches, through the daemon's copy), and both draw the
+    /// same structure: the desktop draws exactly the tree the terminal
+    /// draws, and the terminal places each node where the layout says.
+    #[test]
+    fn a_nested_tree_reaches_the_desktop_as_the_terminal_draws_it() {
+        let manifest = app_model::manifest::Manifest::parse(TREE).expect("manifest");
+        let mut a = App::new(manifest);
+        a.link = Link::Live;
+        a.set_source(
+            "panes",
+            vec![
+                serde_json::json!({"id": 1, "cmd": "sh"}),
+                serde_json::json!({"id": 2, "cmd": "vim"}),
+            ],
+            0,
+        );
+        a.set_source(
+            "windows",
+            vec![
+                serde_json::json!({"id": 7, "name": "build"}),
+                serde_json::json!({"id": 8, "name": "logs"}),
+            ],
+            0,
+        );
+        // Host, daemon, desktop.
+        let mut host = view_tree::Outgoing::default();
+        let mut daemon = view_tree::Kept::default();
+        let mut desktop = view_tree::Mirror::default();
+        let send = |host: &mut view_tree::Outgoing,
+                    daemon: &mut view_tree::Kept,
+                    desktop: &mut view_tree::Mirror,
+                    frame: &view_tree::Frame| {
+            match host.next(frame).expect("an update") {
+                view_tree::Update::Full { seq, frame } => {
+                    daemon.publish(seq, &serde_json::to_string(&frame).expect("json"), "")
+                }
+                view_tree::Update::Patch { seq, ops } => {
+                    daemon.publish(seq, "", &serde_json::to_string(&ops).expect("json"))
+                }
+            }
+            .expect("published");
+            let s = daemon.since(desktop.seq);
+            desktop.take(s.seq, &s.tree, &s.patches).expect("taken");
+            s
+        };
+        let tree = a.frame().expect("a tree");
+        let first = send(&mut host, &mut daemon, &mut desktop, &tree);
+        assert!(!first.tree.is_empty(), "a new reader gets the whole tree");
+        assert_eq!(desktop.frame.as_ref(), Some(&tree));
+        assert_eq!(
+            tree.outline(),
+            "split main\n  table left (2 rows)\n  column side\n    text note\n    list names (2 rows)\n"
+        );
+
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 12)).expect("terminal");
+        let mut state = ViewState::default();
+        term.draw(|f| draw_with(&a, &mut state, f)).expect("draw");
+        let lines = screen(&term);
+        let (panes_x, panes_y) = at(&lines, " Panes ");
+        let (windows_x, windows_y) = at(&lines, " Windows ");
+        let (note_x, note_y) = at(&lines, "build");
+        let (vim_x, vim_y) = at(&lines, "vim");
+        // The split: the table on the left 60%, the column on the right.
+        assert!(panes_x < 30 && windows_x >= 30, "{}", lines.join("\n"));
+        assert!(vim_x < 30 && vim_y > panes_y, "{}", lines.join("\n"));
+        // The column: the text above the titled list.
+        assert!(note_x >= 30 && note_y < windows_y, "{}", lines.join("\n"));
+        assert!(lines[0].contains(" Tree "), "{}", lines.join("\n"));
+
+        // One row changes: one patch, to that row, reaches the desktop;
+        // both draw the change.
+        a.set_source(
+            "panes",
+            vec![
+                serde_json::json!({"id": 1, "cmd": "sh"}),
+                serde_json::json!({"id": 2, "cmd": "htop"}),
+            ],
+            1,
+        );
+        let changed = a.frame().expect("a tree");
+        let next = send(&mut host, &mut daemon, &mut desktop, &changed);
+        assert!(next.tree.is_empty(), "a reader that keeps up gets patches");
+        assert_eq!(next.patches.len(), 1);
+        let ops: Vec<view_tree::Op> = serde_json::from_str(&next.patches[0]).expect("ops");
+        assert!(
+            matches!(&ops[..], [view_tree::Op::Props { path, .. }] if path == &["main", "left", "2"]),
+            "{ops:?}"
+        );
+        assert_eq!(desktop.frame.as_ref(), Some(&changed));
+        term.draw(|f| draw_tree(&changed, &mut state, f))
+            .expect("draw");
+        let lines = screen(&term);
+        assert_eq!(at(&lines, "htop").1, vim_y, "{}", lines.join("\n"));
+    }
+
+    #[test]
+    fn a_table_keeps_its_scroll_across_updates() {
+        let manifest = app_model::manifest::Manifest::parse(TREE).expect("manifest");
+        let mut a = App::new(manifest);
+        let rows = |n: usize| {
+            (0..n)
+                .map(|i| serde_json::json!({"id": i, "cmd": format!("c{i}")}))
+                .collect::<Vec<_>>()
+        };
+        a.set_source("panes", rows(40), 0);
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 12)).expect("terminal");
+        let mut state = ViewState::default();
+        a.move_by(30);
+        term.draw(|f| draw_with(&a, &mut state, f)).expect("draw");
+        let scrolled = state.offsets.get("left").copied().expect("an offset");
+        assert!(scrolled > 0);
+        // Selection one up, still in view, and new rows at the end: the
+        // table does not jump back to the top.
+        a.move_by(-1);
+        a.set_source("panes", rows(41), 1);
+        term.draw(|f| draw_with(&a, &mut state, f)).expect("draw");
+        assert_eq!(state.offsets.get("left"), Some(&scrolled));
     }
 }

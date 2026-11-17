@@ -361,6 +361,12 @@ impl Service for Fixed {
     async fn apps_view(&self, _: api::AppViewQuery) -> Result<api::AppView, RpcError> {
         Ok(api::AppView::default())
     }
+    async fn apps_publish_tree(&self, _: api::AppTreePublish) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
+    async fn apps_tree(&self, _: api::AppTreeQuery) -> Result<api::AppTree, RpcError> {
+        Ok(api::AppTree::default())
+    }
     async fn apps_input(&self, _: api::AppInput) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }

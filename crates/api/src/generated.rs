@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 48;
+pub const PROTOCOL_MINOR: u32 = 49;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2785,6 +2785,64 @@ pub struct AppView {
     pub view: String,
 }
 
+/// A version of an app host's view tree (docs/termapp.md, view trees): the whole tree, or the keyed changes from the version before.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppTreePublish {
+    /// This version; a patch's is one more than the version it changes.
+    #[prost(uint64, tag = "1")]
+    pub seq: u64,
+    /// The whole tree as JSON (a frame: title, status, focus, root); empty with a patch.
+    #[prost(string, tag = "2")]
+    pub tree: String,
+    /// The changes from version seq - 1 as a JSON list of keyed ops; empty with a tree.
+    #[prost(string, tag = "3")]
+    pub patch: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppTreeQuery {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// Wait for a revision newer than this one; 0 answers at once.
+    #[prost(uint64, tag = "2")]
+    pub after: u64,
+    /// The tree version the caller holds; 0 for none. The answer brings it to the newest.
+    #[prost(uint64, tag = "3")]
+    pub seq: u64,
+    /// How long to wait for a newer revision; default 20000, at most 60000.
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppTree {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(string, tag = "2")]
+    pub instance: String,
+    #[prost(string, tag = "3")]
+    pub app_id: String,
+    /// Grows with every new tree version and every change of `live`.
+    #[prost(uint64, tag = "4")]
+    pub revision: u64,
+    /// The host is connected; when false, the tree is its last one.
+    #[prost(bool, tag = "5")]
+    pub live: bool,
+    /// The tree version the caller holds after applying this answer; 0 before the host's first tree.
+    #[prost(uint64, tag = "6")]
+    pub seq: u64,
+    /// The whole tree as JSON, when the caller's version is unknown or too old for patches; else empty.
+    #[prost(string, tag = "7")]
+    pub tree: String,
+    /// The changes from the caller's version, one JSON list of ops per version, in order.
+    #[prost(string, repeated, tag = "8")]
+    pub patches: Vec<String>,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppInput {
@@ -5150,6 +5208,8 @@ pub mod method {
     pub const MEMORY_GET: &str = "memory.get";
     pub const MEMORY_UPDATE: &str = "memory.update";
     pub const MEMORY_FORGET: &str = "memory.forget";
+    pub const APPS_PUBLISH_TREE: &str = "apps.publish_tree";
+    pub const APPS_TREE: &str = "apps.tree";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5834,6 +5894,20 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Delete a memory and its index line; the reply is what was deleted.",
     },
+    MethodInfo {
+        name: "apps.publish_tree",
+        params: "AppTreePublish",
+        result: "Empty",
+        mutation: true,
+        doc: "A registered app host publishes a version of its view tree for its pane. A patch that does not follow the version kept is refused with a precondition error; the host then sends the whole tree.",
+    },
+    MethodInfo {
+        name: "apps.tree",
+        params: "AppTreeQuery",
+        result: "AppTree",
+        mutation: false,
+        doc: "An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (owner only).",
+    },
 ];
 
 /// A typed request for one method.
@@ -5935,6 +6009,8 @@ pub enum Request {
     MemoryGet(MemoryRef),
     MemoryUpdate(MemoryUpdate),
     MemoryForget(MemoryRef),
+    AppsPublishTree(AppTreePublish),
+    AppsTree(AppTreeQuery),
 }
 
 impl Request {
@@ -6036,6 +6112,8 @@ impl Request {
             Self::MemoryGet(_) => "memory.get",
             Self::MemoryUpdate(_) => "memory.update",
             Self::MemoryForget(_) => "memory.forget",
+            Self::AppsPublishTree(_) => "apps.publish_tree",
+            Self::AppsTree(_) => "apps.tree",
         }
     }
 
@@ -6138,6 +6216,8 @@ impl Request {
             Self::MemoryGet(v) => ::prost::Message::encode_to_vec(v),
             Self::MemoryUpdate(v) => ::prost::Message::encode_to_vec(v),
             Self::MemoryForget(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsPublishTree(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsTree(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -6261,6 +6341,8 @@ impl Request {
             "memory.get" => Ok(Self::MemoryGet(::prost::Message::decode(bytes)?)),
             "memory.update" => Ok(Self::MemoryUpdate(::prost::Message::decode(bytes)?)),
             "memory.forget" => Ok(Self::MemoryForget(::prost::Message::decode(bytes)?)),
+            "apps.publish_tree" => Ok(Self::AppsPublishTree(::prost::Message::decode(bytes)?)),
+            "apps.tree" => Ok(Self::AppsTree(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6363,6 +6445,8 @@ impl Request {
             Self::MemoryGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MemoryUpdate(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MemoryForget(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsPublishTree(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsTree(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -6480,6 +6564,8 @@ impl Request {
             "memory.get" => Ok(Self::MemoryGet(serde_json::from_value(value)?)),
             "memory.update" => Ok(Self::MemoryUpdate(serde_json::from_value(value)?)),
             "memory.forget" => Ok(Self::MemoryForget(serde_json::from_value(value)?)),
+            "apps.publish_tree" => Ok(Self::AppsPublishTree(serde_json::from_value(value)?)),
+            "apps.tree" => Ok(Self::AppsTree(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6584,6 +6670,8 @@ pub enum Response {
     MemoryGet(MemoryItem),
     MemoryUpdate(MemoryItem),
     MemoryForget(MemoryItem),
+    AppsPublishTree(Empty),
+    AppsTree(AppTree),
 }
 
 impl Response {
@@ -6685,6 +6773,8 @@ impl Response {
             Self::MemoryGet(_) => "memory.get",
             Self::MemoryUpdate(_) => "memory.update",
             Self::MemoryForget(_) => "memory.forget",
+            Self::AppsPublishTree(_) => "apps.publish_tree",
+            Self::AppsTree(_) => "apps.tree",
         }
     }
 
@@ -6787,6 +6877,8 @@ impl Response {
             Self::MemoryGet(v) => ::prost::Message::encode_to_vec(v),
             Self::MemoryUpdate(v) => ::prost::Message::encode_to_vec(v),
             Self::MemoryForget(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsPublishTree(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsTree(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -6910,6 +7002,8 @@ impl Response {
             "memory.get" => Ok(Self::MemoryGet(::prost::Message::decode(bytes)?)),
             "memory.update" => Ok(Self::MemoryUpdate(::prost::Message::decode(bytes)?)),
             "memory.forget" => Ok(Self::MemoryForget(::prost::Message::decode(bytes)?)),
+            "apps.publish_tree" => Ok(Self::AppsPublishTree(::prost::Message::decode(bytes)?)),
+            "apps.tree" => Ok(Self::AppsTree(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7012,6 +7106,8 @@ impl Response {
             Self::MemoryGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MemoryUpdate(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MemoryForget(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsPublishTree(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsTree(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -7129,6 +7225,8 @@ impl Response {
             "memory.get" => Ok(Self::MemoryGet(serde_json::from_value(value)?)),
             "memory.update" => Ok(Self::MemoryUpdate(serde_json::from_value(value)?)),
             "memory.forget" => Ok(Self::MemoryForget(serde_json::from_value(value)?)),
+            "apps.publish_tree" => Ok(Self::AppsPublishTree(serde_json::from_value(value)?)),
+            "apps.tree" => Ok(Self::AppsTree(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7603,6 +7701,16 @@ pub trait Service: Sync {
         &self,
         params: MemoryRef,
     ) -> impl ::core::future::Future<Output = Result<MemoryItem, RpcError>> + Send;
+    /// A registered app host publishes a version of its view tree for its pane. A patch that does not follow the version kept is refused with a precondition error; the host then sends the whole tree.
+    fn apps_publish_tree(
+        &self,
+        params: AppTreePublish,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (owner only).
+    fn apps_tree(
+        &self,
+        params: AppTreeQuery,
+    ) -> impl ::core::future::Future<Output = Result<AppTree, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -7818,6 +7926,11 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::MemoryGet(p) => service.memory_get(p).await.map(Response::MemoryGet),
         Request::MemoryUpdate(p) => service.memory_update(p).await.map(Response::MemoryUpdate),
         Request::MemoryForget(p) => service.memory_forget(p).await.map(Response::MemoryForget),
+        Request::AppsPublishTree(p) => service
+            .apps_publish_tree(p)
+            .await
+            .map(Response::AppsPublishTree),
+        Request::AppsTree(p) => service.apps_tree(p).await.map(Response::AppsTree),
     }
 }
 

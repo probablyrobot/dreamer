@@ -23,6 +23,12 @@
 //! go back to the host (`apps.input`) as events on its connection. When
 //! the host's connection closes, the last view stays, marked not live,
 //! until the pane is gone.
+//!
+//! A host also publishes its view as a keyed tree (`apps.publish_tree`):
+//! the whole tree, then the changes. The daemon keeps the newest version
+//! and the recent changes, and answers a reader (`apps.tree`) with the
+//! changes since the version it holds, or the whole tree when it holds
+//! none or one too old.
 
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -67,6 +73,10 @@ struct Hosted {
     live: bool,
     view: String,
     revision: u64,
+    /// The view tree, its versions' recent changes, and the revision of
+    /// its last change (the revisions `apps.tree` waits on).
+    tree: view_tree::Kept,
+    tree_revision: u64,
     /// Keys for the host, while it is connected.
     keys: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
@@ -326,6 +336,8 @@ impl Apps {
                     live: true,
                     view: String::new(),
                     revision,
+                    tree: view_tree::Kept::default(),
+                    tree_revision: revision,
                     keys: Some(tx),
                 },
             );
@@ -349,6 +361,75 @@ impl Apps {
         Ok(())
     }
 
+    /// The host on connection `conn` published version `p.seq` of its
+    /// pane's tree. A patch that does not follow the version kept is
+    /// refused with a precondition error: the host sends the whole tree.
+    pub fn publish_tree(&self, conn: u64, p: &api::AppTreePublish) -> Result<(), RpcError> {
+        let mut h = self
+            .hosted
+            .lock()
+            .map_err(|_| RpcError::new(code::INTERNAL, "app registry poisoned"))?;
+        let Some(entry) = h.values_mut().find(|e| e.conn == conn && e.live) else {
+            return Err(forbidden("only a registered app host publishes a view"));
+        };
+        let before = entry.tree.seq();
+        let result = entry.tree.publish(p.seq, &p.tree, &p.patch);
+        if entry.tree.seq() != before || result.is_ok() {
+            entry.tree_revision = self.bump();
+        }
+        result.map_err(|r| match r {
+            view_tree::Refused::Resync(why) => {
+                RpcError::new(code::PRECONDITION, format!("send the whole tree: {why}"))
+            }
+            view_tree::Refused::Invalid(why) => RpcError::new(code::INVALID_PARAMS, why),
+        })
+    }
+
+    fn tree_now(&self, q: &api::AppTreeQuery) -> Result<api::AppTree, RpcError> {
+        let h = self
+            .hosted
+            .lock()
+            .map_err(|_| RpcError::new(code::INTERNAL, "app registry poisoned"))?;
+        let e = h.get(&q.pane).ok_or_else(|| {
+            RpcError::new(
+                code::NOT_FOUND,
+                format!("pane %{} runs no registered app", q.pane),
+            )
+        })?;
+        let since = e.tree.since(q.seq);
+        Ok(api::AppTree {
+            pane: q.pane,
+            instance: e.instance.clone(),
+            app_id: e.app_id.clone(),
+            revision: e.tree_revision,
+            live: e.live,
+            seq: since.seq,
+            tree: since.tree,
+            patches: since.patches,
+        })
+    }
+
+    /// The pane's tree for a reader at version `q.seq`, once its revision
+    /// is newer than `q.after` or the wait runs out.
+    pub async fn tree(&self, q: &api::AppTreeQuery) -> Result<api::AppTree, RpcError> {
+        let wait = q.wait_ms.unwrap_or(VIEW_WAIT_MS).min(VIEW_WAIT_MAX_MS);
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(u64::from(wait));
+        let mut changes = self.changed.subscribe();
+        loop {
+            changes.borrow_and_update();
+            let t = self.tree_now(q)?;
+            if t.revision > q.after {
+                return Ok(t);
+            }
+            if !matches!(
+                tokio::time::timeout_at(deadline, changes.changed()).await,
+                Ok(Ok(()))
+            ) {
+                return self.tree_now(q);
+            }
+        }
+    }
+
     /// Connection `conn` closed: the panes it hosted keep their last view,
     /// no longer live. Whether anything changed.
     pub fn closed(&self, conn: u64) -> bool {
@@ -363,6 +444,7 @@ impl Apps {
             entry.live = false;
             entry.keys = None;
             entry.revision = revision;
+            entry.tree_revision = revision;
         }
         true
     }
@@ -523,6 +605,83 @@ mod tests {
         // Its pane closes: the app is forgotten.
         apps.annotate(&mut topology(&[8]));
         assert!(apps.view(&q(0)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_reader_gets_the_tree_then_only_what_changed() {
+        let apps = Apps::default();
+        let _keys = apps.host(7, "local.x-1", "local.x", 3);
+        let frame = |cmd: &str| {
+            let mut root = view_tree::Node::new(
+                "panes",
+                view_tree::Kind::Table {
+                    columns: vec!["cmd".into()],
+                    selected: None,
+                },
+            );
+            root.children = vec![view_tree::Node::new(
+                "1",
+                view_tree::Kind::Item {
+                    cells: vec![cmd.into()],
+                },
+            )];
+            view_tree::Frame {
+                title: "X".into(),
+                status: String::new(),
+                focus: None,
+                root,
+            }
+        };
+        let full = |seq, f: &view_tree::Frame| api::AppTreePublish {
+            seq,
+            tree: serde_json::to_string(f).expect("json"),
+            patch: String::new(),
+        };
+        let patch = |seq, ops: Vec<view_tree::Op>| api::AppTreePublish {
+            seq,
+            tree: String::new(),
+            patch: serde_json::to_string(&ops).expect("json"),
+        };
+        // Only the host's own connection publishes, and a patch needs a tree.
+        assert!(apps.publish_tree(4, &full(1, &frame("sh"))).is_err());
+        let early = apps.publish_tree(3, &patch(1, Vec::new()));
+        assert_eq!(early.expect_err("no tree").code, code::PRECONDITION);
+        apps.publish_tree(3, &full(1, &frame("sh"))).expect("tree");
+        let q = |seq, after| api::AppTreeQuery {
+            pane: 7,
+            after,
+            seq,
+            wait_ms: Some(50),
+        };
+        let first = apps.tree(&q(0, 0)).await.expect("tree");
+        assert_eq!(first.seq, 1);
+        assert!(first.tree.contains("\"sh\""), "{}", first.tree);
+        let mut reader = view_tree::Mirror::default();
+        reader
+            .take(first.seq, &first.tree, &first.patches)
+            .expect("take");
+
+        let ops = view_tree::diff(&frame("sh"), &frame("vim"));
+        apps.publish_tree(3, &patch(2, ops)).expect("patch");
+        let next = apps
+            .tree(&q(reader.seq, first.revision))
+            .await
+            .expect("tree");
+        assert!(next.tree.is_empty(), "patches, not the tree");
+        assert_eq!(next.patches.len(), 1);
+        reader
+            .take(next.seq, &next.tree, &next.patches)
+            .expect("take");
+        assert_eq!(reader.frame, Some(frame("vim")));
+
+        // A patch that skips a version is refused.
+        let skipped = apps.publish_tree(3, &patch(9, Vec::new()));
+        assert_eq!(skipped.expect_err("skipped").code, code::PRECONDITION);
+        // The host stops: the tree stays, not live.
+        assert!(apps.closed(3));
+        let last = apps.tree(&q(0, next.revision)).await.expect("tree");
+        assert!(!last.live);
+        assert!(last.tree.contains("vim"));
     }
 
     #[test]

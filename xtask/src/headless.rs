@@ -36,6 +36,7 @@ pub const PACKAGES: &[&str] = &[
     "terminal-ghostty",
     "tmux-backend",
     "tmux-protocol",
+    "view-tree",
     "wire",
     "workspace-config",
     "workspace-host",

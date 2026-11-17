@@ -105,6 +105,134 @@ Validation is strict: unknown keys, unknown methods, mutations as data
 sources, malformed placeholders, and duplicate or reserved keys are errors,
 each reported with where it is.
 
+## View trees
+
+A manifest with `schema_version = 2` lays out several views at once as
+a tree of nodes. It names the `root` node and declares every node
+under `[nodes.<key>]`; it has no `[view]`. Data sources, commands, the
+module, and contributions are as in version 1, and version 1 manifests
+keep working unchanged.
+
+```toml
+schema_version = 2
+id = "local.overview"
+version = "0.1.0"
+title = "Overview"
+capabilities = ["tmux.topology"]
+root = "main"
+
+[data.panes]
+method = "tmux.topology"
+path = "panes"
+events = ["tmux.topology"]
+
+[data.windows]
+method = "tmux.topology"
+path = "windows"
+
+[nodes.main]
+type = "split"
+sizes = [60, 40]              # weights, one per child; equal when left out
+children = ["panes", "side"]
+
+[nodes.panes]
+type = "table"
+title = "Panes"
+source = "panes"
+row_key = "id"
+columns = ["id", "current_command"]
+
+[nodes.side]
+type = "tabs"
+children = ["windows", "sizes"]
+
+[nodes.windows]
+type = "list"
+title = "Windows"             # a tab's name
+source = "windows"
+row_key = "id"
+field = "name"
+
+[nodes.sizes]
+type = "table"
+title = "Sizes"
+source = "windows"
+row_key = "id"
+columns = ["name", "width", "height"]
+```
+
+- **Layout nodes** list their `children` by key, in order:
+  - `column` stacks them; text and gauges take the height they need,
+    the others share the rest.
+  - `row` puts them side by side, sharing the width.
+  - `split` divides the space by `sizes`, side by side, or one above the
+    other with `direction = "column"`.
+  - `tabs` shows one child at a time; each child's `title` (else its key)
+    names its tab.
+  - `scroll` stacks them at their natural height and scrolls to keep the
+    focused one in view.
+- **Data nodes** are `table`, `list`, `log`, `text`, `gauge`, `chart`,
+  and `form`, with the same fields as a version 1 `[view]` (`source`,
+  `row_key`, `columns`, `field`, `label`, `fields`, `submit`). A tree
+  has at most one form.
+- **`title`**, on any node, is a heading; in a terminal the node gets a
+  border with it.
+- **Keys** of nodes are lowercase letters, digits, `-`, and `_`. Every
+  node except the root has exactly one parent, and every node must be
+  reached from the root. Validation names each mistake with its node.
+
+Keys: Tab moves the focus to the next table, list, or form shown; Left
+and Right switch the page of the tabs holding the focus (or the first
+tabs). Up and Down move the focused table's or list's selection, and in
+a focused form they move between fields. Commands act on the focused
+node's selected row (`${selected.<field>}`). Tab, Left, and Right are
+the runtime's in a tree, so commands may not use them.
+
+Every data source a node shows is fetched as in version 1, and the
+sources' `events` and the shortest `refresh_ms` apply. A module's
+command handlers work as before; `transform` is not called for a tree.
+`dream app preview` reads a fixture for every source shown.
+
+### The tree on the wire
+
+The app host turns its model into a tree of components with keys and
+publishes it ([topology.md](topology.md#app-panes)): the whole tree
+first, then only the changes, so an update to one row is a change to
+that row's node and nothing else. A version 1 manifest is published as a
+tree too: one data node keyed `view`. An agentic pane has no tree.
+
+The tree is JSON: a frame with `title`, `status`, `focus` (the focused
+node's key), and `root`. A node has `key`, `type`, an optional `title`,
+its content, and `children`:
+
+| `type` | Content |
+| --- | --- |
+| `column`, `row`, `scroll` | None |
+| `split` | `direction` (`row` or `column`), `sizes` |
+| `tabs` | `active`, the index of the page shown |
+| `table` | `columns`, and `selected`, the selected row's key; its rows are `item` children |
+| `list` | `selected`; its rows are `item` children |
+| `log` | Its lines are `item` children |
+| `item` | `cells`: one per column, or one |
+| `text` | `text` |
+| `gauge` | `ratio` (0 to 1) and `label` |
+| `chart` | `values` |
+| `form` | `fields` (`label`, `value`, `toggle`, `required`) and `focus`, the field being edited |
+
+A row's key is its `row_key` value, or its place when the view has
+none. A change is one of these ops, each naming its node by the keys on
+the path from the root:
+
+- `frame`: the new `title`, `status`, and `focus`.
+- `root`: a whole new root `node` (the root's key changed).
+- `props`: a node's own `title` and content (`kind`), not its children.
+- `children`: a node's child `keys` in their new order, with the new
+  ones in full (`added`); children whose key was there before stay as
+  they were.
+
+Renderers keep what they hold per key (scroll positions, the selection
+last scrolled to) across changes, so an update never resets them.
+
 ## Building an app
 
 Building an app takes five steps, each a `dream app` command
@@ -206,10 +334,11 @@ more authority than it was granted. It stays stale and says to relaunch it.
 ## App panes
 
 A registered app is its pane's host. While registered, it publishes its
-model to the daemon whenever it changes (only the newest is kept; a
-model superseded while one is being sent is skipped), and the daemon
-marks its pane in the topology. The desktop then draws that pane
-natively from the published model instead of its terminal, and sends
+model and its [view tree](#the-tree-on-the-wire) to the daemon whenever
+they change (only the newest model is kept, and a model or tree
+superseded while one is being sent is skipped), and the daemon marks
+its pane in the topology. The desktop then draws that pane natively
+from the published tree instead of its terminal, and sends
 it the keys typed there; see [desktop.md](desktop.md#app-panes). Keys
 from the desktop and keys typed in the pane go through the same input
 handling, so `q` from either quits the app. A plain tmux client keeps

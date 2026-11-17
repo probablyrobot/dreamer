@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 48 }
+version: { major: 1, minor: 49 }
 package: dreamer.v1
 
 types:
@@ -794,6 +794,31 @@ types:
       - { n: 4, name: revision, type: u64, doc: "Grows with every new view and every change of `live`." }
       - { n: 5, name: live, type: bool, doc: "The host is connected; when false, `view` is its last one." }
       - { n: 6, name: view, type: string, doc: "The latest model the host published, as JSON; empty before its first." }
+
+  - message: AppTreePublish
+    doc: "A version of an app host's view tree (docs/termapp.md, view trees): the whole tree, or the keyed changes from the version before."
+    fields:
+      - { n: 1, name: seq, type: u64, doc: "This version; a patch's is one more than the version it changes." }
+      - { n: 2, name: tree, type: string, doc: "The whole tree as JSON (a frame: title, status, focus, root); empty with a patch." }
+      - { n: 3, name: patch, type: string, doc: "The changes from version seq - 1 as a JSON list of keyed ops; empty with a tree." }
+
+  - message: AppTreeQuery
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: after, type: u64, doc: "Wait for a revision newer than this one; 0 answers at once." }
+      - { n: 3, name: seq, type: u64, doc: "The tree version the caller holds; 0 for none. The answer brings it to the newest." }
+      - { n: 4, name: wait_ms, type: u32, optional: true, doc: "How long to wait for a newer revision; default 20000, at most 60000." }
+
+  - message: AppTree
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: instance, type: string }
+      - { n: 3, name: app_id, type: string }
+      - { n: 4, name: revision, type: u64, doc: "Grows with every new tree version and every change of `live`." }
+      - { n: 5, name: live, type: bool, doc: "The host is connected; when false, the tree is its last one." }
+      - { n: 6, name: seq, type: u64, doc: "The tree version the caller holds after applying this answer; 0 before the host's first tree." }
+      - { n: 7, name: tree, type: string, doc: "The whole tree as JSON, when the caller's version is unknown or too old for patches; else empty." }
+      - { n: 8, name: patches, type: string, repeated: true, doc: "The changes from the caller's version, one JSON list of ops per version, in order." }
 
   - message: AppInput
     fields:
@@ -2014,6 +2039,8 @@ methods:
   - { method: memory.get, params: MemoryRef, result: MemoryItem }
   - { method: memory.update, params: MemoryUpdate, result: MemoryItem, mutation: true }
   - { method: memory.forget, params: MemoryRef, result: MemoryItem, mutation: true, doc: "Delete a memory and its index line; the reply is what was deleted." }
+  - { method: apps.publish_tree, params: AppTreePublish, result: Empty, mutation: true, doc: "A registered app host publishes a version of its view tree for its pane. A patch that does not follow the version kept is refused with a precondition error; the host then sends the whole tree." }
+  - { method: apps.tree, params: AppTreeQuery, result: AppTree, doc: "An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (owner only)." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the

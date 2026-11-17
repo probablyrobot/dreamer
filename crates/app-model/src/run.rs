@@ -245,12 +245,23 @@ pub(crate) async fn call(
     }
 }
 
-/// The view's rows, through the module's `transform` when it has one.
+/// The view's rows, through the module's `transform` when it has one; in
+/// a tree, every data source shown.
 async fn fetch(
     app: &mut App,
     c: &client::Client,
     script: Option<&script_runtime::Script>,
 ) -> Result<(), (bool, String)> {
+    if app.manifest.is_tree() {
+        for name in app.manifest.shown_sources() {
+            let Some(src) = app.manifest.data.get(&name).cloned() else {
+                continue;
+            };
+            let rows = rows_of(c, &src).await?;
+            app.set_source(&name, rows, now_ms());
+        }
+        return Ok(());
+    }
     let name = app.manifest.view.source.clone();
     let Some(src) = app.manifest.data.get(&name).cloned() else {
         return Ok(());
@@ -312,21 +323,18 @@ pub async fn preview(path: &Path) -> Result<App, String> {
     let pkg = load_package(path, &current).await?;
     let mut app = App::new(pkg.manifest.clone());
     crate::agent::setup_preview(&mut app);
+    if app.manifest.is_tree() {
+        for name in app.manifest.shown_sources() {
+            let src = app.manifest.data[&name].clone();
+            let result = fixture(path, &name)?;
+            app.set_source(&name, rows_in(result, &src), now_ms());
+        }
+        app.link = Link::Preview;
+        return Ok(app);
+    }
     let name = app.manifest.view.source.clone();
     if let Some(src) = app.manifest.data.get(&name).cloned() {
-        let file = path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("fixtures")
-            .join(format!("{name}.json"));
-        let text = std::fs::read_to_string(&file).map_err(|e| {
-            format!(
-                "data source `{name}` needs a fixture to preview: {}: {e}",
-                file.display()
-            )
-        })?;
-        let result: Value =
-            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))?;
+        let result = fixture(path, &name)?;
         let mut rows = rows_in(result, &src);
         if let Some(s) = &pkg.script {
             match s.handle("transform", &Value::Array(rows.clone())).await {
@@ -340,6 +348,23 @@ pub async fn preview(path: &Path) -> Result<App, String> {
     }
     app.link = Link::Preview;
     Ok(app)
+}
+
+/// The fixture for data source `name`: `fixtures/<name>.json` beside the
+/// manifest at `path`.
+fn fixture(path: &Path, name: &str) -> Result<Value, String> {
+    let file = path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("fixtures")
+        .join(format!("{name}.json"));
+    let text = std::fs::read_to_string(&file).map_err(|e| {
+        format!(
+            "data source `{name}` needs a fixture to preview: {}: {e}",
+            file.display()
+        )
+    })?;
+    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))
 }
 
 /// One connection for a package's contributions (spec 12.2.1): its
@@ -387,6 +412,21 @@ impl Session {
 }
 
 fn source_events(m: &Manifest) -> (Vec<String>, Option<Duration>) {
+    if m.is_tree() {
+        let mut events: Vec<String> = Vec::new();
+        let mut refresh: Option<u64> = None;
+        for s in m.shown_sources().iter().filter_map(|n| m.data.get(n)) {
+            for e in &s.events {
+                if !events.contains(e) {
+                    events.push(e.clone());
+                }
+            }
+            if let Some(r) = s.refresh_ms {
+                refresh = Some(refresh.map_or(r, |x| x.min(r)));
+            }
+        }
+        return (events, refresh.map(Duration::from_millis));
+    }
     let source = m.data.get(&m.view.source);
     let mut events = source.map(|s| s.events.clone()).unwrap_or_default();
     // A filter pane shows what its filters match.
@@ -433,6 +473,56 @@ fn host_views(client: Arc<client::Client>) -> tokio::sync::watch::Sender<String>
     tx
 }
 
+/// Publish the newest view tree given to the returned sender as keyed
+/// diffs (`apps.publish_tree`): the whole tree first, then the changes
+/// from the last one sent. A daemon that lost track asks for the whole
+/// tree again; one without the method ends the task. Ends when the
+/// connection does.
+fn host_trees(client: Arc<client::Client>) -> tokio::sync::watch::Sender<Option<view_tree::Frame>> {
+    let (tx, mut rx) = tokio::sync::watch::channel(None::<view_tree::Frame>);
+    tokio::spawn(async move {
+        let mut out = view_tree::Outgoing::default();
+        while rx.changed().await.is_ok() {
+            let Some(frame) = rx.borrow_and_update().clone() else {
+                continue;
+            };
+            // At most twice: the changes, then the whole tree if refused.
+            for _ in 0..2 {
+                let Some(update) = out.next(&frame) else {
+                    break;
+                };
+                let p = match update {
+                    view_tree::Update::Full { seq, frame } => api::AppTreePublish {
+                        seq,
+                        tree: serde_json::to_string(&frame).unwrap_or_default(),
+                        patch: String::new(),
+                    },
+                    view_tree::Update::Patch { seq, ops } => api::AppTreePublish {
+                        seq,
+                        tree: String::new(),
+                        patch: serde_json::to_string(&ops).unwrap_or_default(),
+                    },
+                };
+                match client.call(api::Request::AppsPublishTree(p)).await {
+                    Ok(_) => break,
+                    Err(client::ClientError::Rpc(e)) if e.code == api::code::PRECONDITION => {
+                        out.resync();
+                    }
+                    Err(client::ClientError::Rpc(e)) if e.code == api::code::METHOD_NOT_FOUND => {
+                        return;
+                    }
+                    Err(client::ClientError::Rpc(_)) => {
+                        out.resync();
+                        break;
+                    }
+                    Err(_) => return,
+                }
+            }
+        }
+    });
+    tx
+}
+
 /// Run the package at `path` against the daemon at `endpoint`: connect,
 /// fetch, follow events, run commands for keys from `inputs`, and reload
 /// the package when its files change. `publish` gets the model whenever
@@ -464,12 +554,16 @@ pub async fn run(
     // A registered pane app is its pane's host: it publishes its model to
     // the daemon, and keys typed in desktops come back as events.
     let mut hosting: Option<tokio::sync::watch::Sender<String>> = None;
+    let mut hosting_tree: Option<tokio::sync::watch::Sender<Option<view_tree::Frame>>> = None;
     let (remote_tx, mut remote) = tokio::sync::mpsc::unbounded_channel::<Input>();
     loop {
         if dirty {
             publish(&app)?;
             if let Some(h) = &hosting {
                 h.send_replace(app.to_published(&pkg.source));
+            }
+            if let Some(h) = &hosting_tree {
+                h.send_replace(app.frame());
             }
             dirty = false;
         }
@@ -555,7 +649,21 @@ pub async fn run(
                     }
                     continue;
                 }
-                let form = app.manifest.view.kind == ViewKind::Form;
+                // A tree: Tab moves the focus, Left and Right switch tabs.
+                if app.manifest.is_tree() {
+                    match name.as_str() {
+                        "Tab" => {
+                            app.focus_next();
+                            continue;
+                        }
+                        "Left" | "Right" => {
+                            app.switch_tab(if name == "Left" { -1 } else { 1 });
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                let form = app.in_form();
                 if form && !matches!(name.as_str(), "Enter" | "Esc" | "Ctrl-c")
                     && !name.starts_with('F')
                 {
@@ -563,11 +671,8 @@ pub async fn run(
                     continue;
                 }
                 let name = if form && name == "Enter" {
-                    app.manifest
-                        .view
-                        .submit
-                        .as_ref()
-                        .and_then(|c| app.manifest.commands.get(c))
+                    app.form_submit()
+                        .and_then(|c| app.manifest.commands.get(&c))
                         .map_or(name, |c| c.key.clone())
                 } else {
                     name
@@ -722,6 +827,7 @@ pub async fn run(
                             *current.borrow_mut() = Some(c.client.clone());
                             if registered && hosting.is_none() {
                                 hosting = Some(host_views(c.client.clone()));
+                                hosting_tree = Some(host_trees(c.client.clone()));
                             }
                             crate::agent::refresh_filters(&mut app, &c.client).await;
                             conn = Some(c);
