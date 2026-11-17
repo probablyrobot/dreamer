@@ -308,6 +308,7 @@ async fn sessions_stream_turns_approvals_and_cancels_and_replay_after_a_restart(
             session: s.id.clone(),
             approval: a.id.clone(),
             option: None,
+            for_pane: None,
         }))
         .await
         .expect("approve"),
@@ -326,6 +327,7 @@ async fn sessions_stream_turns_approvals_and_cancels_and_replay_after_a_restart(
             session: s.id.clone(),
             approval: a.id.clone(),
             option: None,
+            for_pane: None,
         }))
         .await
         .is_err()

@@ -503,6 +503,11 @@ sessions` does the same from a shell ([cli.md](cli.md#agent-runs)).
 Only pi runs sessions so far. Creating a session on `claude`, `codex`, or
 an ACP harness is refused with that reason.
 
+An app shows a session with a `transcript` and writes to it with a
+`composer` ([termapp.md](termapp.md#agent-sessions-transcript-and-composer)):
+the session's events go from the daemon to the pane's terminal interface
+and to the desktop without passing through the app.
+
 ### Events
 
 Every harness's output becomes the same events, shaped after the Agent
@@ -527,6 +532,13 @@ one kind:
 then each new one, in order and none missing. It ends with
 `terminal.unsubscribe`, or with a `terminal.end` notification when the
 session closes.
+
+With `for_pane`, `agent.sessions.events`, `agent.sessions.approve`, and
+`agent.sessions.deny` are asked for the app in that app pane: the desktop
+drawing the app's transcript uses it. The daemon then checks the app's
+grant as well as the caller's: the app must hold the method, and the
+session must be one the app may see (one it created, unless it holds the
+owner grant). `taps.subscribe` takes `for_pane` the same way.
 
 A session's state is `starting`, `idle`, `working`, `waiting` (for an
 approval), `detached` (no harness runs), or `closed`.
@@ -616,4 +628,5 @@ no prompt, so it calls no model.
   by hand.
 - Sessions over Claude Code, Codex, and ACP harnesses.
 - Running the pi contract test in CI against each new pi release.
-- `/selection` in pi: attaching the desktop's current selection.
+- `/selection` in pi: attaching the desktop's current selection. (An
+  app's `composer` attaches it, as tmux's newest buffer.)

@@ -68,6 +68,9 @@ pub struct Apps {
 struct Hosted {
     instance: String,
     app_id: String,
+    /// The app's grant: what a desktop may read or answer for it
+    /// (`for_pane`).
+    grant: api::Grant,
     /// The host's connection.
     conn: u64,
     live: bool,
@@ -319,13 +322,14 @@ impl Apps {
         next
     }
 
-    /// The registered app `instance` hosts pane `pane` on connection
-    /// `conn`. Returns what `apps.input` sends it.
+    /// The registered app `instance`, holding `grant`, hosts pane `pane`
+    /// on connection `conn`. Returns what `apps.input` sends it.
     pub fn host(
         &self,
         pane: u32,
         instance: &str,
         app_id: &str,
+        grant: &api::Grant,
         conn: u64,
     ) -> tokio::sync::mpsc::UnboundedReceiver<api::AppInput> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -336,6 +340,7 @@ impl Apps {
                 Hosted {
                     instance: instance.to_owned(),
                     app_id: app_id.to_owned(),
+                    grant: grant.clone(),
                     conn,
                     live: true,
                     view: String::new(),
@@ -432,6 +437,23 @@ impl Apps {
                 return self.tree_now(q);
             }
         }
+    }
+
+    /// The app pane `pane`'s app instance and grant: what a desktop drawing
+    /// its bound streams reads with (`for_pane`), besides its own grant.
+    pub fn app_of(&self, pane: u32) -> Result<(String, api::Grant), RpcError> {
+        let h = self
+            .hosted
+            .lock()
+            .map_err(|_| RpcError::new(code::INTERNAL, "app registry poisoned"))?;
+        h.get(&pane)
+            .map(|e| (e.instance.clone(), e.grant.clone()))
+            .ok_or_else(|| {
+                RpcError::new(
+                    code::NOT_FOUND,
+                    format!("pane %{pane} runs no registered app"),
+                )
+            })
     }
 
     /// Connection `conn` closed: the panes it hosted keep their last view,
@@ -592,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn an_app_pane_keeps_its_last_view_when_its_host_stops() {
         let apps = Apps::default();
-        let mut keys = apps.host(7, "local.x-1", "local.x", 3);
+        let mut keys = apps.host(7, "local.x-1", "local.x", &api::Grant::default(), 3);
         let mut t = topology(&[7, 8]);
         apps.annotate(&mut t);
         assert_eq!(t.panes[0].app.as_ref().map(|a| a.live), Some(true));
@@ -701,7 +723,7 @@ mod tests {
     #[tokio::test]
     async fn a_reader_gets_the_tree_then_only_what_changed() {
         let apps = Apps::default();
-        let _keys = apps.host(7, "local.x-1", "local.x", 3);
+        let _keys = apps.host(7, "local.x-1", "local.x", &api::Grant::default(), 3);
         let frame = |cmd: &str| {
             let mut root = view_tree::Node::new(
                 "panes",

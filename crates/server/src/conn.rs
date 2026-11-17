@@ -666,6 +666,30 @@ fn app_filters(
     }
 }
 
+/// What a desktop asks for the app in pane `pane` (a request's
+/// `for_pane`), checked against that app's grant as if the app asked:
+/// `method`, the panes `request` names, the grant's expiry, and `also`
+/// (with the app as the caller).
+fn app_may(
+    state: &State,
+    pane: u32,
+    method: &str,
+    request: &api::Request,
+    also: impl FnOnce(&crate::sessions::Caller) -> Result<(), RpcError>,
+) -> Result<(), RpcError> {
+    let (instance, grant) = state.apps.app_of(pane)?;
+    let in_app = |e: RpcError| {
+        RpcError::new(
+            e.code,
+            format!("for the app in pane %{pane}: {}", e.message),
+        )
+    };
+    crate::grants::Grant(grant.clone())
+        .check_owning(method, request, |_| false)
+        .map_err(in_app)?;
+    also(&crate::sessions::Caller { instance, grant }).map_err(in_app)
+}
+
 /// `apps.register`: check the ticket and that this connection's process
 /// runs in the launch's pane, then hold the app's grant from now on.
 async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire::Response {
@@ -720,7 +744,10 @@ async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire:
             }
             // The pane is an app pane now: keys for it come here, and
             // watchers see it marked.
-            let mut keys = state.apps.host(r.pane, &r.instance, &r.app_id, conn.id);
+            let granted = r.grant.clone().unwrap_or_default();
+            let mut keys = state
+                .apps
+                .host(r.pane, &r.instance, &r.app_id, &granted, conn.id);
             let (to, pane) = (conn.clone(), r.pane);
             tokio::spawn(async move {
                 while let Some(mut input) = keys.recv().await {
@@ -764,6 +791,22 @@ async fn agent_sessions(state: &Arc<State>, conn: &Conn, req: wire::Request) {
         grant: conn.grant.lock().map(|g| g.0.clone()).unwrap_or_default(),
     };
     let sessions = &state.sessions;
+    // A desktop drawing an app's bound transcript reads and answers for
+    // that app: the app's grant must allow it too.
+    let for_app = match &request {
+        R::AgentSessionsEvents(q) => q.for_pane.map(|p| (p, q.session.clone())),
+        R::AgentSessionsApprove(a) | R::AgentSessionsDeny(a) => {
+            a.for_pane.map(|p| (p, a.session.clone()))
+        }
+        _ => None,
+    };
+    if let Some((pane, session)) = for_app
+        && let Err(e) = app_may(state, pane, &req.method, &request, |caller| {
+            sessions.get(caller, &session).map(|_| ())
+        })
+    {
+        return send(failure(req.id, e)).await;
+    }
     let one = |r: Result<api::AgentSession, RpcError>| match r {
         Ok(s) => ok(req.id, s.encode_to_vec()),
         Err(e) => failure(req.id, e),
@@ -1183,6 +1226,17 @@ async fn taps_subscribe(service: &DaemonService, conn: &Conn, req: wire::Request
             .await;
         }
     };
+    // A desktop drawing an app's bound log follows the tap for that app:
+    // the app's grant must allow it too.
+    if let Some(pane) = p.for_pane {
+        let asked = api::Request::TapsSubscribe(api::TapSubscribe {
+            for_pane: None,
+            ..p.clone()
+        });
+        if let Err(e) = app_may(&service.0, pane, &req.method, &asked, |_| Ok(())) {
+            return reply(failure(req.id, e)).await;
+        }
+    }
     let level = api::TapLevel::try_from(p.level).unwrap_or(api::TapLevel::Unspecified);
     if level == api::TapLevel::Unspecified {
         return reply(failure(

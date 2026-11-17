@@ -87,6 +87,17 @@ the newest in the pane and publishes it to desktops. A tree can be sent
 any time after the handshake. Until the first one arrives, the pane says
 it is starting.
 
+A node with `bind` (a `transcript` or `composer` bound to an agent
+session, a `log` bound to a tap) is drawn from that stream by the host
+and the desktop, which follow it themselves
+([termapp.md](termapp.md#bound-streams)): the program never receives its
+events, and does not send its content. A desktop answers an approval
+card's buttons itself, for the app (with `for_pane`, under the app's
+grant). Every other key and click on these nodes comes to the program,
+which sends prompts, stops turns, and answers approvals with its own
+calls (`agent.sessions.send`, `agent.sessions.cancel`,
+`agent.sessions.approve`).
+
 ## Input: host to app
 
 Input from the pane's terminal and from desktops arrives as `event`,

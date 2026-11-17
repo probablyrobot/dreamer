@@ -241,6 +241,7 @@ fn answer(d: &DaemonArgs, allow: bool, args: &[String]) -> Result<(), String> {
         session: id.clone(),
         approval: approval.clone(),
         option,
+        for_pane: None,
     };
     let request = if allow {
         Request::AgentSessionsApprove(p)
@@ -269,6 +270,7 @@ async fn follow(
         after: Some(after),
         follow: true,
         limit: None,
+        for_pane: None,
     };
     let Response::AgentSessionsEvents(sub) = call(c, Request::AgentSessionsEvents(q)).await? else {
         return Err("unexpected reply".into());
@@ -375,6 +377,7 @@ fn events(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
                 after: Some(after),
                 follow: false,
                 limit: None,
+                for_pane: None,
             };
             let Response::AgentSessionsEvents(b) =
                 call(&mut c, Request::AgentSessionsEvents(q)).await?

@@ -647,6 +647,27 @@ pub async fn run(
     inputs: &mut tokio::sync::mpsc::UnboundedReceiver<Input>,
     publish: &mut dyn FnMut(&App) -> Result<(), String>,
 ) -> Result<(), String> {
+    run_with(
+        path,
+        endpoint,
+        inputs,
+        publish,
+        &crate::bound::Streams::default(),
+    )
+    .await
+}
+
+/// [`run`], following the streams the tree's bound nodes name into
+/// `streams` (for the presentation to draw them); `publish` is called
+/// again when they change.
+pub async fn run_with(
+    path: PathBuf,
+    endpoint: Endpoint,
+    inputs: &mut tokio::sync::mpsc::UnboundedReceiver<Input>,
+    publish: &mut dyn FnMut(&App) -> Result<(), String>,
+    streams: &crate::bound::Streams,
+) -> Result<(), String> {
+    let mut follower = crate::bound::Follower::new(None);
     let current: Current = Rc::default();
     let mut pkg = load_package(&path, &current).await?;
     let mut stamp = stamps(&path, &pkg.manifest);
@@ -671,12 +692,23 @@ pub async fn run(
     let (remote_tx, mut remote) = tokio::sync::mpsc::unbounded_channel::<Input>();
     loop {
         if dirty {
+            let frame = app.frame();
+            // The streams the tree binds are followed before it is drawn.
+            if let (Some(c), Some(f)) = (conn.as_ref(), frame.as_ref())
+                && let Err(why) = follower.sync(&c.client, f, streams).await
+            {
+                conn = None;
+                *current.borrow_mut() = None;
+                follower.reset();
+                app.link = Link::Stale(now_ms(), why);
+                retry = tokio::time::Instant::now() + backoff;
+            }
             publish(&app)?;
             if let Some(h) = &hosting {
                 h.send_replace(app.to_published(&pkg.source));
             }
             if let Some(h) = &hosting_tree {
-                h.send_replace(app.frame());
+                h.send_replace(frame);
             }
             dirty = false;
         }
@@ -826,6 +858,19 @@ pub async fn run(
                         commands.push((c, Some(e)));
                     }
                 }
+                // What transcripts and composers asked: on the app's own
+                // connection, under its grant.
+                for ask in app.take_asks() {
+                    let Some(c) = conn.as_ref() else {
+                        app.status = Some("not sent (disconnected)".into());
+                        break;
+                    };
+                    let client = c.client.clone();
+                    if let Some(gone) = crate::bound::perform(&mut app, &client, streams, ask).await {
+                        lost = Some(gone);
+                        break;
+                    }
+                }
                 for (name, event) in commands {
                     let (again, gone) =
                         run_command(&mut app, &pkg, conn.as_ref(), &name, event.as_ref()).await;
@@ -839,6 +884,11 @@ pub async fn run(
             p = pushed => match p {
                 Some(client::Pushed::Event { topic, payload, .. }) => {
                     let n = api::Notification::decode(&topic, &payload);
+                    if let Ok(n) = &n
+                        && streams.take(n)
+                    {
+                        dirty = true;
+                    }
                     if let Ok(api::Notification::AppsInput(i)) = &n
                         && let Some(input) = from_remote(i)
                     {
@@ -967,6 +1017,7 @@ pub async fn run(
         if let Some(why) = lost {
             conn = None;
             *current.borrow_mut() = None;
+            follower.reset();
             app.link = Link::Stale(now_ms(), why);
             retry = tokio::time::Instant::now() + backoff;
             dirty = true;

@@ -313,6 +313,7 @@ async fn run(
             panes: f.spec.panes.clone(),
             every_pane: f.spec.every_pane,
             interval_ms: Some(100),
+            for_pane: None,
         }))
         .await
         .map_err(|e| format!("taps.subscribe: {e}"))?;

@@ -29,7 +29,7 @@
 //! assert_eq!(frame.root.children.len(), 2);
 //! ```
 
-use view_tree::{Direction, Field, Frame, Kind, Node};
+use view_tree::{Bind, Direction, Field, Frame, Kind, Node};
 
 /// A node being built. Methods that do not apply to its kind (`row` on a
 /// text node, say) change nothing.
@@ -179,6 +179,47 @@ pub fn list(key: impl Into<String>) -> El {
 /// Lines that follow the newest; add them with [`El::item`].
 pub fn log(key: impl Into<String>) -> El {
     El::new(key, Kind::Log)
+}
+
+/// The newest lines of pane `pane`, as the host follows them from a tap:
+/// the lines never pass through the app.
+pub fn tapped_log(key: impl Into<String>, pane: u32) -> El {
+    El(Node::new(key, Kind::Log).bound(Bind::Tap(pane)))
+}
+
+/// Agent session `session`'s conversation, drawn by the host from the
+/// session's events: streaming markdown, thinking, tool and approval
+/// cards, the plan, and usage. The events never pass through the app.
+pub fn transcript(key: impl Into<String>, session: impl Into<String>) -> El {
+    El(Node::new(
+        key,
+        Kind::Transcript {
+            thinking: false,
+            back: 0,
+        },
+    )
+    .bound(Bind::Session(session.into())))
+}
+
+/// A prompt for agent session `session`: several lines of `value` (the
+/// app keeps it, as for an input), with `attachments` shown by label.
+/// The host shows whether a turn runs from the session itself.
+pub fn composer<S: Into<String>>(
+    key: impl Into<String>,
+    session: impl Into<String>,
+    value: impl Into<String>,
+    attachments: impl IntoIterator<Item = S>,
+) -> El {
+    El(Node::new(
+        key,
+        Kind::Composer {
+            label: String::new(),
+            value: value.into(),
+            placeholder: String::new(),
+            attachments: attachments.into_iter().map(Into::into).collect(),
+        },
+    )
+    .bound(Bind::Session(session.into())))
 }
 
 /// Text, over as many lines as it has.

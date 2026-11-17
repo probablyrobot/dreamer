@@ -15,6 +15,10 @@
 //! 5. **Key to echo under that load.**
 //! 6. **Tab switch:** selecting the other tab until each of its panes has
 //!    painted its content.
+//! 7. **Streaming transcript:** a native panel drawing an agent session's
+//!    transcript while a long answer streams in, a delta every 10 ms: each
+//!    render's build time, the time between renders, and how long a delta
+//!    waits to be drawn.
 //!
 //! The results are written to the file as JSON, and the process exits.
 
@@ -161,6 +165,176 @@ async fn key_to_echo(
         sleep(cx, Duration::from_millis(10)).await;
     }
     out
+}
+
+/// Deltas a streaming transcript gets, one every [`DELTA_EVERY`].
+const DELTAS: u64 = 500;
+const DELTA_EVERY: Duration = Duration::from_millis(10);
+
+/// A native panel draws an agent session's transcript while a long answer
+/// streams into it: a delta every 10 ms for 5 s (about 4,000 words of
+/// markdown, with code blocks), then a tool card and an approval card.
+/// The deltas go straight into the panel's streams, as a follow pushes
+/// them, so this measures the desktop's side: how long each panel render
+/// takes to build, how often it renders, and how long a delta waits to be
+/// drawn.
+async fn transcript(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    put: &mut impl FnMut(&str, f64, &str),
+) {
+    use api::agent_session_event::Kind as K;
+    use view_tree::{Bind, Frame, Kind, Node};
+    let streams = app_model::bound::Streams::default();
+    let mut root = Node::new("main", Kind::Column);
+    root.children = vec![
+        Node::new(
+            "chat",
+            Kind::Transcript {
+                thinking: false,
+                back: 0,
+            },
+        )
+        .bound(Bind::Session("bench".into())),
+        Node::new(
+            "prompt",
+            Kind::Composer {
+                label: String::new(),
+                value: String::new(),
+                placeholder: "Ask".into(),
+                attachments: Vec::new(),
+            },
+        )
+        .bound(Bind::Session("bench".into())),
+    ];
+    let tree = Frame {
+        title: "Transcript".into(),
+        status: String::new(),
+        focus: Some("prompt".into()),
+        root,
+    };
+    let st = streams.clone();
+    let panel = cx
+        .update_window(any, |_, _, cx| {
+            ws.upgrade().map(|ws| {
+                ws.update(cx, |w, cx| {
+                    let p = cx.new(|cx| crate::panel::AppPanel::fixed(tree, st, cx));
+                    w.panel = Some(p.clone());
+                    cx.notify();
+                    p
+                })
+            })
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| fail("no workspace for the transcript"));
+    let feed = |seq: u64, kind: K| {
+        streams.take(&api::Notification::AgentSessionsEvents(
+            api::AgentSessionEvents {
+                session: "bench".into(),
+                subscription: Some(1),
+                events: vec![api::AgentSessionEvent {
+                    seq,
+                    unix_ms: 0,
+                    kind: Some(kind),
+                }],
+                more: false,
+            },
+        ));
+    };
+    let text = |t: String| api::AgentText { text: t };
+    feed(
+        1,
+        K::UserMessage(text("explain the build, at length".into())),
+    );
+    sleep(cx, Duration::from_millis(500)).await;
+    if let Ok(mut log) = crate::panel::RENDER_LOG.lock() {
+        *log = Some(Vec::new());
+    }
+    let mut fed: Vec<(Instant, u64)> = Vec::new();
+    for i in 0..DELTAS {
+        let delta = match i % 50 {
+            0 => format!("\n\n## Part {}\n\n", i / 50 + 1),
+            20 => "\n\n```rust\nfn main() {\n    println!(\"step\");\n}\n```\n\n".into(),
+            _ => format!("Word {i} of the answer, with **some** `code` and more text. "),
+        };
+        feed(i + 2, K::TextDelta(text(delta)));
+        fed.push((Instant::now(), streams.revision()));
+        cx.update(|cx| panel.update(cx, |_, cx| cx.notify()));
+        sleep(cx, DELTA_EVERY).await;
+    }
+    feed(
+        DELTAS + 2,
+        K::ToolCall(api::AgentToolCall {
+            id: "t1".into(),
+            name: "bash".into(),
+            status: api::AgentToolStatus::Finished as i32,
+            input: Some(r#"{"command":"cargo build"}"#.into()),
+            output: Some("   Compiling dreamer\n    Finished".into()),
+        }),
+    );
+    feed(
+        DELTAS + 3,
+        K::ApprovalRequest(api::AgentApprovalRequest {
+            id: "a1".into(),
+            title: "Allow bash?".into(),
+            message: Some("cargo test".into()),
+            options: Vec::new(),
+            expires_unix_ms: None,
+        }),
+    );
+    cx.update(|cx| panel.update(cx, |_, cx| cx.notify()));
+    sleep(cx, Duration::from_millis(300)).await;
+    let renders = crate::panel::RENDER_LOG
+        .lock()
+        .ok()
+        .and_then(|mut l| l.take())
+        .unwrap_or_default();
+    let mut work: Vec<f64> = renders.iter().map(|r| r.1 as f64 / 1e6).collect();
+    let mut gaps: Vec<f64> = renders.windows(2).map(|w| ms(w[1].0 - w[0].0)).collect();
+    // A delta waits from being taken until a render that draws it.
+    let mut waits: Vec<f64> = fed
+        .iter()
+        .filter_map(|(at, rev)| {
+            renders
+                .iter()
+                .find(|r| r.2 >= *rev && r.0 >= *at)
+                .map(|r| ms(r.0 - *at) + r.1 as f64 / 1e6)
+        })
+        .collect();
+    put(
+        &format!("transcript: panel renders while {DELTAS} deltas stream over 5 s"),
+        renders.len() as f64,
+        "renders",
+    );
+    put("transcript: deltas drawn", waits.len() as f64, "deltas");
+    put("transcript: render time, p50", pct(&mut work, 0.5), "ms");
+    put("transcript: render time, p95", pct(&mut work, 0.95), "ms");
+    put("transcript: render time, max", pct(&mut work, 1.0), "ms");
+    put(
+        "transcript: time between renders, p95",
+        pct(&mut gaps, 0.95),
+        "ms",
+    );
+    put(
+        "transcript: delta to drawn, p50",
+        pct(&mut waits, 0.5),
+        "ms",
+    );
+    put(
+        "transcript: delta to drawn, p95",
+        pct(&mut waits, 0.95),
+        "ms",
+    );
+    let _ = cx.update_window(any, |_, _, cx| {
+        if let Some(ws) = ws.upgrade() {
+            ws.update(cx, |w, cx| {
+                w.panel = None;
+                cx.notify();
+            });
+        }
+    });
 }
 
 pub(crate) async fn run(
@@ -374,6 +548,9 @@ pub(crate) async fn run(
             "ms",
         );
     }
+
+    // 7. A streaming transcript.
+    transcript(any, &ws, cx, &mut put).await;
 
     let report = json!({ "workload": "gui", "results": results });
     if let Err(e) = std::fs::write(

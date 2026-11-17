@@ -18,10 +18,12 @@ use view_tree::{Direction, Frame as Tree, Kind, Node, Tone};
 
 /// What the terminal keeps per node key between draws, so an update to
 /// the tree does not lose it: how far each table, list, and scroll node
-/// is scrolled.
+/// is scrolled. And the streams bound nodes draw, as the host follows
+/// them.
 #[derive(Debug, Default)]
 pub struct ViewState {
     offsets: HashMap<String, usize>,
+    pub streams: app_model::bound::Streams,
 }
 
 /// Draw `app` once, with nothing kept from an earlier draw.
@@ -80,6 +82,8 @@ fn natural(n: &Node) -> u16 {
         Kind::Form { fields, .. } => count(fields.len()),
         Kind::Markdown { text } => count(rich::markdown(text).len()),
         Kind::Code { text, .. } | Kind::Diff { text } => count(text.lines().count()),
+        Kind::Transcript { .. } => 10,
+        Kind::Composer { .. } => crate::bound::composer_height(n),
         Kind::Button { .. }
         | Kind::Input { .. }
         | Kind::Select { .. }
@@ -104,7 +108,8 @@ fn fixed(n: &Node) -> bool {
         | Kind::Toggle { .. }
         | Kind::Badge { .. }
         | Kind::Progress { .. }
-        | Kind::Status { .. } => true,
+        | Kind::Status { .. }
+        | Kind::Composer { .. } => true,
         Kind::Row | Kind::Column => !n.children.is_empty() && n.children.iter().all(fixed),
         _ => false,
     }
@@ -134,7 +139,7 @@ fn share_row(n: &Node) -> Constraint {
 /// Colours come from the terminal's own palette, by ANSI index, never as
 /// RGB: in Dreamer that palette is the one scheme, so the terminal draws
 /// the components in the same colours the desktop takes from it.
-const ACCENT: Color = Color::Blue;
+pub(crate) const ACCENT: Color = Color::Blue;
 
 fn tone(t: Tone) -> Style {
     let fg = match t {
@@ -148,7 +153,7 @@ fn tone(t: Tone) -> Style {
 }
 
 /// How a span of markdown, code, or a diff is drawn.
-fn role(r: Role) -> Style {
+pub(crate) fn role(r: Role) -> Style {
     let s = Style::default();
     match r {
         Role::Plain => s,
@@ -170,7 +175,7 @@ fn role(r: Role) -> Style {
 }
 
 /// Rich lines as Ratatui lines, `width` columns wide (for rules).
-fn rich_lines(lines: Vec<rich::Line>, width: u16) -> Vec<Line<'static>> {
+pub(crate) fn rich_lines(lines: Vec<rich::Line>, width: u16) -> Vec<Line<'static>> {
     lines
         .into_iter()
         .map(|l| {
@@ -347,6 +352,15 @@ fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: 
                 .with_selected(n.selected_index());
             f.render_stateful_widget(table, area, &mut s);
             state.offsets.insert(n.key.clone(), s.offset());
+        }
+        Kind::Log if matches!(n.bind, Some(view_tree::Bind::Tap(_))) => {
+            if let Some(view_tree::Bind::Tap(pane)) = &n.bind {
+                crate::bound::draw_tap(n, *pane, &state.streams, f, area);
+            }
+        }
+        Kind::Transcript { .. } => crate::bound::draw_transcript(n, &state.streams, f, area),
+        Kind::Composer { .. } => {
+            crate::bound::draw_composer(n, focused, &state.streams, f, area);
         }
         Kind::List { .. } | Kind::Log => {
             let items: Vec<ListItem> = n

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 50;
+pub const PROTOCOL_MINOR: u32 = 51;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2851,7 +2851,7 @@ pub struct AppInput {
     /// A key by the app model's names: a character, Enter, Esc, Tab, Up, Ctrl-c, F2, ... Empty when the input is one of the fields below; exactly one is given.
     #[prost(string, tag = "2")]
     pub key: String,
-    /// Text for the view's focused input (a text or number field, a prompt) as one edit: text committed by the platform's text input (IME) or pasted. Line breaks become spaces and other control characters are dropped. A view with no focused input ignores it, so pasted text never runs a command.
+    /// Text for the view's focused input (a text or number field, a prompt) as one edit: text committed by the platform's text input (IME) or pasted. Line breaks become spaces (a composer keeps them) and other control characters are dropped. A view with no focused input ignores it, so pasted text never runs a command.
     #[prost(string, optional, tag = "3")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -3459,6 +3459,10 @@ pub struct TapSubscribe {
     #[prost(uint32, optional, tag = "4")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interval_ms: Option<u32>,
+    /// Follow for the app in this app pane, as a desktop drawing a `log` bound to a tap: the app's grant must allow this subscription too, as well as the caller's.
+    #[prost(uint32, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_pane: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -4736,6 +4740,10 @@ pub struct AgentSessionAnswer {
     #[prost(string, optional, tag = "3")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub option: Option<String>,
+    /// Answer for the app in this app pane, as a desktop drawing its `transcript`'s approval card: the app's grant must allow this method and the session must be one the app may see, as well as the caller's.
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_pane: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -4754,6 +4762,10 @@ pub struct AgentSessionEventsQuery {
     #[prost(uint32, optional, tag = "4")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Read for the app in this app pane, as a desktop drawing a `transcript` bound to the session: the app's grant must allow agent.sessions.events and the session must be one the app may see, as well as the caller's.
+    #[prost(uint32, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_pane: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
