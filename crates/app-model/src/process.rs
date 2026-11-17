@@ -15,6 +15,13 @@
 //!
 //! All of the program's I/O runs on tasks of its own, so a program that
 //! stops reading or writing never holds up drawing or input.
+//!
+//! A script app (`[script]`, an `app.ts`) is hosted the same way: its
+//! code runs in an [`Engine`] the host is given, on a thread of its own,
+//! and speaks the same protocol over channels instead of pipes. So its
+//! calls pass the same capability check, and when it fails (an error the
+//! engine cannot recover from, or a call that ran too long) its last view
+//! stays, marked stale.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -30,6 +37,7 @@ use view_tree::{Frame, Kind, Node};
 use crate::manifest::{Manifest, ProcessSpec};
 use crate::model::{App, Link};
 use crate::run::{Conn, Endpoint, Input, connect, from_remote, host_trees, host_views, now_ms};
+use app_protocol::build;
 
 /// Messages held for a program that is not reading its input. Past this,
 /// new ones are not queued and the status line says so.
@@ -78,12 +86,82 @@ enum Out {
     Line(String),
     TooLong,
     End,
+    /// A script app's engine stopped it, for this reason.
+    Failed(String),
+    /// A script app asked to quit.
+    Quit,
+}
+
+/// What a script app's engine is given: the app, its JavaScript, and its
+/// end of the protocol.
+#[derive(Debug)]
+pub struct EngineStart {
+    pub app: AppInfo,
+    /// The source's name, for positions in errors (`app.ts`).
+    pub name: String,
+    pub js: String,
+    /// Data for a preview, as JSON: the app draws it instead of loading.
+    pub fixture: Option<String>,
+    /// Messages from the host, one line each.
+    pub input: mpsc::Receiver<String>,
+    pub output: mpsc::UnboundedSender<EngineOut>,
+}
+
+/// What a script app's engine says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineOut {
+    /// A protocol message, one line.
+    Line(String),
+    /// A line the app logged, kept like a program's standard error.
+    Log(String),
+    /// The app stopped and cannot go on: why.
+    Failed(String),
+    /// The app asked to quit.
+    Quit,
+}
+
+/// Starts a script app's engine (the app host's TypeScript runtime). It
+/// runs off the caller's thread and ends when its input closes.
+pub type Engine = Arc<dyn Fn(EngineStart) -> Result<(), String> + Send + Sync>;
+
+/// A script app's JavaScript and the name it goes by: the source itself,
+/// or for TypeScript the JavaScript built from it, which must match it.
+pub fn script_js(dir: &Path, m: &Manifest) -> Result<(String, String), String> {
+    let spec = m.script.as_ref().ok_or("not a script app")?;
+    let src = dir.join(&spec.source);
+    let text = std::fs::read_to_string(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+    match build::kind(&spec.source) {
+        Some(build::Kind::TypeScript) => {
+            let out = build::output(&spec.source);
+            let rebuild = format!(
+                "run `dream app check {}` to build it from {}",
+                dir.display(),
+                spec.source
+            );
+            let js = std::fs::read_to_string(dir.join(&out))
+                .map_err(|_| format!("script: {out} is not built; {rebuild}"))?;
+            if !build::built_from(&js, &text) {
+                return Err(format!(
+                    "script: {out} was built from another {}; {rebuild}",
+                    spec.source
+                ));
+            }
+            Ok((spec.source.clone(), js))
+        }
+        Some(build::Kind::JavaScript) => Ok((spec.source.clone(), text)),
+        None => Err(format!(
+            "script.source: `{}` is not .ts or .js",
+            spec.source
+        )),
+    }
 }
 
 /// A running program: where its input goes, what it wrote, its standard
 /// error, and itself.
 struct Running {
-    child: tokio::process::Child,
+    /// The program; none for a script app, whose engine ends when its
+    /// input closes.
+    child: Option<tokio::process::Child>,
     to_app: Option<mpsc::Sender<String>>,
     out: mpsc::Receiver<Out>,
     tail: Arc<Mutex<VecDeque<String>>>,
@@ -110,11 +188,11 @@ impl Running {
     async fn stop(mut self) {
         self.send(&HostMessage::Quit);
         self.to_app = None;
-        if tokio::time::timeout(GRACE, self.child.wait())
-            .await
-            .is_err()
-        {
-            let _ = self.child.kill().await;
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        if tokio::time::timeout(GRACE, child.wait()).await.is_err() {
+            let _ = child.kill().await;
         }
     }
 }
@@ -129,8 +207,101 @@ fn program(dir: &Path, spec: &ProcessSpec) -> PathBuf {
     }
 }
 
-/// Start the program and its I/O tasks, and say hello.
-fn start(dir: &Path, m: &Manifest, live: bool) -> Result<Running, String> {
+/// Start the program and its I/O tasks, or a script app's engine, and say
+/// hello.
+fn start(
+    dir: &Path,
+    m: &Manifest,
+    live: bool,
+    engine: Option<&Engine>,
+    fixture: Option<String>,
+) -> Result<Running, String> {
+    let running = if m.is_script() {
+        start_script(dir, m, engine, fixture)?
+    } else {
+        start_program(dir, m)?
+    };
+    running.send(&HostMessage::Hello {
+        protocol: PROTOCOL,
+        app: info(m),
+        methods: m.methods(),
+        live,
+    });
+    Ok(running)
+}
+
+fn info(m: &Manifest) -> AppInfo {
+    AppInfo {
+        id: m.id.clone(),
+        version: m.version.clone(),
+        title: m.title.clone(),
+    }
+}
+
+/// Keep `line` as the last of the tail.
+fn keep(tail: &Mutex<VecDeque<String>>, line: &str) {
+    let line: String = line.chars().take(500).collect();
+    if let Ok(mut t) = tail.lock() {
+        if t.len() == TAIL {
+            t.pop_front();
+        }
+        t.push_back(line);
+    }
+}
+
+/// Start a script app's engine; what it logs is kept as a program's
+/// standard error is.
+fn start_script(
+    dir: &Path,
+    m: &Manifest,
+    engine: Option<&Engine>,
+    fixture: Option<String>,
+) -> Result<Running, String> {
+    let engine = engine.ok_or("this host does not run script apps")?;
+    let (name, js) = script_js(dir, m)?;
+    let (to_app, input) = mpsc::channel::<String>(QUEUED);
+    let (output, mut said_rx) = mpsc::unbounded_channel();
+    engine(EngineStart {
+        app: info(m),
+        name,
+        js,
+        fixture,
+        input,
+        output,
+    })?;
+    let (out_tx, out) = mpsc::channel::<Out>(64);
+    let tail = Arc::new(Mutex::new(VecDeque::new()));
+    let kept = tail.clone();
+    let said = tokio::spawn(async move {
+        while let Some(o) = said_rx.recv().await {
+            let msg = match o {
+                EngineOut::Line(l) => Out::Line(l),
+                EngineOut::Log(l) => {
+                    keep(&kept, &l);
+                    continue;
+                }
+                EngineOut::Failed(why) => Out::Failed(why),
+                EngineOut::Quit => Out::Quit,
+            };
+            let last = !matches!(msg, Out::Line(_));
+            if out_tx.send(msg).await.is_err() || last {
+                return;
+            }
+        }
+        let _ = out_tx.send(Out::End).await;
+    });
+    Ok(Running {
+        child: None,
+        to_app: Some(to_app),
+        out,
+        tail,
+        said,
+        hello: false,
+    })
+}
+
+/// Start the program and its I/O tasks.
+fn start_program(dir: &Path, m: &Manifest) -> Result<Running, String> {
     let spec = m.process.as_ref().ok_or("not a process app")?;
     let prog = program(dir, spec);
     let mut child = tokio::process::Command::new(&prog)
@@ -184,34 +355,17 @@ fn start(dir: &Path, m: &Manifest, live: bool) -> Result<Running, String> {
     let said = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let line: String = line.chars().take(500).collect();
-            if let Ok(mut t) = kept.lock() {
-                if t.len() == TAIL {
-                    t.pop_front();
-                }
-                t.push_back(line);
-            }
+            keep(&kept, &line);
         }
     });
-    let running = Running {
-        child,
+    Ok(Running {
+        child: Some(child),
         to_app: Some(to_app),
         out,
         tail,
         said,
         hello: false,
-    };
-    running.send(&HostMessage::Hello {
-        protocol: PROTOCOL,
-        app: AppInfo {
-            id: m.id.clone(),
-            version: m.version.clone(),
-            title: m.title.clone(),
-        },
-        methods: m.methods(),
-        live,
-    });
-    Ok(running)
+    })
 }
 
 /// What one line from the program does to the view.
@@ -339,6 +493,7 @@ fn waiting(m: &Manifest, what: &str) -> Frame {
 pub async fn run_process(
     path: PathBuf,
     endpoint: Endpoint,
+    engine: Option<Engine>,
     inputs: &mut mpsc::UnboundedReceiver<Input>,
     publish: &mut dyn FnMut(&Frame) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -357,7 +512,7 @@ pub async fn run_process(
     let mut view: Option<Frame> = None;
     let mut stopped: Option<String> = None;
     let mut status: Option<String> = None;
-    let mut running = match start(&dir, &manifest, false) {
+    let mut running = match start(&dir, &manifest, false, engine.as_ref(), None) {
         Ok(r) => Some(r),
         Err(e) => {
             stopped = Some(e);
@@ -453,16 +608,33 @@ pub async fn run_process(
                     stopped = Some(format!("a message over {MAX_LINE} bytes"));
                     dirty = true;
                 }
+                Some(Out::Quit) => {
+                    if let Some(r) = running.take() {
+                        r.stop().await;
+                    }
+                    return Ok(());
+                }
+                Some(Out::Failed(why)) => {
+                    if let Some(r) = running.take() {
+                        r.stop().await;
+                    }
+                    app.link = Link::Stale(now_ms(), why.clone());
+                    stopped = Some(why);
+                    dirty = true;
+                }
                 Some(Out::End) | None => {
                     // Its output ended: it exits now, or is stopped.
                     let Some(mut r) = running.take() else { continue };
                     r.to_app = None;
-                    let status = match tokio::time::timeout(GRACE, r.child.wait()).await {
-                        Ok(Ok(s)) => Some(s),
-                        _ => {
-                            let _ = r.child.kill().await;
-                            None
-                        }
+                    let status = match r.child.as_mut() {
+                        None => None,
+                        Some(child) => match tokio::time::timeout(GRACE, child.wait()).await {
+                            Ok(Ok(s)) => Some(s),
+                            _ => {
+                                let _ = child.kill().await;
+                                None
+                            }
+                        },
                     };
                     if status.is_some_and(|s| s.success()) {
                         return Ok(());
@@ -549,19 +721,21 @@ pub async fn run_process(
                 if running.is_none() {
                     match k.as_str() {
                         "q" | "Esc" => break,
-                        "r" => match start(&dir, &manifest, conn.is_some()) {
-                            Ok(r) => {
-                                running = Some(r);
-                                stopped = None;
-                                status = None;
-                                app.link = if conn.is_some() {
-                                    Link::Live
-                                } else {
-                                    Link::Connecting
-                                };
+                        "r" => {
+                            match start(&dir, &manifest, conn.is_some(), engine.as_ref(), None) {
+                                Ok(r) => {
+                                    running = Some(r);
+                                    stopped = None;
+                                    status = None;
+                                    app.link = if conn.is_some() {
+                                        Link::Live
+                                    } else {
+                                        Link::Connecting
+                                    };
+                                }
+                                Err(e) => stopped = Some(e),
                             }
-                            Err(e) => stopped = Some(e),
-                        },
+                        }
                         _ => {}
                     }
                     continue;
@@ -591,14 +765,22 @@ pub async fn run_process(
     Ok(())
 }
 
-/// The process app at `path` as it first looks, with no daemon: its
-/// program's first view, within five seconds.
-pub async fn preview_process(path: &Path) -> Result<Frame, String> {
+/// The process or script app at `path` as it first looks, with no daemon:
+/// its first view, within five seconds. A script app draws its fixture
+/// (`fixtures/load.json`) as its data, when it has one.
+pub async fn preview_process(path: &Path, engine: Option<Engine>) -> Result<Frame, String> {
     let (manifest, _) = crate::run::load_with_text(&path.display().to_string())?;
     let dir = path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let mut r = start(&dir, &manifest, false)?;
+    let fixture = match std::fs::read_to_string(dir.join("fixtures").join("load.json")) {
+        Ok(text) if manifest.is_script() => {
+            serde_json::from_str::<Value>(&text).map_err(|e| format!("fixtures/load.json: {e}"))?;
+            Some(text)
+        }
+        _ => None,
+    };
+    let mut r = start(&dir, &manifest, false, engine.as_ref(), fixture)?;
     let mut view = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let result = loop {
@@ -619,6 +801,7 @@ pub async fn preview_process(path: &Path) -> Result<Frame, String> {
                 }
                 Said::Nothing => {}
             },
+            Ok(Some(Out::Failed(why))) => break Err(why),
             Ok(_) => {
                 let _ = tokio::time::timeout(GRACE, &mut r.said).await;
                 break Err(match r.last_said() {
@@ -745,7 +928,7 @@ exit 3
             tx.send(Input::Key("q".into())).expect("send");
         };
         let (ran, ()) = tokio::join!(
-            run_process(path.clone(), nowhere(), &mut inputs, &mut publish),
+            run_process(path.clone(), nowhere(), None, &mut inputs, &mut publish),
             drive
         );
         ran.expect("quit");

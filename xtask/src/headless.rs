@@ -17,6 +17,7 @@ pub const PACKAGES: &[&str] = &[
     "api",
     "app-model",
     "app-protocol",
+    "app-script",
     "bench",
     "client",
     "dreamer-server",

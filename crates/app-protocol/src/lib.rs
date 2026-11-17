@@ -13,6 +13,8 @@
 //!
 //! Each message is one JSON object on one line, tagged by `type`.
 
+pub mod build;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

@@ -52,6 +52,7 @@ mod profile;
 mod remote;
 mod service;
 mod sessions;
+mod strip;
 
 use std::process::ExitCode;
 

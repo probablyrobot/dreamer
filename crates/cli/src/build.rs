@@ -4,7 +4,9 @@
 //! it in a real tmux pane with exactly the grant it declares.
 //!
 //! Checking and drawing are `dreamer-termapp`'s (`--check --json`,
-//! `--preview`); this only runs it and moves files.
+//! `--preview`); this runs it and moves files. For a script app it first
+//! builds the JavaScript from the `app.ts` (`strip`), so check, preview,
+//! and install always run what the TypeScript says now.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,7 +16,7 @@ use serde_json::Value;
 use crate::daemon::DaemonArgs;
 
 pub const USAGE: &str = "usage:
-  dream app check PATH [--json]           validate a package (a directory or its app.toml)
+  dream app check PATH [--json]           validate a package (a directory or its app.toml); build its app.ts
   dream app preview PATH [--size WxH]     draw it once from fixtures/<source>.json, no daemon
   dream app install PATH [--name NAME]    check, preview, and install; the replaced version is kept
   dream app rollback NAME                 put the last good version back
@@ -90,7 +92,15 @@ pub fn check(args: &[String]) -> Result<(), String> {
         [p, j] if j == "--json" => (p, true),
         _ => return Err(USAGE.into()),
     };
-    let v = checked(&manifest(path))?;
+    let m = manifest(path);
+    if let Err(e) = crate::strip::build(&m) {
+        if json {
+            println!("{}", serde_json::json!({ "ok": false, "error": e }));
+            std::process::exit(1);
+        }
+        return Err(e);
+    }
+    let v = checked(&m)?;
     if json {
         println!("{v}");
         if ok_or_error(&v).is_err() {
@@ -132,7 +142,9 @@ pub fn preview(args: &[String]) -> Result<(), String> {
         [p, f, s] if f == "--size" => (p, Some(s.as_str())),
         _ => return Err(USAGE.into()),
     };
-    print!("{}", preview_text(&manifest(path), size)?);
+    let m = manifest(path);
+    crate::strip::build(&m)?;
+    print!("{}", preview_text(&m, size)?);
     Ok(())
 }
 
@@ -183,6 +195,7 @@ pub fn install(args: &[String]) -> Result<(), String> {
     };
     let m = manifest(path);
     let dir = m.parent().ok_or("no package directory")?.to_path_buf();
+    crate::strip::build(&m)?;
     let v = checked(&m)?;
     ok_or_error(&v)?;
     let id = v["id"].as_str().unwrap_or_default().to_owned();

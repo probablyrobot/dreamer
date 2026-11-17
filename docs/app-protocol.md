@@ -7,6 +7,11 @@ precisely enough to write an app in any language. For the package and how
 it runs in a pane, see [termapp.md](termapp.md#process-apps); for writing
 one in Rust, see [the Rust SDK](#the-rust-sdk).
 
+A script app (`app.ts`, [termapp.md](termapp.md#script-apps-appts)) is
+one more client of the same protocol: the host runs it in its own
+engine and exchanges these messages with it in memory, so its calls pass
+the same capability check.
+
 ## Framing
 
 - Each message is one JSON object on one line, ended by `\n`, in UTF-8.

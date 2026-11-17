@@ -84,10 +84,25 @@ used only by the build tool.
 | `ratatui` (no default features; `crossterm`) | `=0.30.2` | `dreamer-termapp`: pane app views | MIT |
 | `crossterm` | `=0.29.0` | `dreamer-termapp`: raw mode, alternate screen, keys | MIT |
 | `rmcp` (features `server`, `macros`, `transport-io`) | `=3.10.0` | `dream mcp`: the official MCP Rust SDK, MCP up to 2026-07-28 | Apache-2.0 |
+| `rquickjs` (default features off; `std`) | `=0.14.0`, with its vendored QuickJS (`rquickjs-sys` 0.14.0) | `app-script`: script apps (`app.ts`) in `dreamer-termapp` | MIT (QuickJS: MIT) |
+| `swc_ts_fast_strip` | `=60.0.1` (with `swc_common` 27.0.0 and the swc parser crates it pins) | `dream app check`, `preview`, `install`: strips an `app.ts`'s types | Apache-2.0 |
 
 All are pure Rust except Luau (C++, built by `mlua` from its vendored
-source). None pulls in a UI framework, windowing, GPU, or font crate, so
-headless crates may use them (`cargo xtask headless --check`).
+source) and QuickJS (C, built by `rquickjs-sys` with the `cc` crate from
+its vendored source, using the bindings it ships for each of our three
+targets, so no `bindgen` or libclang). None pulls in a UI framework,
+windowing, GPU, or font crate, so headless crates may use them (`cargo
+xtask headless --check`).
+
+Why these two: QuickJS through `rquickjs` was chosen over Boa for a
+script app's engine because it has an interrupt handler (a time limit
+per call, where Boa has only a loop-iteration cap) and a memory limit,
+starts a context in under a millisecond, and adds about 1.5 MB to a
+stripped binary. Only `dreamer-termapp` links it; the server and the
+desktop do not. `swc_ts_fast_strip` in strip-only mode replaces types
+with spaces, so positions in the JavaScript are positions in the
+TypeScript without a source map; it lives in the CLI only, so the app
+host carries no TypeScript tooling.
 
 ## GPUI
 

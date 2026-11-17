@@ -384,6 +384,193 @@ command = ["./counter", "--fast"]   # the program and its arguments; no shell
   with no daemon and draws its first view; its calls are answered with
   an error.
 
+A [script app](#script-apps-appts) is the other way to draw a tree from
+code: TypeScript run by the host itself, sandboxed, with no `process`
+capability.
+
+## Script apps (`app.ts`)
+
+A script app's logic is one TypeScript file, run by the app host in an
+embedded JavaScript engine (QuickJS). It returns a view tree, and the host
+draws and publishes it like a process app's. There is no Node, no package
+install, and no build tool to set up.
+
+```toml
+schema_version = 2
+id = "local.panes"
+version = "0.1.0"
+title = "Panes"
+capabilities = ["tmux.topology", "actions.submit"]
+all_panes = true
+
+[script]
+source = "app.ts"    # or a .js file, run as it is
+```
+
+```ts
+import { app, ui, dreamer } from "dreamer";
+
+interface Pane { id: number; current_command: string }
+
+app({
+  state: { filter: "" },
+  async load() {
+    const t = await dreamer.tmux.topology();
+    return { panes: t.panes as Pane[] };
+  },
+  view(s, data: { panes: Pane[] }) {
+    return ui.column({ key: "main", children: [
+      ui.input({ key: "f", label: "Filter", value: s.filter, onChange: (v: string) => ({ filter: v }) }),
+      ui.table({
+        key: "t",
+        columns: ["id", "current_command"],
+        rows: data.panes.filter((p) => p.current_command.includes(s.filter)),
+        onEnter: async (p: Pane) => {
+          await dreamer.actions.submit({ action: { kind: { select_pane: { pane: p.id } } } });
+        },
+      }),
+    ]});
+  },
+});
+```
+
+- **The manifest.** A script app has `schema_version = 2` and a
+  `[script]` whose `source` is a `.ts` or `.js` file in the package. Like a
+  process app it has no `[view]`, `root`, `[nodes]`, `[data]`,
+  `[commands]`, `module`, `[agent]`, or `[contributes]`, and it does not
+  take the `process` capability. Its `capabilities` and `all_panes` are
+  the grant it needs, as for any app.
+- **Types are stripped, not checked.** `dream app check`, `dream app
+  preview`, and `dream app install` strip the TypeScript types and write
+  the JavaScript to `build/app.js` beside the manifest; the host runs that
+  file. Types become spaces, so a line and column in the JavaScript are
+  the same in `app.ts`, and errors name them: `app.ts:3:1: ...`. Only
+  syntax that strips away is accepted: an `enum`, a `namespace` with
+  code, a parameter property, or `import x = require(...)` is an error
+  where it is. Types are not checked.
+- **A build matches its source.** The last line of `build/app.js` records
+  which `app.ts` it was built from. The host refuses a build that does
+  not match the `app.ts` beside it and says to run `dream app check`. So
+  after editing `app.ts`, run `dream app check DIR` before running
+  `dreamer-termapp app.toml` directly. An installed package carries its
+  build.
+- **One file.** The only module an app can import is `dreamer`; its
+  `app`, `ui`, and `dreamer` are also globals.
+
+### The app
+
+`app({ ... })` is called once, with:
+
+| Field | Means |
+| --- | --- |
+| `state` | The starting state, an object |
+| `load(ctx)` | Optional, may be async: the app's `data`. Called when the host connects to the daemon and each time it reconnects, on `ctx.reload()`, and every `refresh` ms while connected. A newer load wins over an older one still running. Until the first one ends, the pane says it is loading |
+| `refresh` | Optional: reload every this many milliseconds, at least 200 |
+| `view(state, data, ctx)` | The view: a node, or `ui.screen(node, { status, focus, title })` for the status line, the focused node's key, and the title (the manifest's otherwise). Called after every change |
+| `onKey(key, ctx)` | Optional: a key no component took |
+| `onEvent(topic, payload, ctx)` | Optional: an event from a subscription the app made (`events.subscribe`) |
+
+`ctx` holds `state`, `data`, and `live` (whether the host is connected),
+`set(partial)` to change the state, and `reload()`.
+
+**Handlers** are functions on nodes. Each gets its value and then `ctx`,
+and returns a part of the state to change (an object, merged into the
+state) or a promise of one; anything else changes nothing. The view is
+drawn again after every handler, and when its promise settles.
+
+| Node | Handler | Called with |
+| --- | --- | --- |
+| `button` | `onPress` | `ctx` |
+| `input` | `onChange`, `onSubmit` (or `onEnter`) | The text, on every edit; on Enter |
+| `select` | `onChange` | The option and its index |
+| `toggle` | `onChange` | `true` or `false` |
+| `table`, `list` | `onSelect`, `onEnter` | The row (the object given in `rows`) and its key, when the selection moves; on Enter |
+
+An error thrown by a handler, by `load`, or by a timer is shown on the
+status line as `error: ...` until the next handler or load succeeds; the
+app keeps running.
+
+### `dreamer`, `ui`, and the other globals
+
+The globals are `app`, `ui`, `dreamer`, `setTimeout`, `setInterval`,
+`clearTimeout`, `clearInterval`, and `console` (`log`, `warn`, `error`),
+beside the language's own built-ins (`JSON`, `Math`, `Date`, `Promise`,
+...). There is no `fetch`, no file system, no processes, and no way to
+load other code.
+
+- **`dreamer`** has one async function for each API method the app's
+  capabilities allow, named as in the API: `dreamer.tmux.topology()`,
+  `dreamer.actions.submit({ action })`. Each takes the method's
+  parameters and resolves to its result, both as the API's JSON
+  ([api.md](api.md)). `dreamer.call(method, params)` calls a method by
+  name. Every call goes through the host, as a process app's does: a
+  method outside the capabilities is refused there without reaching the
+  daemon, and the daemon holds the host to the app's grant. A refused or
+  failed call rejects with a `dreamer.DreamerError` that has the API's
+  `code` and a `message`.
+- **`ui`** builds nodes. Each takes an object of the node's fields (see
+  [the tree on the wire](#the-tree-on-the-wire)) with an optional `key`
+  (its place among its siblings otherwise) and `title`:
+  - layout: `column`, `row`, `scroll`, `tabs` (`active`), and `split`
+    (`sizes`, `direction`), which also take `(children, fields)`;
+  - text: `text`, `markdown`, `code` (`language`), `diff`, and `badge`
+    (`tone`), which also take `(text, fields)`;
+  - data: `table` (`columns`, `rows`, `rowKey`, `selected`), `list`
+    (`rows`, `field`, `rowKey`, `selected`), `log` (`lines`), `gauge`
+    and `progress` (`ratio`, `label`), `chart` (`values`), and `status`
+    (`items`). A row's key is its `rowKey` field (`id` by default), else
+    its place; a table's cells are the row's `columns` fields as text;
+  - controls: `button` (`label`), `input` (`label`, `value`,
+    `placeholder`), `select` (`label`, `options`, and `value` or
+    `selected`), and `toggle` (`label`, `on`).
+- **Timers** run on the app's thread. An interval is at least 10 ms, and
+  an app has at most 1000 timers pending.
+- **`console`** lines are kept as a process app's standard error is.
+
+### Keys and focus
+
+The host moves the focus and keeps each control's value, so a control
+works whether or not the app listens to it:
+
+- Tab moves the focus through the tables, lists, and controls shown.
+- A focused `input` takes letters, digits, and Space (so `q` is a
+  letter there), Backspace, and Enter (submit); text from a desktop or a
+  paste goes into it as one edit.
+- A focused `button` is pressed, and a `toggle` flipped, with Enter or
+  Space; a `select` moves with Up and Down, and to its next option with
+  Enter or Space.
+- A focused `table` or `list` moves its selection with Up and Down (or
+  k and j), PageUp, PageDown, Home, and End; Enter is `onEnter`.
+- A click from a desktop focuses the node and selects the row or
+  option, presses the button, or flips the toggle.
+- `q` outside an input quits, and `Ctrl-c` always does. Other keys go to
+  `onKey`.
+
+A value the user changed stays until the app gives a different one than
+it gave the last time: an input whose `value` the app sets to `""` after
+a submit is cleared, and one whose `value` the app never changes keeps
+what was typed.
+
+### Limits and failure
+
+The app runs on a thread of its own, never on the pane's drawing and
+input, so a slow app cannot hold up the pane or the desktop.
+
+- **Time:** every entry into the app (starting it, a handler, a call's
+  answer, a timer, an event, drawing the view, with the promise
+  reactions each queues) may run 250 ms. Code still running then is
+  interrupted.
+- **Memory:** the app's heap may hold 64 MiB, and its stack 1 MiB.
+- **Failing.** When code is interrupted, memory runs out, the code does
+  not load, `app()` is not called, or `view` throws or returns something
+  that is not a node, the app stops. Its last view stays, its status
+  line replaced by `stale:` and why; `r` starts it again with a fresh
+  engine (its state and memory dropped), and `q` quits.
+- **Preview.** `--preview` (and `dream app preview`) runs the app with
+  no daemon. With a `fixtures/load.json`, that is its `data` and `load`
+  is not called; without one, the pane says it is waiting for the
+  daemon.
+
 ## Building an app
 
 Building an app takes five steps, each a `dream app` command
@@ -392,9 +579,11 @@ gives Claude Code and Codex the `dreamer-apps` skill, which walks through
 them.
 
 1. **Write** the package directory: `app.toml`, and for each view's data
-   source a `fixtures/<source>.json` holding what its method returns.
-2. **Check:** `dream app check DIR` lists every problem and the grant the
-   app needs: its `capabilities`, plus `events.subscribe` when a source
+   source a `fixtures/<source>.json` holding what its method returns (for
+   a script app, `app.ts` and a `fixtures/load.json` holding what its
+   `load` returns).
+2. **Check:** `dream app check DIR` builds a script app's JavaScript from
+   its `app.ts`, and lists every problem and the grant the app needs: its `capabilities`, plus `events.subscribe` when a source
    follows events and `collect.query` when a source is a collector, on its
    own pane, its agent's panes, or every pane with `all_panes` (or a
    collector source).
