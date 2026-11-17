@@ -9,7 +9,10 @@
 //! ```
 //!
 //! A package may have a Luau module beside its manifest (sandboxed, with
-//! the app's own grant) for `transform(rows)` and command handlers. The
+//! the app's own grant) for `transform(rows)` and command handlers. A
+//! script app's `app.ts` (built to JavaScript by `dream app check`) runs
+//! in the TypeScript runtime (`app-script`), and a process app's program
+//! speaks the app process protocol; both draw their own view tree. The
 //! manifest and module are reloaded when they change: a version that does
 //! not validate or load leaves the running one in place, and says why.
 //!
@@ -25,6 +28,7 @@ mod view;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use app_model::manifest::Manifest;
 use app_model::{Input, check_module, load};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -44,26 +48,24 @@ fn main() -> ExitCode {
             println!("{}", version_line());
             ExitCode::SUCCESS
         }
-        ["--check", path, "--json"] => {
-            match load(path).and_then(|m| check_module(path, &m).map(|()| m)) {
-                Ok(m) => {
-                    let n = m.needs();
-                    let out = serde_json::json!({
-                        "ok": true,
-                        "id": m.id,
-                        "version": m.version,
-                        "title": m.title,
-                        "needs": { "methods": n.methods, "panes": n.panes, "all_panes": n.all_panes },
-                    });
-                    println!("{out}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    println!("{}", serde_json::json!({ "ok": false, "error": e }));
-                    ExitCode::FAILURE
-                }
+        ["--check", path, "--json"] => match checked(path) {
+            Ok(m) => {
+                let n = m.needs();
+                let out = serde_json::json!({
+                    "ok": true,
+                    "id": m.id,
+                    "version": m.version,
+                    "title": m.title,
+                    "needs": { "methods": n.methods, "panes": n.panes, "all_panes": n.all_panes },
+                });
+                println!("{out}");
+                ExitCode::SUCCESS
             }
-        }
+            Err(e) => {
+                println!("{}", serde_json::json!({ "ok": false, "error": e }));
+                ExitCode::FAILURE
+            }
+        },
         ["--preview", path, rest @ ..] => match preview(path, rest) {
             Ok(text) => {
                 print!("{text}");
@@ -74,7 +76,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        ["--check", path] => match load(path).and_then(|m| check_module(path, &m).map(|()| m)) {
+        ["--check", path] => match checked(path) {
             Ok(m) => {
                 println!("ok: {} {} ({})", m.id, m.version, m.title);
                 ExitCode::SUCCESS
@@ -84,8 +86,8 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        [path] => match load(path).and_then(|m| check_module(path, &m).map(|()| m)) {
-            Ok(m) => match run(PathBuf::from(path), m.is_process()) {
+        [path] => match checked(path) {
+            Ok(m) => match run(PathBuf::from(path), m.draws_own_view()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("dreamer-termapp: {e}");
@@ -106,6 +108,21 @@ fn main() -> ExitCode {
     }
 }
 
+/// Load and validate the package at `path`: its manifest, its Luau
+/// module, and a script app's JavaScript, which must compile.
+fn checked(path: &str) -> Result<Manifest, String> {
+    let m = load(path)?;
+    check_module(path, &m)?;
+    if m.is_script() {
+        let dir = std::path::Path::new(path)
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+        let (name, js) = app_model::script_js(dir, &m)?;
+        app_script::check(&name, &js).map_err(|e| format!("{}: {e}", dir.join(&name).display()))?;
+    }
+    Ok(m)
+}
+
 /// Draw the package once, as it first looks, from its fixtures and with
 /// no daemon; the screen as text, one line per row, trailing blanks
 /// trimmed.
@@ -123,17 +140,20 @@ fn preview(path: &str, args: &[&str]) -> Result<String, String> {
         }
         _ => return Err("usage: dreamer-termapp --preview MANIFEST [--size WxH]".into()),
     }
-    let manifest = load(path)?;
-    check_module(path, &manifest)?;
+    let manifest = checked(path)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h))
         .map_err(|e| e.to_string())?;
-    if manifest.is_process() {
-        // A process app's first view, from its program, with no daemon.
-        let tree = rt.block_on(app_model::preview_process(std::path::Path::new(path)))?;
+    if manifest.draws_own_view() {
+        // A process or script app's first view, from its code, with no
+        // daemon.
+        let tree = rt.block_on(app_model::preview_process(
+            std::path::Path::new(path),
+            Some(app_script::engine()),
+        ))?;
         terminal
             .draw(|f| view::draw_tree(&tree, &mut view::ViewState::default(), f))
             .map_err(|e| e.to_string())?;
@@ -184,7 +204,7 @@ impl Drop for Screen {
     }
 }
 
-fn run(path: PathBuf, process: bool) -> Result<(), String> {
+fn run(path: PathBuf, own_view: bool) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -214,8 +234,8 @@ fn run(path: PathBuf, process: bool) -> Result<(), String> {
     });
     // Scroll positions, by node key, kept across updates.
     let mut state = view::ViewState::default();
-    if process {
-        // A process app: its program draws the tree.
+    if own_view {
+        // A process or script app: its code draws the tree.
         let mut publish = |tree: &view_tree::Frame| {
             terminal
                 .draw(|f| view::draw_tree(tree, &mut state, f))
@@ -225,6 +245,7 @@ fn run(path: PathBuf, process: bool) -> Result<(), String> {
         let result = rt.block_on(app_model::run_process(
             path,
             app_model::Endpoint::pane_app(),
+            Some(app_script::engine()),
             &mut inputs,
             &mut publish,
         ));

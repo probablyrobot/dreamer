@@ -57,6 +57,10 @@ pub struct Manifest {
     /// the `process` capability.
     #[serde(default)]
     pub process: Option<ProcessSpec>,
+    /// A script app: its logic in TypeScript (or JavaScript), run by the
+    /// app host, which draws the view tree it returns.
+    #[serde(default)]
+    pub script: Option<ScriptSpec>,
 }
 
 /// The capability a package needs to run a program of its own.
@@ -70,6 +74,16 @@ pub struct ProcessSpec {
     /// it is relative to the package directory; else it is looked up on
     /// `PATH`.
     pub command: Vec<String>,
+}
+
+/// A script app's logic.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptSpec {
+    /// The file beside the manifest: `app.ts`, or plain JavaScript
+    /// (`.js`). A TypeScript file runs from the JavaScript `dream app
+    /// check` and `dream app install` build from it ([`app_protocol::build`]).
+    pub source: String,
 }
 
 /// What an agentic pane is for, and so how much it may do.
@@ -784,6 +798,16 @@ impl Manifest {
         self.process.is_some()
     }
 
+    /// A script app: the host runs its `app.ts` and draws its view.
+    pub fn is_script(&self) -> bool {
+        self.script.is_some()
+    }
+
+    /// Its own code draws its view: a process app or a script app.
+    pub fn draws_own_view(&self) -> bool {
+        self.is_process() || self.is_script()
+    }
+
     /// Its view is a tree of nodes (version 2).
     pub fn is_tree(&self) -> bool {
         self.schema_version == TREE_SCHEMA_VERSION
@@ -856,9 +880,11 @@ impl Manifest {
         let has_view = raw.contains_key("view");
         let m: Manifest = toml::from_str(text).map_err(|e| vec![e.to_string()])?;
         let mut errors = Vec::new();
-        if m.is_process() {
+        if m.draws_own_view() {
             if has_view {
-                errors.push("view: a process app draws its own view; it has no [view]".into());
+                errors.push(
+                    "view: a process or script app draws its own view; it has no [view]".into(),
+                );
             }
         } else if m.is_tree() {
             if has_view {
@@ -957,7 +983,11 @@ impl Manifest {
                 errors.push(format!("{at}.params: placeholders belong to commands"));
             }
         }
-        if self.is_process() {
+        if self.is_process() && self.is_script() {
+            errors.push("script: a package is a process app or a script app, not both".into());
+        } else if self.is_script() {
+            self.validate_script(&mut errors);
+        } else if self.is_process() {
             self.validate_process(&mut errors);
         } else if self.capabilities.iter().any(|c| c == PROCESS) {
             errors.push("capabilities: `process` is for a package with a [process] command".into());
@@ -1107,6 +1137,48 @@ impl Manifest {
                 errors.push(format!(
                     "{name}: a process app's program does this; remove it"
                 ));
+            }
+        }
+    }
+
+    /// A script app names its source beside the manifest, and has none of
+    /// the parts its code replaces.
+    fn validate_script(&self, errors: &mut Vec<String>) {
+        let Some(s) = &self.script else { return };
+        if self.schema_version != TREE_SCHEMA_VERSION {
+            errors.push(format!(
+                "schema_version: a script app draws a view tree; use {TREE_SCHEMA_VERSION}"
+            ));
+        }
+        if app_protocol::build::kind(&s.source).is_none()
+            || s.source.starts_with('/')
+            || s.source.split('/').any(|p| p == ".." || p.is_empty())
+        {
+            errors.push(format!(
+                "script.source: `{}` must be a .ts or .js file in the package",
+                s.source
+            ));
+        }
+        if self.capabilities.iter().any(|c| c == PROCESS) {
+            errors.push("capabilities: `process` is for a package with a [process] command".into());
+        }
+        let parts = [
+            ("data", !self.data.is_empty()),
+            ("root", self.root.is_some()),
+            ("nodes", !self.nodes.is_empty()),
+            ("commands", !self.commands.is_empty()),
+            ("module", self.module.is_some()),
+            ("agent", self.agent.is_some()),
+            (
+                "contributes",
+                !(self.contributes.commands.is_empty()
+                    && self.contributes.sidebar.is_empty()
+                    && self.contributes.status.is_empty()),
+            ),
+        ];
+        for (name, there) in parts {
+            if there {
+                errors.push(format!("{name}: a script app's code does this; remove it"));
             }
         }
     }
@@ -1562,6 +1634,55 @@ capabilities = ["process", "tmux.topology"]
 [process]
 command = ["./bin/counter", "--fast"]
 "#;
+
+    #[test]
+    fn a_script_app_names_its_source_and_nothing_its_code_replaces() {
+        let script = r#"
+schema_version = 2
+id = "local.panes"
+version = "0.1.0"
+title = "Panes"
+capabilities = ["tmux.topology"]
+
+[script]
+source = "app.ts"
+"#;
+        let m = Manifest::parse(script).expect("valid");
+        assert!(m.is_script() && m.draws_own_view() && !m.is_process());
+        assert_eq!(m.methods(), ["tmux.topology"]);
+        for (bad, why) in [
+            (
+                script.replace("app.ts", "../app.ts"),
+                "must be a .ts or .js file",
+            ),
+            (
+                script.replace("app.ts", "app.py"),
+                "must be a .ts or .js file",
+            ),
+            (
+                script.replace("\"tmux.topology\"", "\"process\""),
+                "`process` is for a package with a [process] command",
+            ),
+            (
+                format!("{script}[process]\ncommand = [\"./x\"]\n"),
+                "not both",
+            ),
+        ] {
+            let errors = Manifest::parse(&bad).expect_err("invalid");
+            assert!(errors.iter().any(|e| e.contains(why)), "{errors:?}");
+        }
+        let with_data = script.replace(
+            "[script]",
+            "[data.p]\nmethod = \"tmux.topology\"\n\n[script]",
+        );
+        let errors = Manifest::parse(&with_data).expect_err("invalid");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("data: a script app's code does this")),
+            "{errors:?}"
+        );
+    }
 
     #[test]
     fn a_process_app_needs_the_process_capability() {
