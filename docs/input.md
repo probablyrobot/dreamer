@@ -105,6 +105,94 @@ The input smoke ends with a selection. It clears the screen, prints
 both the highlighted columns and the replica's selected text to match
 exactly. It does not use the system clipboard.
 
+## tmux's prefix and copy mode
+
+Dreamer sends keys to panes as bytes, so tmux's key tables never see
+them. In a workspace window on the local daemon, Dreamer watches for the
+tmux server's own prefix and handles the key after it:
+
+| After the prefix | Does |
+| --- | --- |
+| `[` | Enters Dreamer's copy mode on the focused pane |
+| `]` | Pastes tmux's newest paste buffer, as a paste (bracketed when the program asked for that) |
+| `=` | Opens a list of tmux's buffers, newest first. Up and Down (or `j`, `k`) choose, Enter pastes, Escape or `q` closes |
+| Any other key | Goes to tmux, which runs its binding for it: tmux's defaults (prefix `c` makes a window) and the user's own |
+
+- **Which prefix:** `prefix` and `prefix2`, read from tmux with
+  `tmux.key_options` (with `mode-keys` and `mode-style`). They are read
+  when the window opens, whenever it becomes active, and after each
+  prefix key; Dreamer never changes them. A small `prefix` label shows
+  while the next key is awaited.
+- **How other keys reach tmux:** `tmux.prefix_key` types the prefix and
+  the key with `send-keys -K` on a short-lived control client of the
+  daemon's, attached to the pane with `ignore-size,no-output`. The
+  binding runs on that pane's session, as it would for a person at a
+  terminal attached there. tmux sees that client attach and detach, so
+  `client-attached` and `client-detached` hooks run. A binding that acts
+  on its client (detach, a prompt, a menu) affects only that client.
+- **Modes tmux would draw:** if a binding leaves the pane in a mode
+  (`choose-tree`, a `view-mode` listing), the mode is cancelled again and
+  a notice names it, because tmux draws modes only for ordinary clients.
+  A binding that opens tmux's copy mode (prefix PageUp) opens Dreamer's
+  instead.
+
+### Copy mode
+
+Copy mode works on the pane's local history and screen, as the replica
+holds them; it never asks the daemon. It uses tmux's key table for the
+server's `mode-keys`:
+
+| Action | vi | emacs |
+| --- | --- | --- |
+| Cell, line | `h` `j` `k` `l`, arrows | `C-b` `C-n` `C-p` `C-f`, arrows |
+| Word start, end, back | `w` `e` `b` (`W` `E` `B` by blanks only) | `M-f` (past the word), `M-b` |
+| Line start, first non-blank, end | `0` `^` `$`, Home, End | `C-a` `M-m` `C-e`, Home, End |
+| History top, bottom | `g` `G` | `M-<` `M->` |
+| Screen top, middle, bottom | `H` `M` `L` | |
+| Half page, page | `C-u` `C-d`, `C-b` `C-f`, PageUp, PageDown | `M-v` `C-v`, PageUp, PageDown |
+| Scroll a line | `C-y` `C-e`, `C-Up` `C-Down` | `C-Up` `C-Down` |
+| Search down, up | `/`, `?` | `C-s`, `C-r` |
+| Repeat search, reversed | `n`, `N` | `n`, `N` |
+| Begin selection | `v` or Space | `C-Space` |
+| Rectangle on or off | `C-v` | `R` |
+| Swap selection ends | `o` | |
+| Copy and leave | `y` or Enter | `M-w` or `C-w` |
+| Clear selection | Escape | `C-g` |
+| Leave | `q`, Escape with no selection, `C-c` | `q`, Escape, `C-c` |
+
+- **Copying:** the text becomes tmux's newest paste buffer, and goes to
+  the system clipboard when `clipboard.tmux` brings tmux's copies there
+  (and `clipboard.write` is not `deny`). Trailing blanks are trimmed from
+  each row. Copying with no selection just leaves.
+- **Drawing:** Dreamer draws copy mode over the pane: the selection in
+  `mode-style`'s background (translucent over the text; the theme's
+  accent if the style has no background), the cursor as a box, and
+  tmux's position indicator `[rows back/history rows]` at the top right.
+  The search prompt, `(search down)` or `(search up)`, and messages such
+  as `Search failed` show at the bottom.
+- **Search:** plain text, typed at the prompt and run on Enter; an empty
+  prompt repeats the last search. Case is ignored unless the text has a
+  capital letter. It wraps past either end of history.
+
+What differs from tmux's own copy mode:
+- The pane keeps updating underneath. Copy mode's text is read again
+  when history grows, and positions keep their rows from the top of
+  history; once history is full and its oldest rows are dropped, the
+  cursor and selection can drift by those rows.
+- Search is plain text, not a regular expression, and is not
+  incremental. Matches other than the one jumped to are not highlighted.
+- Words follow vi's classes (letters, digits, and `_`; other symbols;
+  blanks), not tmux's `word-separators` option.
+- Soft-wrapped lines are rows of their own: a selection across a wrap
+  copies a newline there.
+- `mode-style`'s foreground and attributes are not applied, and copy-mode
+  bindings changed with `bind-key -T copy-mode` or `copy-mode-vi` are not
+  followed: only tmux's default tables are.
+- After the prefix, one key is handled. tmux's repeat time (bindings made
+  with `bind-key -r`) does not keep the prefix table active for more.
+- A single-pane window (`dreamer --attach`) and hosts reached over SSH do
+  not have the prefix layer.
+
 ## Scrolling
 
 Scrolling is local view state on the window's replica. It is never sent to

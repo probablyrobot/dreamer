@@ -29,8 +29,10 @@ mod keymap;
 mod live;
 mod palette;
 mod panel;
+mod prefix;
 mod theme;
 mod theme_pick;
+mod tmux_keys;
 
 use theme::{c, ca};
 mod bench_gui;
@@ -181,6 +183,14 @@ pub(crate) struct Shell {
     pub(crate) find: Option<find::Find>,
     find_task: Option<gpui::Task<()>>,
     find_busy: bool,
+    /// tmux's prefix was pressed; the next key is the layer's.
+    prefixed: bool,
+    /// Dreamer's copy mode on this pane, and the history rows its text
+    /// was read at.
+    copy: Option<replica::copy_mode::CopyMode>,
+    copy_rows: u64,
+    /// The buffer chooser (prefix `=`).
+    chooser: Option<prefix::Chooser>,
 }
 
 impl Shell {
@@ -217,6 +227,10 @@ impl Shell {
             find: None,
             find_task: None,
             find_busy: false,
+            prefixed: false,
+            copy: None,
+            copy_rows: 0,
+            chooser: None,
         }
     }
 
@@ -281,6 +295,10 @@ impl Shell {
     /// search again.
     fn frame_changed(&mut self, cx: &mut Context<Self>) {
         let rows = self.frame.view.total_rows;
+        if self.copy.is_some() && rows != self.copy_rows {
+            self.copy_rows = rows;
+            self.copy_text(cx);
+        }
         if let Some(f) = &self.find
             && f.found.is_some()
             && f.searched_rows != Some(rows)
@@ -565,6 +583,10 @@ impl Shell {
             }
             return;
         }
+        if self.tmux_key(ev, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let view = self.frame.view;
         let page = self.frame.size.rows.saturating_sub(1).max(1) as isize;
         if !view.alt_screen
@@ -589,6 +611,350 @@ impl Shell {
             }
             input::KeyIntent::Pass => {}
         }
+    }
+
+    /// The prefix layer, copy mode, and the buffer chooser. True when the
+    /// key was theirs (it never reaches the program).
+    fn tmux_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let Some(key) = tmux_keys::from_keystroke(&ev.keystroke) else {
+            return false;
+        };
+        if let Some(ch) = self.chooser.as_mut() {
+            match ch.key(&key) {
+                prefix::Choice::Stay => {}
+                prefix::Choice::Close => self.chooser = None,
+                prefix::Choice::Paste(name) => {
+                    self.chooser = None;
+                    self.paste_buffer(Some(name), cx);
+                }
+            }
+            cx.notify();
+            return true;
+        }
+        if let Some(copy) = self.copy.as_mut() {
+            use replica::copy_mode::Outcome;
+            match copy.key(key) {
+                Outcome::Stay => self.show_copy(),
+                Outcome::Copy(text) => {
+                    self.copied(text, cx);
+                    self.leave_copy();
+                }
+                Outcome::Leave => self.leave_copy(),
+            }
+            cx.notify();
+            return true;
+        }
+        if self.prefixed {
+            self.prefixed = false;
+            self.after_prefix(key, cx);
+            prefix::refresh(cx);
+            cx.notify();
+            return true;
+        }
+        if TMUX_BUFFERS.get().is_some()
+            && self.feed.as_ref().and_then(|f| f.pane()).is_some()
+            && prefix::is_prefix(&key)
+        {
+            self.prefixed = true;
+            cx.notify();
+            return true;
+        }
+        false
+    }
+
+    /// The key after the prefix.
+    fn after_prefix(&mut self, key: replica::keys::Key, cx: &mut Context<Self>) {
+        match key.text() {
+            Some('[') => return self.enter_copy(cx),
+            Some(']') => return self.paste_buffer(None, cx),
+            Some('=') => return self.open_chooser(cx),
+            _ => {}
+        }
+        let (Some(b), Some(pane)) = (
+            TMUX_BUFFERS.get(),
+            self.feed.as_ref().and_then(|f| f.pane()),
+        ) else {
+            return;
+        };
+        let name = key.tmux_name();
+        cx.spawn(async move |this, cx| {
+            let r = b.prefix_key(pane, name).await;
+            let _ = this.update(cx, |s, cx| match r {
+                // tmux's copy mode (prefix PageUp, say) cannot be shown
+                // here; Dreamer's takes its place.
+                Ok(r) if r.mode_cancelled.as_deref() == Some("copy-mode") => s.enter_copy(cx),
+                Ok(r) => {
+                    if let Some(mode) = r.mode_cancelled {
+                        s.show_notice(
+                            format!(
+                                "tmux opened {mode}, which Dreamer does not draw; it was closed"
+                            ),
+                            cx,
+                        );
+                    }
+                }
+                Err(e) => s.show_notice(format!("tmux key not sent: {e}"), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// A short message at the bottom of the pane for four seconds.
+    fn show_notice(&mut self, text: String, cx: &mut Context<Self>) {
+        self.notice = Some(text.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(4)).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.notice.as_deref() == Some(text.as_str()) {
+                    s.notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Enter copy mode on the history as the replica has it now, at the
+    /// view's place, the cursor where the terminal's is (or at the bottom
+    /// left of the view when that is out of sight).
+    fn enter_copy(&mut self, cx: &mut Context<Self>) {
+        let Some(feed) = self.feed.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let Some(text) = feed.text().await else {
+                return;
+            };
+            let _ = this.update(cx, |s, cx| {
+                let f = &s.frame;
+                let v = f.view;
+                let cursor = if f.cursor.visible {
+                    replica::copy_mode::Pos {
+                        row: (v.offset + u64::from(f.cursor.y)) as usize,
+                        col: usize::from(f.cursor.x),
+                    }
+                } else {
+                    replica::copy_mode::Pos {
+                        row: (v.offset + v.len.saturating_sub(1)) as usize,
+                        col: 0,
+                    }
+                };
+                s.copy_rows = v.total_rows;
+                s.copy = Some(replica::copy_mode::CopyMode::new(
+                    prefix::table(),
+                    &text,
+                    v.total_rows as usize,
+                    v.len as usize,
+                    usize::from(f.size.cols),
+                    v.offset as usize,
+                    cursor,
+                ));
+                s.show_copy();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Read the history's text again for copy mode (more output arrived).
+    fn copy_text(&mut self, cx: &mut Context<Self>) {
+        let Some(feed) = self.feed.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let Some(text) = feed.text().await else {
+                return;
+            };
+            let _ = this.update(cx, |s, cx| {
+                let rows = s.frame.view.total_rows as usize;
+                if let Some(c) = s.copy.as_mut() {
+                    c.set_text(&text, rows);
+                    s.show_copy();
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Scroll the view to copy mode's rows.
+    fn show_copy(&self) {
+        if let (Some(c), Some(feed)) = (&self.copy, &self.feed)
+            && c.top() as u64 != self.frame.view.offset
+        {
+            feed.view(replica::feed::ViewCommand::Top(c.top() as u64));
+        }
+    }
+
+    fn leave_copy(&mut self) {
+        self.copy = None;
+        if let Some(feed) = &self.feed {
+            feed.view(replica::feed::ViewCommand::Scroll(
+                replica::feed::Scroll::Bottom,
+            ));
+        }
+    }
+
+    /// Copy mode's copy: as in tmux, a new paste buffer; and the system
+    /// clipboard when `clipboard.tmux` brings tmux's copies there.
+    fn copied(&mut self, text: String, cx: &mut Context<Self>) {
+        if let Some(b) = TMUX_BUFFERS.get() {
+            b.write(text.clone());
+        }
+        let (from, write) = live::with(|l| (l.clipboard_tmux.from_tmux(), l.clipboard))
+            .unwrap_or((true, workspace_config::ClipboardWrite::Focused));
+        if from && write != workspace_config::ClipboardWrite::Deny {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        }
+    }
+
+    fn open_chooser(&mut self, cx: &mut Context<Self>) {
+        let Some(b) = TMUX_BUFFERS.get() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let buffers = b.list().await;
+            let _ = this.update(cx, |s, cx| {
+                if buffers.is_empty() {
+                    s.show_notice("no tmux buffers".into(), cx);
+                } else {
+                    s.chooser = Some(prefix::Chooser { buffers, at: 0 });
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Paste a tmux buffer (`name`, or the newest) as a paste: bracketed
+    /// when the program asked for it.
+    fn paste_buffer(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        let (Some(feed), Some(b)) = (self.feed.clone(), TMUX_BUFFERS.get()) else {
+            return;
+        };
+        cx.spawn(async move |_, _| {
+            if let Some(text) = b.named(name).await {
+                feed.send(api::terminal_input::Event::Paste(api::PasteInput {
+                    data: text.into_bytes(),
+                    ..api::PasteInput::default()
+                }));
+            }
+        })
+        .detach();
+    }
+
+    /// Copy mode drawn over the grid: the selection in `mode-style`'s
+    /// background (over the text, translucent), the cursor, the position
+    /// indicator at the top right, and a search prompt or message at the
+    /// bottom. The buffer chooser, when open, is a list over the pane.
+    fn copy_ui(&self, window: &mut Window, t: &theme::Theme, term: &TermFont) -> Vec<gpui::Div> {
+        let mut out = Vec::new();
+        let m = cell_metrics(
+            window,
+            &font(term.family.clone()),
+            px(term.size),
+            term.spacing(),
+        );
+        let rgb = |c: terminal_ghostty::core::Rgb| {
+            (u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b)
+        };
+        let (fg, bg) = prefix::mode_colors(&self.frame.colors);
+        let bg = bg.map_or(t.accent, rgb);
+        let fg = fg.map_or(t.background, rgb);
+        let label = |text: String| {
+            div()
+                .px_1()
+                .bg(c(bg))
+                .text_color(c(fg))
+                .font_family(term.family.clone())
+                .text_size(px(term.size * 0.85))
+                .child(text)
+        };
+        if self.prefixed {
+            out.push(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .right_0()
+                    .child(label("prefix".into())),
+            );
+        }
+        if let Some(cm) = &self.copy {
+            let top = self.frame.view.offset as usize;
+            let rows = self.frame.view.len as usize;
+            let in_view = |row: usize| row >= top && row < top + rows;
+            for sp in cm.visible_spans().into_iter().filter(|s| in_view(s.row)) {
+                out.push(
+                    div()
+                        .absolute()
+                        .left(m.width * sp.start as f32)
+                        .top(m.height * (sp.row - top) as f32)
+                        .w(m.width * (sp.end - sp.start) as f32)
+                        .h(m.height)
+                        .bg(ca((bg << 8) | 0x88)),
+                );
+            }
+            let cur = cm.cursor();
+            if in_view(cur.row) {
+                out.push(
+                    div()
+                        .absolute()
+                        .left(m.width * cur.col as f32)
+                        .top(m.height * (cur.row - top) as f32)
+                        .w(m.width)
+                        .h(m.height)
+                        .border_1()
+                        .border_color(c(bg))
+                        .bg(ca((bg << 8) | 0x55)),
+                );
+            }
+            out.push(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .child(label(cm.indicator())),
+            );
+            if let Some(text) = cm.prompt().or_else(|| cm.message().map(str::to_owned)) {
+                out.push(div().absolute().bottom_0().left_0().child(label(text)));
+            }
+        }
+        if let Some(ch) = &self.chooser {
+            let rows = ch.buffers.iter().enumerate().map(|(i, b)| {
+                div()
+                    .flex()
+                    .gap_2()
+                    .px_2()
+                    .when(i == ch.at, |d| d.bg(c(t.selected)))
+                    .child(
+                        div()
+                            .text_color(c(t.muted))
+                            .child(format!("{}  {} B", b.name, b.size)),
+                    )
+                    .child(div().text_color(c(t.text)).child(b.sample.clone()))
+            });
+            out.push(
+                div()
+                    .absolute()
+                    .top(px(6.0))
+                    .left(px(10.0))
+                    .right(px(10.0))
+                    .flex()
+                    .flex_col()
+                    .py_1()
+                    .rounded_md()
+                    .shadow_md()
+                    .bg(c(t.raised))
+                    .border_1()
+                    .border_color(c(t.focus))
+                    .font_family(term.family.clone())
+                    .text_size(px(term.size * 0.9))
+                    .overflow_hidden()
+                    .children(rows),
+            );
+        }
+        out
     }
 
     /// Look up the link under `at` (when the open modifier is held) and
@@ -906,6 +1272,11 @@ impl EntityInputHandler for Shell {
         cx: &mut Context<Self>,
     ) {
         self.preedit = None;
+        // Keys of the prefix layer, copy mode, and the chooser are never
+        // typed into the program.
+        if self.prefixed || self.copy.is_some() || self.chooser.is_some() {
+            return;
+        }
         if let Some(f) = self.find.as_mut() {
             if !text.is_empty() {
                 f.query.push_str(text);
@@ -1095,6 +1466,7 @@ impl Render for Shell {
                 .child(format!("↑ {back} lines"))
         });
         let (found, find_bar) = self.find_ui(window, &t, &term);
+        let copy_ui = self.copy_ui(window, &t, &term);
         let marks = self.visible_marks();
         self.marks_drawn = marks.len();
         let marks: Vec<_> = if marks.is_empty() {
@@ -1179,6 +1551,7 @@ impl Render for Shell {
                     .children(scrolled)
                     .children(underline)
                     .children(notice)
+                    .children(copy_ui)
                     .children(flash)
                     .when(self.link.is_some(), |d| d.cursor_pointer())
                     // Registers the platform text input (IME) each frame.

@@ -574,3 +574,187 @@ pub async fn pane_current_path(
         .await?;
     Ok(r.first().map(first_line).filter(|p| !p.is_empty()))
 }
+
+/// The tmux options that decide how a person's keys reach tmux and how
+/// copy mode looks, as tmux reports them. Read only; never changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyOptions {
+    /// `prefix`, as a tmux key name (`C-b`), or `None`.
+    pub prefix: String,
+    /// `prefix2`, as a tmux key name, or `None`.
+    pub prefix2: String,
+    /// `mode-keys`: `vi` or `emacs`.
+    pub mode_keys: String,
+    /// `mode-style`, as tmux reports it (`bg=yellow,fg=black`).
+    pub mode_style: String,
+}
+
+fn show_global(name: &'static str, window: bool) -> TmuxCommand {
+    let cmd = TmuxCommand::new("show-options").flag("-g");
+    let cmd = if window { cmd.flag("-w") } else { cmd };
+    cmd.flag("-q").flag("-v").arg(name)
+}
+
+/// Read the global `prefix`, `prefix2`, `mode-keys`, and `mode-style`.
+pub async fn key_options(conn: &Connection) -> Result<KeyOptions, CommandError> {
+    let r = conn
+        .execute(
+            Batch::new()
+                .push(show_global("prefix", false))
+                .push(show_global("prefix2", false))
+                .push(show_global("mode-keys", true))
+                .push(show_global("mode-style", true)),
+        )
+        .await?;
+    let line = |i: usize| r.get(i).map(first_line).unwrap_or_default();
+    Ok(KeyOptions {
+        prefix: line(0),
+        prefix2: line(1),
+        mode_keys: line(2),
+        mode_style: line(3),
+    })
+}
+
+/// One of tmux's paste buffers, without its text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BufferInfo {
+    pub name: String,
+    /// Bytes.
+    pub size: u64,
+    /// The start of the text, with control characters escaped by tmux.
+    pub sample: String,
+}
+
+/// tmux's paste buffers, newest first.
+pub async fn list_buffers(conn: &Connection) -> Result<Vec<BufferInfo>, CommandError> {
+    // Two lists in one non-yielding batch, line for line: tmux may print
+    // a control character in a format as `_`, so no field separator
+    // other than the line itself is safe for names and samples.
+    let list = |format: &'static str| TmuxCommand::new("list-buffers").opt_format("-F", format);
+    let r = conn
+        .execute(
+            Batch::new()
+                .push(list("#{buffer_size} #{buffer_name}"))
+                .push(list("#{buffer_sample}")),
+        )
+        .await?;
+    let lines = |i: usize| {
+        r.get(i)
+            .map(|r| {
+                r.body
+                    .iter()
+                    .map(|l| String::from_utf8_lossy(l).into_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let samples = lines(1);
+    Ok(lines(0)
+        .into_iter()
+        .zip(samples.into_iter().chain(std::iter::repeat(String::new())))
+        .filter_map(|(head, sample)| {
+            let (size, name) = head.split_once(' ')?;
+            Some(BufferInfo {
+                name: name.to_owned(),
+                size: size.parse().ok()?,
+                sample,
+            })
+        })
+        .collect())
+}
+
+/// What a key typed after the prefix left behind.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrefixOutcome {
+    /// A mode the binding put the pane in (`copy-mode`, `tree-mode`, ...)
+    /// and that was cancelled again: tmux draws modes only for ordinary
+    /// clients, so a Dreamer view would not show it.
+    pub mode_cancelled: Option<String>,
+}
+
+/// Type the prefix and then `key` (a tmux key name) as a person at a
+/// client looking at pane `target` would, so tmux looks both up in its
+/// key tables and the user's own prefix bindings run there.
+///
+/// The typing is done by a short-lived control client of its own,
+/// attached to the pane (which makes it the active pane, as focusing it
+/// in Dreamer does) with `ignore-size,no-output`. A binding that acts on
+/// its client (`detach-client`, a prompt, a menu) therefore touches only
+/// that client, never the daemon's. The prefix is the server's `prefix`,
+/// or `prefix2` when `prefix` is `None`; neither is changed.
+pub async fn prefix_key(
+    config: &crate::ConnectionConfig,
+    target: TmuxPaneId,
+    key: &str,
+) -> Result<PrefixOutcome, String> {
+    let mut config = config.clone();
+    config.session = pane(target);
+    config.new_session_args = None;
+    config.attach_flags = Some("ignore-size,no-output".into());
+    let (conn, mut events) = Connection::spawn(config)
+        .await
+        .map_err(|e| format!("cannot attach a client to %{}: {e}", target.0))?;
+    // Notifications must keep flowing for responses to arrive.
+    let drain = tokio::spawn(async move { while events.recv().await.is_some() {} });
+    let result = type_prefix_key(&conn, key).await;
+    drop(conn);
+    drain.abort();
+    result
+}
+
+async fn type_prefix_key(conn: &Connection, key: &str) -> Result<PrefixOutcome, String> {
+    let r = conn
+        .execute(
+            Batch::new()
+                .push(show_global("prefix", false))
+                .push(show_global("prefix2", false)),
+        )
+        .await
+        .map_err(|e| failure_message(&e))?;
+    let prefix = r
+        .iter()
+        .map(first_line)
+        .find(|p| !p.is_empty() && p != "None")
+        .ok_or("tmux has no prefix key (prefix and prefix2 are None)")?;
+    conn.execute(
+        TmuxCommand::new("send-keys")
+            .flag("-K")
+            .arg(prefix)
+            .arg(key.to_owned()),
+    )
+    .await
+    .map_err(|e| failure_message(&e))?;
+    // The binding was queued on this client after send-keys answered, so
+    // this runs once it is done. A binding that detached the client ends
+    // the connection instead.
+    let state = match conn
+        .execute(
+            TmuxCommand::new("display-message")
+                .flag("-p")
+                .format("#{pane_id} #{pane_in_mode} #{pane_mode}"),
+        )
+        .await
+    {
+        Ok(r) => r.first().map(first_line).unwrap_or_default(),
+        Err(CommandError::Closed) => return Ok(PrefixOutcome::default()),
+        Err(e) => return Err(failure_message(&e)),
+    };
+    let mut parts = state.split(' ');
+    let (Some(pane_id), Some("1"), mode) = (parts.next(), parts.next(), parts.next()) else {
+        return Ok(PrefixOutcome::default());
+    };
+    conn.execute(
+        TmuxCommand::new("copy-mode")
+            .flag("-q")
+            .opt("-t", pane_id.to_owned()),
+    )
+    .await
+    .map_err(|e| failure_message(&e))?;
+    Ok(PrefixOutcome {
+        mode_cancelled: Some(
+            mode.filter(|m| !m.is_empty())
+                .unwrap_or("a mode")
+                .to_owned(),
+        ),
+    })
+}

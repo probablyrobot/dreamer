@@ -6,6 +6,10 @@
 //!
 //! Whether either direction is used is the window's decision
 //! (`clipboard.tmux` in the settings); this only carries the text.
+//!
+//! The same connection reads tmux's key options (the prefix and the copy
+//! mode keys) and types keys after the prefix for the window's key layer,
+//! so none of that waits on, or blocks, the window.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -18,8 +22,18 @@ use client::Pushed;
 enum Ask {
     /// Make this text tmux's newest buffer.
     Write(String),
-    /// Read the newest buffer and answer.
-    Newest(tokio::sync::oneshot::Sender<Option<String>>),
+    /// Read a buffer (the newest when unnamed) and answer.
+    Read(Option<String>, tokio::sync::oneshot::Sender<Option<String>>),
+    /// List the buffers, newest first.
+    List(tokio::sync::oneshot::Sender<Vec<api::TmuxBufferInfo>>),
+    /// Read tmux's key options.
+    Keys(tokio::sync::oneshot::Sender<Option<api::KeyOptions>>),
+    /// Type the prefix and a key on a pane.
+    PrefixKey {
+        pane: u32,
+        key: String,
+        reply: tokio::sync::oneshot::Sender<Result<api::PrefixKeyResult, String>>,
+    },
 }
 
 #[derive(Debug)]
@@ -56,9 +70,41 @@ impl TmuxBuffers {
 
     /// tmux's newest paste buffer, if there is one.
     pub async fn newest(&self) -> Option<String> {
+        self.named(None).await
+    }
+
+    /// A paste buffer's text: `name`, or the newest.
+    pub async fn named(&self, name: Option<String>) -> Option<String> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.asks.send(Ask::Newest(tx)).ok()?;
+        self.asks.send(Ask::Read(name, tx)).ok()?;
         rx.await.ok().flatten()
+    }
+
+    /// tmux's paste buffers, newest first, without their text.
+    pub async fn list(&self) -> Vec<api::TmuxBufferInfo> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.asks.send(Ask::List(tx)).is_err() {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// tmux's prefix, prefix2, mode-keys, and mode-style.
+    pub async fn key_options(&self) -> Option<api::KeyOptions> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.asks.send(Ask::Keys(tx)).ok()?;
+        rx.await.ok().flatten()
+    }
+
+    /// Type tmux's prefix and then `key` (a tmux key name) on `pane`, so
+    /// tmux's own binding for it runs.
+    pub async fn prefix_key(&self, pane: u32, key: String) -> Result<api::PrefixKeyResult, String> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.asks
+            .send(Ask::PrefixKey { pane, key, reply })
+            .map_err(|_| "the daemon connection is gone".to_owned())?;
+        rx.await
+            .unwrap_or_else(|_| Err("the daemon connection is gone".into()))
     }
 }
 
@@ -123,8 +169,45 @@ async fn follow(
                         }))
                         .await;
                 }
-                Some(Ask::Newest(reply)) => {
-                    let _ = reply.send(read(&c, None).await);
+                Some(Ask::Read(name, reply)) => {
+                    let _ = reply.send(read(&c, name).await);
+                }
+                Some(Ask::List(reply)) => {
+                    let list = match c
+                        .call(Request::ClipboardListTmuxBuffers(
+                            api::TmuxBufferListParams::default(),
+                        ))
+                        .await
+                    {
+                        Ok(Response::ClipboardListTmuxBuffers(l)) => l.buffers,
+                        _ => Vec::new(),
+                    };
+                    let _ = reply.send(list);
+                }
+                Some(Ask::Keys(reply)) => {
+                    let keys = match c
+                        .call(Request::TmuxKeyOptions(api::KeyOptionsParams::default()))
+                        .await
+                    {
+                        Ok(Response::TmuxKeyOptions(o)) => Some(o),
+                        _ => None,
+                    };
+                    let _ = reply.send(keys);
+                }
+                Some(Ask::PrefixKey { pane, key, reply }) => {
+                    let r = match c
+                        .call(Request::TmuxPrefixKey(api::PrefixKey {
+                            endpoint: None,
+                            pane,
+                            key,
+                        }))
+                        .await
+                    {
+                        Ok(Response::TmuxPrefixKey(r)) => Ok(r),
+                        Ok(_) => Err("unexpected answer".into()),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    let _ = reply.send(r);
                 }
                 None => return Ok(()),
             },

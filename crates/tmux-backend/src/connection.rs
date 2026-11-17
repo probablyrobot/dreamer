@@ -59,6 +59,9 @@ pub struct ConnectionConfig {
     /// `new-session` and these arguments (which create and attach a new
     /// session, starting the server if needed).
     pub new_session_args: Option<Vec<String>>,
+    /// Client flags given to `attach-session -f` (for example
+    /// `ignore-size,no-output`).
+    pub attach_flags: Option<String>,
 }
 
 impl ConnectionConfig {
@@ -74,6 +77,7 @@ impl ConnectionConfig {
             event_capacity: 4096,
             env: None,
             new_session_args: None,
+            attach_flags: None,
         }
     }
 }
@@ -183,8 +187,11 @@ impl Connection {
                 cmd.args(["-C", "new-session"]).args(args);
             }
             None => {
-                cmd.args(["-C", "attach-session", "-t"])
-                    .arg(&config.session);
+                cmd.args(["-C", "attach-session"]);
+                if let Some(flags) = &config.attach_flags {
+                    cmd.arg("-f").arg(flags);
+                }
+                cmd.arg("-t").arg(&config.session);
             }
         }
         cmd.stdin(Stdio::piped())
@@ -267,6 +274,10 @@ async fn reader(
     let mut parser = Parser::default();
     let mut buf = vec![0u8; 64 * 1024];
     let mut out = Vec::new();
+    // The attach is answered first. After it, a block whose guard flags
+    // lack 1 is output of a command this client did not send (a key
+    // binding run on it, for example) and answers nothing we asked.
+    let mut attached = false;
     let error: Option<String> = loop {
         let n = match stdout.read(&mut buf).await {
             Ok(0) => break parser.finish().err().map(|e| e.to_string()),
@@ -276,7 +287,11 @@ async fn reader(
         let parsed: Result<(), ProtocolError> = parser.feed(&buf[..n], &mut out);
         for event in out.drain(..) {
             let delivered = match event {
-                Event::Response(r) => responses.send(r).await.is_ok(),
+                Event::Response(r) if attached && r.guard.flags & 1 == 0 => true,
+                Event::Response(r) => {
+                    attached = true;
+                    responses.send(r).await.is_ok()
+                }
                 Event::Notification(n) => events.send(ConnEvent::Notification(n)).await.is_ok(),
             };
             if !delivered {

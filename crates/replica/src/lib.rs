@@ -17,10 +17,12 @@
 //! resume after a reconnect, and resnapshot with bounded retries.
 
 pub mod clipboard;
+pub mod copy_mode;
 pub mod decorations;
 pub mod feed;
 mod follow;
 pub mod hosts;
+pub mod keys;
 pub mod search;
 pub mod topology;
 pub mod via;
