@@ -717,35 +717,43 @@ async fn focus_outlives_a_rebuilt_mirror_so_clipboard_writes_still_arrive() {
     let s = Setup::new(&[]);
     let c = s.client().await;
     focus(&c, 4, true).await;
+    let before = s.mirror().await.1.generation;
     // A new process in the pane gets a new mirror; the client that had
     // the pane's focus still has it.
     s.tmux
         .run_checked(&["respawn-pane", "-k", "-t", "main", "/bin/sh"])
         .expect("respawn");
-    s.type_line("echo NEW''-UP");
-    s.wait_tmux("NEW-UP");
-    // Follow the new process's mirror: one that shows what it printed.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let after = loop {
+        let g = s.mirror().await.1.generation;
+        if g != before {
+            break g;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the mirror was never rebuilt"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    // Follow the new process's mirror (an old subscription would end).
     let mut a = loop {
         assert!(
             tokio::time::Instant::now() < deadline,
             "never followed the new process"
         );
-        let Ok(mut f) = Follower::start_as(s.socket(), 0, RetryPolicy::default(), Some(4)).await
-        else {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
-        };
-        let shown = tokio::time::Instant::now() + Duration::from_secs(5);
-        while !f.replica().text().contains("NEW-UP") {
-            match tokio::time::timeout_at(shown, f.step()).await {
-                Ok(Ok(_)) => {}
-                _ => break,
+        if let Ok(mut f) = Follower::start_as(s.socket(), 0, RetryPolicy::default(), Some(4)).await
+        {
+            let settle = tokio::time::Instant::now() + Duration::from_secs(2);
+            while f.replica().position().is_none() {
+                if !matches!(tokio::time::timeout_at(settle, f.step()).await, Ok(Ok(_))) {
+                    break;
+                }
+            }
+            if f.replica().position().is_some_and(|(_, g, _)| g == after) {
+                break f;
             }
         }
-        if f.replica().text().contains("NEW-UP") {
-            break f;
-        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     };
     // "CLIP-NEW" in base64.
     s.type_line("printf '\\033]52;c;Q0xJUC1ORVc=\\007'; echo N''EW");
