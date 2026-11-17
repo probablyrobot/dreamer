@@ -713,6 +713,77 @@ async fn a_clipboard_write_reaches_only_the_focused_client_once() {
 }
 
 #[tokio::test]
+async fn focus_outlives_a_rebuilt_mirror_so_clipboard_writes_still_arrive() {
+    let s = Setup::new(&[]);
+    let c = s.client().await;
+    focus(&c, 4, true).await;
+    // A new process in the pane gets a new mirror; the client that had
+    // the pane's focus still has it.
+    s.tmux
+        .run_checked(&["respawn-pane", "-k", "-t", "main", "/bin/sh"])
+        .expect("respawn");
+    s.type_line("echo NEW''-UP");
+    s.wait_tmux("NEW-UP");
+    // Follow the new process's mirror: one that shows what it printed.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut a = loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never followed the new process"
+        );
+        let Ok(mut f) = Follower::start_as(s.socket(), 0, RetryPolicy::default(), Some(4)).await
+        else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        let shown = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !f.replica().text().contains("NEW-UP") {
+            match tokio::time::timeout_at(shown, f.step()).await {
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+        if f.replica().text().contains("NEW-UP") {
+            break f;
+        }
+    };
+    // "CLIP-NEW" in base64.
+    s.type_line("printf '\\033]52;c;Q0xJUC1ORVc=\\007'; echo N''EW");
+    assert_eq!(
+        clipboard_writes(&mut a, Duration::from_secs(10)).await,
+        vec![b"CLIP-NEW".to_vec()],
+        "the write reaches the client that had focus before the mirror was rebuilt"
+    );
+}
+
+#[tokio::test]
+async fn a_feed_that_reports_focus_at_once_gets_a_programs_clipboard_write() {
+    let s = Setup::new(&[]);
+    // As a window does: start following, and say this pane has focus
+    // straight away, before the feed has shown anything.
+    let feed = replica::feed::Feed::start(s.socket(), Some(0), None).expect("feed");
+    feed.send(api::terminal_input::Event::Focus(api::FocusInput {
+        gained: true,
+    }));
+    s.type_line("echo READY");
+    feed_until(&feed, |t| t.contains("\nREADY")).await;
+    // "CLIP-FEED" in base64.
+    s.type_line("printf '\\033]52;c;Q0xJUC1GRUVE\\007'; echo F''DONE");
+    feed_until(&feed, |t| t.contains("\nFDONE")).await;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let got = loop {
+        if let Some(t) = feed.take_clipboard() {
+            break Some(t);
+        }
+        if Instant::now() > deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(got.as_deref(), Some(&b"CLIP-FEED"[..]));
+}
+
+#[tokio::test]
 async fn a_clipboard_read_gets_no_clipboard_contents() {
     let s = Setup::new(&[]);
     let c = s.client().await;

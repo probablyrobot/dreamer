@@ -165,6 +165,7 @@ impl Feed {
             dropped: inputs_dropped.clone(),
         };
         let owner = Owner {
+            input: input.clone(),
             via,
             target: target.clone(),
             meta: meta.clone(),
@@ -217,6 +218,11 @@ impl Feed {
         use api::terminal_input::Event;
         if matches!(event, Event::Key(_) | Event::Text(_) | Event::Paste(_)) {
             let _ = self.view.send(ViewCommand::Follow);
+        }
+        if let Event::Focus(f) = &event {
+            self.target
+                .focus
+                .store(if f.gained { 1 } else { 2 }, Ordering::Release);
         }
         let _ = self.input.send(event);
     }
@@ -317,6 +323,10 @@ struct Target {
     pane: AtomicU64,
     generation: AtomicU64,
     known: std::sync::atomic::AtomicBool,
+    /// The view's focus as last reported: 0 never, 1 gained, 2 lost. Focus
+    /// is state, not typing: the daemon must hear it once the pane is known
+    /// and again after a reconnect, or clipboard writes go to no one.
+    focus: std::sync::atomic::AtomicU8,
 }
 
 /// Sends input on its own connection, so input never waits for, or
@@ -392,6 +402,8 @@ impl InputSender {
 
 struct Owner {
     via: crate::Via,
+    /// The input sender's queue: to report focus again (see [`Target`]).
+    input: tokio::sync::mpsc::UnboundedSender<api::terminal_input::Event>,
     target: Arc<Target>,
     meta: Arc<Mutex<crate::PaneMeta>>,
     bells: Arc<AtomicU64>,
@@ -403,6 +415,19 @@ struct Owner {
 }
 
 impl Owner {
+    /// Tell the daemon again that this view has the pane's focus, if it
+    /// does: the report sent before the pane was known was dropped, and a
+    /// daemon that restarted forgot it.
+    fn report_focus(&self) {
+        if self.target.focus.load(Ordering::Acquire) == 1 {
+            let _ = self
+                .input
+                .send(api::terminal_input::Event::Focus(api::FocusInput {
+                    gained: true,
+                }));
+        }
+    }
+
     fn set(&self, s: FeedStatus) {
         if let Ok(mut st) = self.status.lock() {
             *st = s;
@@ -713,7 +738,9 @@ impl Owner {
                 Ok(s) if s.records > 0 || s.restored => {
                     if let Some((_, generation, _)) = f.replica().position() {
                         self.target.generation.store(generation, Ordering::Release);
-                        self.target.known.store(true, Ordering::Release);
+                        if !self.target.known.swap(true, Ordering::AcqRel) {
+                            self.report_focus();
+                        }
                     }
                     let Some(Ok(frame)) = f.frame() else { continue };
                     self.stats.frames.fetch_add(1, Ordering::Relaxed);
@@ -755,6 +782,7 @@ impl Owner {
             tokio::time::sleep(backoff).await;
             if f.reconnect().await.is_ok() {
                 self.set(FeedStatus::Following);
+                self.report_focus();
                 return;
             }
             backoff = (backoff * 2).min(Duration::from_secs(2));
