@@ -7,6 +7,7 @@
 #   "use a tool"   text, a bash tool call, then an approval request (confirm);
 #                  the answer finishes the tool call and the turn
 #   "work slowly"  text, then nothing until abort, which ends it cancelled
+#   "write at length"  thinking, then a long markdown answer in 122 deltas
 #   anything else  thinking, text, usage, and the end of the turn
 #
 # FAKE_PI_OLD=1 makes it a pi without get_state. It appends its arguments,
@@ -149,6 +150,18 @@ while IFS= read -r line; do
 			;;
 		*'work slowly'*)
 			text text_delta "Working"
+			;;
+		*'write at length'*)
+			text thinking_delta "Planning a long answer."
+			text text_delta "# A long answer\\n\\n"
+			i=1
+			while [ $i -le 60 ]; do
+				text text_delta "Paragraph $i of the answer, "
+				text text_delta "streamed in **pieces**.\\n\\n"
+				i=$((i + 1))
+			done
+			text text_delta "\`\`\`sh\\necho done\\n\`\`\`\\n\\nThe end of the long answer."
+			finish
 			;;
 		*)
 			text thinking_delta "Thinking."

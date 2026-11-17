@@ -51,6 +51,9 @@ pub struct App {
     /// What the input components did since the host last took them
     /// ([`App::take_events`]), oldest first.
     pub events: Vec<Event>,
+    /// A tree's transcripts and composers: their own state, and what they
+    /// ask of the daemon ([`App::take_asks`]).
+    pub sessions: crate::session::SessionNodes,
 }
 
 /// Something an input component did: a button pressed, an input's text
@@ -223,6 +226,7 @@ impl App {
             tabs: BTreeMap::new(),
             values: BTreeMap::new(),
             events: Vec::new(),
+            sessions: crate::session::SessionNodes::default(),
         }
         .with_form()
         .with_focus()
@@ -412,7 +416,7 @@ impl App {
         if !self.manifest.is_tree() && self.manifest.view.kind == ViewKind::Agent {
             return true;
         }
-        if self.in_input() {
+        if self.in_input() || self.in_composer() {
             return true;
         }
         self.in_form()
@@ -430,6 +434,9 @@ impl App {
     pub fn insert_text(&mut self, text: &str) -> bool {
         if !self.takes_text() {
             return false;
+        }
+        if self.composer_insert(text) {
+            return true;
         }
         let clean = clean_text(text);
         if !self.manifest.is_tree() && self.manifest.view.kind == ViewKind::Agent {
@@ -486,7 +493,7 @@ impl App {
     /// tree, `node` names the node clicked (else the focused one).
     pub fn select_at(&mut self, node: Option<&str>, index: usize) {
         self.focus_node(node);
-        if self.click_control(index) {
+        if self.click_control(index) || self.session_click(index) {
             return;
         }
         let Some(v) = self.focused_view() else {
@@ -743,6 +750,8 @@ impl App {
         }
         let mut node = if spec.kind.is_content() || spec.kind.is_control() {
             Node::new(key, self.component(key, spec))
+        } else if spec.kind.is_session() || spec.tap.is_some() {
+            self.session_node(key, spec)
         } else if let Some(v) = spec.view() {
             let rows = self.sources.get(&v.source).map_or(&[][..], Vec::as_slice);
             let selected = self.selection.get(key).copied().unwrap_or(0);
@@ -888,6 +897,7 @@ impl App {
                     .or_else(|| n.options.first().cloned())
                     .unwrap_or_default(),
                 NodeType::Toggle => kept.unwrap_or_else(|| n.on.to_string()),
+                NodeType::Composer => kept.unwrap_or_default(),
                 _ => continue,
             };
             self.values.insert(key.clone(), value);
@@ -965,6 +975,9 @@ impl App {
     /// select moves with Up and Down, and Enter or Space steps to the
     /// next option. Returns whether the key was taken.
     pub fn control_key(&mut self, name: &str) -> bool {
+        if self.session_key(name) {
+            return true;
+        }
         let Some(key) = self.focused.clone() else {
             return false;
         };
@@ -1219,6 +1232,7 @@ impl App {
             tabs: BTreeMap::new(),
             values: BTreeMap::new(),
             events: Vec::new(),
+            sessions: crate::session::SessionNodes::default(),
         })
     }
 }
@@ -1471,6 +1485,7 @@ field = "load"
                 kind: view_tree::Kind::Item {
                     cells: vec!["2".into(), "nvim".into()],
                 },
+                bind: None,
             }]
         );
         let mut applied = before.clone();
@@ -1689,6 +1704,7 @@ field = "load"
                     value: "x".into(),
                     placeholder: "type a name, Enter greets".into(),
                 },
+                bind: None,
             }]
         );
         a.select_at(Some("skin"), 1);

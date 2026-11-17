@@ -497,6 +497,29 @@ pub async fn run_process(
     inputs: &mut mpsc::UnboundedReceiver<Input>,
     publish: &mut dyn FnMut(&Frame) -> Result<(), String>,
 ) -> Result<(), String> {
+    run_process_with(
+        path,
+        endpoint,
+        engine,
+        inputs,
+        publish,
+        &crate::bound::Streams::default(),
+    )
+    .await
+}
+
+/// [`run_process`], following the streams the program's tree binds into
+/// `streams` (for the presentation to draw them); `publish` is called
+/// again when they change.
+pub async fn run_process_with(
+    path: PathBuf,
+    endpoint: Endpoint,
+    engine: Option<Engine>,
+    inputs: &mut mpsc::UnboundedReceiver<Input>,
+    publish: &mut dyn FnMut(&Frame) -> Result<(), String>,
+    streams: &crate::bound::Streams,
+) -> Result<(), String> {
+    let mut follower = crate::bound::Follower::new(None);
     let (manifest, source) = crate::run::load_with_text(&path.display().to_string())?;
     let dir = path
         .parent()
@@ -538,6 +561,11 @@ pub async fn run_process(
                 shown.status = format!("stale: {why}  | r restart  q quit");
             } else if let Some(s) = &status {
                 shown.status = format!("{}  | {s}", shown.status);
+            }
+            if let Some(c) = conn.as_ref()
+                && follower.sync(&c.client, &shown, streams).await.is_err()
+            {
+                follower.reset();
             }
             publish(&shown)?;
             if let Some(h) = &hosting {
@@ -667,6 +695,8 @@ pub async fn run_process(
                 Some(client::Pushed::Event { topic, payload, .. }) => {
                     match api::Notification::decode(&topic, &payload) {
                         Ok(api::Notification::AppsInput(i)) => input = from_remote(&i),
+                        // A bound node's stream: drawn, not the program's.
+                        Ok(n) if streams.take(&n) => dirty = true,
                         Ok(n) => {
                             if let Some(r) = running.as_ref() {
                                 r.send(&HostMessage::Notify { topic, payload: n.to_json() });
@@ -748,6 +778,7 @@ pub async fn run_process(
         }
         if let Some(why) = lost {
             conn = None;
+            follower.reset();
             if let Some(r) = running.as_ref() {
                 r.send(&HostMessage::Link {
                     live: false,

@@ -360,6 +360,21 @@ by its key when the tree changes, and a table or list scrolls to its
 selection only when the selection moves. A host that publishes no tree
 (an older one) is drawn from its model as before.
 
+A `transcript` or `composer` bound to an agent session, and a `log`
+bound to a tap ([termapp.md](termapp.md#bound-streams)), are drawn from
+the stream itself: the pane's view thread follows it on the desktop's
+connection for the app (`for_pane`), so the daemon checks the app's
+grant too, and the tokens never pass through the host. The transcript is
+drawn as cards (your prompts, the answer as markdown as it streams,
+thinking folded until clicked, tool calls with their output, approval
+requests with a button per answer, the plan) above its state and usage,
+and follows the newest while it is scrolled to the bottom; it builds at
+most its newest 600 lines per frame. An approval card's buttons answer
+for the app (`agent.sessions.approve` or `deny` with `for_pane`), which
+its grant must allow. The composer has Send, Stop while a turn runs,
+Attach selection, and its attachments, each removed with a click;
+Shift-Enter starts a new line.
+
 When the host stops (the pane stays open, for example with
 `remain-on-exit`), or the daemon cannot be reached, the pane keeps
 showing the last view, with `stale:` and the reason in its status line.
@@ -375,7 +390,7 @@ panes:
 | Input | In an app view |
 | --- | --- |
 | Arrows, Enter, Esc, Tab, Backspace, Delete, Home, End, Page Up/Down, F-keys, Ctrl combinations | A key by the model's names (`Up`, `Enter`, `Ctrl-c`) |
-| Text, Space included | Comes through the platform's text input, so IME composition works: the composition is shown at the bottom of the view and only committed text is sent. It goes into the focused input as one edit (a text or number field, an `input` component, or an agent's prompt); in a view with no input it is the keys it is made of (`j`, `q`, a command's key) |
+| Text, Space included | Comes through the platform's text input, so IME composition works: the composition is shown at the bottom of the view and only committed text is sent. It goes into the focused input as one edit (a text or number field, an `input` or `composer` component, or an agent's prompt); in a view with no input it is the keys it is made of (`j`, `q`, a command's key) |
 | Cmd-C (macOS), Ctrl-Shift-C (Linux) | Copies the lines selected with the mouse; with none, the selected row of the focused table or list (a table's columns separated by tabs), the focused form field or `input`, the focused `select`'s option, a text view's text, or an agent view's latest answer. The copy goes to the clipboard and, with `clipboard.tmux` `sync` or `to_tmux`, becomes tmux's newest buffer |
 | Cmd-V (macOS), Ctrl-Shift-V (Linux) | Pastes the clipboard into the focused input as one edit: line breaks become spaces, other control characters are dropped. A view with no focused input takes no paste, so a paste never runs a command |
 | Click | Selects a table's or list's row, or focuses a form field; presses a `button`, flips a `toggle`, picks a `select`'s option, or focuses an `input`. In a [view tree](termapp.md#view-trees), the node clicked takes the focus |

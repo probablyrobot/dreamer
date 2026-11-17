@@ -462,6 +462,8 @@ pub enum NodeType {
     Badge,
     Progress,
     Status,
+    Transcript,
+    Composer,
 }
 
 impl NodeType {
@@ -475,7 +477,15 @@ impl NodeType {
     /// Takes keys when focused: moves a selection, edits fields, or is a
     /// control.
     pub fn focusable(self) -> bool {
-        matches!(self, NodeType::Table | NodeType::List | NodeType::Form) || self.is_control()
+        matches!(self, NodeType::Table | NodeType::List | NodeType::Form)
+            || self.is_control()
+            || self.is_session()
+    }
+
+    /// Bound to an agent session (by `session`, or the first row's
+    /// `field` of its `source`): a transcript or a composer.
+    pub fn is_session(self) -> bool {
+        matches!(self, NodeType::Transcript | NodeType::Composer)
     }
 
     /// A button, input, select, or toggle: an input component whose
@@ -526,6 +536,8 @@ impl NodeType {
             NodeType::Badge => "badge",
             NodeType::Progress => "progress",
             NodeType::Status => "status",
+            NodeType::Transcript => "transcript",
+            NodeType::Composer => "composer",
         }
     }
 }
@@ -597,11 +609,23 @@ pub struct NodeSpec {
     /// change runs.
     #[serde(default)]
     pub run: Option<String>,
+    /// Transcript and composer: the agent session they are bound to, when
+    /// it does not come from `source` (the first row's `field`).
+    #[serde(default)]
+    pub session: Option<String>,
+    /// Log: the pane whose committed lines it shows, as a tap, instead of
+    /// a `source`.
+    #[serde(default)]
+    pub tap: Option<u32>,
 }
 
 impl NodeSpec {
     /// A data node as a version 1 view; `None` for a layout node.
     pub fn view(&self) -> Option<View> {
+        if self.tap.is_some() {
+            // A log bound to a tap is drawn from the stream, not rows.
+            return None;
+        }
         let kind = match self.kind {
             NodeType::Table => ViewKind::Table,
             NodeType::List => ViewKind::List,
@@ -651,6 +675,24 @@ pub const RESERVED_KEYS: [&str; 8] = ["q", "Up", "Down", "k", "j", "PageUp", "Pa
 /// Keys a tree's runtime also keeps: Tab moves the focus, Left and Right
 /// switch tabs.
 pub const TREE_RESERVED_KEYS: [&str; 3] = ["Tab", "Left", "Right"];
+
+/// What a transcript calls: following its session, and answering its
+/// approval requests.
+pub const TRANSCRIPT_METHODS: [&str; 4] = [
+    "agent.sessions.events",
+    "agent.sessions.approve",
+    "agent.sessions.deny",
+    "terminal.unsubscribe",
+];
+
+/// What a composer calls: sending a prompt, stopping a turn, and
+/// following its session (to know whether a turn runs).
+pub const COMPOSER_METHODS: [&str; 4] = [
+    "agent.sessions.send",
+    "agent.sessions.cancel",
+    "agent.sessions.events",
+    "terminal.unsubscribe",
+];
 
 /// Whether `k` names a key the runtime understands.
 pub fn key_ok(k: &str) -> bool {
@@ -751,7 +793,34 @@ impl Manifest {
         if !declared && self.data.values().any(|s| s.collector.is_some()) {
             methods.push(COLLECT_QUERY.into());
         }
+        // Bound nodes: what following their stream, and acting on it,
+        // calls.
+        let mut bound: Vec<&str> = Vec::new();
+        for n in self.nodes.values() {
+            match n.kind {
+                NodeType::Transcript => bound.extend(TRANSCRIPT_METHODS),
+                NodeType::Composer => bound.extend(COMPOSER_METHODS),
+                NodeType::Log if n.tap.is_some() => {
+                    bound.extend(["taps.subscribe", "taps.unsubscribe"]);
+                }
+                _ => {}
+            }
+        }
+        for m in bound {
+            let service = format!("{}.*", m.rsplit_once('.').map_or(m, |(s, _)| s));
+            if !methods.iter().any(|c| c == m || *c == service) {
+                methods.push(m.to_owned());
+            }
+        }
         methods
+    }
+
+    /// The panes bound logs tap.
+    pub fn tapped_panes(&self) -> Vec<u32> {
+        let mut out: Vec<u32> = self.nodes.values().filter_map(|n| n.tap).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// Whether a data source is a collector, whose rows come from any pane.
@@ -769,10 +838,15 @@ impl Manifest {
         if follows {
             methods.extend(["events.subscribe".into(), "events.unsubscribe".into()]);
         }
-        let (panes, all_panes) = match &self.agent {
+        let (mut panes, all_panes) = match &self.agent {
             Some(a) => (a.tools.panes.clone(), a.tools.all_panes || self.all_panes),
             None => (Vec::new(), self.all_panes),
         };
+        for p in self.tapped_panes() {
+            if !panes.contains(&p) {
+                panes.push(p);
+            }
+        }
         Needs {
             methods,
             panes,
@@ -859,7 +933,7 @@ impl Manifest {
         let mut out: Vec<String> = Vec::new();
         let content = self.tree_order().into_iter().filter_map(|k| {
             let n = self.nodes.get(&k)?;
-            n.kind.is_content().then(|| n.source.clone())
+            (n.kind.is_content() || n.kind.is_session()).then(|| n.source.clone())
         });
         let views: Vec<String> = self
             .data_views()
@@ -1229,6 +1303,7 @@ impl Manifest {
                     self.validate_view(&v, &at, errors);
                 }
                 self.validate_component(n, &at, errors);
+                self.validate_bound(n, &at, errors);
             }
             if !n.sizes.is_empty()
                 && (n.kind != NodeType::Split
@@ -1264,6 +1339,47 @@ impl Manifest {
                     "commands.{name}.key: `{}` moves the focus or the tab in a tree",
                     c.key
                 ));
+            }
+        }
+    }
+
+    /// A transcript's, composer's, or tapped log's own checks: where its
+    /// stream comes from.
+    fn validate_bound(&self, n: &NodeSpec, at: &str, errors: &mut Vec<String>) {
+        let kind = n.kind.name();
+        if n.kind.is_session() {
+            match (&n.session, n.source.is_empty()) {
+                (Some(_), false) => {
+                    errors.push(format!(
+                        "{at}: a {kind} has `session` or a `source`, not both"
+                    ));
+                }
+                (None, true) => {
+                    errors.push(format!(
+                        "{at}: a {kind} needs `session` or a `source` (its `field` is the session id)"
+                    ));
+                }
+                (Some(s), true) if s.is_empty() => {
+                    errors.push(format!("{at}.session: an agent session id"));
+                }
+                (None, false) if !self.data.contains_key(&n.source) => {
+                    errors.push(format!("{at}.source: no data source `{}`", n.source));
+                }
+                _ => {}
+            }
+            if let Some(f) = &n.field
+                && !path_ok(f)
+            {
+                errors.push(format!("{at}: `{f}` is not a dotted field name"));
+            }
+        } else if n.session.is_some() {
+            errors.push(format!("{at}.session: a {kind} is not bound to a session"));
+        }
+        if n.tap.is_some() {
+            if n.kind != NodeType::Log {
+                errors.push(format!("{at}.tap: only a log is bound to a tap"));
+            } else if !n.source.is_empty() {
+                errors.push(format!("{at}: a log has `tap` or a `source`, not both"));
             }
         }
     }

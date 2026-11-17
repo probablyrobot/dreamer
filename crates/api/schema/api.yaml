@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 50 }
+version: { major: 1, minor: 51 }
 package: dreamer.v1
 
 types:
@@ -824,7 +824,7 @@ types:
     fields:
       - { n: 1, name: pane, type: u32 }
       - { n: 2, name: key, type: string, doc: "A key by the app model's names: a character, Enter, Esc, Tab, Up, Ctrl-c, F2, ... Empty when the input is one of the fields below; exactly one is given." }
-      - { n: 3, name: text, type: string, optional: true, doc: "Text for the view's focused input (a text or number field, a prompt) as one edit: text committed by the platform's text input (IME) or pasted. Line breaks become spaces and other control characters are dropped. A view with no focused input ignores it, so pasted text never runs a command." }
+      - { n: 3, name: text, type: string, optional: true, doc: "Text for the view's focused input (a text or number field, a prompt) as one edit: text committed by the platform's text input (IME) or pasted. Line breaks become spaces (a composer keeps them) and other control characters are dropped. A view with no focused input ignores it, so pasted text never runs a command." }
       - { n: 4, name: select, type: u32, optional: true, doc: "A click: select this row of a table or list, or focus this form field, by index." }
       - { n: 5, name: scroll, type: i32, optional: true, doc: "Wheel steps: positive moves a table's or list's selection down, negative up." }
       - { n: 6, name: node, type: string, optional: true, doc: "In a view tree (manifest version 2), the node a click or wheel steps are for, by key; the host focuses it first. Without it they go to the focused node. Only with select or scroll." }
@@ -1120,6 +1120,7 @@ types:
       - { n: 2, name: panes, type: u32, repeated: true, doc: "The panes to follow." }
       - { n: 3, name: every_pane, type: bool, doc: "Follow every mirrored pane, including later ones (needs all_panes)." }
       - { n: 4, name: interval_ms, type: u32, optional: true, doc: "How often text and meta taps look for changes; default 250, at least 50." }
+      - { n: 5, name: for_pane, type: u32, optional: true, doc: "Follow for the app in this app pane, as a desktop drawing a `log` bound to a tap: the app's grant must allow this subscription too, as well as the caller's." }
 
   - message: TapSubscription
     fields:
@@ -1738,6 +1739,7 @@ types:
       - { n: 1, name: session, type: string }
       - { n: 2, name: approval, type: string, doc: "The approval_request event's id." }
       - { n: 3, name: option, type: string, optional: true, doc: "For a request with options, the one chosen when approving." }
+      - { n: 4, name: for_pane, type: u32, optional: true, doc: "Answer for the app in this app pane, as a desktop drawing its `transcript`'s approval card: the app's grant must allow this method and the session must be one the app may see, as well as the caller's." }
 
   - message: AgentSessionEventsQuery
     fields:
@@ -1745,6 +1747,7 @@ types:
       - { n: 2, name: after, type: u64, optional: true, doc: "Events after this sequence number; default from the start of the transcript." }
       - { n: 3, name: follow, type: bool, doc: "Keep streaming: the reply carries no events, and `agent.sessions.events` notifications follow, the stored ones first. End it with terminal.unsubscribe." }
       - { n: 4, name: limit, type: u32, optional: true, doc: "Without follow, the most events in the reply; default 1000, at most 10000." }
+      - { n: 5, name: for_pane, type: u32, optional: true, doc: "Read for the app in this app pane, as a desktop drawing a `transcript` bound to the session: the app's grant must allow agent.sessions.events and the session must be one the app may see, as well as the caller's." }
 
   - enum: AgentToolStatus
     values:

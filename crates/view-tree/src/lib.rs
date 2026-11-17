@@ -9,12 +9,18 @@
 //! data sources or code. The app host builds it from its model; the
 //! daemon keeps the newest ([`Kept`]) and hands each reader the whole tree
 //! or the patches since the version it has ([`Mirror`]).
+//!
+//! The one exception is a bound node ([`Bind`]): it names a daemon stream
+//! (an agent session, a pane's tap), and each renderer follows that stream
+//! itself, so streamed data reaches it without passing through the app or
+//! the tree.
 
 use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
 pub mod rich;
+pub mod transcript;
 
 /// The whole view: the chrome around the tree, and the tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,8 +43,23 @@ pub struct Node {
     pub title: Option<String>,
     #[serde(flatten)]
     pub kind: Kind,
+    /// The daemon stream the node draws, for a `transcript` or `composer`
+    /// (a session) or a `log` (a tap).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind: Option<Bind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Node>,
+}
+
+/// A daemon stream a node is bound to. On the wire it is
+/// `{"session": "<id>"}` or `{"tap": <pane>}`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Bind {
+    /// An agent session's events (`agent.sessions.events`).
+    Session(String),
+    /// A pane's committed lines (`taps.subscribe`, text level).
+    Tap(u32),
 }
 
 /// Which way a split divides its space.
@@ -167,6 +188,38 @@ pub enum Kind {
     Status {
         items: Vec<StatusItem>,
     },
+    /// An agent session's conversation, from the session it is bound to:
+    /// streaming markdown, thinking, tool cards, approval cards, the plan,
+    /// and usage ([`transcript`]). The tree holds only how it is shown.
+    Transcript {
+        /// Thinking shown in full; folded to one line otherwise.
+        #[serde(default, skip_serializing_if = "is_false")]
+        thinking: bool,
+        /// Lines scrolled back from the newest, in a terminal.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        back: u32,
+    },
+    /// A prompt for the session it is bound to: several lines of text,
+    /// with the cursor at the end, and what is attached to it.
+    Composer {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        label: String,
+        value: String,
+        /// Shown, dimmed, while the value is empty.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        placeholder: String,
+        /// What goes with the prompt, by label (`selection`, `@%3`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<String>,
+    },
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// What a badge or a status item means, which picks its colour from the
@@ -228,15 +281,21 @@ impl Kind {
             Kind::Badge { .. } => "badge",
             Kind::Progress { .. } => "progress",
             Kind::Status { .. } => "status",
+            Kind::Transcript { .. } => "transcript",
+            Kind::Composer { .. } => "composer",
         }
     }
 
-    /// Takes keys and clicks of its own: a button, input, select, or
-    /// toggle.
+    /// Takes keys and clicks of its own: a button, input, select,
+    /// toggle, or composer.
     pub fn is_control(&self) -> bool {
         matches!(
             self,
-            Kind::Button { .. } | Kind::Input { .. } | Kind::Select { .. } | Kind::Toggle { .. }
+            Kind::Button { .. }
+                | Kind::Input { .. }
+                | Kind::Select { .. }
+                | Kind::Toggle { .. }
+                | Kind::Composer { .. }
         )
     }
 
@@ -266,8 +325,31 @@ impl Node {
             key: key.into(),
             title: None,
             kind,
+            bind: None,
             children: Vec::new(),
         }
+    }
+
+    /// The node bound to `bind`.
+    pub fn bound(mut self, bind: Bind) -> Node {
+        self.bind = Some(bind);
+        self
+    }
+
+    /// Every stream a node in this subtree is bound to, each once, in
+    /// tree order (hidden tabs pages too: their streams keep flowing).
+    pub fn binds(&self) -> Vec<Bind> {
+        let mut out = Vec::new();
+        let mut stack = vec![self];
+        while let Some(n) = stack.pop() {
+            if let Some(b) = &n.bind
+                && !out.contains(b)
+            {
+                out.push(b.clone());
+            }
+            stack.extend(n.children.iter().rev());
+        }
+        out
     }
 
     /// The node with `key` in this subtree.
@@ -378,6 +460,8 @@ pub enum Op {
         #[serde(default)]
         title: Option<String>,
         kind: Kind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bind: Option<Bind>,
     },
     /// A node's children changed: their keys in order. Children whose key
     /// was there before are kept as they were (later ops change them);
@@ -412,11 +496,12 @@ pub fn diff(old: &Frame, new: &Frame) -> Vec<Op> {
 }
 
 fn diff_node(old: &Node, new: &Node, path: &mut Vec<String>, ops: &mut Vec<Op>) {
-    if old.title != new.title || old.kind != new.kind {
+    if old.title != new.title || old.kind != new.kind || old.bind != new.bind {
         ops.push(Op::Props {
             path: path.clone(),
             title: new.title.clone(),
             kind: new.kind.clone(),
+            bind: new.bind.clone(),
         });
     }
     let before: HashMap<&str, &Node> = old.children.iter().map(|c| (c.key.as_str(), c)).collect();
@@ -478,10 +563,16 @@ pub fn apply(frame: &mut Frame, ops: &[Op]) -> Result<(), String> {
                 frame.focus.clone_from(focus);
             }
             Op::Root { node } => frame.root = node.clone(),
-            Op::Props { path, title, kind } => {
+            Op::Props {
+                path,
+                title,
+                kind,
+                bind,
+            } => {
                 let n = locate(&mut frame.root, path)?;
                 n.title.clone_from(title);
                 n.kind = kind.clone();
+                n.bind.clone_from(bind);
             }
             Op::Children { path, keys, added } => {
                 let n = locate(&mut frame.root, path)?;
@@ -503,8 +594,10 @@ pub fn apply(frame: &mut Frame, ops: &[Op]) -> Result<(), String> {
     Ok(())
 }
 
-/// What a publisher sends next.
+/// What a publisher sends next. One is made per publish and turned into
+/// a message at once, so its size does not matter.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Update {
     /// The whole tree, as version `seq`.
     Full { seq: u64, frame: Frame },

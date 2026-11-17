@@ -14,6 +14,13 @@
 //! a panel, or a host that publishes no tree, the tree of its model.
 //! Scroll positions are kept per node key, so they survive updates.
 //!
+//! Bound nodes (a `transcript` or `composer` bound to an agent session, a
+//! `log` bound to a tap) are drawn from streams the panel follows itself
+//! ([`app_model::bound`]): for an app pane, on the desktop's connection
+//! with `for_pane`, so the daemon checks the app's grant too; for a panel,
+//! by its model on the model's narrowed connection. Streamed tokens reach
+//! the paint without passing through the app.
+//!
 //! Input follows the desktop's one policy (`input::app_intent`): special
 //! keys and Ctrl combinations are keys by the model's names; text comes
 //! through the platform's text input (so IME commits arrive as text) and
@@ -41,6 +48,8 @@ use view_tree::{Direction, Frame as Tree, Kind, Node, Tone};
 
 use crate::input::{self, AppKey};
 use crate::theme::{self, c, ca};
+
+mod bound;
 
 /// Rows drawn at most; a longer source shows the rows around the
 /// selection (a log, its newest rows).
@@ -72,6 +81,12 @@ pub(crate) struct AppPanel {
     wheel: f32,
     /// IME composition in progress: shown, never sent.
     preedit: Option<String>,
+    /// The streams bound nodes draw, and calls made for the app (an
+    /// approval answered from a card).
+    pub(crate) streams: app_model::bound::Streams,
+    calls: tokio::sync::mpsc::UnboundedSender<api::Request>,
+    /// Each transcript's scroll, following the newest.
+    follow: std::cell::RefCell<HashMap<String, bound::Follow>>,
 }
 
 /// Lines selected with the mouse: the node they are in (by key; `AGENT`
@@ -112,7 +127,8 @@ impl AppPanel {
         let ended: Arc<Mutex<Option<String>>> = Arc::default();
         let (inputs, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (wake_tx, wake) = async_channel::bounded::<()>(1);
-        let (l, e, p) = (latest.clone(), ended.clone(), path.clone());
+        let streams = app_model::bound::Streams::default();
+        let (l, e, p, st) = (latest.clone(), ended.clone(), path.clone(), streams.clone());
         let spawned = std::thread::Builder::new()
             .name("dreamer-panel".into())
             .spawn(move || {
@@ -134,7 +150,7 @@ impl AppPanel {
                             let _ = wake_tx.try_send(());
                             Ok(())
                         };
-                        rt.block_on(app_model::run(p, endpoint, &mut rx, &mut publish))
+                        rt.block_on(app_model::run_with(p, endpoint, &mut rx, &mut publish, &st))
                     });
                 if let Ok(mut e) = e.lock() {
                     *e = Some(match result {
@@ -173,6 +189,10 @@ impl AppPanel {
             dragging: false,
             wheel: 0.0,
             preedit: None,
+            streams,
+            // A panel's model answers for itself (a click on the node).
+            calls: tokio::sync::mpsc::unbounded_channel().0,
+            follow: Default::default(),
         }
     }
 
@@ -190,7 +210,9 @@ impl AppPanel {
         let (inputs, rx) = tokio::sync::mpsc::unbounded_channel();
         let (wake_tx, wake) = async_channel::bounded::<()>(1);
         let tree: Arc<Mutex<Option<Tree>>> = Arc::default();
-        let (l, e, tr) = (latest.clone(), ended.clone(), tree.clone());
+        let streams = app_model::bound::Streams::default();
+        let (calls, calls_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (l, e, tr, st) = (latest.clone(), ended.clone(), tree.clone(), streams.clone());
         let spawned = std::thread::Builder::new()
             .name(format!("dreamer-app-pane-{pane}"))
             .spawn(move || {
@@ -203,7 +225,13 @@ impl AppPanel {
                 let wake = move || {
                     let _ = wake_tx.try_send(());
                 };
-                rt.block_on(follow_pane(pane, socket, rx, l, e, tr, wake));
+                let shared = Shared {
+                    latest: l,
+                    ended: e,
+                    tree: tr,
+                    streams: st,
+                };
+                rt.block_on(follow_pane(pane, socket, rx, calls_rx, shared, wake));
             });
         if let Err(why) = spawned
             && let Ok(mut e) = ended.lock()
@@ -234,6 +262,9 @@ impl AppPanel {
             dragging: false,
             wheel: 0.0,
             preedit: None,
+            streams,
+            calls,
+            follow: Default::default(),
         }
     }
 
@@ -245,6 +276,34 @@ impl AppPanel {
     /// Send a key by the model's names (`a`, `Enter`, `Up`, `Ctrl-c`).
     pub(crate) fn key(&self, name: &str) {
         let _ = self.inputs.send(Input::Key(name.to_owned()));
+    }
+
+    /// An approval card's button: in an app pane, answered here for the
+    /// app (`for_pane`: the daemon checks the app's grant allows it); in a
+    /// panel, a click its model answers on its own connection.
+    fn answer(&self, a: bound::Answering) {
+        if let Some((pane, _)) = &self.pane {
+            let p = api::AgentSessionAnswer {
+                session: a.session,
+                approval: a.approval,
+                option: a.option.map(|(_, o)| o),
+                for_pane: Some(*pane),
+            };
+            let _ = self.calls.send(if a.allow {
+                api::Request::AgentSessionsApprove(p)
+            } else {
+                api::Request::AgentSessionsDeny(p)
+            });
+            return;
+        }
+        let index = match (a.allow, a.option) {
+            (false, _) => app_model::session::CLICK_DENY,
+            (true, o) => app_model::session::CLICK_ALLOW + o.map_or(0, |(i, _)| i),
+        };
+        let _ = self.inputs.send(Input::Select {
+            node: Some(a.node),
+            index,
+        });
     }
 
     /// The tree drawn: an app pane's host's, else the model's (a panel,
@@ -344,6 +403,22 @@ impl AppPanel {
 
     fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.tmux_key(ev, cx) {
+            cx.stop_propagation();
+            return;
+        }
+        // Shift-Enter starts a new line in a composer.
+        let k = &ev.keystroke;
+        if k.key == "enter"
+            && k.modifiers.shift
+            && !k.modifiers.platform
+            && self.drawn_tree().is_some_and(|t| {
+                t.focus
+                    .as_deref()
+                    .and_then(|f| t.root.find(f))
+                    .is_some_and(|n| matches!(n.kind, Kind::Composer { .. }))
+            })
+        {
+            self.key("Shift-Enter");
             cx.stop_propagation();
             return;
         }
@@ -605,7 +680,7 @@ fn tree_takes_text(tree: &Tree) -> bool {
     };
     match &n.kind {
         Kind::Form { fields, focus } => fields.get(*focus).is_some_and(|f| !f.toggle),
-        Kind::Input { .. } => true,
+        Kind::Input { .. } | Kind::Composer { .. } => true,
         _ => false,
     }
 }
@@ -657,16 +732,32 @@ impl Drop for AppPanel {
 /// the keys from `inputs`, in order. `ended` says why the view is stale,
 /// while it is. Its view tree is followed beside the model, as patches
 /// to the copy in `tree`; a daemon without trees leaves `tree` empty.
+/// What a followed app pane shares with its view: the model, why it is
+/// stale, its tree, and its bound streams.
+struct Shared {
+    latest: Arc<Mutex<Option<App>>>,
+    ended: Arc<Mutex<Option<String>>>,
+    tree: Arc<Mutex<Option<Tree>>>,
+    streams: app_model::bound::Streams,
+}
+
 async fn follow_pane(
     pane: u32,
     socket: PathBuf,
     mut inputs: tokio::sync::mpsc::UnboundedReceiver<Input>,
-    latest: Arc<Mutex<Option<App>>>,
-    ended: Arc<Mutex<Option<String>>>,
-    tree: Arc<Mutex<Option<Tree>>>,
+    mut calls: tokio::sync::mpsc::UnboundedReceiver<api::Request>,
+    shared: Shared,
     wake: impl Fn(),
 ) {
     use std::time::Duration;
+    let Shared {
+        latest,
+        ended,
+        tree,
+        streams,
+    } = shared;
+    // The streams the tree binds, followed for the app in this pane.
+    let mut follower = app_model::bound::Follower::new(Some(pane));
     let set_ended = |why: Option<String>| {
         if let Ok(mut e) = ended.lock()
             && *e != why
@@ -678,8 +769,11 @@ async fn follow_pane(
     let mut cache: app_model::ManifestCache = None;
     let mut backoff = Duration::from_millis(200);
     loop {
-        let c = match client::Client::connect(&socket, "app-pane").await {
-            Ok(c) => Arc::new(c),
+        let (c, mut pushed) = match client::Client::connect(&socket, "app-pane").await {
+            Ok(mut c) => {
+                let pushed = c.pushed();
+                (Arc::new(c), pushed)
+            }
             Err(e) => {
                 set_ended(Some(format!("no daemon: {e}")));
                 tokio::select! {
@@ -727,8 +821,39 @@ async fn follow_pane(
         let mut mirror = view_tree::Mirror::default();
         let mut trees = next_tree(0, 0);
         let mut follow_trees = true;
+        follower.reset();
         let lost = loop {
+            let next_pushed = async {
+                match pushed.as_mut() {
+                    Some(p) => p.recv().await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
+                p = next_pushed => match p {
+                    Some(client::Pushed::Event { topic, payload, .. }) => {
+                        if let Ok(n) = api::Notification::decode(&topic, &payload)
+                            && streams.take(&n)
+                        {
+                            // Coalesced: one wake stands for every batch
+                            // before the next paint.
+                            wake();
+                        }
+                    }
+                    Some(client::Pushed::Closed { error }) => {
+                        break error.unwrap_or_else(|| "the daemon closed the connection".into());
+                    }
+                    Some(_) => {}
+                    None => break "the daemon closed the connection".into(),
+                },
+                Some(r) = calls.recv() => {
+                    // An approval answered from a card; a refusal shows in
+                    // the transcript as the request still waiting.
+                    let c = c.clone();
+                    tokio::spawn(async move {
+                        let _ = c.call(r).await;
+                    });
+                }
                 i = inputs.recv() => match i {
                     None | Some(Input::Quit) => {
                         key_task.abort();
@@ -767,9 +892,15 @@ async fn follow_pane(
                     Ok(api::Response::AppsTree(t)) => {
                         let whole = !t.tree.is_empty();
                         match mirror.take(t.seq, &t.tree, &t.patches) {
-                            Ok(changed) => {
+                                Ok(changed) => {
                                 if changed && let Ok(mut l) = tree.lock() {
                                     l.clone_from(&mirror.frame);
+                                }
+                                if changed
+                                    && let Some(f) = mirror.frame.as_ref()
+                                    && let Err(e) = follower.sync(&c, f, &streams).await
+                                {
+                                    break e;
                                 }
                                 if changed {
                                     wake();
@@ -843,7 +974,7 @@ fn copy_text(tree: Option<&Tree>, app: &App) -> Option<String> {
                 .map(|r| r.cells().join("\t")),
             Kind::Log => n.children.last().map(|r| r.cells().join("\t")),
             Kind::Form { fields, focus } => fields.get(*focus).map(|f| f.value.clone()),
-            Kind::Input { value, .. } => Some(value.clone()),
+            Kind::Input { value, .. } | Kind::Composer { value, .. } => Some(value.clone()),
             Kind::Select {
                 options, selected, ..
             } => options.get(*selected).cloned(),
@@ -854,8 +985,27 @@ fn copy_text(tree: Option<&Tree>, app: &App) -> Option<String> {
     text.filter(|t| !t.is_empty())
 }
 
+/// The GUI benchmark's record of panel renders, while it records them
+/// (`crate::bench_gui`): when each began, how long building its elements
+/// took (ns), and the streams' revision it drew.
+pub(crate) static RENDER_LOG: Mutex<Option<Vec<(std::time::Instant, u64, u64)>>> = Mutex::new(None);
+
 impl Render for AppPanel {
-    fn render(&mut self, window_: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t0 = std::time::Instant::now();
+        let revision = self.streams.revision();
+        let e = self.render_panel(window, cx);
+        if let Ok(mut log) = RENDER_LOG.lock()
+            && let Some(log) = log.as_mut()
+        {
+            log.push((t0, t0.elapsed().as_nanos() as u64, revision));
+        }
+        e
+    }
+}
+
+impl AppPanel {
+    fn render_panel(&mut self, window_: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = theme::for_window(window_);
         let latest = self.latest.lock().ok().and_then(|l| l.clone());
         if latest.is_some() {
@@ -946,35 +1096,46 @@ impl Render for AppPanel {
             })
             .text_size(px(12.0))
             .text_color(c(t.text));
-        let tree = match self.pane {
-            Some(_) => self.tree.lock().ok().and_then(|t| t.clone()),
-            None => None,
-        };
+        let tree = self.tree.lock().ok().and_then(|t| t.clone());
         let Some(app) = self.shown.as_ref() else {
-            return root.child(
-                div()
-                    .p_2()
-                    .text_color(c(t.muted))
-                    .child(ended.unwrap_or_else(|| "starting…".into())),
-            );
+            return root
+                .child(
+                    div()
+                        .p_2()
+                        .text_color(c(t.muted))
+                        .child(ended.unwrap_or_else(|| "starting…".into())),
+                )
+                .into_any_element();
         };
         // The host's tree; else the model's (a panel, or a host that
         // publishes none); an agentic pane has no tree.
         let tree = tree.or_else(|| app.frame());
+        let answer: bound::Answer = {
+            let entity = cx.entity();
+            std::rc::Rc::new(move |cx: &mut gpui::App, a: bound::Answering| {
+                entity.update(cx, |p, _| p.answer(a));
+            })
+        };
+        let streams = self.streams.clone();
         let (title, status, content) = match &tree {
             Some(tree) => (
                 tree.title.clone(),
                 tree.status.clone(),
-                node(
-                    &tree.root,
-                    &Draw {
-                        tree,
-                        t: &t,
-                        lines: &lines,
-                    },
-                    &mut self.scrolls,
-                    &mut self.scrolled_to,
-                ),
+                streams.with(|data| {
+                    node(
+                        &tree.root,
+                        &Draw {
+                            tree,
+                            t: &t,
+                            lines: &lines,
+                            data,
+                            answer: &answer,
+                            follow: &self.follow,
+                        },
+                        &mut self.scrolls,
+                        &mut self.scrolled_to,
+                    )
+                }),
             ),
             None => {
                 let title = if app.version > 1 {
@@ -1012,6 +1173,40 @@ impl Render for AppPanel {
                 .text_color(c(t.faint))
                 .child(SharedString::from(status)),
         )
+        .into_any_element()
+    }
+
+    /// A panel drawing `tree` with `streams`, and no app behind it: the GUI
+    /// benchmark's streaming transcript. Clicks and keys go nowhere.
+    pub(crate) fn fixed(
+        tree: Tree,
+        streams: app_model::bound::Streams,
+        cx: &mut Context<Self>,
+    ) -> AppPanel {
+        let manifest = "schema_version = 1\nid = \"bench.transcript\"\nversion = \"0.1.0\"\ntitle = \"Transcript\"\n\n[data.none]\nmethod = \"tmux.topology\"\n\n[view]\ntype = \"text\"\nsource = \"none\"\n";
+        let app = app_model::manifest::Manifest::parse(manifest)
+            .ok()
+            .map(App::new);
+        AppPanel {
+            path: PathBuf::new(),
+            pane: None,
+            latest: Arc::new(Mutex::new(app)),
+            ended: Arc::default(),
+            inputs: tokio::sync::mpsc::unbounded_channel().0,
+            focus: cx.focus_handle(),
+            shown: None,
+            tree: Arc::new(Mutex::new(Some(tree))),
+            scrolls: HashMap::new(),
+            scrolled_to: HashMap::new(),
+            prefixed: false,
+            lines: None,
+            dragging: false,
+            wheel: 0.0,
+            preedit: None,
+            streams,
+            calls: tokio::sync::mpsc::unbounded_channel().0,
+            follow: Default::default(),
+        }
     }
 }
 
@@ -1152,6 +1347,11 @@ struct Draw<'a> {
     tree: &'a Tree,
     t: &'a theme::Theme,
     lines: &'a Lines,
+    /// The bound streams, their transcripts' scrolls, and what an
+    /// approval card's button does.
+    data: &'a app_model::bound::Data,
+    answer: &'a bound::Answer,
+    follow: &'a std::cell::RefCell<HashMap<String, bound::Follow>>,
 }
 
 /// A node of the view tree, drawn natively. Scroll handles are kept in
@@ -1268,6 +1468,14 @@ fn node(
                 div().flex_1().min_h_0().child(child(&page))
             }))
             .into_any_element(),
+        Kind::Log if matches!(n.bind, Some(view_tree::Bind::Tap(_))) => match &n.bind {
+            Some(view_tree::Bind::Tap(pane)) => bound::tap(n, *pane, t, dr.data),
+            _ => div().into_any_element(),
+        },
+        Kind::Transcript { .. } => {
+            bound::transcript(n, t, lines, dr.data, &mut dr.follow.borrow_mut(), dr.answer)
+        }
+        Kind::Composer { .. } => bound::composer(n, focused, t, lines, dr.data),
         Kind::Table { .. } | Kind::List { .. } | Kind::Log => {
             let (start, items) = shown_items(n);
             let selected = n.selected_index();
@@ -1437,7 +1645,8 @@ fn fixed_height(n: &Node) -> bool {
         | Kind::Toggle { .. }
         | Kind::Badge { .. }
         | Kind::Progress { .. }
-        | Kind::Status { .. } => true,
+        | Kind::Status { .. }
+        | Kind::Composer { .. } => true,
         Kind::Row | Kind::Column => !n.children.is_empty() && n.children.iter().all(fixed_height),
         _ => false,
     }

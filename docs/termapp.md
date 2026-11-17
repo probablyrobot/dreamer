@@ -178,6 +178,8 @@ columns = ["name", "width", "height"]
 - **Text, input, and status components** (`markdown`, `code`, `diff`,
   `button`, `input`, `select`, `toggle`, `badge`, `progress`, `status`)
   are described [below](#text-input-and-status-components).
+- **`transcript` and `composer`** show and write to an agent session;
+  see [below](#agent-sessions-transcript-and-composer).
 - **`title`**, on any node, is a heading; in a terminal the node gets a
   border with it.
 - **Keys** of nodes are lowercase letters, digits, `-`, and `_`. Every
@@ -285,6 +287,112 @@ sources' `events` and the shortest `refresh_ms` apply. A module's
 command handlers work as before; `transform` is not called for a tree.
 `dream app preview` reads a fixture for every source shown.
 
+### Agent sessions: `transcript` and `composer`
+
+A `transcript` shows an agent session's conversation
+([agents.md](agents.md#sessions)), and a `composer` writes prompts to it.
+Both are bound to the session: its events go from the daemon straight to
+each renderer, which follows the session itself
+([bound streams](#bound-streams)). The app's own code never sees a token.
+`examples/apps/chat/` in the source tree is a chat app made of the two.
+
+```toml
+capabilities = ["agent.sessions.create", "agent.sessions.list"]
+
+[data.sessions]
+method = "agent.sessions.list"
+path = "sessions"
+
+[commands.new]
+key = "Ctrl-n"
+method = "agent.sessions.create"
+params = { grant = { methods = ["tmux.topology"] } }
+
+[nodes.chat]
+type = "transcript"
+source = "sessions"           # the first row's `field` is the session id
+field = "id"
+
+[nodes.prompt]
+type = "composer"
+source = "sessions"
+field = "id"
+placeholder = "Ask the agent"
+```
+
+- **The session.** `session = "<id>"` names one, or `source` and `field`
+  take it from the first row of a data source, as above. An app sees only
+  the sessions it created (unless it holds the owner grant), so an app
+  usually creates its own with `agent.sessions.create`; the session's
+  grant must be within the app's.
+- **What the transcript shows:** each prompt sent; the answer as
+  markdown, drawn as it streams (finished blocks are parsed once, so a
+  long answer does not get slower to draw); thinking, folded to one line
+  until shown; a card per tool call with what it ran (`$ command`, a
+  path, or its input) and its newest output lines, a unified diff marked
+  as one; a card per approval request with its answer buttons, and who
+  answered once it is answered; errors and stopped turns; the plan; and
+  the session's state with the latest usage (tokens, and cost when the
+  harness reports it) on its last line. It keeps the newest 2,000
+  entries.
+- **What the composer holds:** text over several lines, the prompts sent
+  (the newest 100), and attachments. Its text is the app's like an
+  input's: it is kept across updates and reloads, and is
+  `${value.<node>}` to a command.
+- **Attachments.** `@%N` in the text attaches the visible text of pane
+  `N` (it needs `terminal.read`, and the pane in the grant), and `@name`
+  the newest 20 rows of the collector `name` (it needs `collect.query`);
+  an `@name` that names no collector stays as typed. Ctrl-s attaches the
+  selection: tmux's newest buffer, which a finished selection in Dreamer
+  becomes (it needs `clipboard.read_tmux_buffer`). Each attachment goes
+  after the prompt as a block headed by what it is (`Pane %3:`,
+  `Selection:`), fenced, at most its last 200 lines and 16 KB. One that
+  cannot be read is left out and the status line says why.
+- **The grant.** A transcript adds `agent.sessions.events`,
+  `agent.sessions.approve`, `agent.sessions.deny`, and
+  `terminal.unsubscribe` to the grant the app needs; a composer adds
+  `agent.sessions.send` and `agent.sessions.cancel`. Sending, stopping,
+  answering, and attaching are calls on the app's own connection, so its
+  grant decides them.
+
+Keys, when the node has the focus (Tab moves it there):
+
+| Node | Keys | Clicks (desktop) |
+| --- | --- | --- |
+| `composer` | Letters, digits, and Space type (so `q` is a letter here); Backspace deletes; Enter sends; Ctrl-j (Shift-Enter on the desktop) starts a new line; Up and Down step through the prompts sent; Esc stops the running turn; Ctrl-s attaches the selection; Ctrl-x removes the last attachment. Ctrl-c quits the app | Send, Stop (while a turn runs), Attach selection, and an attachment's × |
+| `transcript` | `y` allows the oldest approval request waiting (with its first option, if it offers options), `1` to `9` allow it with that option, `n` denies it; `t` shows or folds thinking; Up, Down, PageUp, PageDown, Home, and End scroll | An approval card's buttons; thinking shows or folds it |
+
+Pasted text and text from the desktop keep their line breaks in a
+composer. In a terminal the composer shows its newest six lines, and
+`working · Esc stops` while a turn runs.
+
+### Bound streams
+
+A node with `bind` draws a daemon stream instead of content in the tree:
+
+| Node | `bind` | Stream |
+| --- | --- | --- |
+| `transcript`, `composer` | `{ "session": "<id>" }` | `agent.sessions.events` with `follow`, from the event after the last one held |
+| `log` | `{ "tap": <pane> }` | `taps.subscribe` at the `text` level: the pane's committed lines, the newest 2,000 |
+
+In a manifest, a log's `tap = <pane>` binds it (instead of a `source`);
+it adds `taps.subscribe`, `taps.unsubscribe`, and the pane to the grant
+the app needs. A process app sets `bind` on the nodes it sends.
+
+Each renderer follows the streams itself, from the tree:
+
+- **The app host**, for its terminal interface, on its own connection,
+  so under the app's grant.
+- **The desktop**, for its native rendering, on the user's connection,
+  with `for_pane` set to the app's pane: the daemon then also checks the
+  app's grant (the method, the panes, its expiry, and for a session that
+  the app may see it), so the desktop never shows an app a stream the app
+  may not read. A refusal is drawn in the node (`not shown:` and why).
+
+A stream is followed while the tree binds it and stops when it no longer
+does. After a lost connection it is followed again, a session from the
+event after the last one held, so nothing is drawn twice or missed.
+
 ### The tree on the wire
 
 The app host turns its model into a tree of components with keys and
@@ -295,7 +403,8 @@ tree too: one data node keyed `view`. An agentic pane has no tree.
 
 The tree is JSON: a frame with `title`, `status`, `focus` (the focused
 node's key), and `root`. A node has `key`, `type`, an optional `title`,
-its content, and `children`:
+its content, an optional `bind` ([bound streams](#bound-streams)), and
+`children`:
 
 | `type` | Content |
 | --- | --- |
@@ -304,7 +413,7 @@ its content, and `children`:
 | `tabs` | `active`, the index of the page shown |
 | `table` | `columns`, and `selected`, the selected row's key; its rows are `item` children |
 | `list` | `selected`; its rows are `item` children |
-| `log` | Its lines are `item` children |
+| `log` | Its lines are `item` children; bound to a tap, none |
 | `item` | `cells`: one per column, or one |
 | `text` | `text` |
 | `gauge` | `ratio` (0 to 1) and `label` |
@@ -319,6 +428,8 @@ its content, and `children`:
 | `badge` | `text` and `tone` |
 | `progress` | `ratio` (0 to 1) and `label` |
 | `status` | `items`, each with `text` and `tone` |
+| `transcript` | `thinking` (shown, not folded) and `back` (lines scrolled back from the newest, in a terminal); the conversation comes from its `bind` |
+| `composer` | `label`, `value` (lines separated by `\n`), `placeholder`, and `attachments` (their labels) |
 
 A row's key is its `row_key` value, or its place when the view has
 none. A change is one of these ops, each naming its node by the keys on
@@ -326,7 +437,8 @@ the path from the root:
 
 - `frame`: the new `title`, `status`, and `focus`.
 - `root`: a whole new root `node` (the root's key changed).
-- `props`: a node's own `title` and content (`kind`), not its children.
+- `props`: a node's own `title`, content (`kind`), and `bind`, not its
+  children.
 - `children`: a node's child `keys` in their new order, with the new
   ones in full (`added`); children whose key was there before stay as
   they were.
@@ -688,7 +800,7 @@ Besides keys, the desktop sends (each as one `apps.input` event):
 
 | Field | Means |
 | --- | --- |
-| `text` | Text for the focused input as one edit: text committed by the desktop's text input (IME) or pasted. Line breaks become spaces, other control characters are dropped, and a number field keeps only digits, `.`, and `-`. A view with no focused input (a table, a toggle field) ignores it, so pasted text never runs a command |
+| `text` | Text for the focused input as one edit: text committed by the desktop's text input (IME) or pasted. Line breaks become spaces (a composer keeps them), other control characters are dropped, and a number field keeps only digits, `.`, and `-`. A view with no focused input (a table, a toggle field) ignores it, so pasted text never runs a command |
 | `select` | A click: select this row of a table or list, or focus this form field, by index |
 | `scroll` | Wheel steps: move a table's or list's selection, positive down |
 | `node` | With `select` or `scroll`, in a [view tree](#view-trees): the key of the node clicked or under the pointer. A table, list, or form shown takes the focus first, so the click or wheel steps reach that node; without it they go to the focused node |

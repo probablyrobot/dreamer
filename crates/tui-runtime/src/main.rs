@@ -23,6 +23,7 @@
 //! not reconnect with more than it was granted, so it stays stale and
 //! asks to be relaunched.
 
+mod bound;
 mod view;
 
 use std::path::PathBuf;
@@ -234,6 +235,7 @@ fn run(path: PathBuf, own_view: bool) -> Result<(), String> {
     });
     // Scroll positions, by node key, kept across updates.
     let mut state = view::ViewState::default();
+    let streams = state.streams.clone();
     if own_view {
         // A process or script app: its code draws the tree.
         let mut publish = |tree: &view_tree::Frame| {
@@ -242,12 +244,13 @@ fn run(path: PathBuf, own_view: bool) -> Result<(), String> {
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         };
-        let result = rt.block_on(app_model::run_process(
+        let result = rt.block_on(app_model::run_process_with(
             path,
             app_model::Endpoint::pane_app(),
             Some(app_script::engine()),
             &mut inputs,
             &mut publish,
+            &streams,
         ));
         drop(screen);
         return result;
@@ -258,11 +261,12 @@ fn run(path: PathBuf, own_view: bool) -> Result<(), String> {
             .map(|_| ())
             .map_err(|e| e.to_string())
     };
-    let result = rt.block_on(app_model::run(
+    let result = rt.block_on(app_model::run_with(
         path,
         app_model::Endpoint::pane_app(),
         &mut inputs,
         &mut publish,
+        &streams,
     ));
     drop(screen);
     result

@@ -1,0 +1,49 @@
+# A chat with an agent session: a transcript and a composer bound to the
+# session the app creates (Ctrl-n). The session's events go from the
+# daemon to the renderers; this package never sees them.
+#
+# Keys: Tab moves between the transcript and the composer. In the
+# composer, Enter sends, Ctrl-j starts a new line, Up and Down step
+# through what was sent, Esc stops the turn, Ctrl-s attaches the
+# selection, and `@%N` in the text attaches pane N. In the transcript,
+# y allows the waiting approval, n denies it, t shows thinking, and
+# PageUp and PageDown scroll.
+schema_version = 2
+id = "dreamer.chat-example"
+version = "0.1.0"
+title = "Chat"
+capabilities = [
+    "agent.sessions.create",
+    "agent.sessions.list",
+    "tmux.topology",
+    "terminal.read",
+    "clipboard.read_tmux_buffer",
+]
+all_panes = true
+root = "main"
+
+[data.sessions]
+method = "agent.sessions.list"
+path = "sessions"
+
+[commands.new]
+key = "Ctrl-n"
+label = "new session"
+method = "agent.sessions.create"
+# The session may read the topology, nothing more.
+params = { grant = { methods = ["tmux.topology"] } }
+
+[nodes.main]
+type = "column"
+children = ["chat", "prompt"]
+
+[nodes.chat]
+type = "transcript"
+source = "sessions"
+field = "id"
+
+[nodes.prompt]
+type = "composer"
+source = "sessions"
+field = "id"
+placeholder = "Ask the agent"
