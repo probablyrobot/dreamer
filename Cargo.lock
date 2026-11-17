@@ -194,6 +194,7 @@ name = "app-model"
 version = "0.2.0"
 dependencies = [
  "api",
+ "app-protocol",
  "client",
  "platform",
  "providers",
@@ -202,6 +203,15 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml 0.8.23",
+ "view-tree",
+]
+
+[[package]]
+name = "app-protocol"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "view-tree",
 ]
 
@@ -1442,12 +1452,14 @@ name = "dreamer-sdk"
 version = "0.2.0"
 dependencies = [
  "api",
+ "app-protocol",
  "client",
  "platform",
  "prost",
  "serde_json",
  "tmux-backend",
  "tokio",
+ "view-tree",
 ]
 
 [[package]]

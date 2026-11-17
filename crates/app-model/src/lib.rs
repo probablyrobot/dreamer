@@ -7,10 +7,12 @@ mod agent;
 pub mod installed;
 pub mod manifest;
 mod model;
+mod process;
 mod run;
 
 pub use model::{
     AgentState, App, Entry, Event, EventKind, Link, ManifestCache, Record, Said, TRANSCRIPT, Taken,
     clean_text, text,
 };
+pub use process::{allowed, preview_process, run_process};
 pub use run::{Endpoint, Input, Session, check_module, load, preview, run};

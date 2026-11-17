@@ -1,4 +1,8 @@
-//! Write a Dreamer extension in Rust.
+//! Write a Dreamer extension, or a process app, in Rust.
+//!
+//! A process app is a pane app whose program draws its own view tree; see
+//! [`app`] for its event loop and [`ui`] for building the tree. The rest
+//! of this page is about extensions.
 //!
 //! An extension is a program `dreamerd` starts and supervises (see
 //! `docs/extensions.md`). It speaks JSON-RPC 2.0 on standard input and
@@ -32,6 +36,9 @@
 //!
 //! Standard error is the extension's log; never print anything else to
 //! standard output.
+
+pub mod app;
+pub mod ui;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -85,7 +85,7 @@ fn main() -> ExitCode {
             }
         },
         [path] => match load(path).and_then(|m| check_module(path, &m).map(|()| m)) {
-            Ok(_) => match run(PathBuf::from(path)) {
+            Ok(m) => match run(PathBuf::from(path), m.is_process()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("dreamer-termapp: {e}");
@@ -129,12 +129,20 @@ fn preview(path: &str, args: &[&str]) -> Result<String, String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let app = rt.block_on(app_model::preview(std::path::Path::new(path)))?;
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h))
         .map_err(|e| e.to_string())?;
-    terminal
-        .draw(|f| view::draw(&app, f))
-        .map_err(|e| e.to_string())?;
+    if manifest.is_process() {
+        // A process app's first view, from its program, with no daemon.
+        let tree = rt.block_on(app_model::preview_process(std::path::Path::new(path)))?;
+        terminal
+            .draw(|f| view::draw_tree(&tree, &mut view::ViewState::default(), f))
+            .map_err(|e| e.to_string())?;
+    } else {
+        let app = rt.block_on(app_model::preview(std::path::Path::new(path)))?;
+        terminal
+            .draw(|f| view::draw(&app, f))
+            .map_err(|e| e.to_string())?;
+    }
     let buf = terminal.backend().buffer();
     let mut out = String::new();
     for y in 0..h {
@@ -176,7 +184,7 @@ impl Drop for Screen {
     }
 }
 
-fn run(path: PathBuf) -> Result<(), String> {
+fn run(path: PathBuf, process: bool) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -206,6 +214,23 @@ fn run(path: PathBuf) -> Result<(), String> {
     });
     // Scroll positions, by node key, kept across updates.
     let mut state = view::ViewState::default();
+    if process {
+        // A process app: its program draws the tree.
+        let mut publish = |tree: &view_tree::Frame| {
+            terminal
+                .draw(|f| view::draw_tree(tree, &mut state, f))
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        let result = rt.block_on(app_model::run_process(
+            path,
+            app_model::Endpoint::pane_app(),
+            &mut inputs,
+            &mut publish,
+        ));
+        drop(screen);
+        return result;
+    }
     let mut publish = |app: &app_model::App| {
         terminal
             .draw(|f| view::draw_with(app, &mut state, f))
