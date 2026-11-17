@@ -16,15 +16,19 @@
 //!   cancelled (its whole process group), and has a [`Capabilities`]
 //!   record. Callers never branch on the provider.
 
+pub mod acp;
 mod api;
 mod claude;
+pub mod claude_session;
 mod codex;
+pub mod codex_session;
 mod mcp;
 pub mod pi;
 pub mod pi_profile;
 pub mod pi_rpc;
 mod run;
 pub mod session;
+mod stdio;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -331,9 +335,15 @@ fn major(version: &str) -> Option<u32> {
         .and_then(|n| n.parse().ok())
 }
 
-async fn output(program: &Path, args: &[&str], kind: Kind) -> Option<(bool, String)> {
+async fn output(
+    program: &Path,
+    pre: &[String],
+    args: &[&str],
+    kind: Kind,
+) -> Option<(bool, String)> {
     let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args)
+    cmd.args(pre)
+        .args(args)
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
     for v in kind.scrubbed() {
@@ -356,6 +366,12 @@ pub async fn probe(kind: Kind) -> Probe {
 
 /// [`probe`] with the executable given.
 pub async fn probe_program(kind: Kind, program: Option<PathBuf>) -> Probe {
+    probe_command(kind, program, Vec::new()).await
+}
+
+/// [`probe`] with the executable and the arguments before the CLI's own
+/// given (a configured command such as `[npx, claude]`).
+pub async fn probe_command(kind: Kind, program: Option<PathBuf>, pre: Vec<String>) -> Probe {
     let mut p = Probe {
         kind,
         program,
@@ -366,7 +382,7 @@ pub async fn probe_program(kind: Kind, program: Option<PathBuf>) -> Probe {
     let Some(program) = p.program.clone() else {
         return p;
     };
-    let Some((_, version)) = output(&program, &["--version"], kind).await else {
+    let Some((_, version)) = output(&program, &pre, &["--version"], kind).await else {
         p.state = State::Unknown("`--version` did not answer".into());
         return p;
     };
@@ -380,8 +396,8 @@ pub async fn probe_program(kind: Kind, program: Option<PathBuf>) -> Probe {
         return p;
     }
     p.state = match kind {
-        Kind::ClaudeCli => claude::login(&program, &mut p.login).await,
-        Kind::CodexCli => codex::login(&program, &mut p.login).await,
+        Kind::ClaudeCli => claude::login(&program, &pre, &mut p.login).await,
+        Kind::CodexCli => codex::login(&program, &pre, &mut p.login).await,
     };
     p
 }

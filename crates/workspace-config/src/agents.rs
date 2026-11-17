@@ -11,6 +11,9 @@
 //!   gemini:
 //!     protocol: acp
 //!     command: [gemini, --experimental-acp]
+//!   claude-opus:                # a second Claude Code configuration
+//!     protocol: claude
+//!     model: opus
 //! ```
 //!
 //! Every key is checked: an unknown one, or one that does not apply to that
@@ -70,6 +73,17 @@ impl AgentSettings {
         out
     }
 
+    /// How Dreamer talks to a harness: a built-in one by its own protocol,
+    /// a configured one by its `protocol`.
+    pub fn protocol(&self, name: &str) -> Option<Protocol> {
+        match name {
+            "pi" => Some(Protocol::Pi),
+            "claude" => Some(Protocol::Claude),
+            "codex" => Some(Protocol::Codex),
+            _ => self.harnesses.get(name).and_then(|h| h.protocol),
+        }
+    }
+
     /// pi's version choice: `latest` unless pinned.
     pub fn pi_version(&self) -> PiVersion {
         self.harnesses
@@ -101,7 +115,8 @@ pub struct Harness {
     /// pi only: the agent directory (`PI_CODING_AGENT_DIR`) instead of
     /// Dreamer's own pi profile.
     pub agent_dir: Option<PathBuf>,
-    /// Custom harnesses only: how Dreamer talks to it.
+    /// How Dreamer talks to it: for a built-in harness, its own protocol
+    /// (given or not); a custom one must say.
     pub protocol: Option<Protocol>,
     /// pi only: the CLIs (`claude`, `codex`) its delegation tools may run;
     /// unset means both.
@@ -119,8 +134,25 @@ pub enum PiVersion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
+    /// pi's RPC mode (`pi --mode rpc`).
+    Pi,
+    /// Claude Code's stream-json mode (`claude -p`).
+    Claude,
+    /// Codex's app server (`codex app-server`).
+    Codex,
     /// The Agent Client Protocol on the program's standard streams.
     Acp,
+}
+
+impl Protocol {
+    pub fn name(self) -> &'static str {
+        match self {
+            Protocol::Pi => "pi",
+            Protocol::Claude => "claude",
+            Protocol::Codex => "codex",
+            Protocol::Acp => "acp",
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -264,30 +296,34 @@ pub fn parse(value: &Value) -> Result<AgentSettings, Problem> {
             h.delegates = Some(seen);
         }
         if let Some(proto) = file.protocol {
-            if built_in {
+            if built_in && proto.name() != name {
                 return Err(p(
                     &at("protocol"),
                     format!(
-                        "{name} is driven by its own protocol; give an ACP adapter its own name"
+                        "{name} is driven by its own protocol; give a harness that speaks {} its own name",
+                        proto.name()
                     ),
                 ));
             }
             h.protocol = Some(proto);
         }
         if !built_in {
-            if h.protocol.is_none() {
-                return Err(p(
-                    &format!(".{name}"),
-                    format!(
-                        "`{name}` is not pi, claude, or codex; a custom harness needs `protocol: acp` and a `command`"
-                    ),
-                ));
-            }
-            if h.command.is_none() {
-                return Err(p(
-                    &at("command"),
-                    "a custom harness needs the command that starts it".into(),
-                ));
+            match h.protocol {
+                None => {
+                    return Err(p(
+                        &format!(".{name}"),
+                        format!(
+                            "`{name}` is not pi, claude, or codex; a custom harness needs a `protocol` (pi, claude, codex, or acp)"
+                        ),
+                    ));
+                }
+                Some(Protocol::Acp) if h.command.is_none() => {
+                    return Err(p(
+                        &at("command"),
+                        "an ACP agent needs the command that starts it".into(),
+                    ));
+                }
+                _ => {}
             }
         }
         out.harnesses.insert(name.to_owned(), h);
@@ -378,6 +414,13 @@ mod tests {
             Some(&["gemini".to_owned(), "--experimental-acp".to_owned()][..])
         );
         assert_eq!(a.all().len(), 4);
+        assert_eq!(a.protocol("gemini"), Some(Protocol::Acp));
+        assert_eq!(a.protocol("codex"), Some(Protocol::Codex));
+        assert_eq!(a.protocol("nothing"), None);
+        let b = agents("claude: {protocol: claude}\nopus: {protocol: claude, model: opus}\n")
+            .expect("a second claude");
+        assert_eq!(b.protocol("opus"), Some(Protocol::Claude));
+        assert!(b.harness("opus").expect("opus").command.is_none());
         assert_eq!(
             agents("pi: {version: latest}")
                 .expect("latest")

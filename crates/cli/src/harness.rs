@@ -258,6 +258,8 @@ pub fn rollback(args: &[String]) -> Result<(), String> {
 #[derive(Debug)]
 pub struct HarnessCheck {
     pub name: String,
+    /// How Dreamer talks to it: pi, claude, codex, or acp.
+    pub protocol: &'static str,
     pub default: bool,
     /// The program sessions would run, when found.
     pub program: Option<PathBuf>,
@@ -276,7 +278,8 @@ pub fn check(settings: &AgentSettings) -> Vec<HarnessCheck> {
         .into_iter()
         .map(|(name, h)| {
             let default = name == settings.default_harness();
-            let (program, looked, login) = match name.as_str() {
+            let protocol = settings.protocol(&name).map_or("?", |p| p.name());
+            let (program, looked, login) = match protocol {
                 "pi" => {
                     let (program, looked) = pi_program(&h, &install);
                     let login = match &program {
@@ -293,20 +296,30 @@ pub fn check(settings: &AgentSettings) -> Vec<HarnessCheck> {
                     (program, looked, login)
                 }
                 "claude" | "codex" => {
-                    let kind = providers::Kind::parse(&name).unwrap_or(providers::Kind::ClaudeCli);
-                    let (program, looked) = match &h.command {
-                        Some(argv) => {
-                            (resolve(&argv[0]), format!("agents.{name}.command {argv:?}"))
-                        }
-                        None => (providers::locate(kind), format!("`{name}` on PATH")),
+                    let kind =
+                        providers::Kind::parse(protocol).unwrap_or(providers::Kind::ClaudeCli);
+                    let (program, pre, looked) = match &h.command {
+                        Some(argv) => (
+                            resolve(&argv[0]),
+                            argv[1..].to_vec(),
+                            format!("agents.{name}.command {argv:?}"),
+                        ),
+                        None => (
+                            providers::locate(kind),
+                            Vec::new(),
+                            format!("`{protocol}` on PATH"),
+                        ),
                     };
                     let login = match &program {
                         Some(p) => tokio::runtime::Builder::new_current_thread()
                             .enable_all()
                             .build()
                             .map(|rt| {
-                                let probe =
-                                    rt.block_on(providers::probe_program(kind, Some(p.clone())));
+                                let probe = rt.block_on(providers::probe_command(
+                                    kind,
+                                    Some(p.clone()),
+                                    pre.clone(),
+                                ));
                                 crate::ask::state_text(&probe.state)
                             })
                             .unwrap_or_else(|e| e.to_string()),
@@ -326,6 +339,7 @@ pub fn check(settings: &AgentSettings) -> Vec<HarnessCheck> {
             };
             HarnessCheck {
                 name,
+                protocol,
                 default,
                 program,
                 looked,
@@ -341,9 +355,15 @@ pub fn print_check(settings: &AgentSettings) {
     for c in check(settings) {
         let mark = if c.program.is_some() { "✓" } else { "·" };
         let star = if c.default { " (default)" } else { "" };
+        // A harness named after its protocol needs no word on it.
+        let speaks = if c.name == c.protocol {
+            String::new()
+        } else {
+            format!(" (speaks {})", c.protocol)
+        };
         match &c.program {
             Some(p) => println!(
-                "{mark} {}{star}: {}\n  login: {}",
+                "{mark} {}{star}: {}{speaks}\n  login: {}",
                 c.name,
                 p.display(),
                 c.login
@@ -354,7 +374,10 @@ pub fn print_check(settings: &AgentSettings) {
                 } else {
                     ""
                 };
-                println!("{mark} {}{star}: not found ({}){hint}", c.name, c.looked);
+                println!(
+                    "{mark} {}{star}: not found ({}){speaks}{hint}",
+                    c.name, c.looked
+                );
             }
         }
     }

@@ -11,7 +11,7 @@ started with.
 | `pi` (default) | pi | Dreamer, under its data directory |
 | `claude` | Claude Code (`claude`) | You; found on `PATH` |
 | `codex` | Codex (`codex`) | You; found on `PATH` |
-| any other name | the `command` you give, with `protocol: acp` | You |
+| any other name | the `command` you give, with its `protocol` | You |
 
 Every harness uses its own login. Dreamer never reads a harness's
 credentials and never gives it an API key; see
@@ -33,16 +33,23 @@ agents:
     model: opus               # optional
   codex: {}
   gemini:                     # any name: letters, digits, - and _
-    protocol: acp             # required for a custom harness
+    protocol: acp             # required for a custom harness: pi, claude, codex, or acp
     command: [gemini, --experimental-acp]
+  claude-opus:                # a second configuration of a built-in harness
+    protocol: claude
+    model: opus
 ```
 
 - `default` must name `pi`, `claude`, `codex`, or a block under `agents`.
 - `version`, `agent_dir`, and `delegates` apply to pi only. `delegates`
   lists `claude`, `codex`, both, or neither (`[]`); see
-  [Delegation](#delegation-to-claude-code-and-codex). `protocol` applies to custom
-  harnesses only, and a custom harness needs both `protocol: acp` and a
-  `command`.
+  [Delegation](#delegation-to-claude-code-and-codex).
+- `protocol` says how Dreamer talks to the harness: `pi`, `claude`,
+  `codex`, or `acp`. A built-in harness speaks its own (giving it is
+  allowed but changes nothing; another value is refused). A custom harness
+  must give one. With `acp` it also needs a `command`; with `pi`,
+  `claude`, or `codex` and no `command`, it runs that program from `PATH`
+  (pi: Dreamer's install).
 - `command` is a program and its arguments. A bare program name is looked
   up on `PATH`.
 - An unknown key, or a key that does not apply to that harness, is
@@ -52,8 +59,9 @@ agents:
 `dream config schema` lists every key. `dream config check` also reports
 each harness: whether its program is there, and its login state by the
 harness's own status command (`pi auth check`, `claude auth status`,
-`codex login status`). A custom ACP agent reports its login when a session
-starts. These lines are information; they do not change the exit status.
+`codex login status`), and, for a custom harness, the protocol it speaks.
+An ACP agent reports its login when a session starts. These lines are
+information; they do not change the exit status.
 
 ## pi, installed by Dreamer
 
@@ -515,8 +523,20 @@ sessions` does the same from a shell ([cli.md](cli.md#agent-runs)).
 | `agent.sessions.resume` | Start a detached (or closed) session's harness again |
 | `agent.sessions.close` | End the harness process; the transcript stays |
 
-Only pi runs sessions so far. Creating a session on `claude`, `codex`, or
-an ACP harness is refused with that reason.
+Sessions run on every protocol: pi, Claude Code, Codex, and ACP agents
+(see [The harness process](#the-harness-process)). A prompt sent while a
+turn runs waits for that turn to end.
+
+**No model turn without the harness's own login.** Before a prompt is
+sent, Dreamer checks the login the way `dream config check` does: pi as
+[above](#no-model-turn-without-a-login); Claude Code with `claude auth
+status`; Codex with `codex login status`. A harness that is logged out, or
+logged in with an API key, gets no prompt, and `send` is refused with the
+reason. Codex is also asked (`account/read`) when the session starts, and
+runs only on a ChatGPT login. Claude Code reports where its key comes
+from at the start of each turn; if that is an API key, the session's
+harness is stopped at once. An ACP agent that needs a login says so when
+the session starts; Dreamer never authenticates for it.
 
 An app shows a session with a `transcript` and writes to it with a
 `composer` ([termapp.md](termapp.md#agent-sessions-transcript-and-composer)):
@@ -563,7 +583,8 @@ approval), `detached` (no harness runs), or `closed`.
 Each event is written to `<state dir>/sessions/<id>.jsonl`, one JSON
 object per line, before any client sees it. `<id>.json` beside it holds
 the session's harness, directory, model, grant, and the harness's own
-session (pi's session id and file). The state directory is
+session (pi's session id and file, Claude Code's session id, Codex's
+thread id, or the ACP agent's session id). The state directory is
 `DREAMER_STATE_DIR`, then `$XDG_STATE_HOME/dreamer`, then
 `~/.local/state/dreamer`.
 
@@ -571,8 +592,11 @@ When the daemon stops, it ends every harness, and its sessions become
 `detached` ("the daemon stopped"). After it starts again they are listed
 with their transcripts. Sending to a detached session, or resuming it,
 starts the harness again on its own session, so the conversation goes on
-where it was. pi keeps a session on disk once it has a message; a session
-that never had one starts afresh.
+where it was: pi with `--session <file>` (pi keeps a session on disk
+once it has a message; one that never had any starts afresh), Claude Code
+with `--resume <id>`, Codex with `thread/resume`, and an ACP agent with
+`session/resume` or `session/load` when it offers them (history a load
+sends again is not added to the transcript), else a new session.
 
 ### The harness process
 
@@ -604,6 +628,69 @@ mode:
 pi's `confirm` and `select` dialogs become approval requests. Its `input`
 and `editor` dialogs, which a session has no place for, are dismissed.
 pi has no plan of its own, so pi sessions have no `plan` events.
+
+**Dreamer's tools for Claude Code, Codex, and ACP agents** are one MCP
+server, `dream mcp`, found beside `dreamerd` (or at `DREAMER_DREAM`). It
+gets the session's environment, so it takes the session's grant. Without
+`dream` the harness runs with no Dreamer tools, and the daemon log says
+so.
+
+**Claude Code** runs as one long-lived process:
+
+```
+claude -p --input-format stream-json --output-format stream-json --verbose
+  --include-partial-messages --permission-prompt-tool stdio
+  --permission-mode manual --strict-mcp-config --mcp-config <dream mcp>
+  --allowedTools mcp__dreamer [--model M] [--resume ID]
+```
+
+These flags were checked against Claude Code 2.1.326. Starting sends the
+`initialize` control request; a Claude Code that does not answer is not
+used. A prompt is a `user` message; a cancel is the `interrupt` control
+request. Claude Code's `can_use_tool` requests become approval requests,
+and its own tools ask every time (`manual`), whatever your own permission
+mode. Dreamer's tools are allowed without asking, since the grant already
+bounds them; `--strict-mcp-config` leaves out your other MCP servers.
+Text and thinking come from `stream_event` deltas, tool calls from
+`assistant` and `user` messages, usage and cost and the end of the turn
+from `result`. A `TodoWrite` call also becomes a `plan` event.
+
+**Codex** runs as `codex app-server` (its JSON-RPC interface), with
+Dreamer's tools given as `-c mcp_servers.dreamer.command=...`, `args`,
+and `env` before `app-server`. Dreamer sends `initialize`, `initialized`,
+`account/read`, then `thread/start` (the session's directory,
+`approvalPolicy: on-request`, `sandbox: workspace-write`, and the model
+when set) or `thread/resume`. A prompt is `turn/start`; a cancel is
+`turn/interrupt`. Command and file-change approval requests become
+approval requests (`accept` or `decline`); requests for more permissions
+are granted nothing, and MCP elicitations are declined. Text, reasoning,
+command, file-change, MCP, and web search items, the plan, and token
+usage map to the events above. This adapter follows the app server's
+protocol as published with Codex 0.169.0; the per-turn `codex exec
+--json` mode is used only for [delegation](#delegation-to-claude-code-and-codex).
+
+**ACP agents** run as their `command`, speaking the Agent Client
+Protocol, version 1, as JSON-RPC 2.0 lines on standard input and output.
+Dreamer is the client:
+
+| Direction | Method | Use |
+| --- | --- | --- |
+| To the agent | `initialize` | The start check: an agent of another protocol version is refused |
+| To the agent | `session/new`, `session/resume`, `session/load` | A session in the session's directory, with Dreamer's MCP server |
+| To the agent | `session/prompt` | A prompt; its answer's `stopReason` ends the turn |
+| To the agent | `session/cancel` | Cancelling; open permission requests are answered `cancelled` |
+| From the agent | `session/update` | `agent_message_chunk` and `agent_thought_chunk` as text and thinking, `tool_call` and `tool_call_update` as tool calls, `plan`, and the cost in `usage_update` |
+| From the agent | `session/request_permission` | An approval request whose options are the agent's |
+
+Approving picks the option you name if it allows, else the agent's
+`allow_once`, else its first allowing option; denying picks a rejecting
+one the same way, or answers `cancelled` when it offers none. Dreamer
+offers no file system or terminal methods to the agent, and refuses them
+if asked.
+
+Whatever the harness, its approval requests are answered only by you (or
+a client you allow), and Dreamer's grant still bounds what any tool does
+through Dreamer.
 
 ### Grants
 
@@ -637,11 +724,18 @@ when `DREAMER_PI_CONTRACT` names the executable: the start check, pi's
 version, resuming a kept session with `--session`, and closing. It sends
 no prompt, so it calls no model.
 
+`crates/server/tests/harness_sessions.rs` runs the same conversation
+through the daemon on scripted stand-ins for Claude Code, Codex, and an
+ACP agent (`fake-claude`, `fake-codex`, `fake-acp` in
+`crates/providers/testdata`): turns, a tool call approved and one denied,
+a cancel, and resuming after a restart. The stand-ins follow the
+published shapes; they are not the real programs.
+
 ## Not yet
 
 - The daily check for a newer pi release; `dream agents update` runs it
   by hand.
-- Sessions over Claude Code, Codex, and ACP harnesses.
+- A contract test against real Claude Code and Codex releases.
 - Running the pi contract test in CI against each new pi release.
 - `/selection` in pi: attaching the desktop's current selection. (An
   app's `composer` attaches it, as tmux's newest buffer.)

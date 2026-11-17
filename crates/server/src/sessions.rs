@@ -8,7 +8,10 @@
 //!   after a restart the sessions are listed as detached and their events
 //!   replay from the file.
 //! - **Harness.** A child process of the daemon, in its own process group,
-//!   with no API key variable in its environment. Closing a session ends
+//!   with no API key variable in its environment, driven over its own
+//!   protocol: pi's RPC mode, Claude Code's stream-json, Codex's app
+//!   server, or the Agent Client Protocol (`agents.<name>.protocol`). No
+//!   prompt reaches a harness that is not logged in by its own login. Closing a session ends
 //!   its process group; stopping the daemon ends every harness and leaves
 //!   the sessions detached. Sending to a detached session (or resuming it)
 //!   starts the harness again on its own session.
@@ -27,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use api::{AgentSessionState as St, RpcError, code};
-use providers::session::{Control, Input, StopReason, ToolStatus, Update};
+use providers::session::{Control, Input, Protocol, StopReason, ToolStatus, Update};
 use tokio::sync::broadcast;
 
 use crate::log;
@@ -350,7 +353,7 @@ fn resolve(program: &str) -> Option<PathBuf> {
 
 /// pi's own login check for the provider `spec` is pinned to, off the
 /// daemon's async threads.
-async fn login_gate(spec: &providers::session::Spec) -> Result<(), String> {
+async fn pi_login_gate(spec: &providers::session::Spec) -> Result<(), String> {
     let (program, args) = (spec.program.clone(), spec.args.clone());
     let dir = spec
         .agent_dir
@@ -367,22 +370,110 @@ async fn login_gate(spec: &providers::session::Spec) -> Result<(), String> {
     .map_err(|e| format!("the login check failed: {e}"))?
 }
 
-/// How to start `harness` for a session, from the settings in force.
-fn spec(info: &Info, env: Vec<(String, String)>) -> Result<providers::session::Spec, String> {
+/// Whether the harness may take a prompt: logged in by its own login, and
+/// not with an API key. ACP agents report their own login when a session
+/// starts.
+async fn login_gate(protocol: Protocol, spec: &providers::session::Spec) -> Result<(), String> {
+    let kind = match protocol {
+        Protocol::Pi => return pi_login_gate(spec).await,
+        Protocol::Acp => return Ok(()),
+        Protocol::Claude => providers::Kind::ClaudeCli,
+        Protocol::Codex => providers::Kind::CodexCli,
+    };
+    let probe = providers::probe_command(kind, Some(spec.program.clone()), spec.args.clone()).await;
+    let cli = match kind {
+        providers::Kind::ClaudeCli => "Claude Code",
+        providers::Kind::CodexCli => "Codex",
+    };
+    match probe.state {
+        providers::State::Ready => Ok(()),
+        providers::State::LoggedOut => Err(match kind {
+            providers::Kind::ClaudeCli => {
+                "Claude Code is not logged in; run `claude` and log in with `/login`".to_owned()
+            }
+            providers::Kind::CodexCli => "Codex is not logged in; run `codex login`".to_owned(),
+        }),
+        providers::State::MeteredLogin(why) => Err(format!(
+            "{cli} is logged in with an API key ({why}), which would be metered; log it in to your subscription"
+        )),
+        providers::State::NotInstalled => Err(format!("{cli} is not installed")),
+        providers::State::Incompatible(why) => Err(format!("{cli}: {why}")),
+        providers::State::Unknown(why) => Err(format!("{cli}'s login could not be checked: {why}")),
+    }
+}
+
+/// `dream` beside the daemon (or `DREAMER_DREAM`): Dreamer's tools for the
+/// harnesses that take an MCP server, as `dream mcp`. Inside a session it
+/// takes the session's grant (`DREAMER_SESSION_ID` and its ticket).
+fn dream_tools() -> Option<providers::Tools> {
+    let dream = std::env::var_os("DREAMER_DREAM")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|e| Some(e.parent()?.join("dream")))
+        })
+        .filter(|p| p.is_file())?;
+    Some(providers::Tools {
+        program: dream,
+        args: vec!["mcp".into()],
+    })
+}
+
+/// How to start the session's harness, from the settings in force: its
+/// protocol and its start.
+fn spec(
+    info: &Info,
+    env: Vec<(String, String)>,
+) -> Result<(Protocol, providers::session::Spec), String> {
     let settings = workspace_config::load_settings().map_err(|e| e.to_string())?;
     let name = info.s.harness.as_str();
-    if name != "pi" {
-        return Err(format!(
-            "sessions over `{name}` are not supported yet; pi is (agents.default: pi)"
+    let h = settings
+        .agents
+        .harness(name)
+        .ok_or_else(|| format!("no harness `{name}` in the agents settings"))?;
+    let protocol = settings
+        .agents
+        .protocol(name)
+        .and_then(|p| Protocol::parse(p.name()))
+        .ok_or_else(|| format!("agents.{name}: no protocol"))?;
+    let model = info.s.model.clone().or(h.model.clone());
+    let cwd = PathBuf::from(&info.s.cwd);
+    let command = |default: &str| match &h.command {
+        Some(argv) if !argv.is_empty() => Ok((
+            resolve(&argv[0])
+                .ok_or_else(|| format!("agents.{name}.command: `{}` is not there", argv[0]))?,
+            argv[1..].to_vec(),
+        )),
+        _ => resolve(default).map(|p| (p, Vec::new())).ok_or_else(|| {
+            format!("`{default}` is not on PATH; install it, or set agents.{name}.command")
+        }),
+    };
+    if protocol != Protocol::Pi {
+        let (program, args) = command(protocol.name())?;
+        let tools = dream_tools();
+        if tools.is_none() {
+            log::warn(format!(
+                "agent session {}: `dream` was not found beside dreamerd (or in DREAMER_DREAM); the harness gets no Dreamer tools",
+                info.s.id
+            ));
+        }
+        return Ok((
+            protocol,
+            providers::session::Spec {
+                program,
+                args,
+                cwd,
+                env,
+                model,
+                resume: info.s.harness_session.clone(),
+                tools,
+                ..providers::session::Spec::default()
+            },
         ));
     }
-    let h = settings.agents.harness("pi").unwrap_or_default();
     let (program, args) = match &h.command {
-        Some(argv) if !argv.is_empty() => (
-            resolve(&argv[0])
-                .ok_or_else(|| format!("agents.pi.command: `{}` is not there", argv[0]))?,
-            argv[1..].to_vec(),
-        ),
+        Some(argv) if !argv.is_empty() => command("pi")?,
         _ => {
             let c = providers::pi::Install::default().command();
             if !c.is_file() {
@@ -400,22 +491,25 @@ fn spec(info: &Info, env: Vec<(String, String)>) -> Result<providers::session::S
             d
         }
     };
-    let model = info.s.model.clone().or(h.model);
     let provider = providers::pi::pinned_provider(model.as_deref(), &agent_dir)?;
-    Ok(providers::session::Spec {
-        program,
-        args,
-        cwd: PathBuf::from(&info.s.cwd),
-        env,
-        agent_dir: Some(agent_dir),
-        model,
-        provider: Some(provider),
-        // Decided by the login check when the harness starts.
-        offline: true,
-        // pi keeps a session on disk once it has a message; resuming one
-        // that never had any would fail, and loses nothing when skipped.
-        resume: info.harness_file.clone().filter(|f| Path::new(f).is_file()),
-    })
+    Ok((
+        protocol,
+        providers::session::Spec {
+            program,
+            args,
+            cwd,
+            env,
+            agent_dir: Some(agent_dir),
+            model,
+            provider: Some(provider),
+            // Decided by the login check when the harness starts.
+            offline: true,
+            // pi keeps a session on disk once it has a message; resuming one
+            // that never had any would fail, and loses nothing when skipped.
+            resume: info.harness_file.clone().filter(|f| Path::new(f).is_file()),
+            ..providers::session::Spec::default()
+        },
+    ))
 }
 
 impl Sessions {
@@ -630,11 +724,13 @@ impl Sessions {
             spec(&info, env)
         };
         let started = match spec {
-            Ok(mut spec) => {
+            Ok((Protocol::Pi, mut spec)) => {
                 // Without a login, pi runs with no automatic network use.
-                spec.offline = login_gate(&spec).await.is_err();
+                spec.offline = pi_login_gate(&spec).await.is_err();
                 providers::pi_rpc::start(&spec).await
             }
+            // The others take no turn until a prompt, which is checked.
+            Ok((protocol, spec)) => providers::session::start(protocol, &spec).await,
             Err(e) => Err(e),
         };
         let mut h = match started {
@@ -701,14 +797,14 @@ impl Sessions {
         if p.text.trim().is_empty() {
             return Err(RpcError::new(code::INVALID_PARAMS, "the prompt is empty"));
         }
-        // No model turn without a real login: refused before pi is started
-        // or sent anything.
-        let spec = {
+        // No model turn without a real login: refused before the harness is
+        // started or sent anything.
+        let (protocol, spec) = {
             let info = s.info.lock().unwrap_or_else(|e| e.into_inner());
             spec(&info, Vec::new())
         }
         .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
-        if let Err(why) = login_gate(&spec).await {
+        if let Err(why) = login_gate(protocol, &spec).await {
             log::info(format!("agent session {}: prompt refused: {why}", s.id));
             return Err(RpcError::new(code::PRECONDITION, why));
         }

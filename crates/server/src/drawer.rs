@@ -77,6 +77,13 @@ fn message_argv(message: &str) -> Vec<String> {
 pub fn harness_launch(settings: &Settings, session: TmuxSessionId) -> HarnessLaunch {
     let name = settings.agents.default_harness().to_owned();
     let block = settings.agents.harness(&name).unwrap_or_default();
+    // A configured harness without a command runs the program its protocol
+    // names (a second Claude Code configuration runs `claude`).
+    let program = settings
+        .agents
+        .protocol(&name)
+        .map_or(name.as_str(), |p| p.name())
+        .to_owned();
     let mut env = vec![
         (
             "DREAMER_RUNTIME_DIR".to_owned(),
@@ -99,7 +106,7 @@ pub fn harness_launch(settings: &Settings, session: TmuxSessionId) -> HarnessLau
     let argv = if let Some(c) = &block.command {
         // The user's own command, run exactly as given.
         c.clone()
-    } else if name == "pi" {
+    } else if program == "pi" {
         let install = providers::pi::Install::default();
         // pi starts only through `dream agents pi`: it checks Dreamer's
         // profile (restoring the last good one if a change broke loading),
@@ -134,15 +141,15 @@ pub fn harness_launch(settings: &Settings, session: TmuxSessionId) -> HarnessLau
                 Vec::new()
             }
         }
-    } else if let Some(p) = which(&name) {
+    } else if let Some(p) = which(&program) {
         vec![p]
     } else {
         problem = Some(format!(
-            "`{name}` is not on PATH. Install it, or set agents.{name}.command in dreamer.yaml."
+            "`{program}` is not on PATH. Install it, or set agents.{name}.command in dreamer.yaml."
         ));
         Vec::new()
     };
-    if name == "pi" {
+    if program == "pi" {
         let dir = block
             .agent_dir
             .clone()
