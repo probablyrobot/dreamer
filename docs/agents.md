@@ -239,13 +239,15 @@ API as `dream mcp` ([mcp.md](mcp.md#terminal-tools)):
 | `terminal_watch` | `terminal.watch` |
 | `terminal_run` | `terminal.run` |
 | `terminal_send` | `leases.acquire`, `terminal.input` |
+| `send_to_pane` | `leases.acquire`, `terminal.input`: a code block as one paste, Enter only when asked ([below](#pane-context-and-send-to-pane)) |
 | `layout` (`split`, `select`, `rename`, `move`, `zoom`, `close`) | `actions.submit` |
 | `collector_create`, `collector_query`, `collector_list`, `collector_stop` | `collect.*`, with the parameters of `dream mcp`'s collector tools ([mcp.md](mcp.md#collector-tools)); registered only when the daemon offers `collect.list` |
 | `claude_code`, `codex` | `terminal.run` of `dream agents delegate` ([below](#delegation-to-claude-code-and-codex)); each only when `agents.pi.delegates` lists it, and not at the `observe` level |
 | `dreamer_profile_commit` | `dream agents profile commit` (below) |
 
 It also adds the commands `/dreamer` (whether the daemon is reachable,
-the level, the profile) and `/dreamer-reload` (commit, then reload).
+the level, the profile), `/dreamer-reload` (commit, then reload), and
+`/pane` ([below](#pane-context-and-send-to-pane)).
 
 - **Socket.** `DREAMER_RPC_SOCKET`; else `dreamerd.rpc.sock` beside
   `DREAMER_SOCKET`; else in the runtime directory, found as the daemon
@@ -255,7 +257,7 @@ the level, the profile) and `/dreamer-reload` (commit, then reload).
   agent's grant ([grants.md](grants.md#act-levels-and-approvals)): every
   pane, the level from `DREAMER_AGENT_LEVEL` (`observe`, `own`, or
   `elsewhere`, the default), and the tools' methods plus
-  `events.subscribe`. The collector methods are in the grant at every
+  `events.subscribe` and `drawer.status`. The collector methods are in the grant at every
   level, `observe` included: collectors only read
   ([collectors.md](collectors.md#grants)). It connects when a session
   starts or a tool first runs, never when pi only loads it.
@@ -276,6 +278,53 @@ the level, the profile) and `/dreamer-reload` (commit, then reload).
   `dream approvals allow|deny ID`. This keeps an agent from approving its
   own actions through Dreamer. It is not an OS sandbox: pi's own `bash`
   tool runs with your privileges.
+
+### Pane context and send to pane
+
+In a prompt to pi, these references attach text from Dreamer. The prompt
+is sent as typed, followed by one fenced block per reference:
+
+| Reference | Attaches |
+| --- | --- |
+| `@pane` | The visible text of the pane you came from: the pane that had focus when the drawer was shown, or when the drawer key moved focus to it |
+| `@%N` | The visible text of pane `%N` |
+| `@name` | The newest 20 rows of the collector `name` ([collectors.md](collectors.md)): each row's id, time, pane, command, exit status, fields, and its matched line with context, or its captured lines |
+
+- **Command.** `/pane` attaches the pane you came from to your next
+  prompt; `/pane %N` attaches pane `%N`. `/pane last` attaches the pane's
+  last finished command and its output instead, as a running collector
+  with `command_end` (such as the `commands` preset) recorded it; that
+  needs the shell's OSC 133 marks. Without such a row it attaches the
+  visible text and says so.
+- **Labels.** Each block starts with a line naming the pane (`Pane %3`,
+  with its title, command, and directory) or the collector.
+- **Bounds.** A block holds at most the last 200 lines and 16 KB of text;
+  a block that was cut says how many lines it kept. Its fence is longer
+  than any run of backticks inside.
+- **What counts.** An `@` counts at the start of the prompt or after a
+  space, a quote, or an opening bracket, so mail addresses do not.
+  `@name` counts only when a collector has that name; anything else stays
+  as typed. A reference that cannot be attached (a pane that is gone, or
+  `@pane` outside a drawer) is left as typed, with a notice.
+- **Where you came from.** `@pane` and `/pane` ask `drawer.status` for
+  `from_pane`, for the session in `DREAMER_DRAWER`. pi started outside a
+  drawer has no such pane: name one with `@%N`.
+- **Reading is not acting.** Attaching reads panes with `terminal.read`
+  and collectors with `collect.query`, which every level may call.
+
+`send_to_pane` types a command or code block into a pane for you to run or
+edit there. A Markdown fence around the block is removed, the rest is sent
+as one paste, and Enter is pressed only when the agent asks for it. It
+goes through the same interaction lease and approvals as `terminal_send`:
+in a pane the agent did not create it waits for your approval at the
+`elsewhere` level and is refused at `observe` and `own`
+([grants.md](grants.md#act-levels-and-approvals)); and when you type in
+that pane in Dreamer, the lease ends, the agent's next input there is
+refused, and it is told to ask you first. Typing through another tmux
+client, which the daemon does not see, does not end the lease.
+
+Not available yet: `/selection`, attaching the selection in the desktop.
+The desktop keeps its selection to itself; the daemon cannot read it.
 
 ### Delegation to Claude Code and Codex
 
@@ -567,3 +616,4 @@ no prompt, so it calls no model.
   by hand.
 - Sessions over Claude Code, Codex, and ACP harnesses.
 - Running the pi contract test in CI against each new pi release.
+- `/selection` in pi: attaching the desktop's current selection.

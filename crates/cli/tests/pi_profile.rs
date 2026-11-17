@@ -261,13 +261,9 @@ fn an_update_keeps_the_agents_edit_of_a_shipped_file() {
     assert!(apps.contains("dreamer-apps skill"), "{apps}");
 }
 
-/// The extension's daemon client (plain Node, with its types stripped)
-/// against a real daemon: it lists and reads panes; its connection is an
-/// agent's, so it cannot see or answer approvals; typing into the user's
-/// pane shows an approval and is refused when the user denies it; in a
-/// window it opened it acts without asking.
-#[test]
-fn the_extension_client_works_under_an_agents_grant() {
+/// Node 23 or newer on `PATH` (it strips the extension's types), else
+/// `None`, with the reason printed.
+fn node_for_types() -> Option<PathBuf> {
     let node = std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|d| d.join("node"))
@@ -275,7 +271,7 @@ fn the_extension_client_works_under_an_agents_grant() {
     });
     let Some(node) = node else {
         eprintln!("node is not installed; skipped");
-        return;
+        return None;
     };
     // Type stripping needs Node 22.6 or newer.
     let v = Command::new(&node).arg("--version").output().expect("node");
@@ -288,61 +284,138 @@ fn the_extension_client_works_under_an_agents_grant() {
         .unwrap_or(0);
     if major < 23 {
         eprintln!("node {major} cannot strip types; skipped");
-        return;
+        return None;
     }
-    let env = Env::new("ext");
-    for d in ["rt", "st"] {
-        let p = env.root.join(d);
-        std::fs::create_dir_all(&p).expect("dir");
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    Some(node)
+}
+
+/// A running `dreamerd` on an isolated tmux, with private directories.
+struct Live {
+    env: Env,
+    tmux: tmux_backend::TmuxServer,
+    daemon: PathBuf,
+}
+
+impl Live {
+    fn start(name: &str, settings: Option<&str>) -> Live {
+        let env = Env::new(name);
+        for d in ["rt", "st"] {
+            let p = env.root.join(d);
+            std::fs::create_dir_all(&p).expect("dir");
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        }
+        if let Some(s) = settings {
+            std::fs::write(env.root.join("config/dreamer.yaml"), s).expect("settings");
+        }
+        let tmux = tmux_backend::TmuxServer::start(100, 30, "/bin/sh").expect("tmux");
+        let daemon = PathBuf::from(DREAM).with_file_name("dreamerd");
+        assert!(
+            daemon.exists(),
+            "build dreamerd: cargo build -p dreamer-server"
+        );
+        let live = Live { env, tmux, daemon };
+        let program = tmux_backend::server::tmux_program().display().to_string();
+        let up = live.dream(&[
+            "ensure-running",
+            "-L",
+            live.tmux.socket(),
+            "--tmux",
+            &program,
+        ]);
+        assert!(
+            up.status.success(),
+            "{}",
+            String::from_utf8_lossy(&up.stderr)
+        );
+        live
     }
-    let tmux = tmux_backend::TmuxServer::start(100, 30, "/bin/sh").expect("tmux");
-    let program = tmux_backend::server::tmux_program().display().to_string();
-    let daemon = PathBuf::from(DREAM).with_file_name("dreamerd");
-    assert!(
-        daemon.exists(),
-        "build dreamerd: cargo build -p dreamer-server"
-    );
-    let dream = |args: &[&str]| {
+
+    fn dream(&self, args: &[&str]) -> Output {
+        let root = &self.env.root;
         Command::new(DREAM)
             .args(args)
-            .env("DREAMER_RUNTIME_DIR", env.root.join("rt"))
-            .env("DREAMER_STATE_DIR", env.root.join("st"))
-            .env("DREAMER_CONFIG_DIR", env.root.join("config"))
+            .env("DREAMER_RUNTIME_DIR", root.join("rt"))
+            .env("DREAMER_STATE_DIR", root.join("st"))
+            .env("DREAMER_DATA_DIR", root.join("data"))
+            .env("DREAMER_CONFIG_DIR", root.join("config"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
-            .env("DREAMER_DAEMON", &daemon)
+            .env("DREAMER_DAEMON", &self.daemon)
             .output()
             .expect("dream")
-    };
-    let up = dream(&["ensure-running", "-L", tmux.socket(), "--tmux", &program]);
-    assert!(
-        up.status.success(),
-        "{}",
-        String::from_utf8_lossy(&up.stderr)
-    );
-    let topo: serde_json::Value = serde_json::from_slice(
-        &dream(&["ls", "--json", "-L", tmux.socket(), "--tmux", &program]).stdout,
-    )
-    .expect("ls");
-    let pane = topo["panes"][0]["id"].as_u64().expect("pane").to_string();
+    }
 
-    let module = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../providers/pi-profile/extensions/dreamer/daemon.ts");
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pi_extension_client.mjs");
-    let signal = env.root.join("deny");
-    let child = Command::new(&node)
-        .arg(&script)
-        .arg(&module)
-        .arg(&pane)
-        .arg(&signal)
-        .env("DREAMER_RUNTIME_DIR", env.root.join("rt"))
-        .env_remove("DREAMER_RPC_SOCKET")
-        .env_remove("DREAMER_SOCKET")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("node");
+    /// The first pane of the tmux server.
+    fn first_pane(&self) -> String {
+        let program = tmux_backend::server::tmux_program().display().to_string();
+        let topo: serde_json::Value = serde_json::from_slice(
+            &self
+                .dream(&["ls", "--json", "-L", self.tmux.socket(), "--tmux", &program])
+                .stdout,
+        )
+        .expect("ls");
+        topo["panes"][0]["id"].as_u64().expect("pane").to_string()
+    }
+
+    /// `node tests/SCRIPT daemon.ts ARGS...`, reaching this daemon.
+    fn node(&self, node: &Path, script: &str, args: &[&Path]) -> std::process::Child {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        Command::new(node)
+            .arg(manifest.join("tests").join(script))
+            .arg(manifest.join("../providers/pi-profile/extensions/dreamer/daemon.ts"))
+            .args(args)
+            .env("DREAMER_RUNTIME_DIR", self.env.root.join("rt"))
+            .env_remove("DREAMER_RPC_SOCKET")
+            .env_remove("DREAMER_SOCKET")
+            .env_remove("DREAMER_DRAWER")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("node")
+    }
+
+    /// The script's JSON step lines: each of `want` is there and ok.
+    fn steps(&self, child: std::process::Child, want: &[&str]) {
+        let out = child.wait_with_output().expect("node");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let _ = self.dream(&["shutdown"]);
+        assert!(
+            out.status.success(),
+            "{text}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let steps: Vec<serde_json::Value> = text
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        for want in want {
+            let s = steps
+                .iter()
+                .find(|s| s["step"] == *want)
+                .unwrap_or_else(|| panic!("no step {want}:\n{text}"));
+            assert_eq!(s["ok"], true, "{want}:\n{text}");
+        }
+    }
+}
+
+/// The extension's daemon client (plain Node, with its types stripped)
+/// against a real daemon: it lists and reads panes; its connection is an
+/// agent's, so it cannot see or answer approvals; typing into the user's
+/// pane shows an approval and is refused when the user denies it; in a
+/// window it opened it acts without asking.
+#[test]
+fn the_extension_client_works_under_an_agents_grant() {
+    let Some(node) = node_for_types() else {
+        return;
+    };
+    let live = Live::start("ext", None);
+    let pane = live.first_pane();
+    let signal = live.env.root.join("deny");
+    let child = live.node(
+        &node,
+        "pi_extension_client.mjs",
+        &[Path::new(&pane), &signal],
+    );
     // The user, through the owner's `dream approvals`, denies what the
     // agent asks.
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -350,43 +423,53 @@ fn the_extension_client_works_under_an_agents_grant() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let id = std::fs::read_to_string(&signal).expect("an approval was shown");
-    let denied = dream(&["approvals", "deny", id.trim()]);
+    let denied = live.dream(&["approvals", "deny", id.trim()]);
     assert!(
         denied.status.success(),
         "{}",
         String::from_utf8_lossy(&denied.stderr)
     );
-    let out = child.wait_with_output().expect("node");
-    let text = String::from_utf8_lossy(&out.stdout);
-    let _ = dream(&["shutdown"]);
-    assert!(
-        out.status.success(),
-        "{text}{}",
-        String::from_utf8_lossy(&out.stderr)
+    live.steps(
+        child,
+        &[
+            "list",
+            "read",
+            "grant",
+            "approvals.list",
+            "approval",
+            "send",
+            "answered",
+            "run",
+            "own",
+            "owned",
+            "rename",
+            "woken",
+            "grouped",
+        ],
     );
-    let steps: Vec<serde_json::Value> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
-    for want in [
-        "list",
-        "read",
-        "grant",
-        "approvals.list",
-        "approval",
-        "send",
-        "answered",
-        "run",
-        "own",
-        "owned",
-        "rename",
-        "woken",
-        "grouped",
-    ] {
-        let s = steps
-            .iter()
-            .find(|s| s["step"] == want)
-            .unwrap_or_else(|| panic!("no step {want}:\n{text}"));
-        assert_eq!(s["ok"], true, "{want}:\n{text}");
-    }
+}
+
+/// Pane context and send_to_pane as pi in a harness drawer uses them: once
+/// the drawer is shown, `@pane` attaches the pane it came from, `@%N` a
+/// named pane, and `@errors` the errors collector's rows; a code block sent
+/// to the user's pane is pasted there after approval, without Enter; and
+/// the user typing in that pane ends the agent's lease.
+#[test]
+fn the_extension_attaches_pane_context_and_sends_to_a_pane() {
+    let Some(node) = node_for_types() else {
+        return;
+    };
+    let live = Live::start(
+        "ctx",
+        Some("agents:\n  default: pi\n  pi:\n    command: ['/bin/sh', '-c', 'exec sleep 600']\n"),
+    );
+    let pane = live.first_pane();
+    let child = live.node(&node, "pi_extension_context.mjs", &[Path::new(&pane)]);
+    live.steps(
+        child,
+        &[
+            "drawer", "@pane", "@%N", "plain", "last", "@errors", "send", "revoked", "stopped",
+            "not sent",
+        ],
+    );
 }

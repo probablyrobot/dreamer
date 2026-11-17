@@ -998,7 +998,11 @@ pub fn drawer(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         } else {
             format!(" ({})", s.harness)
         };
-        println!("session ${} drawer %{p}{harness}: {place}", s.session);
+        let from = s
+            .from_pane
+            .map(|f| format!(", came from %{f}"))
+            .unwrap_or_default();
+        println!("session ${} drawer %{p}{harness}: {place}{from}", s.session);
         if s.created && !s.command.is_empty() {
             println!("started: {}", s.command.join(" "));
         }

@@ -161,6 +161,11 @@ Enter.
   startup leave the holding session out.
 - **In another window,** the key brings the drawer to the window you are
   looking at.
+- **The pane you came from** is the pane that had focus when the drawer
+  was shown, or when the key moved focus from it to the shown drawer.
+  Hiding focuses it again; it stays recorded while the drawer is hidden,
+  until the next show. `drawer.status` reports it as `from_pane`, and pi's
+  `@pane` attaches its text ([agents.md](agents.md#pane-context-and-send-to-pane)).
 - The daemon does the moving (`drawer.toggle`); the window follows the
   topology. `dream drawer` does the same from a shell
   ([cli.md](cli.md#harness-drawer)), for a tmux key of your own. Dreamer

@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 45 }
+version: { major: 1, minor: 46 }
 package: dreamer.v1
 
 types:
@@ -1617,6 +1617,7 @@ types:
       - { n: 8, name: harness, type: string, doc: "The harness the pane was started with." }
       - { n: 9, name: command, type: string, repeated: true, doc: "The program and arguments it was started with; empty unless this call started it." }
       - { n: 10, name: problem, type: string, optional: true, doc: "Why the harness could not start; the pane says the same." }
+      - { n: 11, name: from_pane, type: u32, optional: true, doc: "The pane that had focus before the drawer was last shown or focused, while it exists: where hiding returns focus, and the pane the harness's context commands read." }
 
   # ---- agent sessions -----------------------------------------------------
 

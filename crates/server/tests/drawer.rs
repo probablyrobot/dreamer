@@ -306,6 +306,60 @@ async fn the_drawer_docks_hides_and_comes_back_as_the_same_running_pane() {
     );
 }
 
+/// The drawer knows the pane you came from: the one focused when it was
+/// shown, or the one focused when the key moved focus to it, still known
+/// once it is hidden.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_drawer_records_the_pane_you_came_from() {
+    let s = Setup::new(SETTINGS);
+    s.tmux
+        .run_checked(&["split-window", "-h", "-t", "main:", "/bin/sh"])
+        .expect("split");
+    s.tmux
+        .run_checked(&["select-pane", "-t", "main:.0"])
+        .expect("select");
+    let c = s.client().await;
+    let t = topology(&c).await;
+    let main = session_id(&t, "main");
+    let w = window_of_session(&t, main).clone();
+    let (left, right) = (w.panes[0], w.panes[1]);
+    assert_eq!(w.active_pane, Some(left));
+
+    let d = drawer(&c, main, DrawerWant::Toggle).await;
+    assert!(d.shown && d.focused, "{d:?}");
+    assert_eq!(d.from_pane, Some(left), "{d:?}");
+    assert_eq!(status(&c, main).await.from_pane, Some(left));
+
+    // From the right pane, the key focuses the drawer: you came from there.
+    s.tmux
+        .run_checked(&["select-pane", "-t", &format!("%{right}")])
+        .expect("select");
+    let d = drawer(&c, main, DrawerWant::Toggle).await;
+    assert!(d.focused, "{d:?}");
+    assert_eq!(d.from_pane, Some(right), "{d:?}");
+
+    // Hidden: focus goes back there, and the drawer still names it.
+    let d = drawer(&c, main, DrawerWant::Toggle).await;
+    assert!(!d.shown, "{d:?}");
+    assert_eq!(d.from_pane, Some(right), "{d:?}");
+    let t = topology(&c).await;
+    assert_eq!(window_of_session(&t, main).active_pane, Some(right));
+
+    // A pane that is gone is not named.
+    s.tmux
+        .run_checked(&["kill-pane", "-t", &format!("%{right}")])
+        .expect("kill");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let d = status(&c, main).await;
+        if d.from_pane.is_none() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{d:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_window_too_small_to_dock_shows_the_drawer_zoomed() {
     let s = Setup::new(SETTINGS);
