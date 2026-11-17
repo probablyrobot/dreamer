@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 45;
+pub const PROTOCOL_MINOR: u32 = 46;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -4363,6 +4363,10 @@ pub struct DrawerStatus {
     #[prost(string, optional, tag = "10")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    /// The pane that had focus before the drawer was last shown or focused, while it exists: where hiding returns focus, and the pane the harness's context commands read.
+    #[prost(uint32, optional, tag = "11")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]

@@ -138,7 +138,7 @@ toggle --pane '#{pane_id}'"` in your own tmux configuration).
 | `toggle` | Hidden or in another window: show it here and focus it. Shown but not focused: focus it. Focused: hide it |
 | `show` | Show it here and focus it, starting the harness if there is none |
 | `hide` | Move it to the holding session; focus goes back where it was |
-| `status` | Whether the session has one, its pane, and where it is |
+| `status` | Whether the session has one, its pane, where it is, and the pane you came from |
 | `new --yes` | End the running harness and start a fresh one, shown. Without `--yes` it refuses while a drawer exists |
 
 `--session $N` (or a session name), `--window @N`, or `--pane %N` names

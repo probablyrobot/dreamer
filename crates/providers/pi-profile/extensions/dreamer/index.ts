@@ -16,7 +16,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { COLLECTOR_PRESETS, DELEGATES, Session, collectorQuery, collectorSpec, delegates, inputEvents, readResult } from "./daemon.ts";
+import {
+	COLLECTOR_PRESETS,
+	DELEGATES,
+	Session,
+	collectorQuery,
+	collectorSpec,
+	delegates,
+	inputEvents,
+	readResult,
+	sendToPaneEvents,
+} from "./daemon.ts";
 
 type Ui = { notify(message: string, kind?: "info" | "warning" | "error"): void; setStatus(key: string, text: string | undefined): void };
 
@@ -178,6 +188,66 @@ export default function (pi: ExtensionAPI) {
 			await session.connection();
 			return session.send(p.pane, events);
 		},
+	});
+
+	tool({
+		name: "send_to_pane",
+		label: "Send to a pane",
+		description:
+			"Type a code block into a pane as one paste, for the user to run or edit there: `code` is the block (a Markdown fence around it is removed). Enter is pressed only with `enter`. Under an interaction lease: a person typing there takes the pane back, and you then stop. In a pane you did not create this waits for the user's approval.",
+		parameters: Type.Object({
+			pane,
+			code: Type.String({ description: "The text to type, such as a command or a code block." }),
+			enter: Type.Optional(Type.Boolean({ description: "Press Enter after it; default false." })),
+		}),
+		run: async (p) => {
+			const events = sendToPaneEvents(p);
+			await session.connection();
+			return session.send(p.pane, events);
+		},
+	});
+
+	// Pane context: `@pane`, `@%N`, and `@collector` in a prompt append the
+	// pane's visible text or the collector's newest rows to it; `/pane`
+	// attaches the same to the next prompt.
+	const attach = (content: string) =>
+		(pi as any).sendMessage({ customType: "dreamer-context", content, display: true }, { deliverAs: "nextTurn" });
+
+	pi.registerCommand("pane", {
+		description: "Attach a pane to your next prompt: the pane the drawer came from (or %N), its visible text, or with `last` its last command and output",
+		handler: async (args: string, ctx: any) => {
+			if (ctx?.hasUI) ui = ctx.ui;
+			const words = (args ?? "").trim().split(/\s+/).filter((w) => w !== "");
+			const last = words.includes("last");
+			const named = words.find((w) => /^%?\d+$/.test(w));
+			const other = words.find((w) => w !== "last" && w !== named);
+			if (other !== undefined) {
+				ui?.notify(`/pane: unknown argument \`${other}\`; use /pane [last] [%N]`, "error");
+				return;
+			}
+			try {
+				const p = named !== undefined ? Number(named.replace("%", "")) : await session.fromPane();
+				attach(await session.paneContext(p, last));
+				ui?.notify(`Attached pane %${p}${last ? " (last command)" : ""} to your next prompt`, "info");
+			} catch (e) {
+				ui?.notify(`/pane: ${e instanceof Error ? e.message : String(e)}`, "error");
+			}
+		},
+	});
+
+	pi.on("input", async (event: any, ctx: any) => {
+		if (checking || typeof event?.text !== "string" || !event.text.includes("@")) return;
+		if (ctx?.hasUI) ui = ctx.ui;
+		let r: { text: string; attached: string[]; problems: string[] };
+		try {
+			r = await session.expand(event.text);
+		} catch (e) {
+			ui?.notify(`Dreamer could not attach context: ${e instanceof Error ? e.message : String(e)}`, "warning");
+			return;
+		}
+		for (const p of r.problems) ui?.notify(`Not attached: ${p}`, "warning");
+		if (r.attached.length === 0) return;
+		return { action: "transform", text: r.text, ...(event.images ? { images: event.images } : {}) };
 	});
 
 	tool({

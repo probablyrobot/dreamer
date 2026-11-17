@@ -500,7 +500,8 @@ impl Run<'_> {
         {
             let _ = ops::select_pane(conn, back).await;
         }
-        let _ = ops::set_pane_option(conn, drawer, ops::DRAWER_RETURN, "").await;
+        // The pane stays recorded: `from_pane` still names it while the
+        // drawer is hidden, and the next show records it again.
         Ok(())
     }
 }
@@ -569,7 +570,22 @@ pub async fn run(
                 }
                 run.show(d, None).await?;
             }
-            (Step::Focus, Some(d)) => run.focus(d).await?,
+            (Step::Focus, Some(d)) => {
+                // Coming from another pane of the window: that pane is now
+                // the one to return to.
+                let came_from = run
+                    .inv()
+                    .windows
+                    .get(&window)
+                    .and_then(|w| w.active_pane)
+                    .filter(|p| *p != d);
+                if let Some(p) = came_from {
+                    ops::set_pane_option(&run.ep.conn, d, ops::DRAWER_RETURN, &format!("%{}", p.0))
+                        .await
+                        .map_err(|e| refused(&e))?;
+                }
+                run.focus(d).await?
+            }
             (Step::Hide, Some(d)) => run.hide(d).await?,
             (_, None) => {}
         }
@@ -591,8 +607,13 @@ pub async fn run(
             .unwrap_or_default(),
         (None, None) => String::new(),
     };
+    let from_pane = match pane {
+        Some(d) => run.back(d).await.map(|p| p.0),
+        None => None,
+    };
     Ok(api::DrawerStatus {
         session: session.0,
+        from_pane,
         pane: pane.map(|d| d.0),
         shown: at.is_some_and(|a| a.shown),
         window: in_window.map(|w| w.0),

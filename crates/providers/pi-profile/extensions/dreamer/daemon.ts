@@ -48,7 +48,9 @@ export const COLLECTOR_PRESETS = ["errors", "test-failures", "commands", "urls",
 
 /** The methods of the agent's grant at `level`: the same set `dream mcp
  * --level` uses (collectors only read panes, so every level may create
- * and query them; stopping one is an action), plus the event stream (approvals and collector rows). */
+ * and query them; stopping one is an action), plus the event stream
+ * (approvals and collector rows) and `drawer.status` (the pane the drawer
+ * came from). */
 export function agentMethods(l: Level): string[] {
 	const m = [
 		"tmux.topology",
@@ -66,6 +68,8 @@ export function agentMethods(l: Level): string[] {
 		"collect.query",
 		"events.subscribe",
 	];
+	// Which pane the drawer came from, for `@pane` and `/pane`.
+	m.push("drawer.status");
 	if (l !== "observe") {
 		m.push("terminal.input", "terminal.run", "actions.submit", "jobs.start", "jobs.cancel", "collect.stop");
 	}
@@ -283,6 +287,123 @@ export function layoutKind(op: string, p: any): Record<string, unknown> {
 	}
 }
 
+/** Bounds of one attachment: its newest lines and bytes. */
+export const ATTACH_LINES = 200;
+export const ATTACH_BYTES = 16 * 1024;
+
+/** The newest `maxLines` lines of `lines`, without trailing blank lines,
+ * then fewer until they fit in `maxBytes` (a single longer line keeps its
+ * end). `cut` says whether anything was left out. */
+export function bounded(
+	lines: string[],
+	maxLines: number = ATTACH_LINES,
+	maxBytes: number = ATTACH_BYTES,
+): { lines: string[]; cut: boolean; total: number } {
+	let out = lines.slice();
+	while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+	const total = out.length;
+	let cut = false;
+	if (out.length > maxLines) {
+		out = out.slice(out.length - maxLines);
+		cut = true;
+	}
+	let bytes = out.reduce((n, l) => n + Buffer.byteLength(l, "utf8") + 1, 0);
+	while (out.length > 1 && bytes > maxBytes) {
+		bytes -= Buffer.byteLength(out[0], "utf8") + 1;
+		out.shift();
+		cut = true;
+	}
+	if (out.length === 1 && Buffer.byteLength(out[0], "utf8") > maxBytes) {
+		const b = Buffer.from(out[0], "utf8");
+		// Keep the end; a character split at the cut becomes U+FFFD.
+		out[0] = b.subarray(b.length - maxBytes).toString("utf8");
+		cut = true;
+	}
+	return { lines: out, cut, total };
+}
+
+/** A fence of backticks longer than any run of backticks in `text`. */
+export function fenceFor(text: string): string {
+	let longest = 0;
+	for (const m of text.matchAll(/`+/g)) longest = Math.max(longest, m[0].length);
+	return "`".repeat(Math.max(3, longest + 1));
+}
+
+/** One attachment: a label line, then the bounded text, fenced. */
+export function attachment(label: string, lines: string[]): string {
+	const b = bounded(lines);
+	const body = b.lines.join("\n");
+	const fence = fenceFor(body);
+	const note = b.cut ? ` (cut to the last ${b.lines.length} of ${b.total} lines)` : "";
+	return `${label}${note}:\n${fence}text\n${body}\n${fence}`;
+}
+
+/** A context reference in a prompt: `@pane` (the pane the drawer came
+ * from), `@%N` (pane N), or `@name` (a collector, if one has that name). */
+export type ContextRef = { token: string; pane?: number; from?: boolean; collector?: string };
+
+/** The `@` references in `text`, each once, in order. An `@` counts only at
+ * the start or after a space, a quote, or an opening bracket, so mail
+ * addresses are left alone; trailing dots are not part of a name. */
+export function contextRefs(text: string): ContextRef[] {
+	const out: ContextRef[] = [];
+	const seen = new Set<string>();
+	for (const m of text.matchAll(/(^|[\s(\[{"'])@(%\d+|[A-Za-z0-9_][A-Za-z0-9_.-]*)/g)) {
+		const word = m[2].replace(/[.]+$/, "");
+		const token = `@${word}`;
+		if (word === "" || seen.has(token)) continue;
+		seen.add(token);
+		if (word === "pane") out.push({ token, from: true });
+		else if (word.startsWith("%")) out.push({ token, pane: Number(word.slice(1)) });
+		else out.push({ token, collector: word });
+	}
+	return out;
+}
+
+/** `DREAMER_DRAWER` (`$N`, set in the harness drawer): its session id. */
+export function drawerSession(env: Record<string, string | undefined> = process.env): number | undefined {
+	const m = /^\$(\d+)$/.exec(env.DREAMER_DRAWER ?? "");
+	return m ? Number(m[1]) : undefined;
+}
+
+/** How a pane is named in an attachment's label. */
+export function paneLabel(pane: number, info: any): string {
+	const parts: string[] = [];
+	if (info?.title) parts.push(`title "${info.title}"`);
+	if (info?.command) parts.push(`running ${info.command}`);
+	if (info?.cwd) parts.push(`in ${info.cwd}`);
+	return `Pane %${pane}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`;
+}
+
+/** A collector row as text: one line of metadata, then its lines. */
+export function rowLines(r: any): string[] {
+	const when = r.time_unix_ms ? new Date(Number(r.time_unix_ms)).toISOString().replace(/\.\d+Z$/, "Z") : "";
+	const fields = (r.fields ?? []).map((f: any) => `${f.name}=${f.value}`).join(" ");
+	const status = r.exit_status !== undefined && r.exit_status !== null ? `exit ${r.exit_status}` : "";
+	const head = [`#${r.id}`, when, `%${r.pane}`, r.command ? `[${r.command}]` : "", status, fields]
+		.filter((x) => x !== "")
+		.join(" ");
+	const out = [head];
+	for (const l of r.before ?? []) out.push(`    ${l}`);
+	if (r.line) out.push(`  > ${r.line}`);
+	for (const l of r.after ?? []) out.push(`    ${l}`);
+	if (!r.line) for (const l of r.lines ?? []) out.push(`    ${l}`);
+	return out;
+}
+
+/** `send_to_pane`'s input: `code` without a Markdown fence around it, as a
+ * paste, then Enter only when asked. */
+export function sendToPaneEvents(p: { code: string; enter?: boolean }): Record<string, unknown>[] {
+	let code = p.code;
+	const m = /^\s*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n?\1\s*$/.exec(code);
+	if (m) code = m[2];
+	if (code === "") throw new Error("give the code to type");
+	return inputEvents({ paste: code, enter: p.enter === true });
+}
+
+/** The newest rows a collector attachment shows. */
+export const ATTACH_ROWS = 20;
+
 /** The CLIs a task can be handed to: pi tool name, `dream agents delegate
  * --to` value, and who it is. */
 export const DELEGATES = {
@@ -336,6 +457,8 @@ export class Session {
 	collectors: boolean | undefined;
 	readonly socket: string;
 	readonly level: Level;
+	/** The tmux session whose harness drawer this runs in, if it does. */
+	readonly drawer: number | undefined;
 	/** An approval this session waits for was requested or answered. */
 	onApproval: (a: { id: string; pane?: number; what: string; answered?: string }) => void = () => {};
 	/** Collectors whose new rows this session tells its agent about. */
@@ -348,6 +471,107 @@ export class Session {
 	constructor(env: Record<string, string | undefined> = process.env) {
 		this.socket = socketPath(env);
 		this.level = level(env);
+		this.drawer = drawerSession(env);
+	}
+
+	/** The pane that had focus before the drawer was shown or focused. */
+	async fromPane(): Promise<number> {
+		if (this.drawer === undefined) {
+			throw new Error("@pane is the pane the harness drawer came from, and this pi is not running in a drawer; name a pane with @%N");
+		}
+		const s = await this.call("drawer.status", { session: this.drawer });
+		if (typeof s?.from_pane !== "number") {
+			throw new Error("the drawer has no pane it came from (that pane is gone); name a pane with @%N");
+		}
+		return s.from_pane;
+	}
+
+	private async paneInfo(pane: number): Promise<any> {
+		const list = await this.call("terminal.list", {});
+		return (list?.terminals ?? []).find((t: any) => t.pane === pane);
+	}
+
+	/** A pane as an attachment: its visible text, or with `last` its last
+	 * finished command and output as a command-end collector recorded it
+	 * (the shell's OSC 133 marks), else its visible text. */
+	async paneContext(pane: number, last = false): Promise<string> {
+		const info = await this.paneInfo(pane);
+		if (!info) throw new Error(`no pane %${pane}`);
+		const label = paneLabel(pane, info);
+		if (last) {
+			const row = await this.lastCommand(pane);
+			if (row) {
+				const status = row.exit_status !== undefined && row.exit_status !== null ? `, exit ${row.exit_status}` : "";
+				return attachment(`${label}, its last command \`${row.command ?? "?"}\`${status}`, row.lines ?? []);
+			}
+		}
+		const t = await this.call("terminal.read", { pane });
+		const lines = readResult(t, undefined).lines as string[];
+		const why = last ? "visible text; no command-end collector has recorded a command there (it needs the shell's OSC 133 marks)" : "visible text";
+		return attachment(`${label}, ${why}`, lines);
+	}
+
+	/** The newest row any running command-end collector has for `pane`. */
+	private async lastCommand(pane: number): Promise<any | undefined> {
+		let list: any;
+		try {
+			list = await this.call("collect.list", {});
+		} catch {
+			return undefined;
+		}
+		let best: any;
+		for (const c of list?.collectors ?? []) {
+			if (c?.spec?.when?.command_end !== true) continue;
+			try {
+				const q = await this.call("collect.query", { name: c.name, panes: [pane], limit: 1 });
+				const r = q?.rows?.[q.rows.length - 1];
+				if (r && (!best || Number(r.time_unix_ms) > Number(best.time_unix_ms))) best = r;
+			} catch {
+				// A collector stopped meanwhile.
+			}
+		}
+		return best;
+	}
+
+	/** A collector's newest rows as an attachment. */
+	async collectorContext(name: string): Promise<string> {
+		const q = await this.call("collect.query", { name, limit: ATTACH_ROWS });
+		const rows: any[] = q?.rows ?? [];
+		const lines = rows.flatMap(rowLines);
+		const more = q?.truncated ? `, the newest ${rows.length} of ${q.matched}` : "";
+		return attachment(`Collector \`${name}\`: ${rows.length} row(s)${more}`, lines.length > 0 ? lines : ["(no rows)"]);
+	}
+
+	/** The `@` references of a prompt as attachments, appended after it.
+	 * `@name` counts only when a collector has that name; anything that
+	 * cannot be attached is said in `problems` and left as typed. */
+	async expand(text: string): Promise<{ text: string; attached: string[]; problems: string[] }> {
+		const refs = contextRefs(text);
+		const attached: string[] = [];
+		const problems: string[] = [];
+		if (refs.length === 0) return { text, attached, problems };
+		let collectors: Set<string> | undefined;
+		const blocks: string[] = [];
+		for (const r of refs) {
+			try {
+				if (r.collector !== undefined) {
+					if (!collectors) {
+						const list = await this.call("collect.list", {}).catch(() => undefined);
+						collectors = new Set((list?.collectors ?? []).map((c: any) => String(c.name)));
+					}
+					if (!collectors.has(r.collector)) continue;
+					blocks.push(await this.collectorContext(r.collector));
+				} else {
+					const pane = r.from ? await this.fromPane() : (r.pane as number);
+					blocks.push(await this.paneContext(pane));
+				}
+				attached.push(r.token);
+			} catch (e) {
+				problems.push(`${r.token}: ${e instanceof Error ? e.message : String(e)}`);
+			}
+		}
+		if (blocks.length === 0) return { text, attached, problems };
+		return { text: `${text}\n\n${blocks.join("\n\n")}`, attached, problems };
 	}
 
 	/** The connection, made and narrowed on first use. */
