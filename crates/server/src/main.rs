@@ -30,6 +30,7 @@ mod jobs;
 mod jsonrpc;
 mod leases;
 mod log;
+mod memories;
 mod messages;
 mod query;
 mod scripts;
@@ -292,6 +293,10 @@ fn run(args: Args) -> Result<ExitCode, String> {
             scripts: scripts::Scripts::default(),
             filters: filters::Filters::default(),
             collectors: collectors::Collectors::new(state_dir.join("collectors")),
+            memory: memories::Memory::new(
+                &state_dir,
+                &settings.as_ref().map(|s| s.memory).unwrap_or_default(),
+            ),
             decorations: decorations::Decorations::default(),
             agents: agents::Agents::default(),
             sessions: Arc::new(sessions::Sessions::load()),

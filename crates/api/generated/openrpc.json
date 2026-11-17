@@ -2575,6 +2575,241 @@
         ],
         "type": "string"
       },
+      "MemoryContext": {
+        "description": "Who is asking, for the project and session scopes.",
+        "properties": {
+          "cwd": {
+            "description": "The caller's working directory; the project is the nearest directory above it holding .dreamer/memory, else its git root, else the directory itself.",
+            "type": "string"
+          },
+          "session": {
+            "description": "The agent session id, for the session scope.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "MemoryItem": {
+        "properties": {
+          "created_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": {
+            "description": "One line, for the index.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable while the memory exists; for the files provider, the scope and the file's name without .md (user/prefers-tabs).",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MemoryKind"
+          },
+          "links": {
+            "description": "Paths, URLs, or other memories' ids.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "path": {
+            "description": "The file that holds it, for a provider that keeps files.",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/MemoryScope"
+          },
+          "score": {
+            "description": "memory.recall: how well it matched; higher is better.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updated_unix_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "MemoryItems": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryItem"
+            },
+            "type": "array"
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryProblem"
+            },
+            "type": "array"
+          },
+          "provider": {
+            "description": "The provider in force (files).",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "MemoryKind": {
+        "description": "What a memory is about; the same kinds as Claude Code's memory.",
+        "enum": [
+          "unspecified",
+          "user",
+          "feedback",
+          "project",
+          "reference"
+        ],
+        "type": "string"
+      },
+      "MemoryListQuery": {
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/MemoryContext"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MemoryKind",
+            "description": "Unspecified: every kind."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/MemoryScope",
+            "description": "Unspecified: every scope the context reaches."
+          }
+        },
+        "type": "object"
+      },
+      "MemoryProblem": {
+        "description": "A memory file that could not be read; it is left as it is and skipped.",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "MemoryRecall": {
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/MemoryContext"
+          },
+          "limit": {
+            "description": "Default 10, at most 100.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Words to look for; empty returns the newest.",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/MemoryScope",
+            "description": "Unspecified: every scope the context reaches."
+          }
+        },
+        "type": "object"
+      },
+      "MemoryRef": {
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/MemoryContext",
+            "description": "Needed for an id in the project or session scope."
+          },
+          "id": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "MemoryRemember": {
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/MemoryContext"
+          },
+          "description": {
+            "description": "Default: the title.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MemoryKind"
+          },
+          "links": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/MemoryScope"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "description": "Default: the text's first line, shortened.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "MemoryScope": {
+        "description": "Where a memory applies. Unspecified in a query means every scope the caller's context reaches.",
+        "enum": [
+          "unspecified",
+          "user",
+          "host",
+          "project",
+          "session"
+        ],
+        "type": "string"
+      },
+      "MemoryUpdate": {
+        "description": "Change a memory; what is not given stays.",
+        "properties": {
+          "clear_links": {
+            "description": "Remove every link.",
+            "type": "boolean"
+          },
+          "context": {
+            "$ref": "#/components/schemas/MemoryContext"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/MemoryKind",
+            "description": "Unspecified: unchanged."
+          },
+          "links": {
+            "description": "Replace the links with these.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "description": "The id stays the same.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "MessageDelivery": {
         "description": "Pushed as `messages.deliver`.",
         "properties": {
@@ -4845,7 +5080,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.47"
+    "version": "1.48"
   },
   "methods": [
     {
@@ -7877,6 +8112,264 @@
         }
       },
       "summary": "Send a key to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only).",
+      "x-mutation": true
+    },
+    {
+      "name": "memory.recall",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Words to look for; empty returns the newest.",
+          "name": "query",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Unspecified: every scope the context reaches.",
+          "name": "scope",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryScope"
+          }
+        },
+        {
+          "description": "Default 10, at most 100.",
+          "name": "limit",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "context",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryContext"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/MemoryItems"
+        }
+      },
+      "summary": "Memories that match words, best first, from one scope or every scope the context reaches.",
+      "x-mutation": false
+    },
+    {
+      "name": "memory.remember",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "text",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "kind",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryKind"
+          }
+        },
+        {
+          "name": "scope",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryScope"
+          }
+        },
+        {
+          "description": "Default: the text's first line, shortened.",
+          "name": "title",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Default: the title.",
+          "name": "description",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "links",
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "name": "context",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryContext"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/MemoryItem"
+        }
+      },
+      "summary": "Keep a new memory; the reply carries its id.",
+      "x-mutation": true
+    },
+    {
+      "name": "memory.list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "description": "Unspecified: every scope the context reaches.",
+          "name": "scope",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryScope"
+          }
+        },
+        {
+          "description": "Unspecified: every kind.",
+          "name": "kind",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryKind"
+          }
+        },
+        {
+          "name": "context",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryContext"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/MemoryItems"
+        }
+      },
+      "summary": "Every memory in a scope, newest first, and the files that could not be read.",
+      "x-mutation": false
+    },
+    {
+      "name": "memory.get",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "id",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Needed for an id in the project or session scope.",
+          "name": "context",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryContext"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/MemoryItem"
+        }
+      },
+      "x-mutation": false
+    },
+    {
+      "name": "memory.update",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "id",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "text",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Unspecified: unchanged.",
+          "name": "kind",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryKind"
+          }
+        },
+        {
+          "description": "The id stays the same.",
+          "name": "title",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "description",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Replace the links with these.",
+          "name": "links",
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        {
+          "description": "Remove every link.",
+          "name": "clear_links",
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "context",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryContext"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/MemoryItem"
+        }
+      },
+      "x-mutation": true
+    },
+    {
+      "name": "memory.forget",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "id",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Needed for an id in the project or session scope.",
+          "name": "context",
+          "schema": {
+            "$ref": "#/components/schemas/MemoryContext"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/MemoryItem"
+        }
+      },
+      "summary": "Delete a memory and its index line; the reply is what was deleted.",
       "x-mutation": true
     }
   ],

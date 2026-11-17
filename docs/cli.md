@@ -227,6 +227,19 @@ prints rows (or counts with `--group-by`). `dream collect stop NAME
 [--delete]` stops one, and with `--delete` removes its rows. See
 [collectors.md](collectors.md).
 
+## Memory
+
+`dream memory recall [QUERY...] [--scope SCOPE] [--limit N]` prints the
+memories that match, best first, with their text. `dream memory remember
+--kind KIND --scope SCOPE [--title T] [--description D] [--link L]...
+TEXT...` keeps a new one and prints its id and file (`-` as the text reads
+standard input). `list [--scope SCOPE] [--kind KIND]`, `get ID`, `update
+ID [options]`, and `forget ID` do the rest. Every command takes `--json`,
+`--cwd DIR` (default: the current directory, which picks the project), and
+`--session ID` (default: `$DREAMER_SESSION_ID`). SCOPE is `user`, `host`,
+`project`, or `session`; KIND is `user`, `feedback`, `project`, or
+`reference`. See [memory.md](memory.md).
+
 ## Scripts
 
 `dream scripts` lists loaded scripts; `dream scripts load NAME FILE

@@ -66,12 +66,16 @@ export function agentMethods(l: Level): string[] {
 		"collect.create",
 		"collect.list",
 		"collect.query",
+		"memory.recall",
+		"memory.list",
+		"memory.get",
+		"memory.remember",
 		"events.subscribe",
 	];
 	// Which pane the drawer came from, for `@pane` and `/pane`.
 	m.push("drawer.status");
 	if (l !== "observe") {
-		m.push("terminal.input", "terminal.run", "actions.submit", "jobs.start", "jobs.cancel", "collect.stop");
+		m.push("terminal.input", "terminal.run", "actions.submit", "jobs.start", "jobs.cancel", "collect.stop", "memory.update", "memory.forget");
 	}
 	return m;
 }

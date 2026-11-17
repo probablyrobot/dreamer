@@ -120,8 +120,9 @@ every pane (unless `--pane` names some), the act level, and, unless
 those are `tmux.topology`, `terminal.list`, `terminal.read`,
 `terminal.query`, `terminal.watch`, `jobs.get`, `jobs.list`,
 `actions.get`, `actions.list`, `agents.runs`, `collect.create`,
-`collect.list`, `collect.query`, and `collect.stop`; `own` and `elsewhere`
-add `terminal.input`, `terminal.run`, `actions.submit`, `jobs.start`, and
-`jobs.cancel`.
+`collect.list`, `collect.query`, `memory.recall`, `memory.list`,
+`memory.get`, and `memory.remember`; `own` and `elsewhere` add
+`terminal.input`, `terminal.run`, `actions.submit`, `jobs.start`,
+`jobs.cancel`, `collect.stop`, `memory.update`, and `memory.forget`.
 
 The daemon works the same with no MCP client at all.

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 47;
+pub const PROTOCOL_MINOR: u32 = 48;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1301,6 +1301,114 @@ mod agent_stop_reason_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| AgentStopReason::from_name(n).map(|e| e as i32))
+    }
+}
+
+/// Where a memory applies. Unspecified in a query means every scope the caller's context reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MemoryScope {
+    Unspecified = 0,
+    /// The user, on every host and in every project.
+    User = 1,
+    /// This host only.
+    Host = 2,
+    /// One project: found from the caller's working directory.
+    Project = 3,
+    /// One agent session.
+    Session = 4,
+}
+
+impl MemoryScope {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::User => "user",
+            Self::Host => "host",
+            Self::Project => "project",
+            Self::Session => "session",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "user" => Some(Self::User),
+            "host" => Some(Self::Host),
+            "project" => Some(Self::Project),
+            "session" => Some(Self::Session),
+            _ => None,
+        }
+    }
+}
+
+mod memory_scope_json {
+    use super::MemoryScope;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match MemoryScope::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| MemoryScope::from_name(n).map(|e| e as i32))
+    }
+}
+
+/// What a memory is about; the same kinds as Claude Code's memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum MemoryKind {
+    Unspecified = 0,
+    /// About the user: role, preferences, what they know.
+    User = 1,
+    /// Guidance the user gave about how to work.
+    Feedback = 2,
+    /// Facts about the work: decisions, people, dates.
+    Project = 3,
+    /// Where to find something outside the project.
+    Reference = 4,
+}
+
+impl MemoryKind {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::User => "user",
+            Self::Feedback => "feedback",
+            Self::Project => "project",
+            Self::Reference => "reference",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "user" => Some(Self::User),
+            "feedback" => Some(Self::Feedback),
+            "project" => Some(Self::Project),
+            "reference" => Some(Self::Reference),
+            _ => None,
+        }
+    }
+}
+
+mod memory_kind_json {
+    use super::MemoryKind;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match MemoryKind::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| MemoryKind::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -4769,6 +4877,181 @@ pub struct AgentSessionEvents {
     pub more: bool,
 }
 
+/// Who is asking, for the project and session scopes.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryContext {
+    /// The caller's working directory; the project is the nearest directory above it holding .dreamer/memory, else its git root, else the directory itself.
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The agent session id, for the session scope.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryItem {
+    /// Stable while the memory exists; for the files provider, the scope and the file's name without .md (user/prefers-tabs).
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(enumeration = "MemoryScope", tag = "2")]
+    #[serde(with = "memory_scope_json")]
+    pub scope: i32,
+    #[prost(enumeration = "MemoryKind", tag = "3")]
+    #[serde(with = "memory_kind_json")]
+    pub kind: i32,
+    #[prost(string, tag = "4")]
+    pub title: String,
+    /// One line, for the index.
+    #[prost(string, tag = "5")]
+    pub description: String,
+    #[prost(string, tag = "6")]
+    pub text: String,
+    /// Paths, URLs, or other memories' ids.
+    #[prost(string, repeated, tag = "7")]
+    pub links: Vec<String>,
+    #[prost(uint64, tag = "8")]
+    pub created_unix_ms: u64,
+    #[prost(uint64, tag = "9")]
+    pub updated_unix_ms: u64,
+    /// The file that holds it, for a provider that keeps files.
+    #[prost(string, optional, tag = "10")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// memory.recall: how well it matched; higher is better.
+    #[prost(uint32, optional, tag = "11")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<u32>,
+}
+
+/// A memory file that could not be read; it is left as it is and skipped.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryProblem {
+    #[prost(string, tag = "1")]
+    pub path: String,
+    #[prost(string, tag = "2")]
+    pub message: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryItems {
+    #[prost(message, repeated, tag = "1")]
+    pub items: Vec<MemoryItem>,
+    #[prost(message, repeated, tag = "2")]
+    pub problems: Vec<MemoryProblem>,
+    /// The provider in force (files).
+    #[prost(string, tag = "3")]
+    pub provider: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryRecall {
+    /// Words to look for; empty returns the newest.
+    #[prost(string, tag = "1")]
+    pub query: String,
+    /// Unspecified: every scope the context reaches.
+    #[prost(enumeration = "MemoryScope", tag = "2")]
+    #[serde(with = "memory_scope_json")]
+    pub scope: i32,
+    /// Default 10, at most 100.
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[prost(message, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<MemoryContext>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryRemember {
+    #[prost(string, tag = "1")]
+    pub text: String,
+    #[prost(enumeration = "MemoryKind", tag = "2")]
+    #[serde(with = "memory_kind_json")]
+    pub kind: i32,
+    #[prost(enumeration = "MemoryScope", tag = "3")]
+    #[serde(with = "memory_scope_json")]
+    pub scope: i32,
+    /// Default: the text's first line, shortened.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Default: the title.
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[prost(string, repeated, tag = "6")]
+    pub links: Vec<String>,
+    #[prost(message, optional, tag = "7")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<MemoryContext>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryListQuery {
+    /// Unspecified: every scope the context reaches.
+    #[prost(enumeration = "MemoryScope", tag = "1")]
+    #[serde(with = "memory_scope_json")]
+    pub scope: i32,
+    /// Unspecified: every kind.
+    #[prost(enumeration = "MemoryKind", tag = "2")]
+    #[serde(with = "memory_kind_json")]
+    pub kind: i32,
+    #[prost(message, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<MemoryContext>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryRef {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    /// Needed for an id in the project or session scope.
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<MemoryContext>,
+}
+
+/// Change a memory; what is not given stays.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryUpdate {
+    #[prost(string, tag = "1")]
+    pub id: String,
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Unspecified: unchanged.
+    #[prost(enumeration = "MemoryKind", tag = "3")]
+    #[serde(with = "memory_kind_json")]
+    pub kind: i32,
+    /// The id stays the same.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Replace the links with these.
+    #[prost(string, repeated, tag = "6")]
+    pub links: Vec<String>,
+    /// Remove every link.
+    #[prost(bool, tag = "7")]
+    pub clear_links: bool,
+    #[prost(message, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<MemoryContext>,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -4861,6 +5144,12 @@ pub mod method {
     pub const APPS_PUBLISH: &str = "apps.publish";
     pub const APPS_VIEW: &str = "apps.view";
     pub const APPS_INPUT: &str = "apps.input";
+    pub const MEMORY_RECALL: &str = "memory.recall";
+    pub const MEMORY_REMEMBER: &str = "memory.remember";
+    pub const MEMORY_LIST: &str = "memory.list";
+    pub const MEMORY_GET: &str = "memory.get";
+    pub const MEMORY_UPDATE: &str = "memory.update";
+    pub const MEMORY_FORGET: &str = "memory.forget";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5503,6 +5792,48 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Send a key to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only).",
     },
+    MethodInfo {
+        name: "memory.recall",
+        params: "MemoryRecall",
+        result: "MemoryItems",
+        mutation: false,
+        doc: "Memories that match words, best first, from one scope or every scope the context reaches.",
+    },
+    MethodInfo {
+        name: "memory.remember",
+        params: "MemoryRemember",
+        result: "MemoryItem",
+        mutation: true,
+        doc: "Keep a new memory; the reply carries its id.",
+    },
+    MethodInfo {
+        name: "memory.list",
+        params: "MemoryListQuery",
+        result: "MemoryItems",
+        mutation: false,
+        doc: "Every memory in a scope, newest first, and the files that could not be read.",
+    },
+    MethodInfo {
+        name: "memory.get",
+        params: "MemoryRef",
+        result: "MemoryItem",
+        mutation: false,
+        doc: "",
+    },
+    MethodInfo {
+        name: "memory.update",
+        params: "MemoryUpdate",
+        result: "MemoryItem",
+        mutation: true,
+        doc: "",
+    },
+    MethodInfo {
+        name: "memory.forget",
+        params: "MemoryRef",
+        result: "MemoryItem",
+        mutation: true,
+        doc: "Delete a memory and its index line; the reply is what was deleted.",
+    },
 ];
 
 /// A typed request for one method.
@@ -5598,6 +5929,12 @@ pub enum Request {
     AppsPublish(AppViewPublish),
     AppsView(AppViewQuery),
     AppsInput(AppInput),
+    MemoryRecall(MemoryRecall),
+    MemoryRemember(MemoryRemember),
+    MemoryList(MemoryListQuery),
+    MemoryGet(MemoryRef),
+    MemoryUpdate(MemoryUpdate),
+    MemoryForget(MemoryRef),
 }
 
 impl Request {
@@ -5693,6 +6030,12 @@ impl Request {
             Self::AppsPublish(_) => "apps.publish",
             Self::AppsView(_) => "apps.view",
             Self::AppsInput(_) => "apps.input",
+            Self::MemoryRecall(_) => "memory.recall",
+            Self::MemoryRemember(_) => "memory.remember",
+            Self::MemoryList(_) => "memory.list",
+            Self::MemoryGet(_) => "memory.get",
+            Self::MemoryUpdate(_) => "memory.update",
+            Self::MemoryForget(_) => "memory.forget",
         }
     }
 
@@ -5789,6 +6132,12 @@ impl Request {
             Self::AppsPublish(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsView(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsInput(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryRecall(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryRemember(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryList(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryGet(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryUpdate(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryForget(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -5906,6 +6255,12 @@ impl Request {
             "apps.publish" => Ok(Self::AppsPublish(::prost::Message::decode(bytes)?)),
             "apps.view" => Ok(Self::AppsView(::prost::Message::decode(bytes)?)),
             "apps.input" => Ok(Self::AppsInput(::prost::Message::decode(bytes)?)),
+            "memory.recall" => Ok(Self::MemoryRecall(::prost::Message::decode(bytes)?)),
+            "memory.remember" => Ok(Self::MemoryRemember(::prost::Message::decode(bytes)?)),
+            "memory.list" => Ok(Self::MemoryList(::prost::Message::decode(bytes)?)),
+            "memory.get" => Ok(Self::MemoryGet(::prost::Message::decode(bytes)?)),
+            "memory.update" => Ok(Self::MemoryUpdate(::prost::Message::decode(bytes)?)),
+            "memory.forget" => Ok(Self::MemoryForget(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6002,6 +6357,12 @@ impl Request {
             Self::AppsPublish(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsView(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsInput(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryRecall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryRemember(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryGet(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryUpdate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryForget(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -6113,6 +6474,12 @@ impl Request {
             "apps.publish" => Ok(Self::AppsPublish(serde_json::from_value(value)?)),
             "apps.view" => Ok(Self::AppsView(serde_json::from_value(value)?)),
             "apps.input" => Ok(Self::AppsInput(serde_json::from_value(value)?)),
+            "memory.recall" => Ok(Self::MemoryRecall(serde_json::from_value(value)?)),
+            "memory.remember" => Ok(Self::MemoryRemember(serde_json::from_value(value)?)),
+            "memory.list" => Ok(Self::MemoryList(serde_json::from_value(value)?)),
+            "memory.get" => Ok(Self::MemoryGet(serde_json::from_value(value)?)),
+            "memory.update" => Ok(Self::MemoryUpdate(serde_json::from_value(value)?)),
+            "memory.forget" => Ok(Self::MemoryForget(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6211,6 +6578,12 @@ pub enum Response {
     AppsPublish(Empty),
     AppsView(AppView),
     AppsInput(Empty),
+    MemoryRecall(MemoryItems),
+    MemoryRemember(MemoryItem),
+    MemoryList(MemoryItems),
+    MemoryGet(MemoryItem),
+    MemoryUpdate(MemoryItem),
+    MemoryForget(MemoryItem),
 }
 
 impl Response {
@@ -6306,6 +6679,12 @@ impl Response {
             Self::AppsPublish(_) => "apps.publish",
             Self::AppsView(_) => "apps.view",
             Self::AppsInput(_) => "apps.input",
+            Self::MemoryRecall(_) => "memory.recall",
+            Self::MemoryRemember(_) => "memory.remember",
+            Self::MemoryList(_) => "memory.list",
+            Self::MemoryGet(_) => "memory.get",
+            Self::MemoryUpdate(_) => "memory.update",
+            Self::MemoryForget(_) => "memory.forget",
         }
     }
 
@@ -6402,6 +6781,12 @@ impl Response {
             Self::AppsPublish(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsView(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsInput(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryRecall(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryRemember(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryList(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryGet(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryUpdate(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryForget(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -6519,6 +6904,12 @@ impl Response {
             "apps.publish" => Ok(Self::AppsPublish(::prost::Message::decode(bytes)?)),
             "apps.view" => Ok(Self::AppsView(::prost::Message::decode(bytes)?)),
             "apps.input" => Ok(Self::AppsInput(::prost::Message::decode(bytes)?)),
+            "memory.recall" => Ok(Self::MemoryRecall(::prost::Message::decode(bytes)?)),
+            "memory.remember" => Ok(Self::MemoryRemember(::prost::Message::decode(bytes)?)),
+            "memory.list" => Ok(Self::MemoryList(::prost::Message::decode(bytes)?)),
+            "memory.get" => Ok(Self::MemoryGet(::prost::Message::decode(bytes)?)),
+            "memory.update" => Ok(Self::MemoryUpdate(::prost::Message::decode(bytes)?)),
+            "memory.forget" => Ok(Self::MemoryForget(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6615,6 +7006,12 @@ impl Response {
             Self::AppsPublish(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsView(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsInput(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryRecall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryRemember(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryList(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryGet(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryUpdate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryForget(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -6726,6 +7123,12 @@ impl Response {
             "apps.publish" => Ok(Self::AppsPublish(serde_json::from_value(value)?)),
             "apps.view" => Ok(Self::AppsView(serde_json::from_value(value)?)),
             "apps.input" => Ok(Self::AppsInput(serde_json::from_value(value)?)),
+            "memory.recall" => Ok(Self::MemoryRecall(serde_json::from_value(value)?)),
+            "memory.remember" => Ok(Self::MemoryRemember(serde_json::from_value(value)?)),
+            "memory.list" => Ok(Self::MemoryList(serde_json::from_value(value)?)),
+            "memory.get" => Ok(Self::MemoryGet(serde_json::from_value(value)?)),
+            "memory.update" => Ok(Self::MemoryUpdate(serde_json::from_value(value)?)),
+            "memory.forget" => Ok(Self::MemoryForget(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7172,6 +7575,34 @@ pub trait Service: Sync {
         &self,
         params: AppInput,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Memories that match words, best first, from one scope or every scope the context reaches.
+    fn memory_recall(
+        &self,
+        params: MemoryRecall,
+    ) -> impl ::core::future::Future<Output = Result<MemoryItems, RpcError>> + Send;
+    /// Keep a new memory; the reply carries its id.
+    fn memory_remember(
+        &self,
+        params: MemoryRemember,
+    ) -> impl ::core::future::Future<Output = Result<MemoryItem, RpcError>> + Send;
+    /// Every memory in a scope, newest first, and the files that could not be read.
+    fn memory_list(
+        &self,
+        params: MemoryListQuery,
+    ) -> impl ::core::future::Future<Output = Result<MemoryItems, RpcError>> + Send;
+    fn memory_get(
+        &self,
+        params: MemoryRef,
+    ) -> impl ::core::future::Future<Output = Result<MemoryItem, RpcError>> + Send;
+    fn memory_update(
+        &self,
+        params: MemoryUpdate,
+    ) -> impl ::core::future::Future<Output = Result<MemoryItem, RpcError>> + Send;
+    /// Delete a memory and its index line; the reply is what was deleted.
+    fn memory_forget(
+        &self,
+        params: MemoryRef,
+    ) -> impl ::core::future::Future<Output = Result<MemoryItem, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -7378,6 +7809,15 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::AppsPublish(p) => service.apps_publish(p).await.map(Response::AppsPublish),
         Request::AppsView(p) => service.apps_view(p).await.map(Response::AppsView),
         Request::AppsInput(p) => service.apps_input(p).await.map(Response::AppsInput),
+        Request::MemoryRecall(p) => service.memory_recall(p).await.map(Response::MemoryRecall),
+        Request::MemoryRemember(p) => service
+            .memory_remember(p)
+            .await
+            .map(Response::MemoryRemember),
+        Request::MemoryList(p) => service.memory_list(p).await.map(Response::MemoryList),
+        Request::MemoryGet(p) => service.memory_get(p).await.map(Response::MemoryGet),
+        Request::MemoryUpdate(p) => service.memory_update(p).await.map(Response::MemoryUpdate),
+        Request::MemoryForget(p) => service.memory_forget(p).await.map(Response::MemoryForget),
     }
 }
 

@@ -328,6 +328,24 @@ impl Service for Fixed {
     ) -> Result<api::CollectorStatus, RpcError> {
         Ok(api::CollectorStatus::default())
     }
+    async fn memory_recall(&self, _: api::MemoryRecall) -> Result<api::MemoryItems, RpcError> {
+        Ok(api::MemoryItems::default())
+    }
+    async fn memory_remember(&self, _: api::MemoryRemember) -> Result<api::MemoryItem, RpcError> {
+        Ok(api::MemoryItem::default())
+    }
+    async fn memory_list(&self, _: api::MemoryListQuery) -> Result<api::MemoryItems, RpcError> {
+        Ok(api::MemoryItems::default())
+    }
+    async fn memory_get(&self, _: api::MemoryRef) -> Result<api::MemoryItem, RpcError> {
+        Ok(api::MemoryItem::default())
+    }
+    async fn memory_update(&self, _: api::MemoryUpdate) -> Result<api::MemoryItem, RpcError> {
+        Ok(api::MemoryItem::default())
+    }
+    async fn memory_forget(&self, _: api::MemoryRef) -> Result<api::MemoryItem, RpcError> {
+        Ok(api::MemoryItem::default())
+    }
     async fn collect_list(&self, _: Empty) -> Result<api::CollectList, RpcError> {
         Ok(api::CollectList::default())
     }

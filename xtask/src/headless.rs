@@ -24,6 +24,7 @@ pub const PACKAGES: &[&str] = &[
     "dreamer-termapp",
     "domain",
     "matcher",
+    "memory",
     "procreg",
     "providers",
     "mirror",

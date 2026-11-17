@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 47 }
+version: { major: 1, minor: 48 }
 package: dreamer.v1
 
 types:
@@ -1825,6 +1825,98 @@ types:
       - { n: 3, name: events, type: AgentSessionEvent, repeated: true }
       - { n: 4, name: more, type: bool, doc: "Without follow: more events follow the last one; ask again after it." }
 
+  # ---- memory -------------------------------------------------------------
+
+  - enum: MemoryScope
+    doc: "Where a memory applies. Unspecified in a query means every scope the caller's context reaches."
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: user, doc: "The user, on every host and in every project." }
+      - { n: 2, name: host, doc: "This host only." }
+      - { n: 3, name: project, doc: "One project: found from the caller's working directory." }
+      - { n: 4, name: session, doc: "One agent session." }
+
+  - enum: MemoryKind
+    doc: "What a memory is about; the same kinds as Claude Code's memory."
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: user, doc: "About the user: role, preferences, what they know." }
+      - { n: 2, name: feedback, doc: "Guidance the user gave about how to work." }
+      - { n: 3, name: project, doc: "Facts about the work: decisions, people, dates." }
+      - { n: 4, name: reference, doc: "Where to find something outside the project." }
+
+  - message: MemoryContext
+    doc: "Who is asking, for the project and session scopes."
+    fields:
+      - { n: 1, name: cwd, type: string, optional: true, doc: "The caller's working directory; the project is the nearest directory above it holding .dreamer/memory, else its git root, else the directory itself." }
+      - { n: 2, name: session, type: string, optional: true, doc: "The agent session id, for the session scope." }
+
+  - message: MemoryItem
+    fields:
+      - { n: 1, name: id, type: string, doc: "Stable while the memory exists; for the files provider, the scope and the file's name without .md (user/prefers-tabs)." }
+      - { n: 2, name: scope, type: MemoryScope }
+      - { n: 3, name: kind, type: MemoryKind }
+      - { n: 4, name: title, type: string }
+      - { n: 5, name: description, type: string, doc: "One line, for the index." }
+      - { n: 6, name: text, type: string }
+      - { n: 7, name: links, type: string, repeated: true, doc: "Paths, URLs, or other memories' ids." }
+      - { n: 8, name: created_unix_ms, type: u64 }
+      - { n: 9, name: updated_unix_ms, type: u64 }
+      - { n: 10, name: path, type: string, optional: true, doc: "The file that holds it, for a provider that keeps files." }
+      - { n: 11, name: score, type: u32, optional: true, doc: "memory.recall: how well it matched; higher is better." }
+
+  - message: MemoryProblem
+    doc: "A memory file that could not be read; it is left as it is and skipped."
+    fields:
+      - { n: 1, name: path, type: string }
+      - { n: 2, name: message, type: string }
+
+  - message: MemoryItems
+    fields:
+      - { n: 1, name: items, type: MemoryItem, repeated: true }
+      - { n: 2, name: problems, type: MemoryProblem, repeated: true }
+      - { n: 3, name: provider, type: string, doc: "The provider in force (files)." }
+
+  - message: MemoryRecall
+    fields:
+      - { n: 1, name: query, type: string, doc: "Words to look for; empty returns the newest." }
+      - { n: 2, name: scope, type: MemoryScope, doc: "Unspecified: every scope the context reaches." }
+      - { n: 3, name: limit, type: u32, optional: true, doc: "Default 10, at most 100." }
+      - { n: 4, name: context, type: MemoryContext }
+
+  - message: MemoryRemember
+    fields:
+      - { n: 1, name: text, type: string }
+      - { n: 2, name: kind, type: MemoryKind }
+      - { n: 3, name: scope, type: MemoryScope }
+      - { n: 4, name: title, type: string, optional: true, doc: "Default: the text's first line, shortened." }
+      - { n: 5, name: description, type: string, optional: true, doc: "Default: the title." }
+      - { n: 6, name: links, type: string, repeated: true }
+      - { n: 7, name: context, type: MemoryContext }
+
+  - message: MemoryListQuery
+    fields:
+      - { n: 1, name: scope, type: MemoryScope, doc: "Unspecified: every scope the context reaches." }
+      - { n: 2, name: kind, type: MemoryKind, doc: "Unspecified: every kind." }
+      - { n: 3, name: context, type: MemoryContext }
+
+  - message: MemoryRef
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: context, type: MemoryContext, doc: "Needed for an id in the project or session scope." }
+
+  - message: MemoryUpdate
+    doc: "Change a memory; what is not given stays."
+    fields:
+      - { n: 1, name: id, type: string }
+      - { n: 2, name: text, type: string, optional: true }
+      - { n: 3, name: kind, type: MemoryKind, doc: "Unspecified: unchanged." }
+      - { n: 4, name: title, type: string, optional: true, doc: "The id stays the same." }
+      - { n: 5, name: description, type: string, optional: true }
+      - { n: 6, name: links, type: string, repeated: true, doc: "Replace the links with these." }
+      - { n: 7, name: clear_links, type: bool, doc: "Remove every link." }
+      - { n: 8, name: context, type: MemoryContext }
+
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
@@ -1916,6 +2008,12 @@ methods:
   - { method: apps.publish, params: AppViewPublish, result: Empty, mutation: true, doc: "A registered app host publishes its current view for its pane; only the newest is kept." }
   - { method: apps.view, params: AppViewQuery, result: AppView, doc: "The view an app pane's host published last, waiting for a newer one (owner only)." }
   - { method: apps.input, params: AppInput, result: Empty, mutation: true, doc: "Send a key to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only)." }
+  - { method: memory.recall, params: MemoryRecall, result: MemoryItems, doc: "Memories that match words, best first, from one scope or every scope the context reaches." }
+  - { method: memory.remember, params: MemoryRemember, result: MemoryItem, mutation: true, doc: "Keep a new memory; the reply carries its id." }
+  - { method: memory.list, params: MemoryListQuery, result: MemoryItems, doc: "Every memory in a scope, newest first, and the files that could not be read." }
+  - { method: memory.get, params: MemoryRef, result: MemoryItem }
+  - { method: memory.update, params: MemoryUpdate, result: MemoryItem, mutation: true }
+  - { method: memory.forget, params: MemoryRef, result: MemoryItem, mutation: true, doc: "Delete a memory and its index line; the reply is what was deleted." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the

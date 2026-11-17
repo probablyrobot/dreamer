@@ -47,6 +47,7 @@ mod harness;
 mod hosts;
 mod jobrun;
 mod mcp;
+mod memory;
 mod profile;
 mod remote;
 mod service;
@@ -95,6 +96,7 @@ const USAGE: &str = "usage:
   dream jobs [--json] | start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...] | cancel ID | artifacts ID
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME
   dream collect create -f FILE | create NAME ... | create --preset NAME ... | list | query NAME ... | stop NAME [--delete]
+  dream memory recall|remember|list|get|update|forget ... (see `dream memory`)
   dream hosts connect|list|call|disconnect ... (see `dream hosts`)
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
@@ -182,6 +184,9 @@ fn main() -> ExitCode {
         }
         ["jobs", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::jobs(&d, &extra))
+        }
+        ["memory", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| memory::run(&d, &extra))
         }
         ["collect", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| collect::run(&d, &extra))
