@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use gpui::{
     Context, Entity, FocusHandle, MouseButton, MouseDownEvent, Render, Window, div, font,
@@ -14,6 +15,7 @@ use gpui::{
 use replica::feed::Feed;
 use replica::topology::TopologyFeed;
 use terminal_render::cell_metrics;
+use workspace_config::desktop_state::{DesktopState, DesktopStore};
 
 use crate::theme::c;
 use crate::{Shell, Smoke, load_frame, term_font};
@@ -140,11 +142,17 @@ pub(crate) struct Workspace {
     title_drag: bool,
     /// The sidebar (sessions) is open.
     pub(crate) sidebar: bool,
-    /// Where the arrangement is saved, what was saved at startup, and
-    /// whether the first topology has been matched against it yet.
-    state_path: Option<PathBuf>,
-    saved: Option<workspace_config::desktop_state::DesktopState>,
+    /// Where the arrangements of all windows are kept, this window's key
+    /// there, what it was opened from, and whether the first topology has
+    /// been matched against that yet.
+    store: Option<Arc<DesktopStore>>,
+    state_key: u64,
+    saved: Option<DesktopState>,
     restored: bool,
+    /// A window opened on a new session waits for it here.
+    opening: Opening,
+    /// The pane context menu, open where it was asked for.
+    menu: Option<gpui::Point<gpui::Pixels>>,
     bounds: Option<[f32; 4]>,
     _bounds: Option<gpui::Subscription>,
     /// Activation reads tmux's key options again (the prefix layer).
@@ -171,6 +179,22 @@ pub(crate) struct Workspace {
     /// hides.
     drawer_back: Option<u32>,
 }
+
+/// A window that shows a new session: what it waits for before choosing
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opening {
+    /// The session is chosen as usual: saved, else the first.
+    Ready,
+    /// The daemon is making the new session.
+    Asked,
+    /// The new session's first pane, until the topology shows it (or the
+    /// grace runs out and the window falls back to choosing as usual).
+    Pane(u32, std::time::Instant),
+}
+
+/// How long a new session's first pane is waited for in the topology.
+const OPENING_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long a requested drawer is waited for, to focus it when it shows.
 const DRAWER_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
@@ -224,9 +248,12 @@ impl Workspace {
             theme_preview: None,
             title_drag: false,
             sidebar: false,
-            state_path: None,
+            store: None,
+            state_key: 0,
             saved: None,
             restored: false,
+            opening: Opening::Ready,
+            menu: None,
             bounds: None,
             _bounds: None,
             _activation: None,
@@ -775,6 +802,11 @@ impl Workspace {
     ) {
         use crate::palette::Command as C;
         use api::action::Kind;
+        if let Some(action) = cmd.app_action() {
+            window.dispatch_action(action, cx);
+            cx.notify();
+            return;
+        }
         let pane = self.focused;
         let win = self.active_window().map(|w| w.id);
         let mut windows: Vec<(u32, u32)> = match (&self.current, self.session) {
@@ -833,6 +865,7 @@ impl Workspace {
                 None
             }
             C::CloseView => {
+                self.forget_state(cx);
                 window.remove_window();
                 None
             }
@@ -922,6 +955,21 @@ impl Workspace {
             }
             // Chosen in the palette's own list.
             C::Theme => None,
+            // The app's own commands, dispatched above.
+            C::NewOsWindow
+            | C::Settings
+            | C::About
+            | C::Copy
+            | C::Paste
+            | C::Find
+            | C::FontBigger
+            | C::FontSmaller
+            | C::FontReset
+            | C::FullScreen
+            | C::Minimize
+            | C::ZoomOsWindow
+            | C::BringAllToFront
+            | C::Quit => None,
             C::Contributed(i) => {
                 if let Some(&at) = self.palette_contributed.get(usize::from(i)) {
                     self.run_contributed(at, window, cx);
@@ -1063,31 +1111,46 @@ impl Workspace {
         self.current.as_ref()
     }
 
-    /// Remember where the arrangement lives and what was saved there.
-    pub(crate) fn with_state(&mut self, path: Option<PathBuf>) {
-        self.saved = path
-            .as_deref()
-            .and_then(workspace_config::desktop_state::load_desktop_state);
-        self.sidebar = self.saved.as_ref().is_some_and(|s| s.sidebar);
-        self.state_path = path;
+    /// Remember where the arrangements are kept, this window's key there,
+    /// and the entry it was opened from (none for a new window). The entry
+    /// stays in the store until this window saves its own.
+    pub(crate) fn with_state(
+        &mut self,
+        store: Option<Arc<DesktopStore>>,
+        key: u64,
+        saved: Option<DesktopState>,
+    ) {
+        self.sidebar = saved.as_ref().is_some_and(|s| s.sidebar);
+        self.bounds = saved.as_ref().and_then(|s| s.bounds);
+        if let (Some(store), Some(s)) = (&store, &saved) {
+            store.set(key, s.clone());
+        }
+        self.saved = saved;
+        self.store = store;
+        self.state_key = key;
     }
 
-    /// The arrangement as it is now, and where it goes.
-    fn snapshot(&self) -> Option<(PathBuf, workspace_config::desktop_state::DesktopState)> {
-        let (path, t) = (self.state_path.clone()?, self.current.as_ref()?);
+    /// The arrangement as it is now; none while a new session is awaited.
+    fn snapshot(&self) -> Option<DesktopState> {
+        let t = self.current.as_ref()?;
+        if self.opening != Opening::Ready {
+            return None;
+        }
         let session = t.sessions.iter().find(|s| Some(s.id) == self.session);
-        Some((
-            path,
-            workspace_config::desktop_state::DesktopState {
-                version: 0,
-                endpoint: t.endpoint.clone(),
-                incarnation: t.incarnation,
-                session_id: session.map(|s| s.id),
-                session_name: session.map(|s| s.name.clone()),
-                sidebar: self.sidebar,
-                bounds: self.bounds,
-            },
-        ))
+        Some(DesktopState {
+            endpoint: t.endpoint.clone(),
+            incarnation: t.incarnation,
+            session_id: session.map(|s| s.id),
+            session_name: session.map(|s| s.name.clone()),
+            sidebar: self.sidebar,
+            bounds: self.bounds,
+        })
+    }
+
+    /// This window was closed: it is not opened again at the next launch
+    /// (unless it was the last one). Written off the UI thread.
+    pub(crate) fn forget_state(&self, cx: &mut gpui::App) {
+        forget(self.store.clone(), self.state_key, cx);
     }
 
     /// Save the arrangement off the UI thread, one write at a time: the
@@ -1095,7 +1158,7 @@ impl Workspace {
     /// it changed meanwhile, so an older state never lands last.
     fn save_state(&mut self, cx: &mut Context<Self>) {
         self.save_dirty = true;
-        if self.saving || self.state_path.is_none() {
+        if self.saving || self.store.is_none() {
             return;
         }
         self.saving = true;
@@ -1106,13 +1169,17 @@ impl Workspace {
                     .await;
                 let Ok(next) = this.update(cx, |ws, _| {
                     ws.save_dirty = false;
-                    ws.snapshot()
+                    let store = ws.store.clone()?;
+                    store.set(ws.state_key, ws.snapshot()?);
+                    Some(store)
                 }) else {
                     return;
                 };
-                if let Some((path, state)) = next {
+                // The store writes every window's entry, one write at a
+                // time, so windows saving at once keep each other's.
+                if let Some(store) = next {
                     cx.background_spawn(async move {
-                        let _ = workspace_config::desktop_state::save_desktop_state(&path, &state);
+                        let _ = store.save();
                     })
                     .await;
                 }
@@ -1257,6 +1324,7 @@ impl Workspace {
             replica::Via::Host(name.to_owned()),
             None,
             Vec::new(),
+            Start::Saved(None),
         )
         .map(drop)
         {
@@ -1560,7 +1628,20 @@ impl Workspace {
         if self.sidebar && self.hosts.is_none() {
             self.follow_hosts(cx);
         }
-        if !self.restored {
+        if let Opening::Pane(pane, since) = self.opening {
+            // A new window: the new session, once the topology has it.
+            if let Some(s) = session_of_pane(&t, pane) {
+                self.session = Some(s);
+                self.opening = Opening::Ready;
+                self.restored = true;
+                self.save_state(cx);
+            } else if since.elapsed() >= OPENING_GRACE {
+                self.opening = Opening::Ready;
+            }
+        }
+        if self.opening != Opening::Ready {
+            // Waiting for the new session: show none rather than another.
+        } else if !self.restored {
             // The first topology: the saved session, by id only for the same
             // server incarnation, else by name (spec 15.2: never reopen a
             // stale id from another server epoch).
@@ -2093,6 +2174,7 @@ impl Render for Workspace {
                 };
                 let id = p.id;
                 let entity = entity.clone();
+                let right = entity.clone();
                 Some(
                     div()
                         .absolute()
@@ -2112,6 +2194,12 @@ impl Render for Workspace {
                                 }
                             });
                         })
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            move |ev: &MouseDownEvent, window, cx| {
+                                right.update(cx, |ws, cx| ws.right_click(id, ev, window, cx));
+                            },
+                        )
                         .child(view)
                         .children(mode_banners.remove(&id))
                         .when(Some(id) == focused && zoomable, |d| {
@@ -2323,6 +2411,7 @@ impl Render for Workspace {
                         }),
                 )
         });
+        let menu = self.menu.map(|at| self.context_menu(at, t, window, cx));
         let notice = if unsupported {
             let attach = self.attach_for(w.as_ref().map(|w| w.id));
             Some(
@@ -2381,6 +2470,34 @@ impl Render for Workspace {
             .on_action(cx.listener(|ws, _: &crate::keymap::NewDrawer, window, cx| {
                 ws.toggle_drawer(true, window, cx)
             }))
+            .on_action(cx.listener(|ws, _: &crate::keymap::NewTab, window, cx| {
+                ws.run_command(crate::palette::Command::NewWindow, None, window, cx)
+            }))
+            .on_action(
+                cx.listener(|ws, _: &crate::keymap::SplitRight, window, cx| {
+                    ws.run_command(crate::palette::Command::SplitRight, None, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|ws, _: &crate::keymap::SplitDown, window, cx| {
+                ws.run_command(crate::palette::Command::SplitDown, None, window, cx)
+            }))
+            .on_action(cx.listener(|ws, _: &crate::keymap::NextTab, window, cx| {
+                ws.run_command(crate::palette::Command::NextWindow, None, window, cx)
+            }))
+            .on_action(
+                cx.listener(|ws, _: &crate::keymap::PreviousTab, window, cx| {
+                    ws.run_command(crate::palette::Command::PreviousWindow, None, window, cx)
+                }),
+            )
+            // Any key closes the context menu; Escape goes no further.
+            .capture_key_down(cx.listener(|ws, ev: &gpui::KeyDownEvent, _, cx| {
+                if ws.menu.take().is_some() {
+                    if ev.keystroke.key == "escape" {
+                        cx.stop_propagation();
+                    }
+                    cx.notify();
+                }
+            }))
             .child(strip)
             .child(
                 div()
@@ -2404,6 +2521,130 @@ impl Render for Workspace {
             )
             // Last, so it floats over the panes rather than under them.
             .children(palette)
+            .children(menu)
+    }
+}
+
+/// The pane context menu's entries; `None` is a separator.
+fn menu_items() -> Vec<Option<(&'static str, Box<dyn gpui::Action>)>> {
+    use crate::keymap as k;
+    vec![
+        Some(("Copy", Box::new(k::Copy))),
+        Some(("Paste", Box::new(k::Paste))),
+        None,
+        Some(("New Window", Box::new(k::NewWindow))),
+        Some(("New Tab", Box::new(k::NewTab))),
+        Some(("Split Right", Box::new(k::SplitRight))),
+        Some(("Split Down", Box::new(k::SplitDown))),
+        None,
+        Some(("Command Palette", Box::new(k::CommandPalette))),
+    ]
+}
+
+/// The context menu's width.
+const MENU_WIDTH: f32 = 220.0;
+
+impl Workspace {
+    /// A right click in a pane: the context menu, unless the program there
+    /// takes the mouse (Shift+right-click opens it even then). App panes
+    /// draw their own.
+    fn right_click(
+        &mut self,
+        pane: u32,
+        ev: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(shell) = self.panes.get(&pane).and_then(PaneView::shell) else {
+            return;
+        };
+        if shell.read(cx).frame.view.mouse_tracking && !ev.modifiers.shift {
+            return;
+        }
+        if self.focused != Some(pane) {
+            self.click_pane(pane, window, cx);
+        }
+        self.menu = Some(ev.position);
+        cx.notify();
+    }
+
+    /// The context menu at `at`, kept inside the window, over a backdrop
+    /// that closes it on a click elsewhere.
+    fn context_menu(
+        &self,
+        at: gpui::Point<gpui::Pixels>,
+        t: crate::theme::Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let items = menu_items();
+        let viewport = window.viewport_size();
+        let height = items
+            .iter()
+            .map(|i| if i.is_some() { 24.0 } else { 9.0 })
+            .sum::<f32>()
+            + 10.0;
+        let x = f32::from(at.x).min(f32::from(viewport.width) - MENU_WIDTH - 4.0);
+        let y = f32::from(at.y).min(f32::from(viewport.height) - height - 4.0);
+        let close =
+            |ws: &mut Workspace, _: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>| {
+                ws.menu = None;
+                cx.notify();
+            };
+        div()
+            .id("menu-backdrop")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .on_mouse_down(MouseButton::Left, cx.listener(close))
+            .on_mouse_down(MouseButton::Right, cx.listener(close))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(x.max(4.0)))
+                    .top(px(y.max(4.0)))
+                    .w(px(MENU_WIDTH))
+                    .p_1()
+                    .rounded_md()
+                    .shadow_lg()
+                    .bg(c(t.raised))
+                    .border_1()
+                    .border_color(c(t.divider))
+                    .text_size(px(12.0))
+                    .text_color(c(t.text))
+                    .children(items.into_iter().enumerate().map(|(i, item)| {
+                        let Some((label, action)) = item else {
+                            return div()
+                                .my(px(4.0))
+                                .h(px(1.0))
+                                .bg(c(t.divider))
+                                .into_any_element();
+                        };
+                        let keys = crate::keymap::shortcut_label(&*action);
+                        div()
+                            .id(("menu-item", i))
+                            .h(px(24.0))
+                            .px_2()
+                            .rounded_sm()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .hover(|s| s.bg(c(t.selected)))
+                            .child(label)
+                            .children(keys.map(|k| div().text_color(c(t.faint)).child(k)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |ws, _: &MouseDownEvent, window, cx| {
+                                    ws.menu = None;
+                                    window.dispatch_action(action.boxed_clone(), cx);
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }),
+                            )
+                            .into_any_element()
+                    })),
+            )
     }
 }
 
@@ -2518,6 +2759,87 @@ pub(crate) enum SmokeRun {
     Clipboard,
 }
 
+/// What a window shows first.
+#[derive(Debug, Clone)]
+pub(crate) enum Start {
+    /// A saved window's session (by id on the same tmux server, else by
+    /// name), or with none the first session.
+    Saved(Option<DesktopState>),
+    /// A new session of its own, as a terminal's new window is a new shell.
+    NewSession,
+}
+
+/// A smoke run: windows save their arrangement only in a private
+/// directory the run was given (`DREAMER_DESKTOP_STATE_DIR`), never the
+/// user's, including windows a smoke opens itself.
+pub(crate) static SMOKE_RUN: AtomicBool = AtomicBool::new(false);
+
+/// The one store of every window's arrangement for this process, if this
+/// run saves one.
+fn store() -> Option<Arc<DesktopStore>> {
+    static STORE: std::sync::OnceLock<Option<Arc<DesktopStore>>> = std::sync::OnceLock::new();
+    if SMOKE_RUN.load(Ordering::Relaxed) && std::env::var_os("DREAMER_DESKTOP_STATE_DIR").is_none()
+    {
+        return None;
+    }
+    STORE
+        .get_or_init(|| {
+            workspace_config::desktop_state::desktop_state_path()
+                .map(|p| Arc::new(DesktopStore::new(p)))
+        })
+        .clone()
+}
+
+/// Windows' keys in the store, in opening order.
+static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
+
+/// What a new window asks the daemon for: a new session running the
+/// default shell in the home directory (tmux names it).
+pub(crate) fn new_session_action(home: Option<PathBuf>) -> api::action::Kind {
+    api::action::Kind::NewSession(api::NewSession {
+        cwd: home
+            .filter(|h| h.is_absolute())
+            .map(|h| h.display().to_string()),
+        ..api::NewSession::default()
+    })
+}
+
+/// The session pane `pane` belongs to in `t`.
+fn session_of_pane(t: &api::Topology, pane: u32) -> Option<u32> {
+    let window = t.panes.iter().find(|p| p.id == pane)?.window;
+    t.windows
+        .iter()
+        .find(|w| w.id == window)?
+        .sessions
+        .first()
+        .copied()
+}
+
+/// Window `key` was closed: drop its entry from `store` and write the
+/// rest, off the UI thread.
+fn forget(store: Option<Arc<DesktopStore>>, key: u64, cx: &mut gpui::App) {
+    if let Some(store) = store {
+        store.forget(key);
+        cx.background_spawn(async move {
+            let _ = store.save();
+        })
+        .detach();
+    }
+}
+
+/// Close `window` (Close Window): it is not opened again at the next
+/// launch. Its tmux session keeps running.
+pub(crate) fn close_window(window: &mut Window, cx: &mut gpui::App) {
+    if let Some(Some(ws)) = window.root::<Workspace>() {
+        let (store, key) = {
+            let w = ws.read(cx);
+            (w.store.clone(), w.state_key)
+        };
+        forget(store, key, cx);
+    }
+    window.remove_window();
+}
+
 /// Open a workspace window following the daemon `launch` names. With
 /// `smoke` (the daemon's arguments, to find the isolated tmux), run that
 /// smoke.
@@ -2526,8 +2848,32 @@ pub(crate) fn open(
     launch: client::Launch,
     smoke: Option<(Vec<String>, SmokeRun)>,
     open_at_start: Vec<String>,
+    start: Start,
 ) -> Result<(), String> {
-    open_via(cx, launch, replica::Via::Local, smoke, open_at_start).map(drop)
+    open_via(cx, launch, replica::Via::Local, smoke, open_at_start, start).map(drop)
+}
+
+/// At launch: every window saved last time, each on its own session, or
+/// one window when none was saved. The first runs `smoke`, if any.
+pub(crate) fn open_saved(
+    cx: &mut gpui::App,
+    launch: client::Launch,
+    smoke: Option<(Vec<String>, SmokeRun)>,
+    open_at_start: Vec<String>,
+) -> Result<(), String> {
+    let saved = store()
+        .and_then(|s| workspace_config::desktop_state::load_desktop(s.path()))
+        .unwrap_or_default();
+    let mut windows = saved.into_iter().map(Some).collect::<Vec<_>>();
+    if windows.is_empty() {
+        windows.push(None);
+    }
+    let mut first = Some((smoke, open_at_start));
+    for w in windows {
+        let (smoke, open_at_start) = first.take().unwrap_or_default();
+        open(cx, launch.clone(), smoke, open_at_start, Start::Saved(w))?;
+    }
+    Ok(())
 }
 
 /// The local topology feed, started when the process starts so the
@@ -2554,6 +2900,7 @@ pub(crate) fn open_via(
     via: replica::Via,
     smoke: Option<(Vec<String>, SmokeRun)>,
     open_at_start: Vec<String>,
+    start: Start,
 ) -> Result<(gpui::AnyWindowHandle, gpui::WeakEntity<Workspace>), String> {
     use gpui::{Bounds, WindowBounds, WindowOptions, size};
     let socket = launch.socket.clone();
@@ -2573,23 +2920,38 @@ pub(crate) fn open_via(
     // The saved arrangement. A smoke run uses one only in a private
     // directory it was given, never the user's. A host's window does not
     // save one: the arrangement is the local tmux's.
-    let state_path = if via != replica::Via::Local
-        || (smoke.is_some() && std::env::var_os("DREAMER_DESKTOP_STATE_DIR").is_none())
-    {
-        None
+    let store = if via == replica::Via::Local {
+        store()
     } else {
-        workspace_config::desktop_state::desktop_state_path()
+        None
     };
-    let saved_bounds = state_path
-        .as_deref()
-        .and_then(workspace_config::desktop_state::load_desktop_state)
-        .and_then(|s| s.bounds);
-    let bounds = match saved_bounds {
+    let key = NEXT_KEY.fetch_add(1, Ordering::Relaxed);
+    let (saved, new_session) = match start {
+        Start::Saved(s) => (s, false),
+        Start::NewSession => (None, true),
+    };
+    // A new window sits a little below and right of the active one, as
+    // new windows cascade in a terminal.
+    let cascade = new_session
+        .then(|| cx.active_window())
+        .flatten()
+        .and_then(|w| w.update(cx, |_, window, _| window.bounds()).ok())
+        .map(|b| {
+            let step = px(28.0);
+            Bounds::new(gpui::point(b.origin.x + step, b.origin.y + step), b.size)
+        });
+    let bounds = match saved.as_ref().and_then(|s| s.bounds) {
         Some([x, y, w, h]) if w >= 200.0 && h >= 120.0 => {
             Bounds::new(gpui::point(px(x), px(y)), size(px(w), px(h)))
         }
-        _ => Bounds::centered(None, size(px(1000.), px(560.)), cx),
+        _ => cascade.unwrap_or_else(|| Bounds::centered(None, size(px(1000.), px(560.)), cx)),
     };
+    let asked = new_session.then(|| {
+        topology.act_then(new_session_action(
+            std::env::var_os("HOME").map(PathBuf::from),
+        ))
+    });
+    let closing = store.clone();
     let t = topology.clone();
     let window = cx
         .open_window(
@@ -2610,8 +2972,17 @@ pub(crate) fn open_via(
                 let ws = cx.new(|cx| {
                     let mut ws = Workspace::new(cx, t, socket, daemon_args);
                     ws.via = via.clone();
-                    ws.with_state(state_path);
+                    ws.with_state(store, key, saved);
+                    if new_session {
+                        ws.opening = Opening::Asked;
+                    }
                     ws
+                });
+                // Closed from its own button: not opened again at the
+                // next launch.
+                window.on_window_should_close(cx, move |_, cx| {
+                    forget(closing.clone(), key, cx);
+                    true
                 });
                 let focus = ws.read(cx).focus.clone();
                 window.focus(&focus, cx);
@@ -2644,6 +3015,33 @@ pub(crate) fn open_via(
         .update(cx, |_, _, cx| cx.entity())
         .map_err(|e| format!("{e:#}"))?;
     follow_topology(any, ws.clone(), topology, cx);
+    if let Some(asked) = asked {
+        // The new session's first pane, or (if the daemon could not make
+        // one) the usual choice.
+        let weak = ws.downgrade();
+        cx.spawn(async move |cx| {
+            let pane = asked.recv().await.ok().flatten().and_then(|r| {
+                (r.state == api::ActionState::Completed as i32)
+                    .then_some(r.new_pane)
+                    .flatten()
+            });
+            if pane.is_none() {
+                eprintln!("dreamer: the new window's session could not be made; showing another");
+            }
+            let _ = cx.update_window(any, |_, window, cx| {
+                weak.update(cx, |ws, cx| {
+                    ws.opening = match pane {
+                        Some(p) => Opening::Pane(p, std::time::Instant::now()),
+                        None => Opening::Ready,
+                    };
+                    if let Some(t) = ws.current.clone() {
+                        ws.update_topology(t, window, cx);
+                    }
+                })
+            });
+        })
+        .detach();
+    }
     if !open_at_start.is_empty() {
         let _ = window.update(cx, |ws, window, cx| {
             if open_at_start.iter().any(|o| o == "sidebar") && !ws.sidebar {
@@ -3255,13 +3653,16 @@ mod smoke {
         })
         .await;
         let path = workspace_config::desktop_state::desktop_state_path();
+        let load = || {
+            path.as_deref()
+                .and_then(workspace_config::desktop_state::load_desktop)
+                .unwrap_or_default()
+        };
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let saved = path
-                .as_deref()
-                .and_then(workspace_config::desktop_state::load_desktop_state);
+            let saved = load();
             if saved
-                .as_ref()
+                .first()
                 .is_some_and(|s| s.session_name.as_deref() == Some("other") && s.sidebar)
             {
                 break;
@@ -3276,6 +3677,24 @@ mod smoke {
         println!(
             "smoke: the sidebar switched the window to session `other`, and the arrangement was saved"
         );
+        let name = second_window(any, &ws, cx).await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let saved = load();
+            if saved.len() == 2
+                && saved[0].session_name.as_deref() == Some("other")
+                && saved[1].session_name.as_deref() == Some(name.as_str())
+            {
+                break;
+            }
+            if Instant::now() > deadline {
+                fail(&format!("both windows were not saved: {saved:?}"));
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+        }
+        println!("smoke: both windows were saved, each with its own session");
         std::process::exit(if painted { 0 } else { crate::INCONCLUSIVE });
     }
 
@@ -3707,7 +4126,68 @@ source = "windows"
         println!(
             "smoke: the saved arrangement came back on a new tmux server: session `other` by name, sidebar open"
         );
+        // Every saved window came back, not only the first.
+        let saved = workspace_config::desktop_state::desktop_state_path()
+            .as_deref()
+            .and_then(workspace_config::desktop_state::load_desktop)
+            .map_or(0, |w| w.len());
+        let open = cx.update(|cx| cx.windows().len());
+        if open != saved.max(1) {
+            fail(&format!("{saved} windows were saved but {open} opened"));
+        }
+        println!("smoke: all {open} saved windows opened again");
         std::process::exit(0);
+    }
+
+    /// New Window (Cmd-N, Ctrl+Shift+N): another OS window comes up on a
+    /// session of its own that did not exist before, while this window
+    /// keeps its session. Returns the new session's name.
+    async fn second_window(
+        any: AnyWindowHandle,
+        ws: &WeakEntity<Workspace>,
+        cx: &mut AsyncApp,
+    ) -> String {
+        let (before, here) = read(any, ws, cx, |w, _| {
+            let ids: Vec<u32> = w
+                .topology()
+                .map(|t| t.sessions.iter().map(|s| s.id).collect())
+                .unwrap_or_default();
+            (ids, w.session)
+        })
+        .unwrap_or_else(|| fail("no workspace"));
+        cx.update(|cx| cx.dispatch_action(&crate::keymap::NewWindow));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let name = loop {
+            let other = cx.update(|cx| cx.windows().into_iter().find(|w| *w != any));
+            let shown = other.and_then(|h| {
+                cx.update_window(h, |root, _, cx| {
+                    let ws = root.downcast::<Workspace>().ok()?;
+                    let w = ws.read(cx);
+                    let s = w.session?;
+                    (!w.pane_ids().is_empty()).then(|| (s, w.session_name()))
+                })
+                .ok()
+                .flatten()
+            });
+            match shown {
+                Some((s, _)) if before.contains(&s) => {
+                    fail(&format!("the new window shows the existing session ${s}"))
+                }
+                Some((_, Some(name))) => break name,
+                _ => {}
+            }
+            if Instant::now() > deadline {
+                fail("New Window did not open a window on a new session");
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+        };
+        if read(any, ws, cx, |w, _| w.session) != Some(here) {
+            fail("the first window changed session when another opened");
+        }
+        println!("smoke: New Window opened a second window on a new session `{name}`");
+        name
     }
 
     /// Type `filter` into a freshly opened palette and press Enter; then
@@ -4203,6 +4683,39 @@ fn swatch(s: &'static terminal_ghostty::core::schemes::Scheme) -> gpui::Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_window_asks_for_a_new_session_with_the_default_shell_at_home() {
+        let api::action::Kind::NewSession(a) = new_session_action(Some("/home/me".into())) else {
+            panic!("a new window must ask for a new session, not reuse one");
+        };
+        assert_eq!(a.name, None, "tmux names it");
+        assert!(a.argv.is_empty(), "the default shell");
+        assert_eq!(a.cwd.as_deref(), Some("/home/me"));
+        let api::action::Kind::NewSession(a) = new_session_action(Some("relative".into())) else {
+            panic!("new session");
+        };
+        assert_eq!(a.cwd, None, "never a relative directory");
+    }
+
+    #[test]
+    fn a_new_sessions_pane_finds_its_session() {
+        let t = api::Topology {
+            panes: vec![api::Pane {
+                id: 7,
+                window: 3,
+                ..api::Pane::default()
+            }],
+            windows: vec![api::Window {
+                id: 3,
+                sessions: vec![5],
+                ..api::Window::default()
+            }],
+            ..api::Topology::default()
+        };
+        assert_eq!(session_of_pane(&t, 7), Some(5));
+        assert_eq!(session_of_pane(&t, 8), None);
+    }
 
     fn pane(id: u32, left: u32, top: u32, width: u32, height: u32) -> api::Pane {
         api::Pane {

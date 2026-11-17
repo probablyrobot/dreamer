@@ -15,6 +15,7 @@ settles with an outcome observed in tmux.
 | `send_keys` | tmux key names such as `Enter` or `C-c` | That the keys were delivered |
 | `kill_pane`, `kill_window` | Close | That the target is gone |
 | `new_window` | Add a window at the end of a session. It runs the default shell, or an exact `argv` | The new window and its pane |
+| `new_session` | Start a detached session with one window. It runs the default shell, or an exact `argv`, in an optional working directory. tmux names it unless `name` is given; a name already taken is refused | The new session and its first pane (`new_pane`) |
 | `move_pane` | Move a pane, with its program, into an existing `window`, or into a new window named `new_window` in its session. The pane keeps its id; a window left empty closes | Which window the pane is in afterwards, and its name |
 
 ## Lifecycle

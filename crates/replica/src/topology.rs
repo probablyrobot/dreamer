@@ -30,8 +30,16 @@ const RESTART_EVERY: Duration = Duration::from_secs(5);
 /// What the view asks the daemon for.
 #[derive(Debug)]
 enum Command {
-    Act(api::action::Kind),
-    Size { window: u32, cols: u32, rows: u32 },
+    /// An action, and where its settled record goes (if anywhere).
+    Act(
+        api::action::Kind,
+        Option<async_channel::Sender<Option<api::ActionRecord>>>,
+    ),
+    Size {
+        window: u32,
+        cols: u32,
+        rows: u32,
+    },
     Drawer(api::DrawerRequest),
 }
 
@@ -114,7 +122,19 @@ impl TopologyFeed {
     /// Ask the daemon to run an action (for example select a window). Its
     /// result shows up as a newer topology.
     pub fn act(&self, action: api::action::Kind) {
-        let _ = self.actions.send(Command::Act(action));
+        let _ = self.actions.send(Command::Act(action, None));
+    }
+
+    /// Like [`TopologyFeed::act`], also handing back the settled record
+    /// (`None` when the daemon could not be asked), for example to learn
+    /// the first pane of a new session.
+    pub fn act_then(
+        &self,
+        action: api::action::Kind,
+    ) -> async_channel::Receiver<Option<api::ActionRecord>> {
+        let (tx, rx) = async_channel::bounded(1);
+        let _ = self.actions.send(Command::Act(action, Some(tx)));
+        rx
     }
 
     /// Show, focus, hide, or restart a session's harness drawer
@@ -264,13 +284,20 @@ impl Owner {
                     Some(_) => {}
                 },
                 a = actions.recv() => match a {
-                    Some(Command::Act(kind)) => {
+                    Some(Command::Act(kind, reply)) => {
                         let submit = api::SubmitAction {
                             action: Some(api::Action { kind: Some(kind) }),
                             ..api::SubmitAction::default()
                         };
                         // The outcome arrives as a topology change.
-                        let _ = self.via.call(&c, Request::ActionsSubmit(submit)).await;
+                        let r = self.via.call(&c, Request::ActionsSubmit(submit)).await;
+                        if let Some(reply) = reply {
+                            let record = match r {
+                                Ok(Response::ActionsSubmit(rec)) => Some(rec),
+                                _ => None,
+                            };
+                            let _ = reply.try_send(record);
+                        }
                     }
                     Some(Command::Size { window, cols, rows }) => {
                         let size = Request::TmuxSizeWindow(api::SizeWindow {

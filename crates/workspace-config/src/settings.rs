@@ -509,6 +509,40 @@ pub fn settings_path() -> Option<PathBuf> {
     crate::config_dir().map(|d| d.join("dreamer.yaml"))
 }
 
+/// What a new `dreamer.yaml` holds: no settings (every default applies),
+/// and where to read about them.
+pub const STARTER_SETTINGS: &str = "\
+# Dreamer settings. Every setting is optional; a missing one takes its
+# default, and a change applies as soon as the file is saved.
+#
+#   dream config schema   lists every setting, its default, and an example
+#   dream config check    checks this file
+#
+# For example:
+#
+# font:
+#   size: 14
+# terminal:
+#   theme: catppuccin-mocha
+";
+
+/// The settings file at `path`, created with [`STARTER_SETTINGS`] if there
+/// is none. An existing file is never changed.
+pub fn ensure_settings_file(path: &Path) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut f) => std::io::Write::write_all(&mut f, STARTER_SETTINGS.as_bytes()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 fn error(origin: Option<&Path>, at: &str, message: String) -> ConfigError {
     ConfigError {
         file: origin.map(Path::to_path_buf),
@@ -789,6 +823,29 @@ mod tests {
         assert_eq!(s, Settings::default());
         assert_eq!(s.font.family, "JetBrainsMono Nerd Font Mono");
         assert_eq!(s.font.size, 13.0);
+    }
+
+    #[test]
+    fn a_new_settings_file_holds_the_defaults_and_an_existing_one_is_kept() {
+        assert_eq!(
+            parse_settings(STARTER_SETTINGS, None).expect("starter"),
+            Settings::default()
+        );
+        let dir = std::env::temp_dir().join(format!("dreamer-starter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("dreamer.yaml");
+        ensure_settings_file(&path).expect("create");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            STARTER_SETTINGS
+        );
+        std::fs::write(&path, "font:\n  size: 15\n").expect("write");
+        ensure_settings_file(&path).expect("keep");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "font:\n  size: 15\n"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

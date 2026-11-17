@@ -120,13 +120,18 @@ the coordinator show none: the host's events are not relayed.
   normal: "connecting…", "reconnecting: why", "could not start dreamerd:
   why" (see [daemon.md](daemon.md#files)), or "N panes catching up"
   while panes resynchronize.
-- **Saved arrangement.** The window remembers the session it shows,
-  whether the sidebar is open, and where it was on screen. It is kept in
-  `desktop.yaml` in the desktop state directory: `$DREAMER_DESKTOP_STATE_DIR`,
-  else `$XDG_STATE_HOME/dreamer`, else `~/.local/state/dreamer`. That is
-  apart from preferences (`dreamer.yaml`) and from everything on the host.
-  The app writes the file off the UI thread, one write at a time, and you
-  are not meant to edit it.
+- **Saved arrangement.** Every open window is remembered: the session it
+  shows, whether its sidebar is open, and where it was on screen. The next
+  launch opens all of them again, each on its own session. A window you
+  close is not reopened, unless it was the last one open; quitting keeps
+  them all. The list is kept in `desktop.yaml` in the desktop state
+  directory: `$DREAMER_DESKTOP_STATE_DIR`, else `$XDG_STATE_HOME/dreamer`,
+  else `~/.local/state/dreamer`. That is apart from preferences
+  (`dreamer.yaml`) and from everything on the host. The app writes the
+  file off the UI thread, one write at a time, and every write carries
+  every window's entry, so windows saving at once never drop each other's.
+  A file from an earlier version, which held one window, opens that one
+  window. You are not meant to edit the file.
 - **No stale ids.** tmux ids belong to one run of a tmux server (its
   incarnation, reported in the topology). A saved session id is reused
   only for the same incarnation. After the server restarts, the session is
@@ -171,40 +176,87 @@ Enter.
   ([cli.md](cli.md#harness-drawer)), for a tmux key of your own. Dreamer
   never changes tmux's configuration.
 
+## Windows
+
+Each desktop window shows one tmux session, and windows behave as a
+terminal's do:
+- **New Window** (Cmd-N, Ctrl-Shift-N) opens another window on a **new
+  tmux session**: a fresh shell in your home directory, in a session tmux
+  names. It never reuses a session another window shows. The new window
+  opens a little below and to the right of the active one.
+- **Tabs are tmux windows.** New Tab (Cmd-T) adds a tmux window to this
+  window's session; Next Tab and Previous Tab switch between them.
+- **Two windows show the same session** only if you pick it in one of
+  them from the sidebar. They then show the same tmux windows and panes.
+- **Close Window** (Cmd-W, Ctrl-Shift-W) closes the desktop window only.
+  Its tmux session, panes, and programs keep running, and the sidebar of
+  any window can show the session again. Quitting closes every window the
+  same way, and the daemon keeps running.
+- On Linux the app quits when its last window closes. On macOS it stays in
+  the Dock, and clicking the icon opens a new window.
+- The window title follows the focused pane's title.
+
 ## Menus and shortcuts
 
 Commands, their shortcuts, and the macOS menu bar come from one table
 (`crates/app/src/keymap.rs`). macOS uses Cmd; Linux uses Ctrl-Shift, so
 plain Ctrl and Alt combinations (Ctrl-C, Ctrl-W, Ctrl-Q, …) always reach
-the program in the pane.
+the program in the pane. Every menu command is also in the
+[command palette](#command-palette), so a command with no Linux shortcut
+is still a few keystrokes away.
 
 | Command | macOS | Linux |
 | --- | --- | --- |
+| About Dreamer (name and version) | (menu) | (palette) |
+| Settings…: open `dreamer.yaml` | Cmd-, | (palette) |
 | Quit | Cmd-Q | Ctrl-Shift-Q |
-| New window | Cmd-N | Ctrl-Shift-N |
+| New window (a new session) | Cmd-N | Ctrl-Shift-N |
+| New tab (a tmux window in this session) | Cmd-T | Ctrl-Shift-T |
+| Split right | Cmd-D | Ctrl-Shift-O |
+| Split down | Cmd-Shift-D | Ctrl-Shift-E |
 | Close window | Cmd-W | Ctrl-Shift-W |
+| Next tab, previous tab | Cmd-Shift-], Cmd-Shift-[ | Ctrl-Shift-PageDown, Ctrl-Shift-PageUp |
 | Copy the selection | Cmd-C | Ctrl-Shift-C |
 | Paste | Cmd-V | Ctrl-Shift-V |
-| Command palette | Cmd-Shift-P | Ctrl-Shift-P |
-| Zoom the focused pane | Cmd-Shift-Enter | Ctrl-Shift-Enter |
-| Sessions sidebar | Cmd-Shift-S | Ctrl-Shift-S |
 | Find in the focused pane | Cmd-F | Ctrl-Shift-F |
+| Command palette | Cmd-Shift-P | Ctrl-Shift-P |
+| Sessions sidebar | Cmd-Shift-S | Ctrl-Shift-S |
 | Harness drawer: show, focus, or hide | Cmd-J | Ctrl-Shift-J |
 | New harness drawer | Cmd-Shift-J | Ctrl-Alt-Shift-J |
+| Zoom the focused pane | Cmd-Shift-Enter | Ctrl-Shift-Enter |
+| Bigger text, smaller text, actual size | Cmd-=, Cmd--, Cmd-0 | (palette) |
 | Full screen | Ctrl-Cmd-F | F11 |
 | Hide, hide others | Cmd-H, Alt-Cmd-H | (window manager) |
 | Minimize | Cmd-M | (window manager) |
 
-On macOS the menu bar has Dreamer (Services, Hide, Hide Others, Show All,
-Quit), Shell (New Window, Close Window), Edit (Copy, Paste, Find…), View
-(Command Palette, Sessions Sidebar, Zoom Pane, Harness Drawer, New Harness
-Drawer, Enter Full Screen), and
-Window (Minimize, Zoom), each item showing its shortcut.
+Bigger and smaller text change the terminal font by one point (between 6
+and 72) in every window, without changing `dreamer.yaml`; actual size
+returns to `font.size`. Settings… opens `dreamer.yaml` in your editor
+(`open -t` on macOS, `xdg-open` on Linux). If the file does not exist, it
+is created first with no settings in it, only comments: every setting
+takes its default, and `dream config schema` lists them.
 
-Closing a window or quitting closes views only: tmux sessions, panes, and
-the daemon keep running. On Linux the app quits when its last window
-closes. On macOS it stays in the Dock, and clicking the icon opens a
-window again.
+The macOS menu bar is short:
+- **Dreamer:** About Dreamer, Settings…, Services, Hide Dreamer, Hide
+  Others, Show All, Quit Dreamer.
+- **Shell:** New Window, New Tab, Split Right, Split Down, Close Window.
+- **Edit:** Copy, Paste, Find….
+- **View:** Command Palette, Sessions Sidebar, Harness Drawer, Zoom Pane,
+  Bigger, Smaller, Actual Size, Enter Full Screen.
+- **Window:** Minimize, Zoom, Next Tab, Previous Tab, Bring All to Front,
+  and the list of open windows, which macOS keeps.
+
+Each item shows its shortcut. Linux has no menu bar.
+
+### Context menu
+
+A right click in a terminal pane opens a small menu, drawn in the theme:
+Copy, Paste, New Window, New Tab, Split Right, Split Down, and Command
+Palette, each with its shortcut. When the program in the pane has turned
+on mouse reporting, a right click goes to the program instead, and
+Shift-right-click opens the menu. A click elsewhere or any key closes it.
+It is the same on macOS and Linux. App panes draw their own views and
+have no context menu.
 
 ## Find
 
@@ -456,9 +508,9 @@ Escape closes.
 | Command | Does |
 | --- | --- |
 | Split pane right, Split pane down | Splits the focused pane (`split_pane`) |
-| New window | Adds a window at the end of the session (`new_window`) |
-| Rename window… | Asks for a name, then renames the shown window |
-| Next window, Previous window | Switches windows, wrapping around |
+| New tab (tmux window) | Adds a tmux window at the end of the session (`new_window`) |
+| Rename window… | Asks for a name, then renames the shown tmux window |
+| Next tab, Previous tab (tmux window) | Switches tmux windows, wrapping around |
 | Focus next pane | Moves focus here and in tmux |
 | Zoom or unzoom pane | Toggles zoom |
 | Harness drawer: show, focus, or hide | As Cmd-J ([the harness drawer](#the-harness-drawer)) |
@@ -468,6 +520,7 @@ Escape closes.
 | Show or hide decorations in this pane (filter marks) | Switches drawing [decorations](#decorations) for the focused pane, in this window |
 | Open an app package as a panel…, Close the app panel | Shows an [app panel](#app-panels), or removes it |
 | Theme… (colors of the terminals and the window) | Lists every theme with a swatch and previews the highlighted one; Enter keeps it in `dreamer.yaml`, Escape puts the file back ([settings](settings.md#terminal)) |
+| New Dreamer window (on a new session), Settings…, About Dreamer, Copy, Paste, Find in pane…, Bigger text, Smaller text, Actual text size, Full screen, Minimize window, Zoom window, Bring all windows to front, Quit Dreamer | The [menu commands](#menus-and-shortcuts) |
 
 No destructive action is hidden behind "close". Every command goes
 through the typed actions, and its result shows only in a newer topology.
@@ -504,12 +557,15 @@ step, and `gate linux-desktop` runs it on each backend. It checks that:
   Escape closes it;
 - a tab click switches the tmux window and shows only its pane.
 - the palette opens the sidebar, the sidebar switches the window to a
-  second session, and the arrangement is saved.
+  second session, and the arrangement is saved;
+- New Window opens a second window on a session that did not exist
+  before, the first window keeps its session, and both windows are saved.
 
 The gate then launches the app a second time, against a new tmux server.
 A session `decoy` there now has the old id of `other`. The app must come
 back on `other`, matched by name rather than by the stale id, with the
-sidebar open.
+sidebar open, and must open every saved window (the second one's session
+is gone on the new server, so it shows the first session).
 
 Sizing, clicking, typing, and dragging need a refreshing display. With a locked screen they
 are reported as not run and the step as `not_run`.

@@ -312,6 +312,7 @@ async fn act_of(state: &State, r: &Request) -> Result<Option<Act>, RpcError> {
                     act(panes, format!("move pane %{}", a.pane))
                 }
                 Kind::NewWindow(_) => act(Vec::new(), "open a new window".into()),
+                Kind::NewSession(_) => act(Vec::new(), "start a new session".into()),
                 Kind::SelectWindow(a) => act(
                     panes_of(state, |x| x.id == a.window).await?,
                     format!("select window @{}", a.window),

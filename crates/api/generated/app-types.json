@@ -200,6 +200,7 @@
           "kill_pane": "KillPane",
           "kill_window": "KillWindow",
           "move_pane": "MovePane",
+          "new_session": "NewSession",
           "new_window": "NewWindow",
           "rename_session": "RenameSession",
           "rename_window": "RenameWindow",
@@ -3104,6 +3105,22 @@
         }
       }
     },
+    "NewSession": {
+      "fields": {
+        "argv": {
+          "repeated": true,
+          "type": "string"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
     "NewWindow": {
       "fields": {
         "argv": {
@@ -5067,5 +5084,5 @@
       }
     }
   },
-  "version": "1.53"
+  "version": "1.54"
 }

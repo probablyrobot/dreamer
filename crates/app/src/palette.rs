@@ -33,12 +33,27 @@ pub(crate) enum Command {
     OpenPanel,
     ClosePanel,
     Theme,
+    /// Another OS window, on a new tmux session.
+    NewOsWindow,
+    Settings,
+    About,
+    Copy,
+    Paste,
+    Find,
+    FontBigger,
+    FontSmaller,
+    FontReset,
+    FullScreen,
+    Minimize,
+    ZoomOsWindow,
+    BringAllToFront,
+    Quit,
     /// An installed package's contributed command, by its place in the
     /// palette's `contributed` labels.
     Contributed(u16),
 }
 
-pub(crate) const ALL: [Command; 26] = [
+pub(crate) const ALL: [Command; 40] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -65,6 +80,20 @@ pub(crate) const ALL: [Command; 26] = [
     Command::OpenPanel,
     Command::ClosePanel,
     Command::Theme,
+    Command::NewOsWindow,
+    Command::Settings,
+    Command::About,
+    Command::Copy,
+    Command::Paste,
+    Command::Find,
+    Command::FontBigger,
+    Command::FontSmaller,
+    Command::FontReset,
+    Command::FullScreen,
+    Command::Minimize,
+    Command::ZoomOsWindow,
+    Command::BringAllToFront,
+    Command::Quit,
 ];
 
 impl Command {
@@ -72,10 +101,10 @@ impl Command {
         match self {
             Command::SplitRight => "Split pane right",
             Command::SplitDown => "Split pane down",
-            Command::NewWindow => "New window",
+            Command::NewWindow => "New tab (tmux window)",
             Command::RenameWindow => "Rename window…",
-            Command::NextWindow => "Next window",
-            Command::PreviousWindow => "Previous window",
+            Command::NextWindow => "Next tab (tmux window)",
+            Command::PreviousWindow => "Previous tab (tmux window)",
             Command::NextPane => "Focus next pane",
             Command::Zoom => "Zoom or unzoom pane",
             Command::CloseView => "Close view (programs keep running)",
@@ -96,8 +125,45 @@ impl Command {
             Command::OpenPanel => "Open an app package as a panel… (its manifest's path)",
             Command::ClosePanel => "Close the app panel",
             Command::Theme => "Theme… (colors of the terminals and the window)",
+            Command::NewOsWindow => "New Dreamer window (on a new session)",
+            Command::Settings => "Settings… (open dreamer.yaml)",
+            Command::About => "About Dreamer",
+            Command::Copy => "Copy",
+            Command::Paste => "Paste",
+            Command::Find => "Find in pane…",
+            Command::FontBigger => "Bigger text",
+            Command::FontSmaller => "Smaller text",
+            Command::FontReset => "Actual text size",
+            Command::FullScreen => "Full screen",
+            Command::Minimize => "Minimize window",
+            Command::ZoomOsWindow => "Zoom window (fill the screen)",
+            Command::BringAllToFront => "Bring all windows to front",
+            Command::Quit => "Quit Dreamer (programs keep running)",
             Command::Contributed(_) => "",
         }
+    }
+
+    /// The app command this runs, for those that are the menus' own.
+    pub(crate) fn app_action(self) -> Option<Box<dyn gpui::Action>> {
+        use crate::keymap as k;
+        let a: Box<dyn gpui::Action> = match self {
+            Command::NewOsWindow => Box::new(k::NewWindow),
+            Command::Settings => Box::new(k::OpenSettings),
+            Command::About => Box::new(k::About),
+            Command::Copy => Box::new(k::Copy),
+            Command::Paste => Box::new(k::Paste),
+            Command::Find => Box::new(k::Find),
+            Command::FontBigger => Box::new(k::FontBigger),
+            Command::FontSmaller => Box::new(k::FontSmaller),
+            Command::FontReset => Box::new(k::FontReset),
+            Command::FullScreen => Box::new(k::ToggleFullScreen),
+            Command::Minimize => Box::new(k::Minimize),
+            Command::ZoomOsWindow => Box::new(k::ZoomWindow),
+            Command::BringAllToFront => Box::new(k::BringAllToFront),
+            Command::Quit => Box::new(k::Quit),
+            _ => return None,
+        };
+        Some(a)
     }
 
     /// Ends programs: asks for a second Enter.
@@ -531,6 +597,21 @@ mod tests {
         assert_eq!(p.enter(), Decision::Theme(dawn));
         "zzzz".chars().for_each(|c| p.type_char(c));
         assert_eq!(p.enter(), Decision::Stay, "nothing left to choose");
+    }
+
+    #[test]
+    fn tabs_are_tmux_windows_and_a_new_os_window_is_its_own_command() {
+        let first = |filter: &str| {
+            let mut p = Palette::new();
+            filter.chars().for_each(|c| p.type_char(c));
+            p.shown().first().copied()
+        };
+        assert_eq!(first("new tab"), Some(Command::NewWindow));
+        assert_eq!(first("new window"), Some(Command::NewWindow));
+        assert_eq!(first("next window"), Some(Command::NextWindow));
+        assert_eq!(first("new dreamer window"), Some(Command::NewOsWindow));
+        assert!(Command::NewOsWindow.app_action().is_some());
+        assert!(Command::NewWindow.app_action().is_none());
     }
 
     #[test]

@@ -272,6 +272,29 @@ fn validate(ep: &Endpoint, kind: &Kind) -> Result<(), String> {
             }
             Ok(())
         }
+        Kind::NewSession(a) => {
+            if let Some(name) = a.name.as_deref() {
+                if name.is_empty() || name.contains([':', '.']) {
+                    return Err("a session name cannot be empty or contain `:` or `.`".into());
+                }
+                if ep
+                    .tracker
+                    .inventory()
+                    .sessions
+                    .values()
+                    .any(|s| s.name == name)
+                {
+                    return Err(format!(
+                        "a session named `{name}` already exists on endpoint `{}`",
+                        ep.name
+                    ));
+                }
+            }
+            if a.argv.first().is_some_and(String::is_empty) {
+                return Err("the program name is empty".into());
+            }
+            Ok(())
+        }
         Kind::RenameWindow(a) => {
             has_window(ep, a.window)?;
             if a.name.is_empty() {
@@ -405,6 +428,17 @@ async fn dispatch(conn: &Connection, kind: &Kind) -> Result<Option<u32>, Command
                 .await
                 .map(|p| Some(p.0))
         }
+        Kind::NewSession(a) => {
+            let launch = Launch {
+                argv: a.argv.clone(),
+                cwd: a.cwd.clone(),
+                env: Vec::new(),
+                background: false,
+            };
+            ops::new_session(conn, a.name.as_deref(), &launch)
+                .await
+                .map(|(_, p)| Some(p.0))
+        }
     }
 }
 
@@ -448,6 +482,19 @@ async fn observe(ep: &mut Endpoint, kind: &Kind, new_pane: Option<u32>) -> Outco
                     new_pane: Some(p),
                 },
                 None => not_seen("the new window's pane is not in the inventory".into()),
+            }
+        }
+        Kind::NewSession(_) => {
+            let pane = new_pane.and_then(|p| inv.panes.get(&TmuxPaneId(p)).map(|i| (p, i)));
+            let session = pane
+                .and_then(|(_, i)| inv.windows.get(&i.window))
+                .and_then(|w| w.sessions.first().copied());
+            match pane.zip(session) {
+                Some(((p, _), s)) => Outcome::Completed {
+                    observed: format!("created session ${} with pane %{p}", s.0),
+                    new_pane: Some(p),
+                },
+                None => not_seen("the new session's pane is not in the inventory".into()),
             }
         }
         Kind::ResizePane(a) => match inv.panes.get(&TmuxPaneId(a.pane)) {
