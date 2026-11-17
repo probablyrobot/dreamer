@@ -757,6 +757,90 @@
         }
       }
     },
+    "AppCapture": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "path": {
+          "repeated": false,
+          "type": "string"
+        },
+        "seq": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "wait_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "AppCaptureDone": {
+      "fields": {
+        "error": {
+          "repeated": false,
+          "type": "string"
+        },
+        "height": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "width": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "AppCaptureRequest": {
+      "fields": {
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "path": {
+          "repeated": false,
+          "type": "string"
+        },
+        "seq": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "AppCaptureWait": {
+      "fields": {
+        "wait_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "AppCaptured": {
+      "fields": {
+        "height": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "path": {
+          "repeated": false,
+          "type": "string"
+        },
+        "width": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
     "AppInput": {
       "fields": {
         "key": {
@@ -1376,6 +1460,10 @@
     "DaemonStatus": {
       "fields": {
         "clients": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "desktops": {
           "repeated": false,
           "type": "u32"
         },
@@ -4640,6 +4728,9 @@
     "agents.runs": "AgentRunQuery",
     "approvals.answer": "ApprovalAnswer",
     "approvals.list": "Empty",
+    "apps.capture": "AppCapture",
+    "apps.capture_done": "AppCaptureDone",
+    "apps.capture_wait": "AppCaptureWait",
     "apps.input": "AppInput",
     "apps.launch": "LaunchApp",
     "apps.publish": "AppViewPublish",
@@ -4956,5 +5047,5 @@
       }
     }
   },
-  "version": "1.51"
+  "version": "1.52"
 }

@@ -1022,6 +1022,33 @@ impl Workspace {
         self.active_window().is_some_and(|w| w.zoomed)
     }
 
+    /// Where pane `pane` is drawn in this window now (window coordinates),
+    /// and for an app pane the version of its view tree in the frame drawn
+    /// last; `None` when this window does not show it.
+    pub(crate) fn pane_shown(
+        &self,
+        pane: u32,
+        cx: &gpui::App,
+    ) -> Option<(gpui::Bounds<gpui::Pixels>, Option<u64>)> {
+        let p = self.visible().into_iter().find(|p| p.id == pane)?;
+        let (origin, (cw, ch)) = (self.origin?, self.cell?);
+        let w = self.active_window()?;
+        let (left, top, cols, rows) = if w.zoomed {
+            (0, 0, w.width, w.height)
+        } else {
+            (p.left, p.top, p.width, p.height)
+        };
+        let bounds = gpui::Bounds::new(
+            gpui::point(origin.x + cw * left as f32, origin.y + ch * top as f32),
+            gpui::size(cw * cols as f32, ch * rows as f32),
+        );
+        let painted = match self.panes.get(&pane)? {
+            PaneView::App { view, .. } => Some(view.read(cx).painted),
+            PaneView::Terminal(_) => None,
+        };
+        Some((bounds, painted))
+    }
+
     pub(crate) fn pane_ids(&self) -> Vec<u32> {
         let mut v: Vec<u32> = self.panes.keys().copied().collect();
         v.sort_unstable();
@@ -2659,6 +2686,11 @@ pub(crate) fn open_via(
             }
         })
         .detach();
+    }
+    // Images of panes for `dream app preview --png`: one server per
+    // process, for the local daemon.
+    if via == replica::Via::Local {
+        crate::capture::serve(socket_for_buffers.clone(), cx);
     }
     // The GUI benchmark (`cargo xtask bench gui`): measures this window.
     if via == replica::Via::Local

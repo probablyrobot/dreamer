@@ -7,6 +7,7 @@
 //! dreamer-termapp --check FILE [--json]        validate only
 //! dreamer-termapp --preview FILE [--size WxH]  draw it once from fixtures
 //! dreamer-termapp --replay FILE [--size WxH]   replay fixtures/events.jsonl, as JSON screens
+//! dreamer-termapp --live FILE [--status F]     a live preview from fixtures (dream app preview --open)
 //! ```
 //!
 //! A package may have a Luau module beside its manifest (sandboxed, with
@@ -98,8 +99,40 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        ["--live", path, rest @ ..] => {
+            let status_file = match rest {
+                [] => None,
+                ["--status", f] => Some(PathBuf::from(f)),
+                _ => {
+                    eprintln!("usage: dreamer-termapp --live MANIFEST [--status FILE]");
+                    return ExitCode::from(2);
+                }
+            };
+            match checked(path) {
+                Ok(m) if !m.draws_own_view() => {
+                    eprintln!(
+                        "a live preview runs script and process apps; preview a manifest app with --preview"
+                    );
+                    ExitCode::from(2)
+                }
+                Ok(_) => {
+                    let preview = app_model::Preview { status_file };
+                    match run(PathBuf::from(path), true, Some(preview)) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(e) => {
+                            eprintln!("dreamer-termapp: {e}");
+                            ExitCode::FAILURE
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         [path] => match checked(path) {
-            Ok(m) => match run(PathBuf::from(path), m.draws_own_view()) {
+            Ok(m) => match run(PathBuf::from(path), m.draws_own_view(), None) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("dreamer-termapp: {e}");
@@ -113,7 +146,7 @@ fn main() -> ExitCode {
         },
         _ => {
             eprintln!(
-                "usage: dreamer-termapp MANIFEST | --check MANIFEST [--json] | --preview MANIFEST [--size WxH] | --replay MANIFEST [--size WxH] | --version"
+                "usage: dreamer-termapp MANIFEST | --check MANIFEST [--json] | --preview MANIFEST [--size WxH] | --replay MANIFEST [--size WxH] | --live MANIFEST [--status FILE] | --version"
             );
             ExitCode::from(2)
         }
@@ -353,7 +386,7 @@ impl Drop for Screen {
     }
 }
 
-fn run(path: PathBuf, own_view: bool) -> Result<(), String> {
+fn run(path: PathBuf, own_view: bool, preview: Option<app_model::Preview>) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -396,6 +429,7 @@ fn run(path: PathBuf, own_view: bool) -> Result<(), String> {
             path,
             app_model::Endpoint::pane_app(),
             Some(app_script::engine()),
+            preview,
             &mut inputs,
             &mut publish,
             &streams,

@@ -52,6 +52,29 @@ changes per version, in order. A client whose patches do not lead to
 App panes exist on the local daemon only: a remote host's daemon marks
 its own panes, but the coordinator does not forward their views.
 
+### Images of app panes
+
+The daemon draws nothing, so an image of an app pane as the desktop
+draws it comes from a desktop (`dream app preview --png`):
+
+- A desktop process waits for work with `apps.capture_wait` (`wait_ms`,
+  default 20 s, at most 60 s) on a connection of its own; the answer is
+  a request (`id`, `pane`, `path`, `seq`), or `id` 0 when none came.
+  While it waits, and for 5 s after, it counts in `daemon.status` as
+  one of `desktops`.
+- `apps.capture` (`pane`; `path`, absolute, of the PNG file to write;
+  `seq`, the tree version the image must show at least, 0 for whatever
+  is drawn; `wait_ms`, default 10 s) hands the request to every desktop
+  counted now. With none, it is refused at once with `no Dreamer window
+  is running; --png needs one`.
+- Each desktop answers with `apps.capture_done` (`id`, and `width` and
+  `height` of the image it wrote, or `error`: why not, for example that
+  none of its windows shows the pane). The first image written is the
+  answer; when every desktop said why not, the caller gets their
+  reasons.
+
+All three are owner only.
+
 ## Following changes
 
 `tmux.watch` returns the same topology with a `revision`. Afterwards the

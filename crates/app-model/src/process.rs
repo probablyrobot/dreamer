@@ -486,14 +486,99 @@ fn waiting(m: &Manifest, what: &str) -> Frame {
     }
 }
 
+/// A live preview of a package (`dream app preview --open`): the app runs
+/// as [`preview_process`] runs it, from its fixtures, with every call
+/// answered from `fixtures/calls.json` and none sent to the daemon; and it
+/// starts again whenever a file of its package changes.
+#[derive(Debug, Clone, Default)]
+pub struct Preview {
+    /// A file whose text, when there is any, is shown in the status line:
+    /// what the last build of the app's TypeScript said.
+    pub status_file: Option<PathBuf>,
+}
+
+/// Files a preview follows, at most this many.
+const WATCHED: usize = 2000;
+
+/// One file of a package as a preview compares it.
+pub type Stamp = (PathBuf, std::time::SystemTime, u64);
+
+/// What a preview compares to see that its package changed: every file of
+/// the package directory `dir` (recursively), by path, modification time,
+/// and size. Left out: hidden entries, `types/` and `node_modules/` (for
+/// editors), `fixtures/expect/` (a test's screens), and `skip` (a script
+/// app's TypeScript, which it runs only once it is built).
+pub fn package_stamp(dir: &Path, skip: Option<&Path>) -> Vec<Stamp> {
+    fn walk(dir: &Path, top: &Path, skip: Option<&Path>, out: &mut Vec<Stamp>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for e in entries {
+            if out.len() >= WATCHED {
+                return;
+            }
+            let path = e.path();
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            let rel = path.strip_prefix(top).unwrap_or(&path);
+            if name.starts_with('.')
+                || (dir == top && (name == "types" || name == "node_modules"))
+                || rel == Path::new("fixtures/expect")
+                || Some(rel) == skip
+            {
+                continue;
+            }
+            let Ok(meta) = e.metadata() else { continue };
+            if meta.is_dir() {
+                walk(&path, top, skip, out);
+            } else {
+                let at = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                out.push((rel.to_path_buf(), at, meta.len()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, skip, &mut out);
+    out
+}
+
+/// A script app's TypeScript source, which a preview does not follow
+/// itself: it runs the JavaScript built from it.
+fn typescript_source(m: &Manifest) -> Option<PathBuf> {
+    m.script
+        .as_ref()
+        .filter(|s| build::kind(&s.source) == Some(build::Kind::TypeScript))
+        .map(|s| PathBuf::from(&s.source))
+}
+
+/// What a preview runs: the manifest, its text, the script's fixture, and
+/// the answers to calls.
+type Previewed = (
+    Manifest,
+    String,
+    Option<String>,
+    serde_json::Map<String, Value>,
+);
+
+fn load_preview(path: &Path, dir: &Path) -> Result<Previewed, String> {
+    let (m, text) = crate::run::load_with_text(&path.display().to_string())?;
+    let fixture = load_fixture(dir, &m)?;
+    let calls = call_fixtures(dir)?;
+    Ok((m, text, fixture, calls))
+}
+
 /// Run the process app at `path` against the daemon at `endpoint`. Input
 /// from `inputs` and from desktops goes to the program; `publish` gets
 /// every view to draw. Returns when the user quits (Ctrl-c, or `q` once
-/// the program has stopped) or the program exits successfully.
+/// the program has stopped) or the program exits successfully. With
+/// `preview`, it runs as a live [`Preview`].
 pub async fn run_process(
     path: PathBuf,
     endpoint: Endpoint,
     engine: Option<Engine>,
+    preview: Option<Preview>,
     inputs: &mut mpsc::UnboundedReceiver<Input>,
     publish: &mut dyn FnMut(&Frame) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -501,6 +586,7 @@ pub async fn run_process(
         path,
         endpoint,
         engine,
+        preview,
         inputs,
         publish,
         &crate::bound::Streams::default(),
@@ -515,16 +601,27 @@ pub async fn run_process_with(
     path: PathBuf,
     endpoint: Endpoint,
     engine: Option<Engine>,
+    preview: Option<Preview>,
     inputs: &mut mpsc::UnboundedReceiver<Input>,
     publish: &mut dyn FnMut(&Frame) -> Result<(), String>,
     streams: &crate::bound::Streams,
 ) -> Result<(), String> {
     let mut follower = crate::bound::Follower::new(None);
-    let (manifest, source) = crate::run::load_with_text(&path.display().to_string())?;
     let dir = path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let methods = manifest.methods();
+    let (mut manifest, mut source, mut fixture, mut calls) = if preview.is_some() {
+        load_preview(&path, &dir)?
+    } else {
+        let (m, text) = crate::run::load_with_text(&path.display().to_string())?;
+        (m, text, None, serde_json::Map::new())
+    };
+    let mut methods = manifest.methods();
+    // A preview's package as it was when the app last started, what its
+    // build said last, and how many times it started again.
+    let mut stamp = package_stamp(&dir, typescript_source(&manifest).as_deref());
+    let mut note: Option<String> = None;
+    let mut reloads = 0u32;
     // Not launched with a ticket: the connection would be the user's
     // own, so it gives that up down to the package's capabilities.
     let endpoint = Endpoint {
@@ -535,7 +632,7 @@ pub async fn run_process_with(
     let mut view: Option<Frame> = None;
     let mut stopped: Option<String> = None;
     let mut status: Option<String> = None;
-    let mut running = match start(&dir, &manifest, false, engine.as_ref(), None) {
+    let mut running = match start(&dir, &manifest, false, engine.as_ref(), fixture.clone()) {
         Ok(r) => Some(r),
         Err(e) => {
             stopped = Some(e);
@@ -561,6 +658,17 @@ pub async fn run_process_with(
                 shown.status = format!("stale: {why}  | r restart  q quit");
             } else if let Some(s) = &status {
                 shown.status = format!("{}  | {s}", shown.status);
+            }
+            if preview.is_some() {
+                let what = match reloads {
+                    0 => "preview from fixtures".to_owned(),
+                    n => format!("preview from fixtures, reloaded {n}x"),
+                };
+                shown.status = match (&note, shown.status.is_empty()) {
+                    (Some(n), _) => format!("{n}  | {what}"),
+                    (None, true) => what,
+                    (None, false) => format!("{}  | {what}", shown.status),
+                };
             }
             if let Some(c) = conn.as_ref()
                 && follower.sync(&c.client, &shown, streams).await.is_err()
@@ -601,6 +709,13 @@ pub async fn run_process_with(
                     match take_line(&line, r, &mut view) {
                         Said::Nothing => {}
                         Said::Drawn => dirty = true,
+                        Said::Call(id, method, _) if preview.is_some() => {
+                            let (result, error) = match fixture_answer(&calls, &methods, &method) {
+                                Ok(v) => (Some(v), None),
+                                Err(e) => (None, Some(e)),
+                            };
+                            r.send(&HostMessage::Result { id, result, error });
+                        }
                         Said::Call(id, method, params) => {
                             let answer = allowed(&methods, &method).and_then(|()| {
                                 conn.as_ref().map(|c| c.client.clone()).ok_or(CallError {
@@ -712,6 +827,42 @@ pub async fn run_process_with(
                 None => lost = Some("the daemon closed the connection".into()),
             },
             _ = tick.tick() => {
+                if let Some(p) = &preview {
+                    let said = p
+                        .status_file
+                        .as_ref()
+                        .and_then(|f| std::fs::read_to_string(f).ok())
+                        .map(|t| t.trim().to_owned())
+                        .filter(|t| !t.is_empty());
+                    if said != note {
+                        note = said;
+                        dirty = true;
+                    }
+                    let now = package_stamp(&dir, typescript_source(&manifest).as_deref());
+                    if now != stamp {
+                        stamp = now;
+                        dirty = true;
+                        match load_preview(&path, &dir) {
+                            Ok((m, text, fx, answers)) => {
+                                if let Some(r) = running.take() {
+                                    r.stop().await;
+                                }
+                                reloads += 1;
+                                status = None;
+                                stopped = None;
+                                match start(&dir, &m, false, engine.as_ref(), fx.clone()) {
+                                    Ok(r) => running = Some(r),
+                                    Err(e) => stopped = Some(e),
+                                }
+                                app = App::new(m.clone());
+                                methods = m.methods();
+                                (manifest, source, fixture, calls) = (m, text, fx, answers);
+                            }
+                            // The running version stays.
+                            Err(e) => status = Some(format!("not reloaded: {e}")),
+                        }
+                    }
+                }
                 let now = tokio::time::Instant::now();
                 if conn.is_none() && !gave_up && now >= retry {
                     match connect(&endpoint, &mut registered, &[], &methods).await {
@@ -723,7 +874,9 @@ pub async fn run_process_with(
                             conn = Some(c);
                             app.link = Link::Live;
                             backoff = Duration::from_millis(500);
-                            if let Some(r) = running.as_ref() {
+                            // A preview's app runs from fixtures, never
+                            // live.
+                            if let Some(r) = running.as_ref().filter(|_| preview.is_none()) {
                                 r.send(&HostMessage::Link { live: true, reason: None });
                             }
                             dirty = true;
@@ -752,7 +905,8 @@ pub async fn run_process_with(
                     match k.as_str() {
                         "q" | "Esc" => break,
                         "r" => {
-                            match start(&dir, &manifest, conn.is_some(), engine.as_ref(), None) {
+                            let live = conn.is_some() && preview.is_none();
+                            match start(&dir, &manifest, live, engine.as_ref(), fixture.clone()) {
                                 Ok(r) => {
                                     running = Some(r);
                                     stopped = None;
@@ -1058,6 +1212,39 @@ command = ["/bin/sh", "app.sh"]
         dir.join("app.toml")
     }
 
+    #[test]
+    fn a_preview_follows_the_files_it_runs_and_not_the_editors() {
+        let dir = std::env::temp_dir().join(format!("drm-stamp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for f in [
+            "app.toml",
+            "app.ts",
+            "build/app.js",
+            "fixtures/load.json",
+            "fixtures/expect/000.txt",
+            "types/dreamer.d.ts",
+            ".swp",
+        ] {
+            let p = dir.join(f);
+            std::fs::create_dir_all(p.parent().expect("parent")).expect("dir");
+            std::fs::write(&p, "x").expect("write");
+        }
+        let stamp = package_stamp(&dir, Some(Path::new("app.ts")));
+        let names: Vec<String> = stamp
+            .iter()
+            .map(|(p, ..)| p.display().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["app.toml", "build/app.js", "fixtures/load.json"],
+            "{names:?}"
+        );
+        // A save that changes the size changes the stamp.
+        std::fs::write(dir.join("fixtures/load.json"), "xy").expect("save");
+        assert_ne!(package_stamp(&dir, Some(Path::new("app.ts"))), stamp);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// No daemon: the host runs the program anyway, unconnected.
     fn nowhere() -> Endpoint {
         Endpoint {
@@ -1129,7 +1316,14 @@ exit 3
             tx.send(Input::Key("q".into())).expect("send");
         };
         let (ran, ()) = tokio::join!(
-            run_process(path.clone(), nowhere(), None, &mut inputs, &mut publish),
+            run_process(
+                path.clone(),
+                nowhere(),
+                None,
+                None,
+                &mut inputs,
+                &mut publish
+            ),
             drive
         );
         ran.expect("quit");

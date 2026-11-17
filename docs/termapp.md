@@ -18,6 +18,7 @@ dreamer-termapp app.toml            # run it in this terminal
 dreamer-termapp --check app.toml    # validate only (--json: also the grant it needs)
 dreamer-termapp --preview app.toml  # draw it once from fixtures, no daemon
 dreamer-termapp --replay app.toml   # replay fixtures/events.jsonl (dream app test)
+dreamer-termapp --live app.toml     # a live preview from fixtures (dream app preview --open)
 dream app run panes --method tmux.topology --method actions.submit --all-panes \
     -- dreamer-termapp app.toml      # run it in a new window with a narrow grant
 ```
@@ -761,8 +762,10 @@ them.
 3. **Preview:** `dream app preview DIR --text` draws the app once from its
    fixtures, through its module's `transform`, with no daemon, as text on
    a screen of 80x24 (`--size WxH` for another). The status line of a
-   manifest app says `preview from fixtures`. Text is the only preview
-   there is; `--text` says so.
+   manifest app says `preview from fixtures`. For a script or process
+   app, `--open` shows it live in the desktop and reloads it on every
+   save, and `--png FILE` writes the desktop's drawing of it as an image
+   ([below](#live-preview)).
 4. **Test:** `dream app test DIR` replays the app's events and compares
    each screen with the one expected ([below](#testing-an-app)).
 5. **Install:** `dream app install DIR` checks it, previews it when it has
@@ -802,6 +805,61 @@ method in its test, `types/dreamer.d.ts` and `tsconfig.json` (as
 the expected screens of its test, recorded as it is made. So it passes
 `dream app check`, `preview`, and `test` straight away. The templates
 are part of the `dream` program.
+
+### Live preview
+
+`dream app preview DIR --open [--session $N]` opens a preview of a script
+or process app in a new tmux window (of the first session, or `$N`),
+named `preview <directory name>`. The desktop draws it natively, like
+any [app pane](#app-panes); a plain tmux client sees its text
+interface. A manifest app is previewed with `--text` only.
+
+- **From fixtures.** The app runs as `dream app preview --text` runs it:
+  a script app draws `fixtures/load.json` as its data, and every call
+  it makes is answered from `fixtures/calls.json` (refused outside its
+  capabilities, as in a test). Nothing it does reaches the daemon or
+  tmux, so a preview never renames a window or runs an action. Keys,
+  clicks, and typing work as in any app pane.
+- **Reload on save.** The window's program is `dream app preview DIR
+  --pane`. It builds the app's JavaScript from `app.ts` whenever
+  `app.ts` or `app.toml` changes, and runs `dreamer-termapp --live`, the
+  app host. The host looks at the package five times a second and
+  starts the app again from its fixtures when any file in it changed:
+  the JavaScript built, `app.toml`, the fixtures, a process app's
+  program. Hidden files, `types/`, `node_modules/`, and
+  `fixtures/expect/` do not count. The last view stays on the screen
+  until the new one is drawn; the app's state starts over.
+- **The status line** says `preview from fixtures`, then how many times
+  it reloaded. A save that does not build shows `not built:` and the
+  first error, and the last version that built keeps running; the first
+  type mistake (`dream app check` lists them all) is shown the same way.
+  An app that fails is shown stale with why, as in any pane; `r`
+  starts it again.
+- **Ending it.** `q` (when the app has stopped) or Ctrl-C ends the host,
+  and the pane closes with it.
+
+The preview's app id is the package's id followed by `.preview`.
+
+`dream app preview DIR --png FILE` writes the app as the desktop draws
+it, as a PNG of the preview pane's rectangle at the display's
+resolution, in the window's theme. It uses the newest preview pane of
+the package that is open, or opens one as `--open` does and leaves it
+open. It waits until the desktop has drawn the newest version of the
+app's view, then asks the desktop for the image through the daemon (see
+[topology.md](topology.md#images-of-app-panes)). A desktop window must
+show the pane's tmux window; one opened by the preview is the active
+window of its session, so a desktop window showing that session shows
+it.
+
+- With no desktop running (no daemon, or a daemon no desktop is
+  connected to), it fails at once with `no Dreamer window is running;
+  --png needs one`.
+- On macOS the desktop captures its own window with the system's
+  `screencapture`, so the first capture may ask to allow Dreamer, or the
+  terminal that started it, to record the screen. Other platforms answer
+  that this desktop captures panes on macOS only.
+- An image without a display (a software renderer in the app host) is
+  not available.
 
 ### Testing an app
 

@@ -17,6 +17,7 @@ mod icons;
 mod manifest;
 mod package;
 mod policy;
+mod preview;
 mod release;
 mod render;
 mod scenes;

@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 51 }
+version: { major: 1, minor: 52 }
 package: dreamer.v1
 
 types:
@@ -66,6 +66,7 @@ types:
       - { n: 7, name: version, type: VersionInfo }
       - { n: 8, name: clients, type: u32, doc: "Connected API clients, including the caller." }
       - { n: 9, name: heap_in_use, type: u64, optional: true, doc: "Bytes the daemon's allocator has handed out and not had back, without the freed memory it keeps for reuse; absent where the platform cannot tell." }
+      - { n: 10, name: desktops, type: u32, doc: "Desktop processes connected now that answer apps.capture." }
 
   - message: ShutdownResult
     fields:
@@ -819,6 +820,39 @@ types:
       - { n: 6, name: seq, type: u64, doc: "The tree version the caller holds after applying this answer; 0 before the host's first tree." }
       - { n: 7, name: tree, type: string, doc: "The whole tree as JSON, when the caller's version is unknown or too old for patches; else empty." }
       - { n: 8, name: patches, type: string, repeated: true, doc: "The changes from the caller's version, one JSON list of ops per version, in order." }
+
+  - message: AppCapture
+    doc: "Ask the user's desktop for an image of an app pane as the desktop draws it natively (dream app preview --png)."
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: path, type: string, doc: "Absolute path of the PNG file the desktop writes; replaced when it exists." }
+      - { n: 3, name: seq, type: u64, doc: "Wait until the desktop has drawn at least this version of the pane's view tree; 0 takes what it shows." }
+      - { n: 4, name: wait_ms, type: u32, optional: true, doc: "How long to wait for the desktop's answer; default 10000, at most 60000." }
+
+  - message: AppCaptured
+    fields:
+      - { n: 1, name: path, type: string }
+      - { n: 2, name: width, type: u32, doc: "The image's width in pixels." }
+      - { n: 3, name: height, type: u32, doc: "The image's height in pixels." }
+
+  - message: AppCaptureWait
+    fields:
+      - { n: 1, name: wait_ms, type: u32, optional: true, doc: "How long to wait for a request; default 20000, at most 60000. Answered with id 0 when none came." }
+
+  - message: AppCaptureRequest
+    doc: "A capture for a desktop to make, answered with apps.capture_done."
+    fields:
+      - { n: 1, name: id, type: u64, doc: "0 when no request came within the wait." }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: path, type: string }
+      - { n: 4, name: seq, type: u64 }
+
+  - message: AppCaptureDone
+    fields:
+      - { n: 1, name: id, type: u64 }
+      - { n: 2, name: error, type: string, optional: true, doc: "Why this desktop wrote no image (for example, it does not show the pane); absent when it wrote one." }
+      - { n: 3, name: width, type: u32 }
+      - { n: 4, name: height, type: u32 }
 
   - message: AppInput
     fields:
@@ -2048,6 +2082,9 @@ methods:
   - { method: memory.forget, params: MemoryRef, result: MemoryItem, mutation: true, doc: "Delete a memory and its index line; the reply is what was deleted." }
   - { method: apps.publish_tree, params: AppTreePublish, result: Empty, mutation: true, doc: "A registered app host publishes a version of its view tree for its pane. A patch that does not follow the version kept is refused with a precondition error; the host then sends the whole tree." }
   - { method: apps.tree, params: AppTreeQuery, result: AppTree, doc: "An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (owner only)." }
+  - { method: apps.capture, params: AppCapture, result: AppCaptured, mutation: true, doc: "An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (owner only)." }
+  - { method: apps.capture_wait, params: AppCaptureWait, result: AppCaptureRequest, doc: "A desktop waits for the next capture to make; while it waits, it counts as a desktop that answers captures (owner only)." }
+  - { method: apps.capture_done, params: AppCaptureDone, result: Empty, mutation: true, doc: "A desktop's answer to a capture request (owner only)." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the

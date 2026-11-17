@@ -18,6 +18,7 @@ view-tree = { path = "../view-tree" }
 async-channel = "2.5.0"
 client = { path = "../client" }
 gpui.workspace = true
+png = "=0.18.1"
 replica = { path = "../replica" }
 workspace-config = { path = "../workspace-config" }
 terminal-ghostty = { path = "../terminal-ghostty" }

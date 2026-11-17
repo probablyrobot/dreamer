@@ -30,7 +30,13 @@ wrong with a package, so let it guide you.
    and repeat until it says `ok`.
 4. **Preview:** `dream app preview DIR --text [--size 100x30]` draws the
    app once from its fixtures, with no daemon. Read the drawing and fix
-   what looks wrong.
+   what looks wrong. When a Dreamer window is running:
+   `dream app preview DIR --open` shows the app beside the user, drawn
+   natively from its fixtures, and reloads it on every save (its status
+   line says `not built: …` when a save does not build); and
+   `dream app preview DIR --png FILE` writes the desktop's drawing as an
+   image you can look at. Without a desktop, `--png` fails with
+   `no Dreamer window is running`; use `--text` then.
 5. **Test:** `dream app test DIR` replays `fixtures/events.jsonl` (one
    event per line: `{"kind":"key","key":"Down"}`, `{"kind":"text","text":"hi"}`)
    and compares the screen after each with `fixtures/expect/NNN.txt`. On

@@ -36,6 +36,7 @@ mod tmux_keys;
 
 use theme::{c, ca};
 mod bench_gui;
+mod capture;
 mod clip;
 mod workspace;
 

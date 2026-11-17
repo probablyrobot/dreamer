@@ -22,6 +22,9 @@ pub const USAGE: &str = "usage:
   dream app types DIR                     write types/dreamer.d.ts (and a tsconfig.json) for editors
   dream app preview PATH [--text] [--size WxH]
                                           draw it once from its fixtures as text, no daemon
+  dream app preview PATH --open [--session $N]
+                                          a live preview pane the desktop draws; reloads on save
+  dream app preview PATH --png FILE       the desktop's drawing of the preview pane as a PNG
   dream app test PATH [--update] [--size WxH]
                                           replay fixtures/events.jsonl and compare each screen with fixtures/expect/
   dream app install PATH [--name NAME]    check, preview, and install; the replaced version is kept
@@ -31,7 +34,7 @@ pub const USAGE: &str = "usage:
   dream app run APP_ID [--method M]... [--all-panes] [--session $N] -- PROGRAM [ARGS...]";
 
 /// `dreamer-termapp` beside this program, else on `PATH`.
-fn termapp() -> PathBuf {
+pub(crate) fn termapp() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|e| Some(e.parent()?.join("dreamer-termapp")))
@@ -40,7 +43,7 @@ fn termapp() -> PathBuf {
 }
 
 /// A package's manifest: `PATH/app.toml` for a directory.
-fn manifest(path: &str) -> PathBuf {
+pub(crate) fn manifest(path: &str) -> PathBuf {
     let p = PathBuf::from(path);
     if p.is_dir() { p.join("app.toml") } else { p }
 }
@@ -53,7 +56,7 @@ fn apps() -> Result<PathBuf, String> {
 
 /// The check's JSON: `ok`, and `id`, `version`, `title`, `needs`, or
 /// `error`.
-fn checked(manifest: &Path) -> Result<Value, String> {
+pub(crate) fn checked(manifest: &Path) -> Result<Value, String> {
     let out = Command::new(termapp())
         .arg("--check")
         .arg(manifest)
@@ -68,7 +71,7 @@ fn checked(manifest: &Path) -> Result<Value, String> {
     })
 }
 
-fn ok_or_error(v: &Value) -> Result<(), String> {
+pub(crate) fn ok_or_error(v: &Value) -> Result<(), String> {
     if v["ok"] == Value::Bool(true) {
         Ok(())
     } else {
@@ -76,7 +79,7 @@ fn ok_or_error(v: &Value) -> Result<(), String> {
     }
 }
 
-fn preview_text(manifest: &Path, size: Option<&str>) -> Result<String, String> {
+pub(crate) fn preview_text(manifest: &Path, size: Option<&str>) -> Result<String, String> {
     let mut cmd = Command::new(termapp());
     cmd.arg("--preview").arg(manifest);
     if let Some(s) = size {
@@ -232,19 +235,6 @@ fn path_and_flags<'a>(
         }
     }
     Ok((path, on, size))
-}
-
-/// `dream app preview PATH [--text] [--size WxH]`: the app as text is the
-/// only preview there is, so `--text` is what it does anyway.
-pub fn preview(args: &[String]) -> Result<(), String> {
-    if args.iter().any(|a| a == "--png" || a == "--open") {
-        return Err("this version previews an app as text only (--text)".into());
-    }
-    let (path, _, size) = path_and_flags(args, &["--text"])?;
-    let m = manifest(path);
-    crate::strip::build(&m)?;
-    print!("{}", preview_text(&m, size)?);
-    Ok(())
 }
 
 /// Where a package's expected screens are: `fixtures/expect/` beside its

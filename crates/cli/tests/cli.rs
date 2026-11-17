@@ -2825,3 +2825,83 @@ fn each_template_checks_previews_and_passes_its_test_straight_after_new() {
     assert!(!web_dir.exists());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_preview_pane_follows_saves_and_an_image_needs_a_desktop() {
+    let cli = Cli::new();
+    let dir = cli.root.join("demo");
+    let path = dir.display().to_string();
+    let made = cli.run(&["app", "new", "demo", "--template", "table", "--dir", &path]);
+    assert!(made.status.success(), "{made:?}");
+    let png = cli.root.join("demo.png");
+    let png_path = png.display().to_string();
+    let no_desktop = "no Dreamer window is running; --png needs one";
+    // No daemon at all: no desktop either, and none is started for it.
+    let out = cli.run(&["app", "preview", &path, "--png", &png_path]);
+    assert!(
+        !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(no_desktop),
+        "{out:?}"
+    );
+    assert!(!cli.root.join("rt/dreamerd.sock").exists());
+
+    // A live preview in a new tmux window: the host draws the fixtures.
+    let out = cli.ok(&["app", "preview", &path, "--open"]);
+    assert!(out.contains("no Dreamer window is running"), "{out}");
+    let pane = out
+        .split_whitespace()
+        .find(|w| w.starts_with('%'))
+        .expect("pane")
+        .trim_end_matches(';')
+        .to_owned();
+    cli.wait_pane(&pane, "cargo");
+    cli.wait_pane(&pane, "preview from fixtures");
+
+    // A save rebuilds the app and the pane follows.
+    let ts = std::fs::read_to_string(dir.join("app.ts")).expect("app.ts");
+    let saved = ts.replace("Enter selects the pane", "Saved once more");
+    assert_ne!(ts, saved);
+    std::fs::write(dir.join("app.ts"), &saved).expect("save");
+    let at = Instant::now();
+    let shown = cli.wait_pane(&pane, "Saved once more");
+    println!("the preview pane followed the save in {:?}", at.elapsed());
+    assert!(shown.contains("reloaded 1x"), "{shown}");
+    // So does the tree the desktop draws from.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let id: u32 = pane[1..].parse().expect("pane id");
+    let tree = rt.block_on(async {
+        let c = client::Client::connect(&cli.root.join("rt/dreamerd.sock"), "test")
+            .await
+            .expect("connect");
+        match c
+            .call(api::Request::AppsTree(api::AppTreeQuery {
+                pane: id,
+                after: 0,
+                seq: 0,
+                wait_ms: Some(0),
+            }))
+            .await
+            .expect("tree")
+        {
+            api::Response::AppsTree(t) => t,
+            other => panic!("{other:?}"),
+        }
+    });
+    assert_eq!(tree.app_id, "local.demo.preview");
+    assert!(tree.tree.contains("Saved once more"), "{}", tree.tree);
+
+    // A save that does not build says why and keeps the last good app.
+    std::fs::write(dir.join("app.ts"), format!("{saved}\nlet b: = 3;\n")).expect("break");
+    let shown = cli.wait_pane(&pane, "not built: app.ts:");
+    assert!(shown.contains("cargo"), "{shown}");
+
+    // A daemon with no desktop: still no image, and nothing written.
+    let out = cli.on_tmux(&["app", "preview", &path, "--png", &png_path]);
+    assert!(
+        !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(no_desktop),
+        "{out:?}"
+    );
+    assert!(!png.exists());
+}

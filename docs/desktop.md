@@ -382,6 +382,22 @@ When a pane's program becomes an app host, or stops being one, its view
 is replaced on the next topology update. App panes are drawn for local
 windows only; a remote host's app panes show their terminals.
 
+A live preview (`dream app preview DIR --open`,
+[termapp.md](termapp.md#live-preview)) is an app pane like any other:
+its host runs the app from its fixtures and starts it again when the
+package changes, and the pane follows the new tree.
+
+The desktop also makes images of panes for `dream app preview --png`.
+Each desktop process waits for capture requests from the local daemon
+on a connection of its own ([topology.md](topology.md#images-of-app-panes)).
+For a request, the UI thread only finds the window that shows the pane
+and the pane's rectangle in it, and waits (on a timer, never blocking)
+until the frame drawn has the view tree version asked for, up to 5 s.
+Then, on a thread of its own, it captures the window with the system's
+`screencapture -l` (macOS) and writes the pane's rectangle as a PNG at
+the display's resolution. A desktop that does not show the pane, or a
+platform other than macOS, answers why instead.
+
 ### Input in app views
 
 App panes and app panels take input through the same policy as terminal
@@ -517,6 +533,8 @@ The macOS gate runs these after building the app:
 | `cache` | `dreamer --smoke-repaint`: painting the same frame again reshapes nothing | A display that keeps refreshing |
 | `live` | The live pane check below | A display that keeps refreshing |
 | `clipboard` | The [clipboard check](#clipboard-check) | A window that is being drawn |
+| `screens` | [Pixel evidence](#pixel-evidence) | A display that keeps refreshing, and Screen Recording permission |
+| `preview` | The [preview check](#preview-check) | A display that keeps refreshing, and Screen Recording permission |
 
 A locked screen still paints a window's first frame, but macOS then stops
 refreshing it. `cache` and `live` are recorded as not run while the screen
@@ -596,3 +614,25 @@ The captures stay in `target/gate/screens/`. The step is not run on a
 locked screen, or when the terminal running the gate lacks Screen
 Recording permission (System Settings > Privacy & Security > Screen &
 System Audio Recording).
+
+### Preview check
+
+The macOS gate's `preview` step opens the desktop against an isolated
+tmux server, private daemon directories, and a temporary configuration,
+in each of Dreamer's two schemes, and in each:
+
+- writes the `table` template app (`dream app new`) and opens its live
+  preview (`dream app preview --open`);
+- writes `dream app preview --png`, and checks the image: at least half
+  of it is the scheme's background or the app pane's surface, and more
+  than a few colors are drawn on it.
+
+In the dark scheme it then saves a change to the app's `app.ts` (the
+table's title) and times it: until the host's tree has the change
+(`apps.tree`), then until the desktop has drawn it, taken as how much
+longer a capture that waits for the new version takes than one of what
+was already drawn. The two together must stay under one second, and the
+image after the save must differ from the one before. The images stay
+in `target/gate/screens/`. A locked screen, a window that stops
+repainting, or a terminal without Screen Recording permission records
+the step as not run.
