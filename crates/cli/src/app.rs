@@ -88,6 +88,7 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
                 name,
                 cwd: None,
                 ttl_ms,
+                split: None,
             }),
         )
         .await?

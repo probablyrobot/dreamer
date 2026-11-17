@@ -47,7 +47,8 @@ brings it to the newest version `seq`: the whole `tree` when it held
 none or one older than the changes kept, else `patches`, one list of
 changes per version, in order. A client whose patches do not lead to
 `seq`, or do not apply, asks again with `seq` 0. Owner only, like
-`apps.view`.
+`apps.view`, except that an agent at `own` or `elsewhere` may read the
+tree of an app pane it launched ([grants.md](grants.md#agents-and-apps)).
 
 App panes exist on the local daemon only: a remote host's daemon marks
 its own panes, but the coordinator does not forward their views.
@@ -73,7 +74,9 @@ draws it comes from a desktop (`dream app preview --png`):
   answer; when every desktop said why not, the caller gets their
   reasons.
 
-All three are owner only.
+All three are owner only, except that an agent at `own` or `elsewhere`
+may call `apps.capture` for an app pane it launched
+([grants.md](grants.md#agents-and-apps)).
 
 ## Following changes
 

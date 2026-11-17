@@ -18,6 +18,8 @@ use api::code;
 pub struct Caller {
     pub conn: u64,
     pub owner: bool,
+    /// The act level of its grant (`api::ActLevel`); 0 for none.
+    pub level: i32,
 }
 
 tokio::task_local! {
@@ -256,14 +258,17 @@ mod tests {
     const AGENT: Caller = Caller {
         conn: 7,
         owner: true,
+        level: 0,
     };
     const PERSON: Caller = Caller {
         conn: 1,
         owner: true,
+        level: 0,
     };
     const APP: Caller = Caller {
         conn: 9,
         owner: false,
+        level: 0,
     };
 
     #[test]

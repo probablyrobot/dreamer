@@ -42,6 +42,13 @@ fn targets(r: &Request) -> Targets {
         Request::ProcessesList(p) => Targets::Panes(p.panes.clone()),
         // A job gets a window of its own; cancelling signals a process.
         Request::JobsStart(_) | Request::JobsCancel(_) => Targets::Everything,
+        // An app beside a pane splits it; else it gets a window of its own.
+        Request::AppsLaunch(p) => match p.split {
+            Some(pane) => Targets::Panes(vec![pane]),
+            None => Targets::Everything,
+        },
+        Request::AppsTree(p) => Targets::Panes(vec![p.pane]),
+        Request::AppsCapture(p) => Targets::Panes(vec![p.pane]),
         // A collector reads its panes for as long as it runs; one that
         // names only listed panes needs those, any other every pane.
         Request::CollectCreate(p) => match &p.from {

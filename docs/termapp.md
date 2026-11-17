@@ -772,9 +772,12 @@ them.
    fixtures, and copies it to `<config dir>/apps/<id>/`. A package that
    fails changes nothing. The version it replaces is kept in
    `apps/.last-good/`, and `dream app rollback NAME` swaps it back.
-6. **Launch:** `dream app launch NAME` runs it in a new tmux window as a
-   registered app with exactly the grant it needs. It keeps running with
-   no desktop window open.
+6. **Launch:** `dream app launch NAME` runs it in a new tmux window (or,
+   with `--beside %N`, beside that pane) as a registered app with exactly
+   the grant it needs. It keeps running with no desktop window open.
+
+An agent follows the same steps with the app tools of `dream mcp` and of
+Dreamer's pi extension ([mcp.md](mcp.md#app-tools)).
 
 An installed app that is running reloads itself when its files change,
 and an install replaces its files whole. A version that does not validate

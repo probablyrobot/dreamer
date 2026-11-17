@@ -2051,6 +2051,179 @@ impl Cli {
             .spawn()
             .expect("dream mcp")
     }
+
+    /// `dream mcp <args>` working in `dir` (its apps directory), as a
+    /// harness outside tmux starts it.
+    fn mcp_in(&self, dir: &std::path::Path, args: &[&str]) -> std::process::Child {
+        let program = tmux_program().display().to_string();
+        Command::new(DREAM)
+            .arg("mcp")
+            .args(args)
+            .args(["-L", self.tmux.socket(), "--tmux", program.as_str()])
+            .current_dir(dir)
+            .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
+            .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .env("DREAMER_DAEMON", Self::daemon())
+            .env("DREAMER_CONFIG_DIR", self.root.join("config"))
+            .env_remove("DREAMER_APPS_ROOT")
+            .env_remove("TMUX_PANE")
+            .env_remove("DREAMER_SESSION_ID")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("dream mcp")
+    }
+}
+
+/// The loop an agent follows to build an app, over MCP at the `own`
+/// level: a new package; an edit with a type error, which the check
+/// reports at its line and column; the fix; a text preview and the test;
+/// an image preview, refused with no desktop; the install; and the app
+/// opened beside a pane the agent created. A directory outside the apps
+/// directory, and a pane the agent did not create, are refused; at
+/// `observe` installing and launching are refused.
+#[test]
+fn an_agent_builds_an_app_and_opens_it_over_mcp() {
+    use serde_json::json;
+    let cli = Cli::new();
+    cli.ok(&["ensure-running"]);
+    let work = cli.root.join("work");
+    std::fs::create_dir_all(&work).expect("work");
+    let mut m = Mcp::start(cli.mcp_in(&work, &["--level", "own"]));
+    let err = |r: &serde_json::Value| r["isError"] == true;
+    let said = |r: &serde_json::Value| r["content"][0]["text"].as_str().unwrap_or("").to_owned();
+
+    let created = m.call("app_new", json!({ "name": "hello" }));
+    assert!(!err(&created), "{created}");
+    let dir = PathBuf::from(created["structuredContent"]["dir"].as_str().expect("dir"));
+    assert!(dir.ends_with("work/hello"), "{created}");
+
+    let source = dir.join("app.ts");
+    let good = std::fs::read_to_string(&source).expect("app.ts");
+    std::fs::write(&source, good.replace("ui.table({", "ui.tabel({")).expect("edit");
+    let checked = m.call("app_check", json!({ "dir": "hello" }));
+    let c = &checked["structuredContent"];
+    assert_eq!(c["ok"], false, "{checked}");
+    let p = &c["problems"][0];
+    let line = good
+        .lines()
+        .position(|l| l.contains("ui.table({"))
+        .expect("the table")
+        + 1;
+    assert_eq!(p["file"], "app.ts", "{checked}");
+    assert_eq!(p["line"], line, "{checked}");
+    assert!(p["column"].as_u64().unwrap_or(0) > 0, "{checked}");
+    assert!(
+        p["message"].as_str().unwrap_or("").contains("ui.tabel"),
+        "{checked}"
+    );
+    std::fs::write(&source, &good).expect("fix");
+    let checked = m.call("app_check", json!({ "dir": "hello" }));
+    assert_eq!(checked["structuredContent"]["ok"], true, "{checked}");
+
+    let outside = m.call("app_check", json!({ "dir": "../elsewhere" }));
+    assert!(err(&outside), "{outside}");
+    let outside = m.call("app_check", json!({ "dir": "/etc" }));
+    assert!(
+        err(&outside) && said(&outside).contains("outside the apps directory"),
+        "{outside}"
+    );
+
+    let text = m.call("app_preview", json!({ "dir": "hello", "mode": "text" }));
+    assert!(!err(&text) && said(&text).contains("cargo"), "{text}");
+    let tested = m.call("app_test", json!({ "dir": "hello" }));
+    assert_eq!(tested["structuredContent"]["ok"], true, "{tested}");
+    let image = m.call("app_preview", json!({ "dir": "hello", "mode": "image" }));
+    assert!(
+        err(&image) && said(&image).contains("no Dreamer window is running"),
+        "{image}"
+    );
+
+    let installed = m.call("app_install", json!({ "dir": "hello" }));
+    assert!(!err(&installed), "{installed}");
+    assert_eq!(installed["structuredContent"]["name"], "local.hello");
+
+    // A pane of the agent's own, and the app opened beside it.
+    let run = m.call(
+        "terminal_run",
+        json!({ "argv": ["/bin/sh"], "timeout_ms": 300 }),
+    );
+    let own = run["structuredContent"]["job"]["pane"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{run}"));
+    let launched = m.call(
+        "app_launch",
+        json!({ "name": "local.hello", "beside": own }),
+    );
+    assert!(!err(&launched), "{launched}");
+    let pane = launched["structuredContent"]["pane"]
+        .as_u64()
+        .expect("pane");
+    cli.wait_pane(&format!("%{pane}"), "Enter selects the pane");
+    let t = cli.topology();
+    let window = |p: u64| {
+        t["panes"]
+            .as_array()
+            .and_then(|a| a.iter().find(|x| x["id"] == p))
+            .map(|x| x["window"].clone())
+    };
+    assert_eq!(window(pane), window(own), "beside it: {t}");
+    let listed = m.call("terminals_list", json!({}));
+    let owned = listed["structuredContent"]["terminals"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["pane"] == pane))
+        .map(|x| x["owned"].clone());
+    assert_eq!(owned, Some(json!(true)), "{listed}");
+    // Beside a pane it did not create: not at `own`.
+    let foreign = m.call("app_launch", json!({ "name": "local.hello", "beside": 0 }));
+    assert!(
+        err(&foreign) && said(&foreign).contains("not created by this connection"),
+        "{foreign}"
+    );
+    drop(m);
+
+    let mut o = Mcp::start(cli.mcp_in(&work, &["--level", "observe"]));
+    let install = o.call("app_install", json!({ "dir": "hello" }));
+    assert!(
+        err(&install) && said(&install).contains("apps.launch"),
+        "{install}"
+    );
+    let launch = o.call(
+        "app_launch",
+        json!({ "name": "local.hello", "new_window": true }),
+    );
+    assert!(
+        err(&launch) && said(&launch).contains("launch apps"),
+        "{launch}"
+    );
+    // Building and looking need no level.
+    let checked = o.call("app_check", json!({ "dir": "hello" }));
+    assert_eq!(checked["structuredContent"]["ok"], true, "{checked}");
+    drop(o);
+
+    // An agent never hands an app more than it holds: this app needs
+    // actions.submit, which this agent's grant lacks.
+    let mut n = Mcp::start(cli.mcp_in(
+        &work,
+        &[
+            "--level",
+            "own",
+            "--method",
+            "apps.launch",
+            "--method",
+            "tmux.topology",
+        ],
+    ));
+    let wider = n.call(
+        "app_launch",
+        json!({ "name": "local.hello", "new_window": true }),
+    );
+    assert!(
+        err(&wider) && said(&wider).contains("the app's grant: `actions.submit`"),
+        "{wider}"
+    );
 }
 
 /// A minimal MCP client over a child's stdio.
@@ -2142,6 +2315,12 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
     assert_eq!(
         names,
         [
+            "app_check",
+            "app_install",
+            "app_launch",
+            "app_new",
+            "app_preview",
+            "app_test",
             "cancel_job",
             "check_action",
             "check_job",

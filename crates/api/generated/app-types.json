@@ -2474,6 +2474,10 @@
           "repeated": false,
           "type": "u32"
         },
+        "split": {
+          "repeated": false,
+          "type": "u32"
+        },
         "ttl_ms": {
           "repeated": false,
           "type": "u32"
@@ -5047,5 +5051,5 @@
       }
     }
   },
-  "version": "1.52"
+  "version": "1.53"
 }

@@ -24,13 +24,17 @@ pub const USAGE: &str = "usage:
                                           draw it once from its fixtures as text, no daemon
   dream app preview PATH --open [--session $N]
                                           a live preview pane the desktop draws; reloads on save
-  dream app preview PATH --png FILE       the desktop's drawing of the preview pane as a PNG
+  dream app preview PATH --png FILE [--level observe|own|elsewhere]
+                                          the desktop's drawing of the preview pane as a PNG;
+                                          with --level, as an agent at that level takes it
   dream app test PATH [--update] [--size WxH]
                                           replay fixtures/events.jsonl and compare each screen with fixtures/expect/
   dream app install PATH [--name NAME]    check, preview, and install; the replaced version is kept
   dream app rollback NAME                 put the last good version back
   dream app list                          installed packages
-  dream app launch NAME [--session $N]    run it in a new tmux window with the grant it declares
+  dream app launch NAME [--session $N | --beside %N] [--request]
+                                          run it in a new tmux window (or beside a pane) with the grant it declares;
+                                          --request prints the apps.launch parameters instead
   dream app run APP_ID [--method M]... [--all-panes] [--session $N] -- PROGRAM [ARGS...]";
 
 /// `dreamer-termapp` beside this program, else on `PATH`.
@@ -560,10 +564,10 @@ pub fn list() -> Result<(), String> {
     Ok(())
 }
 
-pub fn launch(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
-    let [name, rest @ ..] = args else {
-        return Err(USAGE.into());
-    };
+/// The `apps.launch` request that runs the installed package `name` with
+/// the grant it declares: in a new window of session 0 until the caller
+/// says where (`session`, or `split` to open it beside a pane).
+pub(crate) fn launch_request(name: &str) -> Result<api::LaunchApp, String> {
     valid_name(name)?;
     let m = apps()?.join(name).join("app.toml");
     if !m.is_file() {
@@ -572,25 +576,109 @@ pub fn launch(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     let v = checked(&m)?;
     ok_or_error(&v)?;
     let n = &v["needs"];
-    let mut run: Vec<String> = vec![v["id"].as_str().unwrap_or(name).to_owned()];
-    for method in n["methods"].as_array().into_iter().flatten() {
-        run.extend(["--method".into(), method.as_str().unwrap_or("").to_owned()]);
+    let grant = api::Grant {
+        methods: n["methods"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        all_panes: n["all_panes"] == Value::Bool(true),
+        panes: n["panes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .filter_map(|p| u32::try_from(p).ok())
+            .collect(),
+        ..api::Grant::default()
+    };
+    Ok(api::LaunchApp {
+        app_id: v["id"].as_str().unwrap_or(name).to_owned(),
+        grant: Some(grant),
+        argv: vec![termapp().display().to_string(), m.display().to_string()],
+        name: Some(name.to_owned()),
+        ..api::LaunchApp::default()
+    })
+}
+
+/// The session of `pane`, else the first session.
+pub(crate) async fn session_of(c: &client::Client, pane: Option<u32>) -> Result<u32, String> {
+    let api::Response::TmuxTopology(t) = c
+        .call(api::Request::TmuxTopology(api::TopologyParams::default()))
+        .await
+        .map_err(crate::daemon::explain)?
+    else {
+        return Err("unexpected reply".into());
+    };
+    let window = pane.and_then(|p| t.panes.iter().find(|x| x.id == p).map(|x| x.window));
+    window
+        .and_then(|w| t.windows.iter().find(|x| x.id == w))
+        .and_then(|w| w.sessions.first().copied())
+        .or_else(|| t.sessions.first().map(|s| s.id))
+        .ok_or_else(|| "tmux has no sessions".into())
+}
+
+/// `dream app launch NAME [--session $N | --beside %N] [--request]`.
+pub fn launch(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    let [name, rest @ ..] = args else {
+        return Err(USAGE.into());
+    };
+    let (mut session_id, mut beside, mut request) = (None, None, false);
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        let mut value = || it.next().cloned().ok_or(format!("{a} needs a value"));
+        match a.as_str() {
+            "--session" => {
+                let v = value()?;
+                session_id = Some(
+                    v.trim_start_matches('$')
+                        .parse::<u32>()
+                        .map_err(|_| format!("`{v}` is not a session id"))?,
+                );
+            }
+            "--beside" => {
+                let v = value()?;
+                beside = Some(
+                    v.trim_start_matches('%')
+                        .parse::<u32>()
+                        .map_err(|_| format!("`{v}` is not a pane (%N)"))?,
+                );
+            }
+            "--request" => request = true,
+            other => return Err(format!("unknown option {other}\n{USAGE}")),
+        }
     }
-    if n["all_panes"] == Value::Bool(true) {
-        run.push("--all-panes".into());
+    let mut r = launch_request(name)?;
+    r.split = beside;
+    if request {
+        // For a client that launches on a connection of its own (Dreamer's
+        // pi extension): it says where.
+        println!("{}", serde_json::to_string(&r).map_err(|e| e.to_string())?);
+        return Ok(());
     }
-    for p in n["panes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_u64)
-    {
-        run.extend(["--pane".into(), format!("%{p}")]);
-    }
-    run.extend(["--name".into(), name.clone()]);
-    run.extend(rest.iter().cloned());
-    run.push("--".into());
-    run.push(termapp().display().to_string());
-    run.push(m.display().to_string());
-    crate::app::run(d, &run)
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    rt.block_on(async {
+        let c = crate::remote::session(d).await?;
+        r.session = match session_id {
+            Some(s) => s,
+            None => session_of(&c, beside).await?,
+        };
+        let api::Response::AppsLaunch(l) = c
+            .call(api::Request::AppsLaunch(r.clone()))
+            .await
+            .map_err(crate::daemon::explain)?
+        else {
+            return Err("unexpected reply".into());
+        };
+        println!(
+            "launched {} in pane %{} (launch {})",
+            r.app_id, l.pane, l.launch_id
+        );
+        Ok(())
+    })
 }

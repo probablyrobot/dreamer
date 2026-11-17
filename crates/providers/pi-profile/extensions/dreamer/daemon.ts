@@ -8,8 +8,10 @@
 // an agent: it can never answer approvals, and acting outside the panes it
 // created waits for the user (docs/grants.md).
 
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 
 /** The JSON-RPC socket: `DREAMER_RPC_SOCKET`; else beside `DREAMER_SOCKET`
@@ -76,6 +78,8 @@ export function agentMethods(l: Level): string[] {
 	m.push("drawer.status");
 	if (l !== "observe") {
 		m.push("terminal.input", "terminal.run", "actions.submit", "jobs.start", "jobs.cancel", "collect.stop", "memory.update", "memory.forget");
+		// Opening the apps it builds and looking at the app panes it opened.
+		m.push("apps.launch", "apps.tree", "apps.capture", "daemon.status", "daemon.version");
 	}
 	return m;
 }
@@ -777,5 +781,153 @@ export class Session {
 		this.gatherTimer = undefined;
 		this.client?.close();
 		this.client = undefined;
+	}
+}
+
+/** The templates `dream app new` starts from. */
+export const APP_TEMPLATES = ["table", "form", "chat"];
+
+/** Where the app tools work: `DREAMER_APPS_ROOT`, else pi's working
+ * directory; with its links resolved. */
+export function appsRoot(env: Record<string, string | undefined> = process.env, cwd: string = process.cwd()): string {
+	const r = env.DREAMER_APPS_ROOT;
+	return fs.realpathSync(r !== undefined && r !== "" ? r : cwd);
+}
+
+/** `dir` (relative to `root`, or absolute) as a path inside `root`,
+ * following the links of the part that exists; else an error. The app
+ * tools never read or write outside the apps directory. */
+export function appDir(root: string, dir: string): string {
+	if (typeof dir !== "string" || dir.trim() === "") throw new Error("give a directory");
+	if (dir.split(/[\\/]/).includes("..")) throw new Error(`\`${dir}\`: \`..\` is not allowed; name a directory inside ${root}`);
+	let existing = path.isAbsolute(dir) ? dir : path.join(root, dir);
+	const rest: string[] = [];
+	while (!fs.existsSync(existing)) {
+		const up = path.dirname(existing);
+		if (up === existing) break;
+		rest.unshift(path.basename(existing));
+		existing = up;
+	}
+	const real = path.join(fs.realpathSync(existing), ...rest);
+	if (real !== root && !real.startsWith(root + path.sep)) {
+		throw new Error(`\`${dir}\` is outside the apps directory ${root}; the app tools work only there`);
+	}
+	return real;
+}
+
+/** What `dream ARGS` printed, and whether it succeeded. */
+export type Ran = { ok: boolean; stdout: string; stderr: string };
+
+/** Run `dream` with exact arguments (no shell). */
+export function runDream(dream: string, args: string[]): Promise<Ran> {
+	return new Promise((resolve) => {
+		execFile(dream, args, { maxBuffer: 16 * 1024 * 1024, timeout: 300_000 }, (err, stdout, stderr) => {
+			const spawnFailed = err !== null && typeof (err as any).code === "string";
+			resolve({
+				ok: err === null,
+				stdout: String(stdout ?? ""),
+				stderr: spawnFailed ? `${dream}: ${err?.message}` : String(stderr ?? "").trim(),
+			});
+		});
+	});
+}
+
+let previews = 0;
+
+/** The app tools: `dream app` in the apps directory, and launching an
+ * installed app on the session's own connection, so the daemon checks it
+ * against the session's grant and the session owns the new pane. */
+export class Apps {
+	readonly session: Session;
+	readonly dream: string;
+	readonly root: string;
+
+	constructor(session: Session, dream: string, root?: string) {
+		this.session = session;
+		this.dream = dream;
+		this.root = root ?? appsRoot();
+	}
+
+	private app(args: string[]): Promise<Ran> {
+		return runDream(this.dream, ["app", ...args]);
+	}
+
+	/** `dream app new`. */
+	async create(p: { name: string; template?: string; dir?: string }): Promise<Record<string, unknown>> {
+		const dir = appDir(this.root, p.dir ?? p.name);
+		const r = await this.app(["new", p.name, "--template", p.template ?? "table", "--dir", dir]);
+		if (!r.ok) throw new Error(r.stderr);
+		return { dir, id: `local.${p.name}`, output: r.stdout.trim() };
+	}
+
+	/** `dream app check --json`: ok, and problems with file, line, and column. */
+	async check(p: { dir: string }): Promise<any> {
+		const r = await this.app(["check", appDir(this.root, p.dir), "--json"]);
+		try {
+			return JSON.parse(r.stdout);
+		} catch {
+			throw new Error(r.stderr || "dream app check said nothing");
+		}
+	}
+
+	/** The app drawn from its fixtures: as text, or (`image`) a PNG as the
+	 * desktop draws it, in base64, taken at this session's level. */
+	async preview(p: { dir: string; mode?: string; size?: string }): Promise<{ text: string; image?: string }> {
+		const dir = appDir(this.root, p.dir);
+		const mode = p.mode ?? "text";
+		if (mode === "text") {
+			const r = await this.app(["preview", dir, "--text", ...(p.size ? ["--size", p.size] : [])]);
+			if (!r.ok) throw new Error(r.stderr);
+			return { text: r.stdout };
+		}
+		if (mode !== "image") throw new Error(`mode \`${mode}\`: use text or image`);
+		if (p.size) throw new Error("size is for mode text; the desktop draws the pane at its size");
+		const file = path.join(fs.realpathSync(os.tmpdir()), `dreamer-pi-preview-${process.pid}-${previews++}.png`);
+		try {
+			const r = await this.app(["preview", dir, "--png", file, "--level", this.session.level]);
+			if (!r.ok) throw new Error(r.stderr);
+			const said = [r.stdout.trim(), r.stderr].filter((s) => s !== "").join("\n");
+			return { text: said, image: fs.readFileSync(file).toString("base64") };
+		} finally {
+			fs.rmSync(file, { force: true });
+		}
+	}
+
+	/** `dream app test`: ok, and what differs. */
+	async test(p: { dir: string; update?: boolean }): Promise<Record<string, unknown>> {
+		const r = await this.app(["test", appDir(this.root, p.dir), ...(p.update ? ["--update"] : [])]);
+		return { ok: r.ok, output: r.ok ? r.stdout.trim() : r.stderr };
+	}
+
+	/** `dream app install`, which needs the level that launches apps. */
+	async install(p: { dir: string; name?: string }): Promise<Record<string, unknown>> {
+		if (this.session.level === "observe") {
+			throw new Error("installing an app needs the own or elsewhere level; this session only observes");
+		}
+		const r = await this.app(["install", appDir(this.root, p.dir), ...(p.name ? ["--name", p.name] : [])]);
+		if (!r.ok) throw new Error(r.stderr);
+		// "installed ID VERSION as NAME (DIR)"
+		const name = r.stdout.split(" as ")[1]?.split(/\s+/)[0] ?? "";
+		return { name, output: r.stdout.trim() };
+	}
+
+	/** Open an installed app beside `beside` (default the pane pi runs in),
+	 * or in a new window, on this session's connection. */
+	async launch(
+		p: { name: string; beside?: number; new_window?: boolean },
+		env: Record<string, string | undefined> = process.env,
+	): Promise<Record<string, unknown>> {
+		const r = await this.app(["launch", p.name, "--request"]);
+		if (!r.ok) throw new Error(r.stderr);
+		const request = JSON.parse(r.stdout);
+		const own = /^%(\d+)$/.exec(env.TMUX_PANE ?? "");
+		const beside = p.new_window ? undefined : (p.beside ?? (own ? Number(own[1]) : undefined));
+		const t = await this.session.call("tmux.topology", {});
+		const window = (t?.panes ?? []).find((x: any) => x.id === beside)?.window;
+		const session = (t?.windows ?? []).find((w: any) => w.id === window)?.sessions?.[0] ?? t?.sessions?.[0]?.id;
+		if (session === undefined) throw new Error("tmux has no sessions");
+		const params = { ...request, session, ...(beside !== undefined ? { split: beside } : {}) };
+		const l = await this.session.acting_on(beside, () => this.session.call("apps.launch", params));
+		return { app_id: request.app_id, name: p.name, pane: l.pane, beside: beside ?? null, launch_id: l.launch_id };
 	}
 }

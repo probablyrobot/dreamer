@@ -66,6 +66,16 @@ pub fn agent_methods(level: i32) -> Vec<String> {
             method::COLLECT_STOP,
             method::MEMORY_UPDATE,
             method::MEMORY_FORGET,
+            // Opening an app the agent built, and looking at the app panes
+            // it opened (the daemon allows these only for those panes,
+            // and only for an app grant within the agent's own).
+            method::APPS_LAUNCH,
+            method::APPS_TREE,
+            method::APPS_CAPTURE,
+            // Whether a desktop is there to draw an image preview, and the
+            // version an app may ask for.
+            method::DAEMON_STATUS,
+            method::DAEMON_VERSION,
         ]);
     }
     m.into_iter().map(str::to_owned).collect()

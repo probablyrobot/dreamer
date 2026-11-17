@@ -374,6 +374,7 @@ pub async fn connection_as(
                         let caller = crate::leases::Caller {
                             conn: conn.id,
                             owner: conn.grant.lock().is_ok_and(|g| g.0.owner),
+                            level: conn.grant.lock().map_or(0, |g| g.0.level),
                         };
                         crate::leases::CALLER
                             .scope(caller, answer(&service, req))
@@ -490,13 +491,19 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
     if grant.0.owner {
         return None;
     }
-    // Only the user starts apps and hands out grants; an app's grant can
-    // never include that, whatever it lists.
-    if req.method == api::method::APPS_LAUNCH {
-        return Some(failure(
-            req.id,
-            RpcError::new(code::FORBIDDEN, "only the user's own clients launch apps"),
-        ));
+    // The user starts apps and hands out grants. An agent at `own` or
+    // `elsewhere` may too, for a grant within its own, and may watch and
+    // capture the app panes it launched; an app's grant can never include
+    // any of that, whatever it lists.
+    if [
+        api::method::APPS_LAUNCH,
+        api::method::APPS_TREE,
+        api::method::APPS_CAPTURE,
+    ]
+    .contains(&req.method.as_str())
+        && let Err(e) = agent_apps(state, conn, &grant, req)
+    {
+        return Some(failure(req.id, e));
     }
     // A registered app host publishes its own view whatever its grant
     // lists; the registry refuses any other connection.
@@ -516,10 +523,8 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         api::method::DRAWER_TOGGLE,
         // App panes are the user's to see and type into.
         api::method::APPS_VIEW,
-        api::method::APPS_TREE,
         api::method::APPS_INPUT,
         // Images of app panes are the user's desktop's to make.
-        api::method::APPS_CAPTURE,
         api::method::APPS_CAPTURE_WAIT,
         api::method::APPS_CAPTURE_DONE,
     ]
@@ -570,6 +575,63 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         .check_owning(&req.method, &request, |p| state.approvals.owns(conn.id, p))
         .err()
         .map(|e| failure(req.id, e))
+}
+
+/// Whether a connection that is not the owner may launch an app, or read
+/// the view tree of or capture an app pane. Only an agent's grant at `own`
+/// or `elsewhere` with the method in it may, and never a registered app
+/// (whose grant has no level). A launch hands out a grant, which must be
+/// within the agent's own and at its level at most; the tree and images
+/// are of the app panes it launched. The ordinary checks (pane scope, act
+/// level, approvals) still follow.
+fn agent_apps(
+    state: &State,
+    conn: &Conn,
+    grant: &crate::grants::Grant,
+    req: &wire::Request,
+) -> Result<(), RpcError> {
+    let no = |why: String| Err(RpcError::new(code::FORBIDDEN, why));
+    if grant.0.level < api::ActLevel::Own as i32 {
+        return no(if req.method == api::method::APPS_LAUNCH {
+            "only the user's own clients and agents acting at own or elsewhere launch apps".into()
+        } else {
+            format!(
+                "only the user's own clients, and agents for the app panes they launched, may call {}",
+                req.method
+            )
+        });
+    }
+    if !grant.method_allowed(&req.method) {
+        return no(format!(
+            "`{}` is not in this connection's grant",
+            req.method
+        ));
+    }
+    let Ok(request) = api::Request::decode(&req.method, &req.payload) else {
+        // Left to the method, which reports it; it acts on nothing.
+        return Ok(());
+    };
+    let pane = match &request {
+        api::Request::AppsLaunch(p) => {
+            let mut wanted = p.grant.clone().unwrap_or_default();
+            if wanted.level == api::ActLevel::Unspecified as i32 {
+                wanted.level = grant.0.level;
+            }
+            return crate::grants::within(&grant.0, &wanted)
+                .or_else(|why| no(format!("the app's grant: {why}")));
+        }
+        api::Request::AppsTree(p) => p.pane,
+        api::Request::AppsCapture(p) => p.pane,
+        _ => return Ok(()),
+    };
+    if state.approvals.owns(conn.id, pane) {
+        Ok(())
+    } else {
+        no(format!(
+            "pane %{pane} is not an app this connection launched; {} is for those",
+            req.method
+        ))
+    }
 }
 
 /// The act level of the connection's grant, for a request that acts on
