@@ -16,9 +16,14 @@ use serde_json::Value;
 use crate::daemon::DaemonArgs;
 
 pub const USAGE: &str = "usage:
+  dream app new NAME [--template table|form|chat] [--dir DIR]
+                                          a working package to start from
   dream app check PATH [--json]           validate a package (a directory or its app.toml); build and check its app.ts
   dream app types DIR                     write types/dreamer.d.ts (and a tsconfig.json) for editors
-  dream app preview PATH [--size WxH]     draw it once from fixtures/<source>.json, no daemon
+  dream app preview PATH [--text] [--size WxH]
+                                          draw it once from its fixtures as text, no daemon
+  dream app test PATH [--update] [--size WxH]
+                                          replay fixtures/events.jsonl and compare each screen with fixtures/expect/
   dream app install PATH [--name NAME]    check, preview, and install; the replaced version is kept
   dream app rollback NAME                 put the last good version back
   dream app list                          installed packages
@@ -205,16 +210,217 @@ fn needs_text(n: &Value) -> String {
     format!("{} on {panes}", methods.join(", "))
 }
 
-pub fn preview(args: &[String]) -> Result<(), String> {
-    let (path, size) = match args {
-        [p] => (p, None),
-        [p, f, s] if f == "--size" => (p, Some(s.as_str())),
-        _ => return Err(USAGE.into()),
+/// A package path and its options: the flags in `switches`, and
+/// `--size WxH`.
+fn path_and_flags<'a>(
+    args: &'a [String],
+    switches: &[&str],
+) -> Result<(&'a str, Vec<&'a str>, Option<&'a str>), String> {
+    let [path, rest @ ..] = args else {
+        return Err(USAGE.into());
     };
+    if path.starts_with('-') {
+        return Err(USAGE.into());
+    }
+    let (mut on, mut size) = (Vec::new(), None);
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--size" => size = Some(it.next().ok_or("--size needs WIDTHxHEIGHT")?.as_str()),
+            s if switches.contains(&s) => on.push(s),
+            other => return Err(format!("unknown option {other}\n{USAGE}")),
+        }
+    }
+    Ok((path, on, size))
+}
+
+/// `dream app preview PATH [--text] [--size WxH]`: the app as text is the
+/// only preview there is, so `--text` is what it does anyway.
+pub fn preview(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| a == "--png" || a == "--open") {
+        return Err("this version previews an app as text only (--text)".into());
+    }
+    let (path, _, size) = path_and_flags(args, &["--text"])?;
     let m = manifest(path);
     crate::strip::build(&m)?;
     print!("{}", preview_text(&m, size)?);
     Ok(())
+}
+
+/// Where a package's expected screens are: `fixtures/expect/` beside its
+/// manifest.
+fn expect_dir(manifest: &Path) -> PathBuf {
+    manifest
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("fixtures")
+        .join("expect")
+}
+
+/// `NNN.txt`: the screen after event `n` (0, the first view).
+fn screen_file(n: usize) -> String {
+    format!("{n:03}.txt")
+}
+
+/// The screens of a package's test, from `dreamer-termapp --replay`: the
+/// first view, then one after each event.
+fn replayed(manifest: &Path, size: Option<&str>) -> Result<Vec<String>, String> {
+    let mut cmd = Command::new(termapp());
+    cmd.arg("--replay").arg(manifest);
+    if let Some(s) = size {
+        cmd.args(["--size", s]);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("{}: {e}", termapp().display()))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_owned());
+    }
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("dreamer-termapp --replay: {e}"))?;
+    Ok(v["screens"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|s| s.as_str().unwrap_or_default().to_owned())
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// The expected screens kept now, by number.
+fn kept_screens(dir: &Path) -> Vec<usize> {
+    let mut kept: Vec<usize> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let n = name.strip_suffix(".txt")?;
+            (n.len() == 3).then(|| n.parse().ok())?
+        })
+        .collect();
+    kept.sort_unstable();
+    kept
+}
+
+/// Replay a package's events and write each screen as its expected one,
+/// removing expected screens no event makes any more. How many there are.
+pub fn record(manifest: &Path, size: Option<&str>) -> Result<usize, String> {
+    let screens = replayed(manifest, size)?;
+    let dir = expect_dir(manifest);
+    let fail = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    std::fs::create_dir_all(&dir).map_err(|e| fail(&dir, e))?;
+    for (n, s) in screens.iter().enumerate() {
+        let file = dir.join(screen_file(n));
+        std::fs::write(&file, s).map_err(|e| fail(&file, e))?;
+    }
+    for n in kept_screens(&dir) {
+        if n >= screens.len() {
+            let file = dir.join(screen_file(n));
+            std::fs::remove_file(&file).map_err(|e| fail(&file, e))?;
+        }
+    }
+    Ok(screens.len())
+}
+
+/// The events of a test as written, for naming them in a failure.
+fn event_lines(manifest: &Path) -> Vec<String> {
+    let file = manifest
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("fixtures")
+        .join("events.jsonl");
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The rows that differ between two screens: each row's number, then the
+/// expected (`-`) and the drawn (`+`) row.
+fn screen_diff(expected: &str, drawn: &str) -> String {
+    let (a, b): (Vec<&str>, Vec<&str>) = (expected.lines().collect(), drawn.lines().collect());
+    let mut out = String::new();
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (a.get(i), b.get(i));
+        if x != y {
+            out.push_str(&format!(
+                "  {:>3} - {}\n  {:>3} + {}\n",
+                i + 1,
+                x.copied().unwrap_or("<no row>"),
+                i + 1,
+                y.copied().unwrap_or("<no row>")
+            ));
+        }
+    }
+    out
+}
+
+/// `dream app test PATH [--update] [--size WxH]`.
+pub fn test(args: &[String]) -> Result<(), String> {
+    let (path, on, size) = path_and_flags(args, &["--update"])?;
+    let m = manifest(path);
+    crate::strip::build(&m)?;
+    if on.contains(&"--update") {
+        let n = record(&m, size)?;
+        println!(
+            "recorded {n} expected screens in {}",
+            expect_dir(&m).display()
+        );
+        return Ok(());
+    }
+    let screens = replayed(&m, size)?;
+    let dir = expect_dir(&m);
+    let events = event_lines(&m);
+    let mut failures = Vec::new();
+    for (n, drawn) in screens.iter().enumerate() {
+        let what = match n {
+            0 => "the first view".to_owned(),
+            n => format!(
+                "after event {n} {}",
+                events.get(n - 1).map_or("", String::as_str)
+            ),
+        };
+        let file = dir.join(screen_file(n));
+        match std::fs::read_to_string(&file) {
+            Err(_) => failures.push(format!(
+                "{what}: {} is missing; `dream app test {path} --update` records it",
+                file.display()
+            )),
+            Ok(expected) if expected != *drawn => failures.push(format!(
+                "{what}: the screen differs from {}\n{}",
+                file.display(),
+                screen_diff(&expected, drawn)
+            )),
+            Ok(_) => {}
+        }
+    }
+    for n in kept_screens(&dir) {
+        if n >= screens.len() {
+            failures.push(format!(
+                "{}: no event draws it any more",
+                dir.join(screen_file(n)).display()
+            ));
+        }
+    }
+    if failures.is_empty() {
+        println!(
+            "ok: {} screens match ({} events)",
+            screens.len(),
+            screens.len().saturating_sub(1)
+        );
+        return Ok(());
+    }
+    Err(format!(
+        "{}\n{} of {} screens differ; after a deliberate change, `dream app test {path} --update` records them",
+        failures.join("\n"),
+        failures.len(),
+        screens.len()
+    ))
 }
 
 /// Copy a package's regular files and directories; a symbolic link or

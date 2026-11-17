@@ -1,36 +1,47 @@
 ---
 name: dreamer-apps
-description: "Build small terminal apps for the Dreamer terminal: monitors, dashboards, lists, forms, and agentic panes that run in a real tmux pane. Use when the user asks for a pane that shows or watches something (jobs, panes, agent runs, filter matches), or a small tool inside Dreamer. Writes a declarative app package, checks it, previews it from sample data, installs it, and launches it."
+description: "Build small terminal apps for the Dreamer terminal: monitors, dashboards, lists, forms, and agentic panes that run in a real tmux pane. Use when the user asks for a pane that shows or watches something (jobs, panes, agent runs, filter matches), or a small tool inside Dreamer. Starts from a template (TypeScript) or writes a declarative package, checks it, previews it as text and tests it from sample data, installs it, and launches it."
 ---
 
 # Building Dreamer apps
 
-A Dreamer app is a package directory: a declarative `app.toml`, optional
-sample data in `fixtures/`, and optionally a sandboxed Luau module. It
-runs as `dreamer-termapp` in a real tmux pane, so it keeps running with
-no window open and works through a plain `tmux attach`. No code is
-compiled.
+A Dreamer app is a package directory: an `app.toml`, sample data in
+`fixtures/`, and either an `app.ts` (TypeScript using `ui.*` and
+`dreamer.*`, run sandboxed by the app host) or a declarative view with an
+optional Luau module. It runs as `dreamer-termapp` in a real tmux pane,
+so it keeps running with no window open and works through a plain
+`tmux attach`. There is no Node and no build tool.
 
-Build apps for the user instead of explaining how. For a view, key, or
-agent setting this page does not cover, read "Pane apps" in Dreamer's
+Build apps for the user instead of explaining how. For a component, key,
+or setting this page does not cover, read "Pane apps" in Dreamer's
 documentation (`docs/termapp.md`). `dream app check` says exactly what is
 wrong with a package, so let it guide you.
 
 ## The loop
 
-1. **Write the package** in a scratch directory: `app.toml`, plus
-   `fixtures/<source>.json` holding what the source's method returns.
-2. **Check:** `dream app check DIR`. It reports every problem with where
-   it is, and what the app's grant will be (`needs …`). Fix and repeat
-   until it says `ok`.
-3. **Preview:** `dream app preview DIR [--size 100x30]` draws the app once
-   from the fixture, with no daemon. Read the drawing and fix what looks
-   wrong.
-4. **Install:** `dream app install DIR`. This checks and previews again,
+1. **New:** `dream app new NAME --template table|form|chat [--dir DIR]`
+   writes a working package: `app.toml`, `app.ts`, `fixtures/load.json`
+   (what `load()` returns), `fixtures/events.jsonl`, `fixtures/calls.json`
+   (answers to `dreamer.*` calls in tests), `types/dreamer.d.ts`, and the
+   test's expected screens. There is no web template yet.
+2. **Edit** `app.ts`, the fixtures, and the capabilities in `app.toml`.
+3. **Check:** `dream app check DIR`. It reports every problem with
+   `file:line:column`, and what the app's grant will be (`needs …`). Fix
+   and repeat until it says `ok`.
+4. **Preview:** `dream app preview DIR --text [--size 100x30]` draws the
+   app once from its fixtures, with no daemon. Read the drawing and fix
+   what looks wrong.
+5. **Test:** `dream app test DIR` replays `fixtures/events.jsonl` (one
+   event per line: `{"kind":"key","key":"Down"}`, `{"kind":"text","text":"hi"}`)
+   and compares the screen after each with `fixtures/expect/NNN.txt`. On
+   a difference it prints the rows that differ. When the change is
+   intended, `dream app test DIR --update` records the screens again;
+   read them before you keep them.
+6. **Install:** `dream app install DIR`. This checks and previews again,
    then copies the package to the user's apps directory. The version it
    replaces is kept: `dream app rollback NAME` brings it back. A package
    that fails changes nothing.
-5. **Launch:** `dream app launch NAME` runs it in a new tmux window with
+7. **Launch:** `dream app launch NAME` runs it in a new tmux window with
    exactly the grant it declares. Tell the user the pane id it prints.
 
 An installed app that is running reloads itself when its files change. A

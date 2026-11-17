@@ -2734,3 +2734,94 @@ fn app_check_reports_type_mistakes_in_an_app_ts_with_their_places() {
     assert!(pkg.join("tsconfig.json").is_file());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn each_template_checks_previews_and_passes_its_test_straight_after_new() {
+    let root = PathBuf::from(format!("/tmp/drm-cli-new-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("root");
+    // None of this starts a daemon; the guards are there in case it would.
+    let dream = |args: &[&str]| {
+        Command::new(DREAM)
+            .args(args)
+            .env("DREAMER_RUNTIME_DIR", root.join("rt"))
+            .env("DREAMER_STATE_DIR", root.join("st"))
+            .env("DREAMER_CONFIG_DIR", root.join("config"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .output()
+            .expect("dream")
+    };
+    let said = |o: &Output| {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        )
+    };
+    for (template, shows) in [
+        ("table", "cargo"),
+        ("form", "Rename a window"),
+        ("chat", "Type a message"),
+    ] {
+        let dir = root.join(template);
+        let path = dir.display().to_string();
+        let name = format!("my-{template}");
+        let made = dream(&["app", "new", &name, "--template", template, "--dir", &path]);
+        assert!(made.status.success(), "{template}: {}", said(&made));
+        assert!(dir.join("types/dreamer.d.ts").is_file());
+        let checked = dream(&["app", "check", &path]);
+        assert!(checked.status.success(), "{template}: {}", said(&checked));
+        assert!(said(&checked).contains(&format!("local.my-{template}")));
+        let preview = dream(&["app", "preview", &path, "--text"]);
+        assert!(
+            preview.status.success() && said(&preview).contains(shows),
+            "{template}: {}",
+            said(&preview)
+        );
+        let tested = dream(&["app", "test", &path]);
+        assert!(tested.status.success(), "{template}: {}", said(&tested));
+        assert!(said(&tested).starts_with("ok: "), "{}", said(&tested));
+    }
+
+    // The table's test walks to the second row and presses Enter, whose
+    // call is answered from fixtures/calls.json.
+    let table = root.join("table");
+    let last = std::fs::read_to_string(table.join("fixtures/expect/002.txt")).expect("expect");
+    assert!(
+        last.contains("selected %2") && last.contains("--- panes: row 2 selected"),
+        "{last}"
+    );
+
+    // A deliberately broken expectation fails with the rows that differ.
+    let broken = last.replace("selected %2", "selected %3");
+    std::fs::write(table.join("fixtures/expect/002.txt"), &broken).expect("break");
+    let path = table.display().to_string();
+    let failed = dream(&["app", "test", &path]);
+    let text = said(&failed);
+    assert!(!failed.status.success(), "{text}");
+    assert!(
+        text.contains(r#"after event 2 {"kind":"key","key":"Enter"}"#)
+            && text.contains("- selected %3")
+            && text.contains("+ selected %2")
+            && text.contains("1 of 3 screens differ"),
+        "{text}"
+    );
+    // --update records what it draws now, and the test passes again.
+    assert!(dream(&["app", "test", &path, "--update"]).status.success());
+    assert!(dream(&["app", "test", &path]).status.success());
+
+    // There are no web panes in this version: said, not faked.
+    let web_dir = root.join("web");
+    let web = dream(&[
+        "app",
+        "new",
+        "site",
+        "--template",
+        "web",
+        "--dir",
+        &web_dir.display().to_string(),
+    ]);
+    assert!(!web.status.success() && said(&web).contains("web panes"));
+    assert!(!web_dir.exists());
+    let _ = std::fs::remove_dir_all(&root);
+}

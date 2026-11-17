@@ -53,6 +53,7 @@ mod remote;
 mod service;
 mod sessions;
 mod strip;
+mod templates;
 mod typecheck;
 
 use std::process::ExitCode;
@@ -103,7 +104,7 @@ const USAGE: &str = "usage:
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
   dream service uninstall [--no-stop]
-  dream app check|preview|install|rollback|list|launch|types ... (see `dream app`)
+  dream app new|check|preview|test|install|rollback|list|launch|types ... (see `dream app`)
   dream app run APP_ID [--method M]... [--all-panes | --pane %N...] [--session $N] -- PROGRAM [ARGS...]
   dream --version";
 
@@ -166,7 +167,9 @@ fn main() -> ExitCode {
                 _ => Err(format!("unexpected arguments {extra:?}\n{USAGE}")),
             })
         }
+        ["app", "new", rest @ ..] => templates::new(&to_owned(rest)),
         ["app", "check", rest @ ..] => build::check(&to_owned(rest)),
+        ["app", "test", rest @ ..] => build::test(&to_owned(rest)),
         ["app", "preview", rest @ ..] => build::preview(&to_owned(rest)),
         ["app", "install", rest @ ..] => build::install(&to_owned(rest)),
         ["app", "rollback", rest @ ..] => build::rollback(&to_owned(rest)),

@@ -796,21 +796,62 @@ pub async fn run_process_with(
     Ok(())
 }
 
+/// A script app's data for a preview or a test: `fixtures/load.json`,
+/// when it has one.
+fn load_fixture(dir: &Path, manifest: &Manifest) -> Result<Option<String>, String> {
+    Ok(
+        match std::fs::read_to_string(dir.join("fixtures").join("load.json")) {
+            Ok(text) if manifest.is_script() => {
+                serde_json::from_str::<Value>(&text)
+                    .map_err(|e| format!("fixtures/load.json: {e}"))?;
+                Some(text)
+            }
+            _ => None,
+        },
+    )
+}
+
+/// The answers to calls in a preview or a test: `fixtures/calls.json`, an
+/// object of each method's result by its name. None without the file.
+fn call_fixtures(dir: &Path) -> Result<serde_json::Map<String, Value>, String> {
+    let file = dir.join("fixtures").join("calls.json");
+    match std::fs::read_to_string(&file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::Map::new()),
+        Err(e) => Err(format!("fixtures/calls.json: {e}")),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(Value::Object(m)) => Ok(m),
+            Ok(_) => Err("fixtures/calls.json: not an object of results by method".into()),
+            Err(e) => Err(format!("fixtures/calls.json: {e}")),
+        },
+    }
+}
+
+/// A call's answer with no daemon: refused outside the capabilities, else
+/// its method's result in `calls`, else refused as having none.
+fn fixture_answer(
+    calls: &serde_json::Map<String, Value>,
+    methods: &[String],
+    method: &str,
+) -> Result<Value, CallError> {
+    allowed(methods, method)?;
+    calls.get(method).cloned().ok_or_else(|| CallError {
+        code: api::code::UNAVAILABLE,
+        message: format!("no daemon, and fixtures/calls.json has no result for `{method}`"),
+    })
+}
+
 /// The process or script app at `path` as it first looks, with no daemon:
 /// its first view, within five seconds. A script app draws its fixture
-/// (`fixtures/load.json`) as its data, when it has one.
+/// (`fixtures/load.json`) as its data, when it has one. Calls are answered
+/// from `fixtures/calls.json`.
 pub async fn preview_process(path: &Path, engine: Option<Engine>) -> Result<Frame, String> {
     let (manifest, _) = crate::run::load_with_text(&path.display().to_string())?;
     let dir = path
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let fixture = match std::fs::read_to_string(dir.join("fixtures").join("load.json")) {
-        Ok(text) if manifest.is_script() => {
-            serde_json::from_str::<Value>(&text).map_err(|e| format!("fixtures/load.json: {e}"))?;
-            Some(text)
-        }
-        _ => None,
-    };
+    let fixture = load_fixture(&dir, &manifest)?;
+    let calls = call_fixtures(&dir)?;
+    let methods = manifest.methods();
     let mut r = start(&dir, &manifest, false, engine.as_ref(), fixture)?;
     let mut view = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -820,15 +861,12 @@ pub async fn preview_process(path: &Path, engine: Option<Engine>) -> Result<Fram
             Ok(Some(Out::Line(line))) => match take_line(&line, &mut r, &mut view) {
                 Said::Drawn => break Ok(view.take().unwrap_or_else(|| waiting(&manifest, ""))),
                 Said::Broken(why) => break Err(why),
-                Said::Call(id, ..) => {
-                    r.send(&HostMessage::Result {
-                        id,
-                        result: None,
-                        error: Some(CallError {
-                            code: api::code::UNAVAILABLE,
-                            message: "a preview has no daemon".into(),
-                        }),
-                    });
+                Said::Call(id, method, _) => {
+                    let (result, error) = match fixture_answer(&calls, &methods, &method) {
+                        Ok(v) => (Some(v), None),
+                        Err(e) => (None, Some(e)),
+                    };
+                    r.send(&HostMessage::Result { id, result, error });
                 }
                 Said::Nothing => {}
             },
@@ -842,6 +880,138 @@ pub async fn preview_process(path: &Path, engine: Option<Engine>) -> Result<Fram
             }
         }
     };
+    r.stop().await;
+    result
+}
+
+/// Where a replayed app is after an event.
+enum Settled {
+    Ready,
+    Quit,
+}
+
+/// Wait until the app has done everything `r` sent it: until each resync
+/// asked for (`expect`) has its whole tree back, answering calls from
+/// `calls` and asking for one more resync after each answer. Messages
+/// are taken in order, so the tree that answers the last resync is the
+/// one after the event and everything its calls led to. Before the first
+/// view (`view` none), it waits for that and then asks.
+async fn settle(
+    r: &mut Running,
+    view: &mut Option<Frame>,
+    calls: &serde_json::Map<String, Value>,
+    methods: &[String],
+    mut expect: usize,
+) -> Result<Settled, String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut synced = view.is_some();
+    loop {
+        if !synced && view.is_some() {
+            r.send(&HostMessage::Resync {
+                reason: "a test takes the whole tree".into(),
+            });
+            expect += 1;
+            synced = true;
+        }
+        if synced && expect == 0 {
+            return Ok(Settled::Ready);
+        }
+        match tokio::time::timeout_at(deadline, r.out.recv()).await {
+            Err(_) if view.is_none() => return Err("the app drew no view within 5 s".into()),
+            Err(_) => {
+                return Err("the app did not send its whole tree after a resync within 5 s".into());
+            }
+            Ok(Some(Out::Line(line))) => {
+                let whole = serde_json::from_str::<Value>(&line)
+                    .is_ok_and(|v| v["type"] == Value::String("view".into()));
+                let was_synced = synced;
+                match take_line(&line, r, view) {
+                    Said::Drawn if whole && was_synced => expect = expect.saturating_sub(1),
+                    Said::Drawn | Said::Nothing => {}
+                    Said::Call(id, method, _) => {
+                        let (result, error) = match fixture_answer(calls, methods, &method) {
+                            Ok(v) => (Some(v), None),
+                            Err(e) => (None, Some(e)),
+                        };
+                        r.send(&HostMessage::Result { id, result, error });
+                        if synced {
+                            r.send(&HostMessage::Resync {
+                                reason: "a test takes the whole tree".into(),
+                            });
+                            expect += 1;
+                        }
+                    }
+                    Said::Broken(why) => return Err(why),
+                }
+            }
+            Ok(Some(Out::Quit)) => return Ok(Settled::Quit),
+            Ok(Some(Out::Failed(why))) => return Err(format!("the app stopped: {why}")),
+            Ok(Some(Out::TooLong)) => return Err(format!("a message over {MAX_LINE} bytes")),
+            Ok(Some(Out::End) | None) => {
+                r.to_app = None;
+                if let Some(child) = r.child.as_mut()
+                    && let Ok(Ok(s)) = tokio::time::timeout(GRACE, child.wait()).await
+                    && s.success()
+                {
+                    return Ok(Settled::Quit);
+                }
+                let _ = tokio::time::timeout(GRACE, &mut r.said).await;
+                return Err(match r.last_said() {
+                    Some(s) => format!("the app ended: {s}"),
+                    None => "the app ended".to_owned(),
+                });
+            }
+        }
+    }
+}
+
+/// Replay `events` against the process or script app at `path`, with its
+/// fixtures and no daemon, as [`preview_process`] runs it: `each` gets its
+/// first whole view and then the view after every event, once the app
+/// has handled it and every call it led to (answered from
+/// `fixtures/calls.json`). Timers are not waited for. An event after the
+/// app quit, and an app that fails, are errors.
+pub async fn replay_process(
+    path: &Path,
+    engine: Option<Engine>,
+    events: Vec<Event>,
+    each: &mut dyn FnMut(&Frame) -> Result<(), String>,
+) -> Result<(), String> {
+    let (manifest, _) = crate::run::load_with_text(&path.display().to_string())?;
+    let dir = path
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let fixture = load_fixture(&dir, &manifest)?;
+    let calls = call_fixtures(&dir)?;
+    let methods = manifest.methods();
+    let mut r = start(&dir, &manifest, false, engine.as_ref(), fixture)?;
+    let mut view = None;
+    let result = async {
+        let mut quit = matches!(
+            settle(&mut r, &mut view, &calls, &methods, 0).await?,
+            Settled::Quit
+        );
+        let shown = |v: &Option<Frame>| v.clone().unwrap_or_else(|| waiting(&manifest, ""));
+        each(&shown(&view))?;
+        for (n, event) in events.into_iter().enumerate() {
+            if quit {
+                return Err(format!("event {}: the app had quit", n + 1));
+            }
+            r.send(&HostMessage::Event { event });
+            r.send(&HostMessage::Resync {
+                reason: "a test takes the whole tree".into(),
+            });
+            quit = matches!(
+                settle(&mut r, &mut view, &calls, &methods, 1)
+                    .await
+                    .map_err(|e| format!("event {}: {e}", n + 1))?,
+                Settled::Quit
+            );
+            each(&shown(&view))?;
+        }
+        Ok(())
+    }
+    .await;
     r.stop().await;
     result
 }
