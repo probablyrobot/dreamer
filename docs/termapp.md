@@ -8,8 +8,10 @@ desktop and through any plain `tmux attach`.
 The app's model (the manifest, its data and selection, a form's values,
 commands, the Luau module, and reloading) is the headless `app-model`
 crate. `dreamer-termapp` only turns keys into input for it and draws it
-with Ratatui. The desktop draws the same model as a native panel; see
-[desktop.md](desktop.md#app-panels).
+with Ratatui. The desktop draws the same model natively: in the app's
+own pane, from the model the running app publishes (see
+[app panes](#app-panes)), or as a panel with a model of its own (see
+[desktop.md](desktop.md#app-panels)).
 
 ```sh
 dreamer-termapp app.toml            # run it in this terminal
@@ -200,6 +202,23 @@ daemon is back it shows `live` and fetches again.
 An app that registered with a ticket cannot register again after its
 daemon restarted (the ticket is used up), and it does not reconnect with
 more authority than it was granted. It stays stale and says to relaunch it.
+
+## App panes
+
+A registered app is its pane's host. While registered, it publishes its
+model to the daemon whenever it changes (only the newest is kept; a
+model superseded while one is being sent is skipped), and the daemon
+marks its pane in the topology. The desktop then draws that pane
+natively from the published model instead of its terminal, and sends
+it the keys typed there; see [desktop.md](desktop.md#app-panes). Keys
+from the desktop and keys typed in the pane go through the same input
+handling, so `q` from either quits the app. A plain tmux client keeps
+seeing the text interface.
+
+An app started without a launch ticket (`dreamer-termapp app.toml` in a
+shell) is not registered: the desktop draws its pane as a terminal.
+After a daemon restart the pane is drawn as a terminal too, until the
+app is relaunched.
 
 ## Agentic panes
 

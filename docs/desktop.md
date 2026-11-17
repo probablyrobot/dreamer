@@ -313,6 +313,32 @@ Nothing from the package runs on the UI thread or while drawing. `q`
 (or Esc in a form) ends the app; "Close the app panel" removes it. One
 panel is shown at a time.
 
+### App panes
+
+A pane whose program is a registered app host (an app package started
+with `dream app launch` or `dream app run`, see
+[termapp.md](termapp.md#app-panes)) is drawn natively, in the pane's own
+cell rectangle, instead of its terminal: the same table, list, log,
+text, form, gauge, chart, or agent view as a panel. Any number of app
+panes can be shown, in any window, and they follow splits, resizes,
+zoom, and tab switches like terminal panes, because tmux still owns the
+pane and its layout. A plain tmux client attached to the same session
+sees the app's text interface in that pane.
+
+The desktop runs none of the package. Each app pane's view has a thread
+of its own that reads the model the pane's host publishes through the
+daemon ([topology.md](topology.md#app-panes)), and sends the keys typed
+while the pane has focus (click it) back to the host, where they act
+exactly as keys typed in the pane. Cmd and Alt shortcuts stay with the
+desktop.
+
+When the host stops (the pane stays open, for example with
+`remain-on-exit`), or the daemon cannot be reached, the pane keeps
+showing the last view, with `stale:` and the reason in its status line.
+When a pane's program becomes an app host, or stops being one, its view
+is replaced on the next topology update. App panes are drawn for local
+windows only; a remote host's app panes show their terminals.
+
 ### Contributions
 
 Installed app packages can add palette commands (with keybindings),

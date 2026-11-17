@@ -65,14 +65,20 @@ fn now_ms() -> u64 {
 }
 
 pub fn load(path: &str) -> Result<Manifest, String> {
+    load_with_text(path).map(|(m, _)| m)
+}
+
+/// The manifest at `path`, and its text.
+fn load_with_text(path: &str) -> Result<(Manifest, String), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-    Manifest::parse(&text).map_err(|errors| {
+    let m = Manifest::parse(&text).map_err(|errors| {
         errors
             .iter()
             .map(|e| format!("{path}: {e}"))
             .collect::<Vec<_>>()
             .join("\n")
-    })
+    })?;
+    Ok((m, text))
 }
 
 fn module_path(manifest: &Path, m: &Manifest) -> Option<PathBuf> {
@@ -118,11 +124,13 @@ impl script_runtime::Host for ClientHost {
 /// A manifest with its module loaded and run.
 struct Package {
     manifest: Manifest,
+    /// The manifest's text, published with the model.
+    source: String,
     script: Option<script_runtime::Script>,
 }
 
 async fn load_package(path: &Path, current: &Current) -> Result<Package, String> {
-    let manifest = load(&path.display().to_string())?;
+    let (manifest, source) = load_with_text(&path.display().to_string())?;
     let script = match module_path(path, &manifest) {
         None => None,
         Some(p) => {
@@ -139,7 +147,11 @@ async fn load_package(path: &Path, current: &Current) -> Result<Package, String>
             Some(s)
         }
     };
-    Ok(Package { manifest, script })
+    Ok(Package {
+        manifest,
+        source,
+        script,
+    })
 }
 
 /// When the package's files last changed.
@@ -390,6 +402,37 @@ fn source_events(m: &Manifest) -> (Vec<String>, Option<Duration>) {
     )
 }
 
+/// The next input: the presentation's, or a key a desktop sent.
+async fn next_input(
+    inputs: &mut tokio::sync::mpsc::UnboundedReceiver<Input>,
+    remote: &mut tokio::sync::mpsc::UnboundedReceiver<Input>,
+) -> Option<Input> {
+    tokio::select! {
+        i = inputs.recv() => i,
+        Some(i) = remote.recv() => Some(i),
+    }
+}
+
+/// Publish the newest model given to the returned sender, one at a time:
+/// a model superseded while one is being sent is skipped. Ends when the
+/// connection does.
+fn host_views(client: Arc<client::Client>) -> tokio::sync::watch::Sender<String> {
+    let (tx, mut rx) = tokio::sync::watch::channel(String::new());
+    tokio::spawn(async move {
+        while rx.changed().await.is_ok() {
+            let view = rx.borrow_and_update().clone();
+            let sent = client
+                .call(api::Request::AppsPublish(api::AppViewPublish { view }))
+                .await;
+            if let Err(client::ClientError::Rpc(_)) | Ok(_) = sent {
+                continue;
+            }
+            return;
+        }
+    });
+    tx
+}
+
 /// Run the package at `path` against the daemon at `endpoint`: connect,
 /// fetch, follow events, run commands for keys from `inputs`, and reload
 /// the package when its files change. `publish` gets the model whenever
@@ -418,9 +461,16 @@ pub async fn run(
     // An agentic pane's provider, chosen once; and its run in progress.
     crate::agent::setup(&mut app).await;
     let mut agent_run: Option<providers::Run> = None;
+    // A registered pane app is its pane's host: it publishes its model to
+    // the daemon, and keys typed in desktops come back as events.
+    let mut hosting: Option<tokio::sync::watch::Sender<String>> = None;
+    let (remote_tx, mut remote) = tokio::sync::mpsc::unbounded_channel::<Input>();
     loop {
         if dirty {
             publish(&app)?;
+            if let Some(h) = &hosting {
+                h.send_replace(app.to_published(&pkg.source));
+            }
             dirty = false;
         }
         let pushed = async {
@@ -456,7 +506,7 @@ pub async fn run(
                     }
                 }
             }
-            ev = inputs.recv() => {
+            ev = next_input(inputs, &mut remote) => {
                 dirty = true;
                 let name = match ev {
                     None | Some(Input::Quit) => return Ok(()),
@@ -593,7 +643,11 @@ pub async fn run(
             }
             p = pushed => match p {
                 Some(client::Pushed::Event { topic, payload, .. }) => {
-                    if let Ok(api::Notification::EventsBatch(b)) = api::Notification::decode(&topic, &payload)
+                    let n = api::Notification::decode(&topic, &payload);
+                    if let Ok(api::Notification::AppsInput(i)) = &n {
+                        let _ = remote_tx.send(Input::Key(i.key.clone()));
+                    }
+                    if let Ok(api::Notification::EventsBatch(b)) = n
                         && (b.gap.is_some() || !b.events.is_empty())
                     {
                         if crate::agent::filter_events(&mut app, &b.events) {
@@ -666,6 +720,9 @@ pub async fn run(
                     match connect(&endpoint, &mut registered, &watch, &app.manifest.methods()).await {
                         Ok(c) => {
                             *current.borrow_mut() = Some(c.client.clone());
+                            if registered && hosting.is_none() {
+                                hosting = Some(host_views(c.client.clone()));
+                            }
                             crate::agent::refresh_filters(&mut app, &c.client).await;
                             conn = Some(c);
                             app.link = Link::Live;

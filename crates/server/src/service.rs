@@ -345,9 +345,16 @@ pub async fn release_sizing(state: &State, clients: &[u64]) {
     }
 }
 
+/// The endpoint's topology, with its app panes marked.
+pub fn topology_of(state: &State, ep: &Endpoint) -> api::Topology {
+    let mut t = workspace_host::topology(&ep.name, &ep.tracker);
+    state.apps.annotate(&mut t);
+    t
+}
+
 /// Publish the endpoint's topology to watchers if it changed.
 pub fn publish_topology(state: &State, ep: &Endpoint) {
-    let topology = workspace_host::topology(&ep.name, &ep.tracker);
+    let topology = topology_of(state, ep);
     state.topology.send_if_modified(|current| {
         if current
             .as_ref()
@@ -516,7 +523,7 @@ impl api::Service for DaemonService {
             .await
             .map_err(|e| unavailable(format!("cannot read tmux: {e}")))?;
         publish_topology(&self.0, ep);
-        Ok(workspace_host::topology(&ep.name, &ep.tracker))
+        Ok(topology_of(&self.0, ep))
     }
 
     async fn tmux_size_window(&self, p: api::SizeWindow) -> Result<api::SizeResult, RpcError> {
@@ -1325,6 +1332,18 @@ impl api::Service for DaemonService {
 
     async fn collect_stop(&self, p: api::CollectRef) -> Result<api::CollectorStatus, RpcError> {
         crate::collectors::stop(&self.0, &p.name, p.delete).await
+    }
+
+    async fn apps_publish(&self, _: api::AppViewPublish) -> Result<api::Empty, RpcError> {
+        Err(for_a_connection("apps.publish"))
+    }
+
+    async fn apps_view(&self, p: api::AppViewQuery) -> Result<api::AppView, RpcError> {
+        self.0.apps.view(&p).await
+    }
+
+    async fn apps_input(&self, p: api::AppInput) -> Result<api::Empty, RpcError> {
+        self.0.apps.input(&p).map(|()| api::Empty {})
     }
 
     async fn filters_list(&self, _: api::Empty) -> Result<api::FilterList, RpcError> {

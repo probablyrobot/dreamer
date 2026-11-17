@@ -34,9 +34,56 @@ const PANE_INSET: f32 = 6.0;
 /// Command palette rows shown at once; the list scrolls with the selection.
 const PALETTE_ROWS: usize = 12;
 
-/// A visible pane: its view and the feed that keeps it current.
-struct PaneView {
-    shell: Entity<Shell>,
+/// A visible pane: a terminal view with the feed that keeps it current, or,
+/// for a pane whose program is a registered app host, the app drawn
+/// natively from the model its host publishes.
+enum PaneView {
+    Terminal(Entity<Shell>),
+    App {
+        view: Entity<crate::panel::AppPanel>,
+        instance: String,
+    },
+}
+
+impl PaneView {
+    fn shell(&self) -> Option<&Entity<Shell>> {
+        match self {
+            PaneView::Terminal(s) => Some(s),
+            PaneView::App { .. } => None,
+        }
+    }
+
+    fn focus(&self, cx: &gpui::App) -> FocusHandle {
+        match self {
+            PaneView::Terminal(s) => s.read(cx).focus.clone(),
+            PaneView::App { view, .. } => view.read(cx).focus.clone(),
+        }
+    }
+
+    fn element(&self) -> gpui::AnyView {
+        match self {
+            PaneView::Terminal(s) => s.clone().into(),
+            PaneView::App { view, .. } => view.clone().into(),
+        }
+    }
+
+    /// The app instance drawn; `None` for a terminal.
+    fn app(&self) -> Option<&str> {
+        match self {
+            PaneView::Terminal(_) => None,
+            PaneView::App { instance, .. } => Some(instance),
+        }
+    }
+}
+
+/// The app a pane's view draws instead of its terminal: the registered app
+/// whose host is the pane's program, for a pane of the local daemon (whose
+/// `apps.view` serves it). `None` draws the terminal.
+fn app_drawn<'a>(p: &'a api::Pane, via: &replica::Via) -> Option<&'a str> {
+    if *via != replica::Via::Local {
+        return None;
+    }
+    p.app.as_ref().map(|a| a.instance.as_str())
 }
 
 pub(crate) struct Workspace {
@@ -318,9 +365,10 @@ impl Workspace {
             return;
         };
         for (id, view) in &self.panes {
+            let Some(shell) = view.shell() else { continue };
             let shown = !self.undecorated.contains(id);
             let marks = feed.marks(*id);
-            view.shell.update(cx, |s, cx| s.set_marks(marks, shown, cx));
+            shell.update(cx, |s, cx| s.set_marks(marks, shown, cx));
         }
     }
 
@@ -627,7 +675,7 @@ impl Workspace {
         }
         self.palette = None;
         if let Some(view) = self.focused.and_then(|f| self.panes.get(&f)) {
-            let handle = view.shell.read(cx).focus.clone();
+            let handle = view.focus(cx);
             window.focus(&handle, cx);
         }
         cx.notify();
@@ -973,7 +1021,7 @@ impl Workspace {
     }
 
     pub(crate) fn pane_shell(&self, pane: u32) -> Option<Entity<Shell>> {
-        self.panes.get(&pane).map(|p| p.shell.clone())
+        self.panes.get(&pane).and_then(|p| p.shell().cloned())
     }
 
     pub(crate) fn topology(&self) -> Option<&api::Topology> {
@@ -1528,12 +1576,21 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A view for pane `p`: its app, drawn natively, when its program is a
+    /// registered app host; otherwise its terminal.
     fn open_pane(
         &self,
-        pane: u32,
+        p: &api::Pane,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<PaneView> {
+        let pane = p.id;
+        if let Some(instance) = app_drawn(p, &self.via) {
+            let (instance, socket) = (instance.to_owned(), self.socket.clone());
+            let view =
+                cx.new(|cx| crate::panel::AppPanel::follow(pane, instance.clone(), socket, cx));
+            return Some(PaneView::App { view, instance });
+        }
         let feed = Feed::start_via(self.socket.clone(), self.via.clone(), Some(pane), None)
             .ok()
             .map(Arc::new);
@@ -1554,7 +1611,7 @@ impl Workspace {
             })
             .detach();
         }
-        Some(PaneView { shell })
+        Some(PaneView::Terminal(shell))
     }
 
     /// Move keyboard focus to `pane`, and tell the panes' programs (focus
@@ -1564,8 +1621,8 @@ impl Workspace {
             return;
         }
         let report = |id: Option<u32>, gained: bool, cx: &mut Context<Self>| {
-            if let Some(view) = id.and_then(|i| self.panes.get(&i))
-                && let Some(feed) = view.shell.read(cx).feed.clone()
+            if let Some(shell) = id.and_then(|i| self.panes.get(&i)?.shell())
+                && let Some(feed) = shell.read(cx).feed.clone()
             {
                 feed.send(api::terminal_input::Event::Focus(api::FocusInput {
                     gained,
@@ -1576,7 +1633,7 @@ impl Workspace {
         self.focused = pane;
         report(pane, true, cx);
         if let Some(view) = pane.and_then(|p| self.panes.get(&p)) {
-            let handle = view.shell.read(cx).focus.clone();
+            let handle = view.focus(cx);
             window.focus(&handle, cx);
         }
     }
@@ -1630,7 +1687,27 @@ impl Workspace {
             }
         }
         let current = self.current.clone();
-        self.hidden.retain(|id, _| exists(id, &current));
+        // A view that no longer fits its pane goes: the pane's program
+        // became an app host, or its app went away.
+        let fits = |id: &u32, view: &PaneView| {
+            current
+                .as_ref()
+                .and_then(|t| t.panes.iter().find(|p| p.id == *id))
+                .is_some_and(|p| app_drawn(p, &self.via) == view.app())
+        };
+        self.hidden
+            .retain(|id, (view, _)| exists(id, &current) && fits(id, view));
+        let stale: Vec<u32> = self
+            .panes
+            .iter()
+            .filter(|(id, view)| !fits(id, view))
+            .map(|(id, _)| *id)
+            .collect();
+        let mut refocus = false;
+        for id in stale {
+            self.panes.remove(&id);
+            refocus |= self.focused == Some(id);
+        }
         while self.hidden.len() > HIDDEN_VIEWS {
             let Some(oldest) = self
                 .hidden
@@ -1648,9 +1725,14 @@ impl Workspace {
             }
             if let Some((view, _)) = self.hidden.remove(&p.id) {
                 self.panes.insert(p.id, view);
-            } else if let Some(view) = self.open_pane(p.id, window, cx) {
+            } else if let Some(view) = self.open_pane(p, window, cx) {
                 self.panes.insert(p.id, view);
             }
+        }
+        // The focused pane's view was replaced: the new one takes the keys.
+        if refocus && let Some(view) = self.focused.and_then(|f| self.panes.get(&f)) {
+            let handle = view.focus(cx);
+            window.focus(&handle, cx);
         }
         // Keep focus on a visible pane: tmux's active one if ours is gone.
         if self.focused.is_none_or(|f| !self.panes.contains_key(&f)) {
@@ -1684,7 +1766,14 @@ impl Workspace {
         let title = self
             .focused
             .and_then(|f| self.panes.get(&f))
-            .map(|p| p.shell.read(cx).wanted_title())
+            .map(|p| match p {
+                PaneView::Terminal(s) => s.read(cx).wanted_title(),
+                PaneView::App { view, instance } => view
+                    .read(cx)
+                    .shown
+                    .as_ref()
+                    .map_or_else(|| instance.clone(), |a| a.manifest.title.clone()),
+            })
             .unwrap_or_else(|| "Dreamer".into());
         let title = match self.via.host() {
             Some(host) => format!("{host}: {title}"),
@@ -1746,9 +1835,9 @@ impl Render for Workspace {
                     let behind = self
                         .panes
                         .values()
-                        .filter(|p| {
-                            p.shell
-                                .read(cx)
+                        .filter_map(PaneView::shell)
+                        .filter(|s| {
+                            s.read(cx)
                                 .feed
                                 .as_ref()
                                 .is_some_and(|f| f.status() != FeedStatus::Following)
@@ -1946,7 +2035,7 @@ impl Render for Workspace {
             .visible()
             .into_iter()
             .filter_map(|p| {
-                let shell = self.panes.get(&p.id)?.shell.clone();
+                let view = self.panes.get(&p.id)?.element();
                 let (left, top, cols, rows) = match (&w, zoomed) {
                     (Some(w), true) => (0, 0, w.width, w.height),
                     _ => (p.left, p.top, p.width, p.height),
@@ -1972,7 +2061,7 @@ impl Render for Workspace {
                                 }
                             });
                         })
-                        .child(shell)
+                        .child(view)
                         .children(mode_banners.remove(&id))
                         .when(Some(id) == focused && zoomable, |d| {
                             // Zoom control on the focused pane: shown only
@@ -4043,6 +4132,22 @@ mod tests {
             height,
             ..api::Pane::default()
         }
+    }
+
+    #[test]
+    fn a_pane_whose_program_is_an_app_host_draws_the_app() {
+        let local = replica::Via::Local;
+        let mut p = pane(1, 0, 0, 40, 10);
+        assert_eq!(app_drawn(&p, &local), None);
+        // Also once its host stopped: the last view, marked stale.
+        p.app = Some(api::PaneApp {
+            instance: "local.x-1".into(),
+            app_id: "local.x".into(),
+            live: false,
+        });
+        assert_eq!(app_drawn(&p, &local), Some("local.x-1"));
+        // A host's panes: its own daemon serves their views, not this one.
+        assert_eq!(app_drawn(&p, &replica::Via::Host("h".into())), None);
     }
 
     #[test]

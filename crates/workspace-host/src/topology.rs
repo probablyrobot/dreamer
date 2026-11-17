@@ -88,6 +88,8 @@ pub fn topology(endpoint: &str, tracker: &InventoryTracker) -> api::Topology {
                 mode: p.mode.clone(),
                 drawer_of: p.drawer_for.map(|s| s.0),
                 generation: tracker.generation(*id).map_or(0, |g| g.0),
+                // The daemon marks app panes (it knows their hosts).
+                app: None,
             }
         })
         .collect();
