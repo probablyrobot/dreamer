@@ -525,6 +525,24 @@ async fn search_is_bounded_in_matches_lines_and_bytes() {
         .await
         .expect("type");
     shown(&owner, pane, "d1one").await;
+    // The split pane is searched too once the daemon mirrors it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let Ok(Response::TerminalMirrors(m)) = owner
+            .call(Request::TerminalMirrors(api::TopologyParams::default()))
+            .await
+        else {
+            panic!("mirrors")
+        };
+        if m.mirrors.len() >= 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the split pane was never mirrored"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let agent = s.agent(api::ActLevel::Observe).await;
     let search = |q: api::TerminalQuery| async {
         match agent.call(Request::TerminalQuery(q)).await {
