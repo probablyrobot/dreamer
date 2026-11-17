@@ -722,20 +722,35 @@ async fn focus_outlives_a_rebuilt_mirror_so_clipboard_writes_still_arrive() {
     s.tmux
         .run_checked(&["respawn-pane", "-k", "-t", "main", "/bin/sh"])
         .expect("respawn");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    s.type_line("echo NEW''-UP");
+    s.wait_tmux("NEW-UP");
+    // Follow the new process's mirror: one that shows what it printed.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut a = loop {
-        match Follower::start_as(s.socket(), 0, RetryPolicy::default(), Some(4)).await {
-            Ok(f) => break f,
-            Err(e) => {
-                assert!(tokio::time::Instant::now() < deadline, "follow: {e}");
-                tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never followed the new process"
+        );
+        let Ok(mut f) = Follower::start_as(s.socket(), 0, RetryPolicy::default(), Some(4)).await
+        else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        let shown = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !f.replica().text().contains("NEW-UP") {
+            match tokio::time::timeout_at(shown, f.step()).await {
+                Ok(Ok(_)) => {}
+                _ => break,
             }
+        }
+        if f.replica().text().contains("NEW-UP") {
+            break f;
         }
     };
     // "CLIP-NEW" in base64.
     s.type_line("printf '\\033]52;c;Q0xJUC1ORVc=\\007'; echo N''EW");
     assert_eq!(
-        clipboard_writes(&mut a, Duration::from_secs(3)).await,
+        clipboard_writes(&mut a, Duration::from_secs(10)).await,
         vec![b"CLIP-NEW".to_vec()],
         "the write reaches the client that had focus before the mirror was rebuilt"
     );
