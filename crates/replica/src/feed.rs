@@ -62,6 +62,12 @@ pub enum ViewCommand {
     /// Scroll so this row (from the top of history) is in view, near the
     /// middle.
     Reveal(u64),
+    /// Scroll so this row (from the top of history) is the viewport's
+    /// first, as far as history allows.
+    Top(u64),
+    /// The text of history and screen, one row per line (copy mode works
+    /// on it).
+    Text(tokio::sync::oneshot::Sender<Option<String>>),
 }
 
 /// A search's outcome: the matches, `None` when a newer search replaced
@@ -108,6 +114,9 @@ pub struct Feed {
     clipboard: Arc<Mutex<Option<Vec<u8>>>>,
     /// This view's searches; a new one stops the one before.
     searches: crate::search::Searches,
+    target: Arc<Target>,
+    /// The pane is the local daemon's (not a host's).
+    local: bool,
     /// One signal means "a newer frame is waiting"; never more than one.
     pub wake: async_channel::Receiver<()>,
 }
@@ -132,6 +141,7 @@ impl Feed {
         pane: Option<u32>,
         launch: Option<client::Launch>,
     ) -> std::io::Result<Feed> {
+        let local = via == crate::Via::Local;
         let latest = Arc::new(Mutex::new(None));
         let meta = Arc::new(Mutex::new(crate::PaneMeta::default()));
         let bells = Arc::new(AtomicU64::new(0));
@@ -156,7 +166,7 @@ impl Feed {
         };
         let owner = Owner {
             via,
-            target,
+            target: target.clone(),
             meta: meta.clone(),
             bells: bells.clone(),
             clipboard: clipboard.clone(),
@@ -193,6 +203,8 @@ impl Feed {
             bells,
             clipboard,
             searches: crate::search::Searches::default(),
+            target,
+            local,
             wake,
         })
     }
@@ -242,6 +254,26 @@ impl Feed {
             reply,
         });
         rx.await.unwrap_or(Ok(None))
+    }
+
+    /// The text of the local mirror's history and screen, one row per
+    /// line, asked of the owner thread; never of the daemon.
+    pub async fn text(&self) -> Option<String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.view(ViewCommand::Text(tx));
+        rx.await.ok().flatten()
+    }
+
+    /// The local daemon's pane this feed follows, once known; `None` for
+    /// a host's pane.
+    pub fn pane(&self) -> Option<u32> {
+        if !self.local {
+            return None;
+        }
+        self.target
+            .known
+            .load(Ordering::Acquire)
+            .then(|| self.target.pane.load(Ordering::Acquire) as u32)
     }
 
     pub fn cancel_search(&self) {
@@ -458,7 +490,7 @@ impl Owner {
         use terminal_ghostty::selection::Autoscroll;
         let Some(Ok(before)) = f.frame() else {
             match command {
-                ViewCommand::Copy(reply) => drop(reply.send(None)),
+                ViewCommand::Copy(reply) | ViewCommand::Text(reply) => drop(reply.send(None)),
                 ViewCommand::Link { reply, .. } => drop(reply.send(None)),
                 ViewCommand::Search { reply, .. } => {
                     drop(reply.send(Err("the pane is not shown yet".into())));
@@ -470,6 +502,7 @@ impl Owner {
         let Some(engine) = f.replica_mut().engine_mut() else {
             return;
         };
+        let command_top = matches!(command, ViewCommand::Top(_));
         let applied = match command {
             ViewCommand::Scroll(to) => engine.scroll_viewport(to).is_ok(),
             ViewCommand::Follow if before.view.rows_back() > 0 => {
@@ -515,9 +548,17 @@ impl Owner {
                 }
                 false
             }
-            ViewCommand::Reveal(row) => {
+            ViewCommand::Text(reply) => {
+                let _ = reply.send(engine.screen_text().ok());
+                false
+            }
+            ViewCommand::Top(row) | ViewCommand::Reveal(row) => {
                 let v = before.view;
-                let top = row.saturating_sub(v.len / 2);
+                let top = if command_top {
+                    row
+                } else {
+                    row.saturating_sub(v.len / 2)
+                };
                 let top = top.min(v.total_rows.saturating_sub(v.len));
                 let delta = i64::try_from(top).unwrap_or(i64::MAX)
                     - i64::try_from(v.offset).unwrap_or(i64::MAX);

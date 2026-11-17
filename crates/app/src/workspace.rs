@@ -143,6 +143,8 @@ pub(crate) struct Workspace {
     restored: bool,
     bounds: Option<[f32; 4]>,
     _bounds: Option<gpui::Subscription>,
+    /// Activation reads tmux's key options again (the prefix layer).
+    _activation: Option<gpui::Subscription>,
     /// A save is running, and the arrangement changed since it began.
     saving: bool,
     save_dirty: bool,
@@ -222,6 +224,7 @@ impl Workspace {
             restored: false,
             bounds: None,
             _bounds: None,
+            _activation: None,
             saving: false,
             save_dirty: false,
             decorations: None,
@@ -2567,6 +2570,11 @@ pub(crate) fn open_via(
                             cx,
                         );
                     }));
+                    ws._activation = Some(cx.observe_window_activation(window, |_, window, cx| {
+                        if window.is_window_active() {
+                            crate::prefix::refresh(cx);
+                        }
+                    }));
                 });
                 ws
             },
@@ -2596,6 +2604,7 @@ pub(crate) fn open_via(
     {
         let copied = b.copied.clone();
         let _ = crate::TMUX_BUFFERS.set(b);
+        crate::prefix::refresh(cx);
         cx.spawn(async move |cx| {
             while let Ok(text) = copied.recv().await {
                 let _ = cx.update_window(any, |_, window, cx| {

@@ -512,6 +512,81 @@ impl api::Service for DaemonService {
             .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))
     }
 
+    async fn clipboard_list_tmux_buffers(
+        &self,
+        p: api::TmuxBufferListParams,
+    ) -> Result<api::TmuxBufferList, RpcError> {
+        let conn = self.tmux_conn(p.endpoint.as_deref()).await?;
+        let buffers = tmux_backend::ops::list_buffers(&conn)
+            .await
+            .map_err(|e| unavailable(format!("cannot list tmux buffers: {e}")))?;
+        Ok(api::TmuxBufferList {
+            buffers: buffers
+                .into_iter()
+                .map(|b| api::TmuxBufferInfo {
+                    name: b.name,
+                    size: b.size,
+                    sample: b.sample,
+                })
+                .collect(),
+        })
+    }
+
+    async fn tmux_key_options(
+        &self,
+        p: api::KeyOptionsParams,
+    ) -> Result<api::KeyOptions, RpcError> {
+        let conn = self.tmux_conn(p.endpoint.as_deref()).await?;
+        let o = tmux_backend::ops::key_options(&conn)
+            .await
+            .map_err(|e| unavailable(format!("cannot read tmux options: {e}")))?;
+        Ok(api::KeyOptions {
+            prefix: o.prefix,
+            prefix2: o.prefix2,
+            mode_keys: o.mode_keys,
+            mode_style: o.mode_style,
+        })
+    }
+
+    async fn tmux_prefix_key(&self, p: api::PrefixKey) -> Result<api::PrefixKeyResult, RpcError> {
+        if p.key.is_empty() || p.key.len() > 32 || p.key.contains(char::is_whitespace) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "the key must be one tmux key name, such as c, C-o, or PPage",
+            ));
+        }
+        self.check_endpoint(p.endpoint.as_deref())?;
+        {
+            let guard = self.0.endpoint().await?;
+            let ep = guard
+                .as_ref()
+                .ok_or_else(|| unavailable("endpoint not connected".into()))?;
+            if !ep
+                .tracker
+                .inventory()
+                .panes
+                .contains_key(&domain::TmuxPaneId(p.pane))
+            {
+                return Err(RpcError::new(
+                    code::NOT_FOUND,
+                    format!("pane %{} does not exist", p.pane),
+                ));
+            }
+        }
+        let cfg = &self.0.endpoint_config;
+        let config = tmux_backend::ConnectionConfig::new(
+            cfg.program.clone(),
+            cfg.socket.clone(),
+            String::new(),
+        );
+        let out = tmux_backend::ops::prefix_key(&config, domain::TmuxPaneId(p.pane), &p.key)
+            .await
+            .map_err(unavailable)?;
+        Ok(api::PrefixKeyResult {
+            mode_cancelled: out.mode_cancelled,
+        })
+    }
+
     async fn tmux_topology(&self, p: api::TopologyParams) -> Result<api::Topology, RpcError> {
         self.check_endpoint(p.endpoint.as_deref())?;
         let mut guard = self.0.endpoint().await?;
@@ -1595,6 +1670,19 @@ impl DaemonService {
             .await
             .clone()
             .ok_or_else(|| unavailable("no mirrors yet".into()))
+    }
+
+    /// The endpoint's control connection, connecting it first if needed.
+    async fn tmux_conn(
+        &self,
+        endpoint: Option<&str>,
+    ) -> Result<tmux_backend::Connection, RpcError> {
+        self.check_endpoint(endpoint)?;
+        let guard = self.0.endpoint().await?;
+        guard
+            .as_ref()
+            .map(|ep| ep.conn.clone())
+            .ok_or_else(|| unavailable("endpoint not connected".into()))
     }
 
     fn check_endpoint(&self, name: Option<&str>) -> Result<(), RpcError> {

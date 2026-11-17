@@ -73,7 +73,9 @@ fn targets(r: &Request) -> Targets {
             // Windows and sessions hold panes beyond any pane scope.
             _ => Targets::Everything,
         },
+        // A prefix binding is the user's own command: it can act anywhere.
         Request::TerminalMirrors(_)
+        | Request::TmuxPrefixKey(_)
         | Request::DrawerToggle(_)
         | Request::DaemonShutdown(_)
         | Request::HostsConnect(_)

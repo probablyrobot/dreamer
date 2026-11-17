@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 46 }
+version: { major: 1, minor: 47 }
 package: dreamer.v1
 
 types:
@@ -816,6 +816,42 @@ types:
     fields:
       - { n: 1, name: endpoint, type: string, optional: true, doc: Endpoint name; the default endpoint when absent. }
       - { n: 2, name: text, type: string, doc: "Becomes tmux's newest paste buffer (1 byte to 4 MiB)." }
+
+  - message: TmuxBufferListParams
+    fields:
+      - { n: 1, name: endpoint, type: string, optional: true, doc: Endpoint name; the default endpoint when absent. }
+
+  - message: TmuxBufferInfo
+    fields:
+      - { n: 1, name: name, type: string }
+      - { n: 2, name: size, type: u64, doc: Bytes. }
+      - { n: 3, name: sample, type: string, doc: "The start of the text, as tmux shows it (control characters escaped)." }
+
+  - message: TmuxBufferList
+    fields:
+      - { n: 1, name: buffers, type: TmuxBufferInfo, repeated: true, doc: Newest first. }
+
+  - message: KeyOptionsParams
+    fields:
+      - { n: 1, name: endpoint, type: string, optional: true, doc: Endpoint name; the default endpoint when absent. }
+
+  - message: KeyOptions
+    doc: "tmux's global key and copy-mode options, as tmux reports them. Read only: Dreamer never changes them."
+    fields:
+      - { n: 1, name: prefix, type: string, doc: "A tmux key name such as C-b, or None." }
+      - { n: 2, name: prefix2, type: string, doc: "A tmux key name, or None." }
+      - { n: 3, name: mode_keys, type: string, doc: "vi or emacs." }
+      - { n: 4, name: mode_style, type: string, doc: "As tmux reports it, for example bg=yellow,fg=black." }
+
+  - message: PrefixKey
+    fields:
+      - { n: 1, name: endpoint, type: string, optional: true, doc: Endpoint name; the default endpoint when absent. }
+      - { n: 2, name: pane, type: u32, doc: The pane the key is typed on. }
+      - { n: 3, name: key, type: string, doc: "One tmux key name (c, C-o, M-Up, PPage), typed after the prefix." }
+
+  - message: PrefixKeyResult
+    fields:
+      - { n: 1, name: mode_cancelled, type: string, optional: true, doc: "A mode the binding opened on the pane (copy-mode, tree-mode, ...), which was cancelled: tmux draws modes only for ordinary clients." }
 
   - message: DaemonEvent
     doc: "One entry of the daemon's event log: metadata only, never terminal content."
@@ -1797,6 +1833,9 @@ methods:
   - { method: tmux.size_window, params: SizeWindow, result: SizeResult, mutation: true, doc: "Size a tmux window for the client that owns its size (see SizeWindow)." }
   - { method: clipboard.read_tmux_buffer, params: TmuxBufferRead, result: TmuxBuffer, doc: "A tmux paste buffer's text: the newest, or one a clipboard.tmux_buffer event named." }
   - { method: clipboard.write_tmux_buffer, params: TmuxBufferWrite, result: Empty, mutation: true, doc: "Make text tmux's newest paste buffer, for tmux's own paste and other tmux clients. Not reported back as a clipboard.tmux_buffer event." }
+  - { method: clipboard.list_tmux_buffers, params: TmuxBufferListParams, result: TmuxBufferList, doc: "tmux's paste buffers, newest first, without their text." }
+  - { method: tmux.key_options, params: KeyOptionsParams, result: KeyOptions, doc: "tmux's prefix, prefix2, mode-keys, and mode-style." }
+  - { method: tmux.prefix_key, params: PrefixKey, result: PrefixKeyResult, mutation: true, doc: "Type tmux's prefix and then a key on a pane, as a person at an ordinary client would, so tmux's own prefix bindings run there." }
   - { method: tmux.watch, params: TopologyParams, result: TopologyUpdate, doc: "The current topology; afterwards `tmux.topology` events follow every change." }
   - { method: actions.submit, params: SubmitAction, result: ActionRecord, mutation: true, doc: "Run a typed action and report its observed outcome." }
   - { method: leases.acquire, params: LeaseAcquire, result: Lease, mutation: true, doc: "Hold a pane's interaction lease, so automated input to it is accepted until a person types there." }

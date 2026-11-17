@@ -211,6 +211,21 @@ impl Service for Fixed {
     ) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn clipboard_list_tmux_buffers(
+        &self,
+        _: api::TmuxBufferListParams,
+    ) -> Result<api::TmuxBufferList, RpcError> {
+        Ok(api::TmuxBufferList::default())
+    }
+    async fn tmux_key_options(
+        &self,
+        _: api::KeyOptionsParams,
+    ) -> Result<api::KeyOptions, RpcError> {
+        Ok(api::KeyOptions::default())
+    }
+    async fn tmux_prefix_key(&self, _: api::PrefixKey) -> Result<api::PrefixKeyResult, RpcError> {
+        Ok(api::PrefixKeyResult::default())
+    }
     async fn approvals_list(&self, _: Empty) -> Result<api::ApprovalList, RpcError> {
         Ok(api::ApprovalList::default())
     }
