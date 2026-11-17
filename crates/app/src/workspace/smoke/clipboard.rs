@@ -130,8 +130,9 @@ fn type_into(
 }
 
 /// Where cell (`col`, the middle of `row`) of a terminal pane is drawn, for
-/// the row that shows `line` last.
-fn cell_of(
+/// the row that shows `line` last. A pane that was never drawn cannot be
+/// pointed at: not run if the window stopped painting, else a failure.
+async fn cell_of(
     any: AnyWindowHandle,
     ws: &WeakEntity<Workspace>,
     cx: &mut AsyncApp,
@@ -150,7 +151,7 @@ fn cell_of(
     })
     .flatten();
     let Some((grid, row)) = found else {
-        fail(&format!("no row showing {line:?} in pane %{pane}"));
+        crate::stalled(any, cx, &format!("no row showing {line:?} in pane %{pane}")).await;
     };
     move |col: f32| {
         point(
@@ -262,7 +263,7 @@ async fn terminal(
     })
     .await;
     pause(cx, 200).await;
-    let at = cell_of(any, ws, cx, 0, WORDS);
+    let at = cell_of(any, ws, cx, 0, WORDS).await;
 
     // A drag over ALPHA: tmux's newest buffer at once (as marking text in
     // tmux does), the clipboard only on Copy (copy on select is off).
@@ -401,7 +402,7 @@ async fn terminal(
     // The middle button pastes tmux's newest buffer.
     tmux(daemon, &["set-buffer", "MIDDLE-TEXT"]);
     paste_probe(any, ws, cx, 0, "MIDDLE-READY", 23).await;
-    let at = cell_of(any, ws, cx, 0, "MIDDLE-READY");
+    let at = cell_of(any, ws, cx, 0, "MIDDLE-READY").await;
     dispatch(
         any,
         cx,
@@ -514,7 +515,7 @@ async fn drawer(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut Async
     })
     .await;
     pause(cx, 200).await;
-    let at = cell_of(any, ws, cx, pane, "DRAWER-OK");
+    let at = cell_of(any, ws, cx, pane, "DRAWER-OK").await;
     dispatch(
         any,
         cx,
