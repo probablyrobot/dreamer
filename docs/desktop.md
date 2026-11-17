@@ -355,7 +355,22 @@ Focus moves between terminal panes and app panes the same way:
 The desktop draws the tree's layout ([termapp.md](termapp.md#view-trees))
 natively: splits by their sizes with a divider, tabs with the active
 page, titled nodes in a frame that is highlighted while the node has
-the focus. Each table, list, and scroll node keeps its scroll position
+the focus.
+
+A `terminal` node ([termapp.md](termapp.md#terminal-and-image-components))
+is drawn with the same terminal renderer as a terminal pane, at the
+terminal font, from the desktop's own replica of the pane. The pane is
+followed on a thread of its own, as a terminal pane is, while the node is
+shown (not on a hidden tab). It is read only: keys, clicks, and the
+wheel never reach the pane shown. The pane is drawn from its top left
+and cut off at the node's edges. A node the host marked refused shows
+`refused:` and why, and the desktop does not follow that pane.
+
+An `image` node's file is read and decoded off the UI thread, then drawn
+at the image's size, shrunk to fit the node. Until then the node shows
+the image's name; when the file cannot be decoded, why. The desktop only
+reads the file the host resolved in the app's package, and only a PNG
+or JPEG of at most 8 MiB. Each table, list, and scroll node keeps its scroll position
 by its key when the tree changes, and a table or list scrolls to its
 selection only when the selection moves. A host that publishes no tree
 (an older one) is drawn from its model as before.

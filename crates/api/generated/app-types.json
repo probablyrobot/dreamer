@@ -5020,6 +5020,22 @@
         "props": {
           "lines": "unknown[]"
         }
+      },
+      {
+        "first": "pane",
+        "form": "content",
+        "name": "terminal",
+        "props": {
+          "pane": "number | string"
+        }
+      },
+      {
+        "first": "src",
+        "form": "content",
+        "name": "image",
+        "props": {
+          "src": "string"
+        }
       }
     ],
     "screen": {

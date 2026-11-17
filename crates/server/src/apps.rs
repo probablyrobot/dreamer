@@ -373,7 +373,15 @@ impl Apps {
     /// The host on connection `conn` published version `p.seq` of its
     /// pane's tree. A patch that does not follow the version kept is
     /// refused with a precondition error: the host sends the whole tree.
-    pub fn publish_tree(&self, conn: u64, p: &api::AppTreePublish) -> Result<(), RpcError> {
+    /// A version whose `terminal` node shows a pane `may_show` does not
+    /// allow (one outside the app's grant), unless the node is marked
+    /// refused, is refused and changes nothing.
+    pub fn publish_tree(
+        &self,
+        conn: u64,
+        p: &api::AppTreePublish,
+        may_show: &dyn Fn(u32) -> bool,
+    ) -> Result<(), RpcError> {
         let mut h = self
             .hosted
             .lock()
@@ -382,7 +390,9 @@ impl Apps {
             return Err(forbidden("only a registered app host publishes a view"));
         };
         let before = entry.tree.seq();
-        let result = entry.tree.publish(p.seq, &p.tree, &p.patch);
+        let result = entry
+            .tree
+            .publish_checked(p.seq, &p.tree, &p.patch, may_show);
         if entry.tree.seq() != before || result.is_ok() {
             entry.tree_revision = self.bump();
         }
@@ -391,6 +401,7 @@ impl Apps {
                 RpcError::new(code::PRECONDITION, format!("send the whole tree: {why}"))
             }
             view_tree::Refused::Invalid(why) => RpcError::new(code::INVALID_PARAMS, why),
+            view_tree::Refused::Forbidden(why) => forbidden(&why),
         })
     }
 
@@ -756,10 +767,14 @@ mod tests {
             patch: serde_json::to_string(&ops).expect("json"),
         };
         // Only the host's own connection publishes, and a patch needs a tree.
-        assert!(apps.publish_tree(4, &full(1, &frame("sh"))).is_err());
-        let early = apps.publish_tree(3, &patch(1, Vec::new()));
+        assert!(
+            apps.publish_tree(4, &full(1, &frame("sh")), &|_| true)
+                .is_err()
+        );
+        let early = apps.publish_tree(3, &patch(1, Vec::new()), &|_| true);
         assert_eq!(early.expect_err("no tree").code, code::PRECONDITION);
-        apps.publish_tree(3, &full(1, &frame("sh"))).expect("tree");
+        apps.publish_tree(3, &full(1, &frame("sh")), &|_| true)
+            .expect("tree");
         let q = |seq, after| api::AppTreeQuery {
             pane: 7,
             after,
@@ -775,7 +790,8 @@ mod tests {
             .expect("take");
 
         let ops = view_tree::diff(&frame("sh"), &frame("vim"));
-        apps.publish_tree(3, &patch(2, ops)).expect("patch");
+        apps.publish_tree(3, &patch(2, ops), &|_| true)
+            .expect("patch");
         let next = apps
             .tree(&q(reader.seq, first.revision))
             .await
@@ -787,8 +803,23 @@ mod tests {
             .expect("take");
         assert_eq!(reader.frame, Some(frame("vim")));
 
+        // A terminal node on a pane the host may not read is refused,
+        // and the tree stays as it was.
+        let mut shows = frame("vim");
+        shows.root.children.push(view_tree::Node::new(
+            "t",
+            view_tree::Kind::Terminal {
+                pane: 9,
+                refused: String::new(),
+            },
+        ));
+        let ops = view_tree::diff(&frame("vim"), &shows);
+        let shown = apps.publish_tree(3, &patch(3, ops), &|p| p != 9);
+        assert_eq!(shown.expect_err("pane 9").code, code::FORBIDDEN);
+        assert_eq!(apps.tree(&q(0, 0)).await.expect("tree").seq, 2);
+
         // A patch that skips a version is refused.
-        let skipped = apps.publish_tree(3, &patch(9, Vec::new()));
+        let skipped = apps.publish_tree(3, &patch(9, Vec::new()), &|_| true);
         assert_eq!(skipped.expect_err("skipped").code, code::PRECONDITION);
         // The host stops: the tree stays, not live.
         assert!(apps.closed(3));

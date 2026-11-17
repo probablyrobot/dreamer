@@ -571,16 +571,17 @@ fn load_preview(path: &Path, dir: &Path) -> Result<Previewed, String> {
 
 /// Run the process app at `path` against the daemon at `endpoint`. Input
 /// from `inputs` and from desktops goes to the program; `publish` gets
-/// every view to draw. Returns when the user quits (Ctrl-c, or `q` once
-/// the program has stopped) or the program exits successfully. With
-/// `preview`, it runs as a live [`Preview`].
+/// every view to draw, with what its `terminal` nodes show. Returns when
+/// the user quits (Ctrl-c, or `q` once the program has stopped) or the
+/// program exits successfully. With `preview`, it runs as a live
+/// [`Preview`].
 pub async fn run_process(
     path: PathBuf,
     endpoint: Endpoint,
     engine: Option<Engine>,
     preview: Option<Preview>,
     inputs: &mut mpsc::UnboundedReceiver<Input>,
-    publish: &mut dyn FnMut(&Frame) -> Result<(), String>,
+    publish: &mut dyn FnMut(&Frame, &crate::embeds::Embeds) -> Result<(), String>,
 ) -> Result<(), String> {
     run_process_with(
         path,
@@ -603,7 +604,7 @@ pub async fn run_process_with(
     engine: Option<Engine>,
     preview: Option<Preview>,
     inputs: &mut mpsc::UnboundedReceiver<Input>,
-    publish: &mut dyn FnMut(&Frame) -> Result<(), String>,
+    publish: &mut dyn FnMut(&Frame, &crate::embeds::Embeds) -> Result<(), String>,
     streams: &crate::bound::Streams,
 ) -> Result<(), String> {
     let mut follower = crate::bound::Follower::new(None);
@@ -629,6 +630,9 @@ pub async fn run_process_with(
         ..endpoint
     };
     let mut app = App::new(manifest.clone());
+    app.embeds.dir = Some(dir.clone());
+    // Reads the panes `terminal` nodes show, while connected.
+    let mut terminals: Option<crate::embeds::Follower> = None;
     let mut view: Option<Frame> = None;
     let mut stopped: Option<String> = None;
     let mut status: Option<String> = None;
@@ -670,12 +674,16 @@ pub async fn run_process_with(
                     (None, false) => format!("{}  | {what}", shown.status),
                 };
             }
+            app.embeds.mark(&mut shown);
             if let Some(c) = conn.as_ref()
                 && follower.sync(&c.client, &shown, streams).await.is_err()
             {
                 follower.reset();
             }
-            publish(&shown)?;
+            if let Some(f) = &terminals {
+                f.want(crate::embeds::panes_named(&shown));
+            }
+            publish(&shown, &app.embeds)?;
             if let Some(h) = &hosting {
                 h.send_replace(app.to_published(&source));
             }
@@ -696,9 +704,25 @@ pub async fn run_process_with(
                 None => std::future::pending().await,
             }
         };
+        let screens = async {
+            match terminals.as_mut() {
+                Some(f) => f.next().await,
+                None => std::future::pending().await,
+            }
+        };
         let mut lost: Option<String> = None;
         let mut input: Option<Input> = None;
         tokio::select! {
+            s = screens => match s {
+                Some((pane, screen)) => {
+                    if let crate::embeds::Screen::Refused(why) = &screen {
+                        status = Some(format!("terminal %{pane}: {why}"));
+                    }
+                    app.embeds.panes.insert(pane, screen);
+                    dirty = true;
+                }
+                None => terminals = None,
+            },
             i = inputs.recv() => match i {
                 None | Some(Input::Quit) => break,
                 Some(i) => input = Some(i),
@@ -855,6 +879,7 @@ pub async fn run_process_with(
                                     Err(e) => stopped = Some(e),
                                 }
                                 app = App::new(m.clone());
+                                app.embeds.dir = Some(dir.clone());
                                 methods = m.methods();
                                 (manifest, source, fixture, calls) = (m, text, fx, answers);
                             }
@@ -867,6 +892,8 @@ pub async fn run_process_with(
                 if conn.is_none() && !gave_up && now >= retry {
                     match connect(&endpoint, &mut registered, &[], &methods).await {
                         Ok(c) => {
+                            app.embeds.grant = crate::embeds::grant_of(&c.client).await;
+                            terminals = Some(crate::embeds::Follower::start(c.client.clone()));
                             if registered && hosting.is_none() {
                                 hosting = Some(host_views(c.client.clone()));
                                 hosting_tree = Some(host_trees(c.client.clone()));
@@ -933,6 +960,7 @@ pub async fn run_process_with(
         if let Some(why) = lost {
             conn = None;
             follower.reset();
+            terminals = None;
             if let Some(r) = running.as_ref() {
                 r.send(&HostMessage::Link {
                     live: false,
@@ -1035,7 +1063,15 @@ pub async fn preview_process(path: &Path, engine: Option<Engine>) -> Result<Fram
         }
     };
     r.stop().await;
-    result
+    // Its images, from the package; its panes wait for a daemon.
+    let embeds = crate::embeds::Embeds {
+        dir: Some(dir),
+        ..crate::embeds::Embeds::default()
+    };
+    result.map(|mut f| {
+        embeds.mark(&mut f);
+        f
+    })
 }
 
 /// Where a replayed app is after an event.
@@ -1270,7 +1306,7 @@ exit 3
         let (tx, mut inputs) = mpsc::unbounded_channel();
         let frames = std::rc::Rc::new(std::cell::RefCell::new(Vec::<Frame>::new()));
         let seen = frames.clone();
-        let mut publish = move |f: &Frame| {
+        let mut publish = move |f: &Frame, _: &crate::embeds::Embeds| {
             seen.borrow_mut().push(f.clone());
             Ok(())
         };

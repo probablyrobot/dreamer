@@ -337,6 +337,7 @@ pub async fn preview(path: &Path) -> Result<App, String> {
     let current: Current = Rc::default();
     let pkg = load_package(path, &current).await?;
     let mut app = App::new(pkg.manifest.clone());
+    app.embeds.dir = path.parent().map(Path::to_path_buf);
     crate::agent::setup_preview(&mut app);
     if app.manifest.is_tree() {
         for name in app.manifest.shown_sources() {
@@ -787,6 +788,9 @@ pub async fn run_with(
     let mut stamp = stamps(&path, &pkg.manifest);
     let (mut watch, mut refresh) = source_events(&pkg.manifest);
     let mut app = App::new(pkg.manifest.clone());
+    app.embeds.dir = path.parent().map(Path::to_path_buf);
+    // Reads the panes `terminal` nodes show, while connected.
+    let mut terminals: Option<crate::embeds::Follower> = None;
     let mut ticks = 0u32;
     let mut conn: Option<Conn> = None;
     let mut registered = false;
@@ -812,6 +816,7 @@ pub async fn run_with(
                 && let Err(why) = follower.sync(&c.client, f, streams).await
             {
                 conn = None;
+                terminals = None;
                 *current.borrow_mut() = None;
                 follower.reset();
                 app.link = Link::Stale(now_ms(), why);
@@ -821,11 +826,25 @@ pub async fn run_with(
             if let Some(h) = &hosting {
                 h.send_replace(app.to_published(&pkg.source));
             }
+            if let Some(f) = &terminals {
+                f.want(
+                    frame
+                        .as_ref()
+                        .map(crate::embeds::panes_named)
+                        .unwrap_or_default(),
+                );
+            }
             if let Some(h) = &hosting_tree {
                 h.send_replace(frame);
             }
             dirty = false;
         }
+        let screens = async {
+            match terminals.as_mut() {
+                Some(f) => f.next().await,
+                None => std::future::pending().await,
+            }
+        };
         let pushed = async {
             match conn.as_mut() {
                 Some(c) => c.pushed.recv().await,
@@ -841,6 +860,16 @@ pub async fn run_with(
         let mut lost: Option<String> = None;
         let mut refetch = false;
         tokio::select! {
+            s = screens => match s {
+                Some((pane, screen)) => {
+                    if let crate::embeds::Screen::Refused(why) = &screen {
+                        app.status = Some(format!("terminal %{pane}: {why}"));
+                    }
+                    app.embeds.panes.insert(pane, screen);
+                    dirty = true;
+                }
+                None => terminals = None,
+            },
             e = agent_events => {
                 dirty = true;
                 let ended = match e {
@@ -1023,6 +1052,8 @@ pub async fn run_with(
                     match connect(&endpoint, &mut registered, &watch, &app.manifest.methods()).await {
                         Ok(c) => {
                             *current.borrow_mut() = Some(c.client.clone());
+                            app.embeds.grant = crate::embeds::grant_of(&c.client).await;
+                            terminals = Some(crate::embeds::Follower::start(c.client.clone()));
                             if registered && hosting.is_none() {
                                 hosting = Some(host_views(c.client.clone()));
                                 hosting_tree = Some(host_trees(c.client.clone()));
@@ -1072,6 +1103,7 @@ pub async fn run_with(
         }
         if let Some(why) = lost {
             conn = None;
+            terminals = None;
             *current.borrow_mut() = None;
             follower.reset();
             app.link = Link::Stale(now_ms(), why);

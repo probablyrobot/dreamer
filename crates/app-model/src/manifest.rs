@@ -464,6 +464,8 @@ pub enum NodeType {
     Status,
     Transcript,
     Composer,
+    Terminal,
+    Image,
 }
 
 impl NodeType {
@@ -538,6 +540,8 @@ impl NodeType {
             NodeType::Status => "status",
             NodeType::Transcript => "transcript",
             NodeType::Composer => "composer",
+            NodeType::Terminal => "terminal",
+            NodeType::Image => "image",
         }
     }
 }
@@ -617,6 +621,12 @@ pub struct NodeSpec {
     /// a `source`.
     #[serde(default)]
     pub tap: Option<u32>,
+    /// Terminal: the tmux pane shown, by number (`3` for `%3`).
+    #[serde(default)]
+    pub pane: Option<u32>,
+    /// Image: a PNG or JPEG file in the package, by its path there.
+    #[serde(default)]
+    pub src: Option<String>,
 }
 
 impl NodeSpec {
@@ -845,6 +855,14 @@ impl Manifest {
         for p in self.tapped_panes() {
             if !panes.contains(&p) {
                 panes.push(p);
+            }
+        }
+        // The panes its `terminal` nodes show.
+        if self.is_tree() {
+            for p in self.nodes.values().filter_map(|n| n.pane) {
+                if !panes.contains(&p) {
+                    panes.push(p);
+                }
             }
         }
         Needs {
@@ -1415,6 +1433,39 @@ impl Manifest {
         }
         if n.kind.is_control() && !n.source.is_empty() {
             errors.push(format!("{at}.source: a {kind} holds its own value"));
+        }
+        let embed = matches!(n.kind, NodeType::Terminal | NodeType::Image);
+        if embed && !n.source.is_empty() {
+            errors.push(format!("{at}.source: a {kind} shows no data source"));
+        }
+        if n.pane.is_some() && n.kind != NodeType::Terminal {
+            errors.push(format!("{at}.pane: only a terminal shows a pane"));
+        }
+        if n.src.is_some() && n.kind != NodeType::Image {
+            errors.push(format!("{at}.src: only an image has a `src`"));
+        }
+        match n.kind {
+            NodeType::Terminal => {
+                if n.pane.is_none() {
+                    errors.push(format!("{at}.pane: a terminal names the pane it shows"));
+                }
+                let reads = self
+                    .methods()
+                    .iter()
+                    .any(|c| c == api::method::TERMINAL_READ || c == "terminal.*");
+                if !reads {
+                    errors.push(format!(
+                        "{at}: a terminal reads its pane; add `{}` to `capabilities`",
+                        api::method::TERMINAL_READ
+                    ));
+                }
+            }
+            NodeType::Image => {
+                if let Some(why) = view_tree::image::src_problem(n.src.as_deref().unwrap_or("")) {
+                    errors.push(format!("{at}.src: {why}"));
+                }
+            }
+            _ => {}
         }
         match n.kind {
             NodeType::Button if n.label.as_deref().is_none_or(str::is_empty) => {
@@ -2130,6 +2181,59 @@ columns = ["id"]
             errors
                 .iter()
                 .any(|e| e.contains("a tree needs schema_version = 2")),
+            "{errors:?}"
+        );
+    }
+
+    const EMBEDS: &str = r#"
+schema_version = 2
+id = "local.embeds"
+version = "0.1.0"
+title = "Embeds"
+capabilities = ["terminal.read"]
+root = "main"
+
+[nodes.main]
+type = "split"
+children = ["left", "right", "logo"]
+
+[nodes.left]
+type = "terminal"
+pane = 3
+
+[nodes.right]
+type = "terminal"
+pane = 7
+
+[nodes.logo]
+type = "image"
+src = "img/logo.png"
+"#;
+
+    #[test]
+    fn terminal_and_image_nodes_are_checked_and_their_panes_granted() {
+        let m = Manifest::parse(EMBEDS).expect("valid");
+        let needs = m.needs();
+        assert_eq!(needs.panes, [3, 7]);
+        assert!(!needs.all_panes);
+        assert_eq!(needs.methods, ["terminal.read"]);
+
+        let bad = EMBEDS
+            .replace("capabilities = [\"terminal.read\"]", "capabilities = []")
+            .replace("pane = 7\n", "")
+            .replace("img/logo.png", "../secret.png");
+        let errors = Manifest::parse(&bad).expect_err("invalid");
+        let has = |s: &str| errors.iter().any(|e| e.contains(s));
+        assert!(
+            has("nodes.left: a terminal reads its pane; add `terminal.read`"),
+            "{errors:?}"
+        );
+        assert!(
+            has("nodes.right.pane: a terminal names the pane it shows"),
+            "{errors:?}"
+        );
+        assert!(
+            has("nodes.logo.src: an image's `src` may not leave the app's package"),
             "{errors:?}"
         );
     }

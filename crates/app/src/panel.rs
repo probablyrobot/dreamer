@@ -31,6 +31,13 @@
 //! the tree node they land on, so they reach that node. In an app pane,
 //! tmux's prefix works as in a terminal pane: the key after it runs tmux's
 //! binding.
+//!
+//! A `terminal` node is drawn with the terminal renderer from a replica of
+//! its pane, followed on a thread of its own, read only: keys never go to
+//! the pane. A node the app host marked refused (its pane is outside the
+//! app's grant) shows the refusal and follows nothing. An `image` node's
+//! file, as the host resolved it in the app's package, is read and decoded
+//! off the UI thread and drawn once it is ready.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -43,6 +50,8 @@ use gpui::{
     MouseUpEvent, ParentElement, Pixels, Render, ScrollEvent, SharedString,
     StatefulInteractiveElement, Styled, UTF16Selection, Window, div, prelude::FluentBuilder, px,
 };
+use replica::feed::Feed;
+use terminal_ghostty::core::FrameSnapshot;
 use view_tree::rich::{self, Block as RichBlock, Role};
 use view_tree::{Direction, Frame as Tree, Kind, Node, Tone};
 
@@ -92,6 +101,50 @@ pub(crate) struct AppPanel {
     calls: tokio::sync::mpsc::UnboundedSender<api::Request>,
     /// Each transcript's scroll, following the newest.
     follow: std::cell::RefCell<HashMap<String, bound::Follow>>,
+    /// The daemon `terminal` nodes' panes are followed through.
+    socket: PathBuf,
+    /// The panes `terminal` nodes show, each followed by a feed of its own,
+    /// with the newest frame painted.
+    embedded: HashMap<u32, Embedded>,
+    /// `image` nodes' pictures, by the file the host resolved.
+    pictures: HashMap<String, Picture>,
+}
+
+/// A pane a `terminal` node shows.
+struct Embedded {
+    feed: Arc<Feed>,
+    frame: Option<Arc<FrameSnapshot>>,
+}
+
+/// An image file, read and decoded off the UI thread.
+#[derive(Clone)]
+enum Picture {
+    Loading,
+    Ready(Arc<gpui::RenderImage>),
+    Failed(String),
+}
+
+/// Read and decode the image file `path`: a PNG or JPEG of at most
+/// [`view_tree::image::MAX_BYTES`] and [`view_tree::image::MAX_SIDE`]
+/// pixels a side. Slow: never on the UI thread.
+fn load_picture(path: &str) -> Picture {
+    use view_tree::image::{MAX_BYTES, MAX_SIDE, sniff};
+    let read = || -> Result<Arc<gpui::RenderImage>, String> {
+        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        if !meta.is_file() || meta.len() > MAX_BYTES {
+            return Err(format!("larger than {} MiB", MAX_BYTES / (1024 * 1024)));
+        }
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let (_, w, h) = sniff(&bytes).ok_or("not a PNG or JPEG")?;
+        if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
+            return Err(format!("{w}x{h} is too large"));
+        }
+        terminal_render::decode_image(&bytes)
+    };
+    match read() {
+        Ok(image) => Picture::Ready(image),
+        Err(why) => Picture::Failed(why),
+    }
 }
 
 /// Lines selected with the mouse: the node they are in (by key; `AGENT`
@@ -134,6 +187,7 @@ impl AppPanel {
         let (wake_tx, wake) = async_channel::bounded::<()>(1);
         let streams = app_model::bound::Streams::default();
         let (l, e, p, st) = (latest.clone(), ended.clone(), path.clone(), streams.clone());
+        let daemon = socket.clone();
         let spawned = std::thread::Builder::new()
             .name("dreamer-panel".into())
             .spawn(move || {
@@ -200,6 +254,9 @@ impl AppPanel {
             // A panel's model answers for itself (a click on the node).
             calls: tokio::sync::mpsc::unbounded_channel().0,
             follow: Default::default(),
+            socket: daemon,
+            embedded: HashMap::new(),
+            pictures: HashMap::new(),
         }
     }
 
@@ -227,6 +284,7 @@ impl AppPanel {
             streams.clone(),
             seq.clone(),
         );
+        let daemon = socket.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("dreamer-app-pane-{pane}"))
             .spawn(move || {
@@ -282,6 +340,73 @@ impl AppPanel {
             streams,
             calls,
             follow: Default::default(),
+            socket: daemon,
+            embedded: HashMap::new(),
+            pictures: HashMap::new(),
+        }
+    }
+
+    /// Follow the panes `tree`'s `terminal` nodes show (not refused ones,
+    /// and only on shown tabs), and stop following the others; start
+    /// reading and decoding the images it shows that are new. Each feed
+    /// wakes the view when its pane has a new frame.
+    fn sync_embeds(&mut self, tree: &Tree, cx: &mut Context<Self>) {
+        let wanted = tree.panes();
+        self.embedded.retain(|p, _| wanted.contains(p));
+        for pane in wanted {
+            if self.embedded.contains_key(&pane) {
+                continue;
+            }
+            let Ok(feed) = Feed::start(self.socket.clone(), Some(pane), None) else {
+                continue;
+            };
+            let wake = feed.wake.clone();
+            self.embedded.insert(
+                pane,
+                Embedded {
+                    feed: Arc::new(feed),
+                    frame: None,
+                },
+            );
+            cx.spawn(async move |this, cx| {
+                while wake.recv().await.is_ok() {
+                    let alive = this.update(cx, |p, cx| {
+                        if let Some(e) = p.embedded.get_mut(&pane)
+                            && let Some(f) = e.feed.take()
+                        {
+                            e.frame = Some(f);
+                            cx.notify();
+                        }
+                    });
+                    if alive.is_err() {
+                        return;
+                    }
+                }
+            })
+            .detach();
+        }
+        let mut wanted_pictures = Vec::new();
+        images_in(&tree.root, &mut wanted_pictures);
+        self.pictures.retain(|p, _| wanted_pictures.contains(p));
+        for path in wanted_pictures {
+            if self.pictures.contains_key(&path) {
+                continue;
+            }
+            self.pictures.insert(path.clone(), Picture::Loading);
+            let task = cx.background_executor().spawn({
+                let path = path.clone();
+                async move { load_picture(&path) }
+            });
+            cx.spawn(async move |this, cx| {
+                let picture = task.await;
+                let _ = this.update(cx, |p, cx| {
+                    if let Some(slot) = p.pictures.get_mut(&path) {
+                        *slot = picture;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
         }
     }
 
@@ -1122,6 +1247,12 @@ impl AppPanel {
             .text_size(px(12.0))
             .text_color(c(t.text));
         let tree = self.tree.lock().ok().and_then(|t| t.clone());
+        // The host's tree; else the model's (a panel, or a host that
+        // publishes none); an agentic pane has no tree.
+        let tree = tree.or_else(|| self.shown.as_ref().and_then(App::frame));
+        if let Some(tree) = &tree {
+            self.sync_embeds(tree, cx);
+        }
         let Some(app) = self.shown.as_ref() else {
             return root
                 .child(
@@ -1132,9 +1263,6 @@ impl AppPanel {
                 )
                 .into_any_element();
         };
-        // The host's tree; else the model's (a panel, or a host that
-        // publishes none); an agentic pane has no tree.
-        let tree = tree.or_else(|| app.frame());
         let answer: bound::Answer = {
             let entity = cx.entity();
             std::rc::Rc::new(move |cx: &mut gpui::App, a: bound::Answering| {
@@ -1142,6 +1270,7 @@ impl AppPanel {
             })
         };
         let streams = self.streams.clone();
+        let term = crate::term_font();
         let (title, status, content) = match &tree {
             Some(tree) => (
                 tree.title.clone(),
@@ -1156,6 +1285,9 @@ impl AppPanel {
                             data,
                             answer: &answer,
                             follow: &self.follow,
+                            embedded: &self.embedded,
+                            pictures: &self.pictures,
+                            term: &term,
                         },
                         &mut self.scrolls,
                         &mut self.scrolled_to,
@@ -1233,6 +1365,9 @@ impl AppPanel {
             streams,
             calls: tokio::sync::mpsc::unbounded_channel().0,
             follow: Default::default(),
+            socket: PathBuf::new(),
+            embedded: HashMap::new(),
+            pictures: HashMap::new(),
         }
     }
 }
@@ -1379,6 +1514,82 @@ struct Draw<'a> {
     data: &'a app_model::bound::Data,
     answer: &'a bound::Answer,
     follow: &'a std::cell::RefCell<HashMap<String, bound::Follow>>,
+    embedded: &'a HashMap<u32, Embedded>,
+    pictures: &'a HashMap<String, Picture>,
+    term: &'a crate::TermFont,
+}
+
+/// The files of the images `n`'s subtree shows (not refused ones).
+fn images_in(n: &Node, out: &mut Vec<String>) {
+    if let Kind::Image { path, refused, .. } = &n.kind
+        && refused.is_empty()
+        && !path.is_empty()
+        && !out.contains(path)
+    {
+        out.push(path.clone());
+    }
+    for c in n.shown() {
+        images_in(c, out);
+    }
+}
+
+/// A `terminal` node: its pane's newest frame, clipped to the node, read
+/// only; or why it is not shown.
+fn terminal_node(pane: u32, refused: &str, dr: &Draw<'_>) -> gpui::AnyElement {
+    let t = dr.t;
+    let note = |text: String, color: u32| {
+        div()
+            .text_color(c(color))
+            .child(SharedString::from(text))
+            .into_any_element()
+    };
+    if !refused.is_empty() {
+        return note(format!("refused: {refused}"), t.danger);
+    }
+    match dr.embedded.get(&pane).and_then(|e| e.frame.clone()) {
+        Some(frame) => div()
+            .size_full()
+            .overflow_hidden()
+            .child(terminal_render::TerminalElement {
+                frame,
+                font: gpui::font(dr.term.family.clone()),
+                font_size: px(dr.term.size),
+                spacing: dr.term.spacing(),
+            })
+            .into_any_element(),
+        None => note(format!("pane %{pane}…"), t.muted),
+    }
+}
+
+/// An `image` node: the picture at its own size, shrunk to fit; or its
+/// name while it loads, or why it is not shown.
+fn image_node(
+    src: &str,
+    path: &str,
+    size: (u32, u32),
+    refused: &str,
+    dr: &Draw<'_>,
+) -> gpui::AnyElement {
+    let t = dr.t;
+    let note = |text: String, color: u32| {
+        div()
+            .text_color(c(color))
+            .child(SharedString::from(text))
+            .into_any_element()
+    };
+    if !refused.is_empty() {
+        return note(format!("image {src}: {refused}"), t.danger);
+    }
+    match dr.pictures.get(path) {
+        Some(Picture::Ready(image)) => gpui::img(image.clone())
+            .w(px(size.0 as f32))
+            .h(px(size.1 as f32))
+            .max_w_full()
+            .max_h_full()
+            .into_any_element(),
+        Some(Picture::Failed(why)) => note(format!("image {src}: {why}"), t.danger),
+        _ => note(format!("image {src}…"), t.muted),
+    }
 }
 
 /// A node of the view tree, drawn natively. Scroll handles are kept in
@@ -1638,6 +1849,14 @@ fn node(
         | Kind::Badge { .. }
         | Kind::Progress { .. }
         | Kind::Status { .. } => component(n, focused, t, lines, scrolls),
+        Kind::Terminal { pane, refused } => terminal_node(*pane, refused, dr),
+        Kind::Image {
+            src,
+            path,
+            width,
+            height,
+            refused,
+        } => image_node(src, path, (*width, *height), refused, dr),
     };
     match &n.title {
         Some(title) => div()
@@ -1673,7 +1892,8 @@ fn fixed_height(n: &Node) -> bool {
         | Kind::Badge { .. }
         | Kind::Progress { .. }
         | Kind::Status { .. }
-        | Kind::Composer { .. } => true,
+        | Kind::Composer { .. }
+        | Kind::Image { .. } => true,
         Kind::Row | Kind::Column => !n.children.is_empty() && n.children.iter().all(fixed_height),
         _ => false,
     }
@@ -2175,5 +2395,46 @@ field = "name"
             Some("Enter".into())
         );
         assert!(to_remote(7, Input::Redraw).is_none());
+    }
+
+    #[test]
+    fn only_shown_images_load_and_a_file_that_is_no_image_fails() {
+        let image = |key: &str, path: &str, refused: &str| {
+            Node::new(
+                key,
+                Kind::Image {
+                    src: "x.png".into(),
+                    path: path.into(),
+                    width: 1,
+                    height: 1,
+                    refused: refused.into(),
+                },
+            )
+        };
+        let mut tabs = Node::new("tabs", Kind::Tabs { active: 0 });
+        tabs.children = vec![image("shown", "/a.png", ""), image("hidden", "/b.png", "")];
+        let mut root = Node::new("main", Kind::Column);
+        root.children = vec![
+            tabs,
+            image("refused", "/c.png", "outside"),
+            image("same", "/a.png", ""),
+        ];
+        let mut out = Vec::new();
+        images_in(&root, &mut out);
+        assert_eq!(out, ["/a.png"]);
+
+        let dir = std::env::temp_dir().join(format!("panel-picture-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let fake = dir.join("fake.png");
+        std::fs::write(&fake, b"not an image").expect("write");
+        let Picture::Failed(why) = load_picture(&fake.display().to_string()) else {
+            panic!("decoded a text file");
+        };
+        assert_eq!(why, "not a PNG or JPEG");
+        assert!(matches!(
+            load_picture(&dir.join("none.png").display().to_string()),
+            Picture::Failed(_)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

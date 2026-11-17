@@ -54,6 +54,9 @@ pub struct App {
     /// A tree's transcripts and composers: their own state, and what they
     /// ask of the daemon ([`App::take_asks`]).
     pub sessions: crate::session::SessionNodes,
+    /// What `terminal` and `image` nodes show: the panes' screens, the
+    /// grant, and the package directory.
+    pub embeds: crate::embeds::Embeds,
 }
 
 /// Something an input component did: a button pressed, an input's text
@@ -227,6 +230,7 @@ impl App {
             values: BTreeMap::new(),
             events: Vec::new(),
             sessions: crate::session::SessionNodes::default(),
+            embeds: crate::embeds::Embeds::default(),
         }
         .with_form()
         .with_focus()
@@ -734,12 +738,14 @@ impl App {
                 .then(|| "view".to_owned());
             (self.data_node("view", v, &self.rows, self.selected), focus)
         };
-        Some(Frame {
+        let mut frame = Frame {
             title,
             status: self.status_text(),
             focus,
             root,
-        })
+        };
+        self.embeds.mark(&mut frame);
+        Some(frame)
     }
 
     fn tree_node(&self, key: &str, depth: usize) -> Option<Node> {
@@ -752,6 +758,25 @@ impl App {
             Node::new(key, self.component(key, spec))
         } else if spec.kind.is_session() || spec.tap.is_some() {
             self.session_node(key, spec)
+        } else if spec.kind == NodeType::Terminal {
+            Node::new(
+                key,
+                Kind::Terminal {
+                    pane: spec.pane.unwrap_or_default(),
+                    refused: String::new(),
+                },
+            )
+        } else if spec.kind == NodeType::Image {
+            Node::new(
+                key,
+                Kind::Image {
+                    src: spec.src.clone().unwrap_or_default(),
+                    path: String::new(),
+                    width: 0,
+                    height: 0,
+                    refused: String::new(),
+                },
+            )
         } else if let Some(v) = spec.view() {
             let rows = self.sources.get(&v.source).map_or(&[][..], Vec::as_slice);
             let selected = self.selection.get(key).copied().unwrap_or(0);
@@ -1233,6 +1258,7 @@ impl App {
             values: BTreeMap::new(),
             events: Vec::new(),
             sessions: crate::session::SessionNodes::default(),
+            embeds: crate::embeds::Embeds::default(),
         })
     }
 }

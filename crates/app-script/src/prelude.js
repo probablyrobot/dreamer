@@ -230,6 +230,8 @@
     input: content("input", "value", { value: "" }),
     select: content("select", "options", { options: [] }),
     toggle: content("toggle", "label", { label: "", on: false }),
+    terminal: content("terminal", "pane"),
+    image: content("image", "src", { src: "" }),
     table(o) {
       o = opts(o);
       const columns = (o.columns || []).map(String);
@@ -299,6 +301,8 @@
     input: { label: "", value: "", placeholder: "" },
     select: { label: "", options: [], selected: 0 },
     toggle: { label: "", on: false },
+    terminal: { pane: undefined },
+    image: { src: "" },
   };
   const ON = ["onPress", "onChange", "onSubmit", "onEnter", "onSelect"];
 
@@ -321,9 +325,19 @@
       if (n.type === "select" && f === "selected" && n.value !== undefined) {
         v = Math.max(0, (n.options || []).map(String).indexOf(String(n.value)));
       }
+      if (f === "pane" && (v === undefined || v === null)) {
+        throw new TypeError("view: a terminal needs `pane`, the pane it shows");
+      }
       if (v === undefined) continue;
-      if (f === "label" || f === "text" || f === "value" || f === "placeholder" || f === "language") {
+      if (f === "label" || f === "text" || f === "value" || f === "placeholder" || f === "language" || f === "src") {
         v = String(v);
+      } else if (f === "pane") {
+        // A pane by number, or by its tmux name: 3 or "%3".
+        const p = typeof v === "string" ? Number(v.replace(/^%/, "")) : Number(v);
+        if (!Number.isInteger(p) || p < 0 || p > 0xffffffff) {
+          throw new TypeError("view: a terminal's `pane` is a pane number, not `" + cell(v) + "`");
+        }
+        v = p;
       } else if (f === "options" || f === "cells" || f === "columns") {
         v = Array.from(v, String);
       } else if (f === "selected" && (n.type === "table" || n.type === "list")) {

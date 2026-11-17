@@ -785,6 +785,19 @@ pub fn rgba_image(width: u32, height: u32, mut rgba: Vec<u8>) -> Option<Arc<Rend
     Some(Arc::new(RenderImage::new(smallvec::smallvec![frame])))
 }
 
+/// Decode a PNG or JPEG file's bytes into a GPUI image. Slow for a large
+/// image: call it off the UI thread.
+pub fn decode_image(bytes: &[u8]) -> Result<Arc<RenderImage>, String> {
+    let format = image::guess_format(bytes).map_err(|e| e.to_string())?;
+    if !matches!(format, image::ImageFormat::Png | image::ImageFormat::Jpeg) {
+        return Err("not a PNG or JPEG".into());
+    }
+    let decoded = image::load_from_memory_with_format(bytes, format).map_err(|e| e.to_string())?;
+    let rgba = decoded.into_rgba8();
+    let (w, h) = rgba.dimensions();
+    rgba_image(w, h, rgba.into_raw()).ok_or_else(|| "an image of no size".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -921,5 +934,21 @@ mod tests {
         };
         c.cursor = Some(own);
         assert_eq!(cursor_color(&c), own, "the scheme's own");
+    }
+
+    #[test]
+    fn a_png_decodes_and_other_formats_do_not() {
+        let mut bytes = Vec::new();
+        image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 0, 255, 255])
+            .expect("pixels")
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("encode");
+        let decoded = decode_image(&bytes).expect("a PNG");
+        assert_eq!(decoded.size(0).width.0, 2);
+        assert!(decode_image(b"GIF89a....").is_err());
+        assert!(decode_image(&bytes[..20]).is_err(), "a cut file");
     }
 }

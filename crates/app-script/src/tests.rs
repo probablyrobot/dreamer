@@ -359,3 +359,47 @@ async fn the_declared_ui_builders_are_the_preludes_and_make_valid_nodes() {
         }
     }
 }
+
+#[tokio::test]
+async fn terminal_and_image_nodes_name_a_pane_and_a_file() {
+    let js = r#"
+import { app, ui } from "dreamer";
+app({
+  view() {
+    return ui.row({ key: "main", children: [
+      ui.terminal({ key: "a", pane: 3 }),
+      ui.terminal("%7", { key: "b" }),
+      ui.image("img/logo.png", { key: "logo" }),
+    ]});
+  },
+});
+"#;
+    let mut h = Host::start(js, &[], Limits::default());
+    h.until("drew", |h| h.view.is_some()).await;
+    let kind = |k: &str| {
+        h.view
+            .as_ref()
+            .and_then(|v| v.root.find(k))
+            .map(|n| n.kind.clone())
+    };
+    assert_eq!(
+        kind("a"),
+        Some(Kind::Terminal {
+            pane: 3,
+            refused: String::new()
+        })
+    );
+    assert!(matches!(kind("b"), Some(Kind::Terminal { pane: 7, .. })));
+    assert!(matches!(kind("logo"), Some(Kind::Image { src, .. }) if src == "img/logo.png"));
+
+    // A terminal without a pane is a mistake in the view.
+    let mut bad = Host::start(
+        r#"import { app, ui } from "dreamer"; app({ view: () => ui.terminal({}) });"#,
+        &[],
+        Limits::default(),
+    );
+    match bad.until("failed", |_| false).await {
+        Some(EngineOut::Failed(why)) => assert!(why.contains("needs `pane`"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
