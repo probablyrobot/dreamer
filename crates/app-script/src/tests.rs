@@ -195,8 +195,10 @@ app({
   view() { return ui.button({ key: "b", label: "spin", onPress() { for (;;) {} } }); },
 });
 "#;
+    // Long enough that loading and the first view finish in time under
+    // emulation, so only the endless handler runs into it.
     let limits = Limits {
-        call: Duration::from_millis(100),
+        call: Duration::from_millis(750),
         ..Limits::default()
     };
     let mut h = Host::start(js, &[], limits);
@@ -205,11 +207,11 @@ app({
     h.key("Enter");
     match h.until("stopped", |_| false).await {
         Some(EngineOut::Failed(why)) => {
-            assert!(why.contains("a handler ran longer than 100 ms"), "{why}");
+            assert!(why.contains("a handler ran longer than 750 ms"), "{why}");
         }
         other => panic!("{other:?}"),
     }
-    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(started.elapsed() < Duration::from_secs(10));
 }
 
 #[tokio::test]
