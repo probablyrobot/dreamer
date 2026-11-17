@@ -36,6 +36,7 @@ mod tmux_keys;
 
 use theme::{c, ca};
 mod bench_gui;
+mod clip;
 mod workspace;
 
 use std::process::ExitCode;
@@ -502,7 +503,7 @@ impl Shell {
         cx.spawn(async move |_, cx| {
             if let Some(text) = feed.selection_text().await {
                 to_tmux_buffer(&text);
-                cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)));
+                cx.update(|cx| clip::write(cx, text));
             }
         })
         .detach();
@@ -522,9 +523,9 @@ impl Shell {
             to_tmux_buffer(&text);
             cx.update(|cx| {
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                cx.write_to_primary(gpui::ClipboardItem::new_string(text.clone()));
+                clip::write_primary(cx, text.clone());
                 if live::with(|l| l.copy_on_select).unwrap_or(false) {
-                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    clip::write(cx, text);
                 }
             });
         })
@@ -556,7 +557,7 @@ impl Shell {
         let Some(feed) = self.feed.clone() else {
             return;
         };
-        if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+        if let Some(text) = clip::read(cx) {
             feed.send(api::terminal_input::Event::Paste(api::PasteInput {
                 data: text.into_bytes(),
                 ..api::PasteInput::default()
@@ -805,7 +806,7 @@ impl Shell {
         let (from, write) = live::with(|l| (l.clipboard_tmux.from_tmux(), l.clipboard))
             .unwrap_or((true, workspace_config::ClipboardWrite::Focused));
         if from && write != workspace_config::ClipboardWrite::Deny {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            clip::write(cx, text);
         }
     }
 
@@ -1040,7 +1041,9 @@ impl Shell {
         let allowed = match live::with(|l| l.clipboard).unwrap_or_default() {
             ClipboardWrite::Deny => false,
             ClipboardWrite::Allow => true,
-            ClipboardWrite::Focused => window.is_window_active() || self.smoke != Smoke::Off,
+            ClipboardWrite::Focused => {
+                window.is_window_active() || self.smoke != Smoke::Off || clip::in_memory()
+            }
         };
         if !allowed {
             return;
@@ -1051,9 +1054,7 @@ impl Shell {
             }
             return;
         }
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-            String::from_utf8_lossy(&text).into_owned(),
-        ));
+        clip::write(cx, String::from_utf8_lossy(&text).into_owned());
     }
 
     /// The window title follows the pane: its title, else its working
@@ -1684,6 +1685,8 @@ struct Args {
     workspace: bool,
     /// The workspace smoke's second run: check the restored arrangement.
     restore: bool,
+    /// The clipboard smoke: copy and paste in every kind of pane.
+    clipboard: bool,
     /// Parts of the workspace to open at start (`sidebar`, `palette`).
     open: Vec<String>,
     /// `dreamerd` options for a daemon started on demand.
@@ -1717,6 +1720,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--smoke-workspace" => {
                 a.smoke = true;
                 a.workspace = true;
+            }
+            "--smoke-clipboard" => {
+                a.smoke = true;
+                a.workspace = true;
+                a.clipboard = true;
             }
             "--smoke-workspace-restore" => {
                 a.smoke = true;
@@ -1802,6 +1810,8 @@ fn main() -> ExitCode {
     };
     let backend = display_backend();
     if args.smoke {
+        // No smoke run reads or replaces what the user copied.
+        clip::use_memory();
         println!("smoke: backend {backend}");
         if backend == "headless" {
             // A headless platform would "present" frames without drawing.
@@ -1905,7 +1915,12 @@ fn main() -> ExitCode {
                 eprintln!("error: --smoke-remote needs --host NAME");
                 std::process::exit(2);
             }
-            let smoke = args.smoke.then(|| (args.daemon.clone(), args.restore));
+            let run = match (args.restore, args.clipboard) {
+                (true, _) => workspace::SmokeRun::Restore,
+                (false, true) => workspace::SmokeRun::Clipboard,
+                (false, false) => workspace::SmokeRun::Workspace,
+            };
+            let smoke = args.smoke.then(|| (args.daemon.clone(), run));
             if let Err(e) = workspace::open(cx, launch, smoke, args.open.clone()) {
                 eprintln!("error: {e}");
                 std::process::exit(1);

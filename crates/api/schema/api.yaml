@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 49 }
+version: { major: 1, minor: 50 }
 package: dreamer.v1
 
 types:
@@ -823,7 +823,11 @@ types:
   - message: AppInput
     fields:
       - { n: 1, name: pane, type: u32 }
-      - { n: 2, name: key, type: string, doc: "A key by the app model's names: a character, Enter, Esc, Tab, Up, Ctrl-c, F2, ..." }
+      - { n: 2, name: key, type: string, doc: "A key by the app model's names: a character, Enter, Esc, Tab, Up, Ctrl-c, F2, ... Empty when the input is one of the fields below; exactly one is given." }
+      - { n: 3, name: text, type: string, optional: true, doc: "Text for the view's focused input (a text or number field, a prompt) as one edit: text committed by the platform's text input (IME) or pasted. Line breaks become spaces and other control characters are dropped. A view with no focused input ignores it, so pasted text never runs a command." }
+      - { n: 4, name: select, type: u32, optional: true, doc: "A click: select this row of a table or list, or focus this form field, by index." }
+      - { n: 5, name: scroll, type: i32, optional: true, doc: "Wheel steps: positive moves a table's or list's selection down, negative up." }
+      - { n: 6, name: node, type: string, optional: true, doc: "In a view tree (manifest version 2), the node a click or wheel steps are for, by key; the host focuses it first. Without it they go to the focused node. Only with select or scroll." }
 
   # ---- events -------------------------------------------------------------
 
@@ -2032,7 +2036,7 @@ methods:
   - { method: agent.sessions.close, params: AgentSessionRef, result: AgentSession, mutation: true, doc: "End the harness process and close the session; its transcript stays." }
   - { method: apps.publish, params: AppViewPublish, result: Empty, mutation: true, doc: "A registered app host publishes its current view for its pane; only the newest is kept." }
   - { method: apps.view, params: AppViewQuery, result: AppView, doc: "The view an app pane's host published last, waiting for a newer one (owner only)." }
-  - { method: apps.input, params: AppInput, result: Empty, mutation: true, doc: "Send a key to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only)." }
+  - { method: apps.input, params: AppInput, result: Empty, mutation: true, doc: "Send a key, text, a click, or wheel steps to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only)." }
   - { method: memory.recall, params: MemoryRecall, result: MemoryItems, doc: "Memories that match words, best first, from one scope or every scope the context reaches." }
   - { method: memory.remember, params: MemoryRemember, result: MemoryItem, mutation: true, doc: "Keep a new memory; the reply carries its id." }
   - { method: memory.list, params: MemoryListQuery, result: MemoryItems, doc: "Every memory in a scope, newest first, and the files that could not be read." }
@@ -2054,4 +2058,4 @@ notifications:
   - { topic: messages.deliver, payload: MessageDelivery, doc: "A message for a messages.subscribe subscription." }
   - { topic: taps.data, payload: TapData, doc: "Output of a taps.subscribe subscription, for one pane." }
   - { topic: agent.sessions.events, payload: AgentSessionEvents, doc: "Events of a followed agent session, in order." }
-  - { topic: apps.input, payload: AppInput, doc: "A key for this registered app host, sent by the user's desktop (apps.input)." }
+  - { topic: apps.input, payload: AppInput, doc: "A key, text, click, or wheel steps for this registered app host, sent by the user's desktop (apps.input)." }

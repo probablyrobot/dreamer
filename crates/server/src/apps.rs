@@ -78,11 +78,15 @@ struct Hosted {
     tree: view_tree::Kept,
     tree_revision: u64,
     /// Keys for the host, while it is connected.
-    keys: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    keys: Option<tokio::sync::mpsc::UnboundedSender<api::AppInput>>,
 }
 
 /// The longest key name `apps.input` takes.
 const MAX_KEY: usize = 32;
+/// Longest view tree node key (the manifest allows 64).
+const MAX_NODE: usize = 64;
+/// Longest text one `apps.input` carries (a paste).
+const MAX_TEXT: usize = 64 * 1024;
 /// How long `apps.view` waits by default, and at most.
 const VIEW_WAIT_MS: u32 = 20_000;
 const VIEW_WAIT_MAX_MS: u32 = 60_000;
@@ -316,14 +320,14 @@ impl Apps {
     }
 
     /// The registered app `instance` hosts pane `pane` on connection
-    /// `conn`. Returns the keys `apps.input` sends it.
+    /// `conn`. Returns what `apps.input` sends it.
     pub fn host(
         &self,
         pane: u32,
         instance: &str,
         app_id: &str,
         conn: u64,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+    ) -> tokio::sync::mpsc::UnboundedReceiver<api::AppInput> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         if let Ok(mut h) = self.hosted.lock() {
             let revision = self.bump();
@@ -507,11 +511,9 @@ impl Apps {
         }
     }
 
-    /// Send a key to the pane's host.
+    /// Send a key, text, a click, or wheel steps to the pane's host.
     pub fn input(&self, i: &api::AppInput) -> Result<(), RpcError> {
-        if i.key.is_empty() || i.key.len() > MAX_KEY || i.key.chars().any(char::is_control) {
-            return Err(RpcError::new(code::INVALID_PARAMS, "not a key name"));
-        }
+        check_input(i)?;
         let h = self
             .hosted
             .lock()
@@ -519,7 +521,7 @@ impl Apps {
         let sent = h
             .get(&i.pane)
             .and_then(|e| e.keys.as_ref())
-            .is_some_and(|k| k.send(i.key.clone()).is_ok());
+            .is_some_and(|k| k.send(i.clone()).is_ok());
         if sent {
             Ok(())
         } else {
@@ -529,6 +531,45 @@ impl Apps {
             ))
         }
     }
+}
+
+/// An app input is exactly one of a key name, text, a click, or wheel
+/// steps, within bounds.
+fn check_input(i: &api::AppInput) -> Result<(), RpcError> {
+    let given = usize::from(!i.key.is_empty())
+        + usize::from(i.text.is_some())
+        + usize::from(i.select.is_some())
+        + usize::from(i.scroll.is_some());
+    if given != 1 {
+        return Err(RpcError::new(
+            code::INVALID_PARAMS,
+            "give exactly one of key, text, select, or scroll",
+        ));
+    }
+    if !i.key.is_empty() && (i.key.len() > MAX_KEY || i.key.chars().any(char::is_control)) {
+        return Err(RpcError::new(code::INVALID_PARAMS, "not a key name"));
+    }
+    if i.text
+        .as_ref()
+        .is_some_and(|t| t.is_empty() || t.len() > MAX_TEXT)
+    {
+        return Err(RpcError::new(
+            code::INVALID_PARAMS,
+            format!("text must be 1 to {MAX_TEXT} bytes"),
+        ));
+    }
+    if let Some(n) = &i.node {
+        if i.select.is_none() && i.scroll.is_none() {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "node goes with select or scroll",
+            ));
+        }
+        if n.is_empty() || n.len() > MAX_NODE || n.chars().any(char::is_control) {
+            return Err(RpcError::new(code::INVALID_PARAMS, "not a node key"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -583,9 +624,58 @@ mod tests {
         apps.input(&api::AppInput {
             pane: 7,
             key: "Enter".into(),
+            ..api::AppInput::default()
         })
         .expect("input");
-        assert_eq!(keys.recv().await.as_deref(), Some("Enter"));
+        assert_eq!(keys.recv().await.map(|i| i.key).as_deref(), Some("Enter"));
+        // Pasted text goes as it is, one input; never with a key too.
+        let text = api::AppInput {
+            pane: 7,
+            text: Some("two words".into()),
+            ..api::AppInput::default()
+        };
+        apps.input(&text).expect("text");
+        assert_eq!(keys.recv().await, Some(text));
+        // A click on a row of a view tree's node names the node.
+        let click = api::AppInput {
+            pane: 7,
+            select: Some(2),
+            node: Some("names".into()),
+            ..api::AppInput::default()
+        };
+        apps.input(&click).expect("click");
+        assert_eq!(keys.recv().await, Some(click));
+        for bad in [
+            api::AppInput {
+                pane: 7,
+                ..api::AppInput::default()
+            },
+            api::AppInput {
+                pane: 7,
+                key: "a".into(),
+                select: Some(1),
+                ..api::AppInput::default()
+            },
+            api::AppInput {
+                pane: 7,
+                text: Some(String::new()),
+                ..api::AppInput::default()
+            },
+            api::AppInput {
+                pane: 7,
+                key: "\u{1b}[A".into(),
+                ..api::AppInput::default()
+            },
+            // A node key names where a click or wheel steps go, nothing else.
+            api::AppInput {
+                pane: 7,
+                key: "a".into(),
+                node: Some("left".into()),
+                ..api::AppInput::default()
+            },
+        ] {
+            assert!(apps.input(&bad).is_err(), "{bad:?}");
+        }
 
         // The host's connection closes: the last view stays, not live, and
         // keys reach nothing.
@@ -596,6 +686,7 @@ mod tests {
         let key = api::AppInput {
             pane: 7,
             key: "a".into(),
+            ..api::AppInput::default()
         };
         assert!(apps.input(&key).is_err());
         let mut t = topology(&[7]);

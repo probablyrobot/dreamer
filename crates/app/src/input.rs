@@ -174,26 +174,29 @@ pub fn is_palette_shortcut(k: &Keystroke) -> bool {
     k.key == "p" && primary && m.shift && !m.alt
 }
 
+/// The clipboard shortcuts: Cmd-C and Cmd-V on macOS, Ctrl-Shift-C and
+/// Ctrl-Shift-V elsewhere (plain Ctrl-C belongs to the program).
+fn clipboard_intent(k: &Keystroke) -> Option<KeyIntent> {
+    let m = &k.modifiers;
+    let primary = if cfg!(target_os = "macos") {
+        m.platform && !m.control && !m.alt
+    } else {
+        m.control && m.shift && !m.alt && !m.platform
+    };
+    match k.key.as_str() {
+        "v" if primary => Some(KeyIntent::Paste),
+        "c" if primary => Some(KeyIntent::Copy),
+        _ => None,
+    }
+}
+
 pub fn intent(k: &Keystroke, held: bool) -> KeyIntent {
     let m = &k.modifiers;
     if is_zoom_shortcut(k) || is_palette_shortcut(k) {
         return KeyIntent::Pass;
     }
-    let paste = if cfg!(target_os = "macos") {
-        m.platform && !m.control && !m.alt && k.key == "v"
-    } else {
-        m.control && m.shift && !m.alt && k.key == "v"
-    };
-    if paste {
-        return KeyIntent::Paste;
-    }
-    let copy = if cfg!(target_os = "macos") {
-        m.platform && !m.control && !m.alt && k.key == "c"
-    } else {
-        m.control && m.shift && !m.alt && k.key == "c"
-    };
-    if copy {
-        return KeyIntent::Copy;
+    if let Some(i) = clipboard_intent(k) {
+        return i;
     }
     if cfg!(target_os = "macos") && m.platform {
         return KeyIntent::Pass;
@@ -210,6 +213,81 @@ pub fn intent(k: &Keystroke, held: bool) -> KeyIntent {
         })),
         None => KeyIntent::Pass,
     }
+}
+
+/// What a key press means for a native app view (an app pane or panel).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppKey {
+    /// Copy the view's selection.
+    Copy,
+    /// Paste the clipboard into the focused input.
+    Paste,
+    /// Send this key, by the app model's names (`Enter`, `Up`, `Ctrl-c`).
+    Key(String),
+    /// Not the view's: a Dreamer or application shortcut, or text that the
+    /// platform's text input delivers (so IME composition works).
+    Pass,
+}
+
+/// The same policy as [`intent`], for an app view: the clipboard
+/// shortcuts copy and paste, Dreamer's own shortcuts and Cmd (macOS) or
+/// Alt combinations are left alone, special keys and Ctrl combinations
+/// are keys by the model's names, and text (Space included) goes through
+/// the platform's text input.
+pub fn app_intent(k: &Keystroke) -> AppKey {
+    let m = &k.modifiers;
+    if is_zoom_shortcut(k) || is_palette_shortcut(k) {
+        return AppKey::Pass;
+    }
+    match clipboard_intent(k) {
+        Some(KeyIntent::Copy) => return AppKey::Copy,
+        Some(KeyIntent::Paste) => return AppKey::Paste,
+        _ => {}
+    }
+    if m.platform || m.alt {
+        return AppKey::Pass;
+    }
+    let named = match k.key.as_str() {
+        "enter" => "Enter",
+        "escape" => "Esc",
+        "tab" => "Tab",
+        "backspace" => "Backspace",
+        "delete" => "Delete",
+        "left" => "Left",
+        "right" => "Right",
+        "up" => "Up",
+        "down" => "Down",
+        "home" => "Home",
+        "end" => "End",
+        "pageup" => "PageUp",
+        "pagedown" => "PageDown",
+        f if f.len() > 1 && f.starts_with('f') && f[1..].parse::<u8>().is_ok() => {
+            return AppKey::Key(f.to_uppercase());
+        }
+        _ => "",
+    };
+    if !named.is_empty() {
+        return AppKey::Key(named.to_owned());
+    }
+    let mut chars = k.key.chars();
+    match (chars.next(), chars.next()) {
+        _ if !m.control => AppKey::Pass,
+        (Some(ch), None) => AppKey::Key(format!("Ctrl-{}", ch.to_ascii_lowercase())),
+        _ => AppKey::Pass,
+    }
+}
+
+/// Wheel steps in a native app view, positive down (the selection moves
+/// with the content), from a scroll of `delta`; `carry` keeps the part of
+/// a step a trackpad has not finished. `line` is the height of one row.
+pub fn app_wheel_steps(carry: &mut f32, delta: ScrollDelta, line: Pixels) -> i32 {
+    *carry -= match delta {
+        ScrollDelta::Lines(d) => d.y,
+        ScrollDelta::Pixels(d) => f32::from(d.y) / f32::from(line).max(1.0),
+    };
+    let steps = carry.trunc();
+    *carry -= steps;
+    steps.clamp(-MAX_WHEEL_STEPS, MAX_WHEEL_STEPS) as i32
 }
 
 /// Where the grid is drawn, for turning window positions into cells.
@@ -455,6 +533,62 @@ mod tests {
         let down = p.scroll(&g, at, ScrollDelta::Lines(point(0.0, -3.0)), &m);
         assert_eq!(down.len(), 3);
         assert_eq!(cell_of(down[0].clone()).1, B::WheelDown as i32);
+    }
+
+    #[test]
+    fn app_views_get_keys_by_the_models_names_and_text_goes_to_the_text_input() {
+        let k = |s: &'static str| app_intent(&ks(s));
+        let key = |s: &str| AppKey::Key(s.to_owned());
+        assert_eq!(k("enter"), key("Enter"));
+        assert_eq!(k("down"), key("Down"));
+        assert_eq!(k("shift-tab"), key("Tab"));
+        assert_eq!(k("ctrl-c"), key("Ctrl-c"));
+        assert_eq!(k("f2"), key("F2"));
+        // Text, Space included, goes through the platform's text input
+        // (IME); the view decides whether it is typed into an input.
+        assert_eq!(k("a"), AppKey::Pass);
+        assert_eq!(k("space"), AppKey::Pass);
+        assert_eq!(k("shift-a"), AppKey::Pass);
+        // Dreamer's shortcuts stay Dreamer's; the clipboard ones copy and
+        // paste, never reaching the app as Ctrl-c (which quits it).
+        assert_eq!(k("alt-b"), AppKey::Pass);
+        if cfg!(target_os = "macos") {
+            assert_eq!(k("cmd-c"), AppKey::Copy);
+            assert_eq!(k("cmd-v"), AppKey::Paste);
+            assert_eq!(k("cmd-shift-p"), AppKey::Pass);
+            assert_eq!(k("cmd-j"), AppKey::Pass);
+        } else {
+            assert_eq!(k("ctrl-shift-c"), AppKey::Copy);
+            assert_eq!(k("ctrl-shift-v"), AppKey::Paste);
+            assert_eq!(k("ctrl-shift-p"), AppKey::Pass);
+        }
+    }
+
+    #[test]
+    fn the_wheel_moves_an_app_selection_by_whole_rows() {
+        let mut carry = 0.0;
+        // Scrolling down (negative y) moves the selection down.
+        assert_eq!(
+            app_wheel_steps(&mut carry, ScrollDelta::Lines(point(0.0, -2.0)), px(16.0)),
+            2
+        );
+        assert_eq!(
+            app_wheel_steps(
+                &mut carry,
+                ScrollDelta::Pixels(point(px(0.0), px(24.0))),
+                px(16.0)
+            ),
+            -1
+        );
+        // The half row left over counts with the next scroll.
+        assert_eq!(
+            app_wheel_steps(
+                &mut carry,
+                ScrollDelta::Pixels(point(px(0.0), px(8.0))),
+                px(16.0)
+            ),
+            -1
+        );
     }
 
     fn ks(s: &'static str) -> Keystroke {

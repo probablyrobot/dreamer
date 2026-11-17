@@ -23,10 +23,13 @@ The host of an app pane publishes its current model to the daemon
 (`apps.publish`), which keeps only the newest per pane. The user's own
 clients read it with `apps.view` (`pane`, and `after`: wait up to
 `wait_ms`, default 20 s, for a revision newer than that one) and send
-the host keys with `apps.input` (`pane`, `key` by the app model's key
-names). Both are owner only. A key arrives at the host as an
+the host input with `apps.input`: `pane` and exactly one of `key` (by
+the app model's key names), `text` (typed or pasted into the focused
+input), `select` (a click on a row or field, by index), or `scroll`
+(wheel steps); with `select` or `scroll`, `node` names the tree node
+they are for (see below). Both are owner only. The input arrives at the host as an
 `apps.input` event on its connection and acts there exactly as if it was
-typed in the pane, so every client, including a plain tmux client, sees
+made in the pane, so every client, including a plain tmux client, sees
 the same app in the same state. When the host stops, `apps.view` keeps
 returning its last view with `live: false` until the pane closes.
 

@@ -6,27 +6,40 @@
 //!
 //! The same view draws an app pane: a tmux pane whose program is a
 //! registered app host. There the model is the host's own, as it published
-//! it to the daemon (`apps.view`), and keys go back to the host
+//! it to the daemon (`apps.view`), and input goes back to the host
 //! (`apps.input`). The desktop runs none of the package.
 //!
 //! What is drawn is the app's view tree: for an app pane, the tree its
 //! host publishes (`apps.tree`, the whole tree and then keyed patches); for
 //! a panel, or a host that publishes no tree, the tree of its model.
 //! Scroll positions are kept per node key, so they survive updates.
+//!
+//! Input follows the desktop's one policy (`input::app_intent`): special
+//! keys and Ctrl combinations are keys by the model's names; text comes
+//! through the platform's text input (so IME commits arrive as text) and
+//! goes into the focused input as one edit, or as keys in a view with no
+//! input; Cmd-C / Ctrl-Shift-C copies the mouse-selected lines, else the
+//! focused node's selected row or field; Cmd-V / Ctrl-Shift-V and a middle
+//! click paste into the focused input only. Clicks and wheel steps name
+//! the tree node they land on, so they reach that node. In an app pane,
+//! tmux's prefix works as in a terminal pane: the key after it runs tmux's
+//! binding.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use app_model::manifest::{ViewKind, field};
-use app_model::{App, Endpoint, Input, text};
+use app_model::{App, Endpoint, Input};
 use gpui::{
-    Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
+    Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, FocusHandle,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, ScrollEvent, SharedString,
+    StatefulInteractiveElement, Styled, UTF16Selection, Window, div, prelude::FluentBuilder, px,
 };
 use view_tree::{Direction, Frame as Tree, Kind, Node};
 
-use crate::theme::{self, c};
+use crate::input::{self, AppKey};
+use crate::theme::{self, c, ca};
 
 /// Rows drawn at most; a longer source shows the rows around the
 /// selection (a log, its newest rows).
@@ -48,7 +61,39 @@ pub(crate) struct AppPanel {
     /// Per node key: scroll handles, and the selection last scrolled to.
     scrolls: HashMap<String, gpui::ScrollHandle>,
     scrolled_to: HashMap<String, Option<String>>,
+    /// tmux's prefix was pressed in this app pane: the next key is tmux's.
+    pub(crate) prefixed: bool,
+    /// Lines selected with the mouse, in one node of the tree; and whether
+    /// the button is still down.
+    pub(crate) lines: Option<LineSel>,
+    dragging: bool,
+    /// The part of a wheel step not yet sent.
+    wheel: f32,
+    /// IME composition in progress: shown, never sent.
+    preedit: Option<String>,
 }
+
+/// Lines selected with the mouse: the node they are in (by key; `AGENT`
+/// for an agentic pane's transcript), where the press was, where the
+/// pointer is, and whether a click there picks (a table's or list's row,
+/// a form's field).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LineSel {
+    pub(crate) node: String,
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pick: bool,
+}
+
+impl LineSel {
+    fn range(&self) -> std::ops::RangeInclusive<usize> {
+        self.from.min(self.to)..=self.from.max(self.to)
+    }
+}
+
+/// The node key of an agentic pane's transcript, which has no tree. Tree
+/// keys are never empty.
+const AGENT: &str = "";
 
 impl std::fmt::Debug for AppPanel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -122,6 +167,11 @@ impl AppPanel {
             tree: Arc::default(),
             scrolls: HashMap::new(),
             scrolled_to: HashMap::new(),
+            prefixed: false,
+            lines: None,
+            dragging: false,
+            wheel: 0.0,
+            preedit: None,
         }
     }
 
@@ -178,6 +228,11 @@ impl AppPanel {
             tree,
             scrolls: HashMap::new(),
             scrolled_to: HashMap::new(),
+            prefixed: false,
+            lines: None,
+            dragging: false,
+            wheel: 0.0,
+            preedit: None,
         }
     }
 
@@ -191,33 +246,386 @@ impl AppPanel {
         let _ = self.inputs.send(Input::Key(name.to_owned()));
     }
 
-    /// Copy what the panel has selected: the selected row (a table's
-    /// columns separated by tabs), the focused form field, or an agent
-    /// view's latest answer.
-    fn copy(&mut self, cx: &mut Context<Self>) {
-        if let Some(text) = self.shown.as_ref().and_then(copy_text) {
-            crate::to_tmux_buffer(&text);
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+    /// The tree drawn: an app pane's host's, else the model's (a panel,
+    /// or a host that publishes none); `None` for an agentic pane.
+    fn drawn_tree(&self) -> Option<Tree> {
+        let host = match self.pane {
+            Some(_) => self.tree.lock().ok().and_then(|t| t.clone()),
+            None => None,
+        };
+        host.or_else(|| self.shown.as_ref().and_then(App::frame))
+    }
+
+    /// Whether the view drawn has a focused input that takes text: the
+    /// tree's focused form field, unless it is a toggle; or an agent's
+    /// prompt.
+    fn takes_text(&self) -> bool {
+        match self.drawn_tree() {
+            Some(tree) => tree_takes_text(&tree),
+            None => self.shown.as_ref().is_some_and(App::takes_text),
         }
     }
 
-    /// Type the clipboard's text into the focused field or prompt, one
-    /// character at a time as the model takes keys; line breaks become
-    /// spaces, other control characters are dropped.
-    fn paste(&mut self, cx: &mut Context<Self>) {
-        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+    /// Text typed (committed by the platform's text input): into the
+    /// focused input as one edit, or, in a view with no input, as the keys
+    /// it is made of (a table's command keys, `q`).
+    pub(crate) fn typed(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if self.takes_text() {
+            let _ = self.inputs.send(Input::Text(text.to_owned()));
+        } else {
+            for ch in text.chars().filter(|c| !c.is_control()) {
+                self.key(&ch.to_string());
+            }
+        }
+    }
+
+    /// Pasted text: into the focused input as one edit. A view with no
+    /// input takes none, so a paste never runs a command.
+    pub(crate) fn paste_text(&mut self, text: &str) -> bool {
+        if text.is_empty() || !self.takes_text() {
+            return false;
+        }
+        let _ = self.inputs.send(Input::Text(text.to_owned()));
+        true
+    }
+
+    /// What Copy takes: the lines selected with the mouse, else the
+    /// focused node's selected row (a table's columns separated by tabs)
+    /// or focused form field, or an agent view's latest answer.
+    pub(crate) fn copy_text(&self) -> Option<String> {
+        let app = self.shown.as_ref()?;
+        let tree = self.drawn_tree();
+        if let Some(sel) = &self.lines {
+            let text = sel
+                .range()
+                .filter_map(|i| line_text(tree.as_ref(), app, &sel.node, i))
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+        copy_text(tree.as_ref(), app)
+    }
+
+    /// Copy: to the clipboard, and to tmux's newest buffer when the
+    /// settings send Dreamer's copies there.
+    pub(crate) fn copy(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.copy_text() {
+            crate::to_tmux_buffer(&text);
+            crate::clip::write(cx, text);
+        }
+    }
+
+    /// Paste the clipboard's text into the focused input.
+    pub(crate) fn paste(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = crate::clip::read(cx) {
+            self.paste_text(&text);
+        }
+    }
+
+    /// tmux's newest buffer into the focused input (a middle click, or the
+    /// prefix and `]`), as tmux pastes it.
+    fn paste_tmux_buffer(&mut self, cx: &mut Context<Self>) {
+        let Some(b) = crate::TMUX_BUFFERS.get() else {
             return;
         };
-        for k in paste_keys(&text) {
-            self.key(&k);
-        }
+        cx.spawn(async move |this, cx| {
+            if let Some(text) = b.newest().await {
+                let _ = this.update(cx, |p, _| p.paste_text(&text));
+            }
+        })
+        .detach();
     }
 
     fn key_down(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(name) = key_name(&ev.keystroke) {
-            self.key(&name);
+        if self.tmux_key(ev, cx) {
             cx.stop_propagation();
+            return;
         }
+        match input::app_intent(&ev.keystroke) {
+            AppKey::Copy => self.copy(cx),
+            AppKey::Paste => self.paste(cx),
+            AppKey::Key(name) => {
+                // A key acts on the view; a mouse selection is done with.
+                self.lines = None;
+                self.key(&name);
+            }
+            AppKey::Pass => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// tmux's prefix in an app pane, as in a terminal pane: the key after
+    /// it runs tmux's binding for it (prefix and an arrow selects the
+    /// next pane), and `]` pastes tmux's newest buffer into the focused
+    /// input. True when the key was the layer's.
+    fn tmux_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let (Some((pane, _)), Some(b)) = (self.pane.as_ref(), crate::TMUX_BUFFERS.get()) else {
+            return false;
+        };
+        let Some(key) = crate::tmux_keys::from_keystroke(&ev.keystroke) else {
+            return false;
+        };
+        if !self.prefixed {
+            if crate::prefix::is_prefix(&key) {
+                self.prefixed = true;
+                cx.notify();
+                return true;
+            }
+            return false;
+        }
+        self.prefixed = false;
+        crate::prefix::refresh(cx);
+        cx.notify();
+        if key.text() == Some(']') {
+            self.paste_tmux_buffer(cx);
+            return true;
+        }
+        let (pane, name) = (*pane, key.tmux_name());
+        cx.spawn(async move |_, _| {
+            // A mode tmux opens (copy mode, a chooser) is closed by the
+            // daemon: an app pane has no terminal to show it in.
+            let _ = b.prefix_key(pane, name).await;
+        })
+        .detach();
+        true
+    }
+
+    /// A left press on line `i` of node `node`: the start of a mouse
+    /// selection.
+    fn line_down(&mut self, node: &str, i: usize, pick: bool, cx: &mut Context<Self>) {
+        self.lines = Some(LineSel {
+            node: node.to_owned(),
+            from: i,
+            to: i,
+            pick,
+        });
+        self.dragging = true;
+        cx.notify();
+    }
+
+    /// The pointer over line `i` of node `node` with the button down
+    /// extends the selection to it; a selection stays in its node.
+    fn line_moved(&mut self, node: &str, i: usize, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if !self.dragging || ev.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        if let Some(sel) = self.lines.as_mut()
+            && sel.node == node
+            && sel.to != i
+        {
+            sel.to = i;
+            cx.notify();
+        }
+    }
+
+    /// The button comes up. A click (no drag) on a table's or list's row
+    /// selects it, and on a form's field focuses it, in the app (naming
+    /// the node clicked, which takes the focus); a drag keeps the lines
+    /// selected for Copy.
+    fn mouse_up(&mut self, cx: &mut Context<Self>) {
+        if !std::mem::take(&mut self.dragging) {
+            return;
+        }
+        if let Some(sel) = self.lines.take_if(|s| s.from == s.to && s.pick) {
+            let _ = self.inputs.send(Input::Select {
+                node: Some(sel.node),
+                index: sel.from,
+            });
+        }
+        cx.notify();
+    }
+
+    /// A middle click pastes tmux's newest buffer into the focused input,
+    /// as in a terminal pane (when `clipboard.middle_click` is `paste`).
+    fn middle_click(&mut self, cx: &mut Context<Self>) {
+        if crate::live::with(|l| l.middle_click) == Some(workspace_config::MiddleClick::Paste) {
+            self.paste_tmux_buffer(cx);
+        }
+    }
+
+    /// Wheel steps over a table or list (`node`) move its selection.
+    fn wheel(&mut self, node: &str, ev: &ScrollEvent, cx: &mut Context<Self>) {
+        let steps = input::app_wheel_steps(&mut self.wheel, ev.delta, px(LINE_HEIGHT));
+        if steps != 0 {
+            let _ = self.inputs.send(Input::Scroll {
+                node: Some(node.to_owned()),
+                steps: i64::from(steps),
+            });
+            cx.notify();
+        }
+    }
+}
+
+/// The height of a drawn line, for turning trackpad pixels into rows.
+const LINE_HEIGHT: f32 = 16.0;
+
+/// Text input from the platform, including IME: committed text goes to
+/// the view (`AppPanel::typed`), composition is only shown.
+impl EntityInputHandler for AppPanel {
+    fn text_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        _: &mut Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.preedit.as_ref().map(|p| 0..p.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.preedit = None;
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.preedit = None;
+        // The key after tmux's prefix is never typed into the app.
+        if !self.prefixed {
+            self.lines = None;
+            self.typed(text);
+        }
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _: Option<std::ops::Range<usize>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.preedit = (!new_text.is_empty()).then(|| new_text.to_owned());
+        cx.notify();
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: gpui::Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _: std::ops::Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        // The IME candidate window opens at the bottom left of the view.
+        Some(Bounds::new(
+            gpui::point(
+                element_bounds.origin.x,
+                element_bounds.origin.y + element_bounds.size.height - px(LINE_HEIGHT),
+            ),
+            gpui::size(px(LINE_HEIGHT), px(LINE_HEIGHT)),
+        ))
+    }
+}
+
+/// Mouse input over what a view draws: each line takes presses and drags
+/// (and is highlighted while selected), and each table or list takes
+/// wheel steps, by node key.
+#[derive(Clone)]
+struct Lines {
+    entity: Entity<AppPanel>,
+    sel: Option<LineSel>,
+    mark: u32,
+}
+
+impl Lines {
+    /// Line `i` of node `node`; `pick` when a click there selects it (a
+    /// table's or list's row, a form's field).
+    fn wrap(&self, node: &str, i: usize, pick: bool, d: gpui::Div) -> gpui::Div {
+        let selected = self
+            .sel
+            .as_ref()
+            .is_some_and(|s| s.node == node && s.range().contains(&i));
+        let (down, moved) = (self.entity.clone(), self.entity.clone());
+        let (k1, k2) = (node.to_owned(), node.to_owned());
+        d.when(selected, |d| d.bg(ca(self.mark)))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                down.update(cx, |p, cx| p.line_down(&k1, i, pick, cx));
+            })
+            .on_mouse_move(move |ev, _, cx| {
+                moved.update(cx, |p, cx| p.line_moved(&k2, i, ev, cx));
+            })
+    }
+
+    /// Wheel steps over the table or list `node` move its selection.
+    fn wheel<E: InteractiveElement>(&self, node: &str, e: E) -> E {
+        let entity = self.entity.clone();
+        let key = node.to_owned();
+        e.on_scroll(move |ev, _, cx| {
+            entity.update(cx, |p, cx| p.wheel(&key, ev, cx));
+        })
+    }
+}
+
+/// Whether the tree's focused node is a form whose focused field takes
+/// text (not a toggle).
+fn tree_takes_text(tree: &Tree) -> bool {
+    let Some(n) = tree.focus.as_deref().and_then(|k| tree.root.find(k)) else {
+        return false;
+    };
+    match &n.kind {
+        Kind::Form { fields, focus } => fields.get(*focus).is_some_and(|f| !f.toggle),
+        _ => false,
+    }
+}
+
+/// The text of line `i` of node `key` as the view draws it: a table's row
+/// (columns separated by tabs), a list's or log's row, a form field's
+/// value, a text node's text; or, in an agentic pane (no tree), a
+/// transcript entry.
+fn line_text(tree: Option<&Tree>, app: &App, key: &str, i: usize) -> Option<String> {
+    let Some(tree) = tree else {
+        return (key == AGENT)
+            .then(|| app.agent.transcript.get(i).map(|e| e.text.clone()))
+            .flatten();
+    };
+    let n = tree.root.find(key)?;
+    match &n.kind {
+        Kind::Table { .. } | Kind::List { .. } | Kind::Log => {
+            n.children.get(i).map(|r| r.cells().join("\t"))
+        }
+        Kind::Form { fields, .. } => fields.get(i).map(|f| f.value.clone()),
+        Kind::Text { text } => (i == 0).then(|| text.clone()),
+        _ => None,
     }
 }
 
@@ -266,15 +674,13 @@ async fn follow_pane(
             }
         };
         backoff = Duration::from_millis(200);
-        // Keys go on their own task, one call after another, so they keep
-        // their order and never wait for a view.
-        let (keys, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        // Input goes on its own task, one call after another, so it keeps
+        // its order and never waits for a view.
+        let (keys, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<api::AppInput>();
         let sender = c.clone();
         let key_task = tokio::spawn(async move {
-            while let Some(key) = key_rx.recv().await {
-                let _ = sender
-                    .call(api::Request::AppsInput(api::AppInput { pane, key }))
-                    .await;
+            while let Some(input) = key_rx.recv().await {
+                let _ = sender.call(api::Request::AppsInput(input)).await;
             }
         });
         let next = |after: u64| {
@@ -312,8 +718,10 @@ async fn follow_pane(
                         return;
                     }
                     Some(Input::Redraw) => {}
-                    Some(Input::Key(key)) => {
-                        let _ = keys.send(key);
+                    Some(i) => {
+                        if let Some(input) = to_remote(pane, i) {
+                            let _ = keys.send(input);
+                        }
                     }
                 },
                 r = &mut view => match r {
@@ -373,87 +781,59 @@ async fn follow_pane(
     }
 }
 
-/// A GPUI keystroke as the model names keys; `None` for keys the desktop
-/// keeps (Cmd shortcuts) or that have no name.
-fn key_name(k: &gpui::Keystroke) -> Option<String> {
-    let m = &k.modifiers;
-    if m.platform || m.alt {
-        return None;
-    }
-    let named = match k.key.as_str() {
-        "enter" => "Enter",
-        "escape" => "Esc",
-        "tab" => "Tab",
-        "backspace" => "Backspace",
-        "delete" => "Delete",
-        "left" => "Left",
-        "right" => "Right",
-        "up" => "Up",
-        "down" => "Down",
-        "home" => "Home",
-        "end" => "End",
-        "pageup" => "PageUp",
-        "pagedown" => "PageDown",
-        "space" if !m.control => " ",
-        f if f.len() > 1 && f.starts_with('f') && f[1..].parse::<u8>().is_ok() => {
-            return Some(f.to_uppercase());
-        }
-        _ => "",
+/// An input for an app pane's host, as `apps.input` carries it.
+fn to_remote(pane: u32, i: Input) -> Option<api::AppInput> {
+    let mut out = api::AppInput {
+        pane,
+        ..api::AppInput::default()
     };
-    if !named.is_empty() {
-        return Some(named.to_owned());
+    match i {
+        Input::Key(key) => out.key = key,
+        Input::Text(text) => out.text = Some(text),
+        Input::Select { node, index } => {
+            out.select = Some(u32::try_from(index).ok()?);
+            out.node = node;
+        }
+        Input::Scroll { node, steps } => {
+            out.scroll = Some(i32::try_from(steps).ok()?);
+            out.node = node;
+        }
+        Input::Redraw | Input::Quit => return None,
     }
-    let mut chars = k.key.chars();
-    match (chars.next(), chars.next()) {
-        (Some(ch), None) if m.control => Some(format!("Ctrl-{}", ch.to_ascii_lowercase())),
-        _ if m.control => None,
-        _ => k.key_char.clone().filter(|t| t.chars().count() == 1),
-    }
+    Some(out)
 }
 
-/// The text Copy takes from a panel's model, if any.
-fn copy_text(app: &App) -> Option<String> {
-    let v = &app.manifest.view;
-    match v.kind {
-        ViewKind::Form => app.form.get(app.focus).cloned(),
-        ViewKind::Agent => app
+/// The text Copy takes when no lines are selected: from the tree drawn,
+/// the focused table's or list's selected row (a table's columns
+/// separated by tabs) or the focused form field, else a text view's text;
+/// from an agentic pane (no tree), its latest answer.
+fn copy_text(tree: Option<&Tree>, app: &App) -> Option<String> {
+    let Some(tree) = tree else {
+        return app
             .agent
             .transcript
             .iter()
             .rev()
             .find(|e| e.who == app_model::Said::Agent)
-            .map(|e| e.text.clone()),
-        ViewKind::Table if !v.columns.is_empty() => {
-            let row = app.rows.get(app.selected)?;
-            Some(
-                v.columns
-                    .iter()
-                    .map(|c| field(row, c).map(text).unwrap_or_default())
-                    .collect::<Vec<_>>()
-                    .join("\t"),
-            )
-        }
-        _ => {
-            let row = app.rows.get(app.selected)?;
-            Some(match &v.field {
-                Some(p) => field(row, p).map(text).unwrap_or_default(),
-                None => text(row),
-            })
-        }
-    }
-    .filter(|t| !t.is_empty())
-}
-
-/// Pasted text as the keys the model takes: one per character, line
-/// breaks as spaces, other control characters dropped.
-fn paste_keys(text: &str) -> Vec<String> {
-    text.chars()
-        .filter_map(|ch| match ch {
-            '\r' | '\n' | '\t' => Some(" ".to_owned()),
-            c if c.is_control() => None,
-            c => Some(c.to_string()),
-        })
-        .collect()
+            .map(|e| e.text.clone())
+            .filter(|t| !t.is_empty());
+    };
+    let text = match tree.focus.as_deref().and_then(|k| tree.root.find(k)) {
+        Some(n) => match &n.kind {
+            Kind::Table { .. } | Kind::List { .. } => n
+                .selected_index()
+                .and_then(|i| n.children.get(i))
+                .map(|r| r.cells().join("\t")),
+            Kind::Log => n.children.last().map(|r| r.cells().join("\t")),
+            Kind::Form { fields, focus } => fields.get(*focus).map(|f| f.value.clone()),
+            _ => None,
+        },
+        None => match &tree.root.kind {
+            Kind::Text { text } => Some(text.clone()),
+            _ => None,
+        },
+    };
+    text.filter(|t| !t.is_empty())
 }
 
 impl Render for AppPanel {
@@ -465,8 +845,36 @@ impl Render for AppPanel {
         }
         let ended = self.ended();
         let focused = self.focus.is_focused(window_);
+        let entity = cx.entity();
+        let focus = self.focus.clone();
+        let lines = Lines {
+            entity: entity.clone(),
+            sel: self.lines.clone(),
+            mark: t.mark,
+        };
+        let preedit = self.preedit.clone().map(|text| {
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .px_2()
+                .bg(c(t.selected))
+                .underline()
+                .child(text)
+        });
+        let prefix = self.prefixed.then(|| {
+            div()
+                .absolute()
+                .bottom_0()
+                .right_0()
+                .px_1()
+                .bg(c(t.accent))
+                .text_color(c(t.background))
+                .child("prefix")
+        });
         let root = div()
             .id("app-panel")
+            .relative()
             .track_focus(&self.focus)
             .on_action(cx.listener(|p, _: &crate::keymap::Copy, _, cx| p.copy(cx)))
             .on_action(cx.listener(|p, _: &crate::keymap::Paste, _, cx| p.paste(cx)))
@@ -474,6 +882,37 @@ impl Render for AppPanel {
             .on_click(cx.listener(|p, _, window, cx| {
                 window.focus(&p.focus, cx);
             }))
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|p, _: &MouseDownEvent, _, cx| p.middle_click(cx)),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|p, _: &MouseUpEvent, _, cx| p.mouse_up(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|p, _: &MouseUpEvent, _, cx| p.mouse_up(cx)),
+            )
+            .children(preedit)
+            .children(prefix)
+            // Registers the platform text input (IME) each frame.
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        window.handle_input(
+                            &focus,
+                            ElementInputHandler::new(bounds, entity.clone()),
+                            cx,
+                        );
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
             .h_full()
             .flex()
             .flex_col()
@@ -510,8 +949,11 @@ impl Render for AppPanel {
                 tree.status.clone(),
                 node(
                     &tree.root,
-                    tree,
-                    &t,
+                    &Draw {
+                        tree,
+                        t: &t,
+                        lines: &lines,
+                    },
                     &mut self.scrolls,
                     &mut self.scrolled_to,
                 ),
@@ -522,7 +964,7 @@ impl Render for AppPanel {
                 } else {
                     app.manifest.title.clone()
                 };
-                (title, app.status_text(), body(app, &t))
+                (title, app.status_text(), body(app, &t, &lines))
             }
         };
         let status = match (&ended, &self.pane) {
@@ -556,8 +998,9 @@ impl Render for AppPanel {
 }
 
 /// An agentic pane: who it is, what it may do, its steps, its
-/// transcript, and the prompt.
-fn body(app: &App, t: &theme::Theme) -> gpui::AnyElement {
+/// transcript, and the prompt. Transcript entries take mouse selection
+/// as lines of the node `AGENT`.
+fn body(app: &App, t: &theme::Theme, lines: &Lines) -> gpui::AnyElement {
     {
         use app_model::Said;
         let a = &app.agent;
@@ -621,7 +1064,7 @@ fn body(app: &App, t: &theme::Theme) -> gpui::AnyElement {
                     .flex()
                     .flex_col()
                     .justify_end()
-                    .children(a.transcript[newest..].iter().map(|e| {
+                    .children(a.transcript[newest..].iter().enumerate().map(|(i, e)| {
                         let (mark, color) = match e.who {
                             Said::You => ("> ", t.text),
                             Said::Agent => ("", t.text),
@@ -631,9 +1074,14 @@ fn body(app: &App, t: &theme::Theme) -> gpui::AnyElement {
                             Said::Note => ("· ", t.faint),
                             Said::Failed => ("✗ ", t.danger),
                         };
-                        div()
-                            .text_color(c(color))
-                            .child(SharedString::from(format!("{mark}{}", e.text)))
+                        lines.wrap(
+                            AGENT,
+                            newest + i,
+                            false,
+                            div()
+                                .text_color(c(color))
+                                .child(SharedString::from(format!("{mark}{}", e.text))),
+                        )
                     })),
             )
             .child(
@@ -680,19 +1128,30 @@ fn shown_items(n: &Node) -> (usize, &[Node]) {
     (start, &n.children[start..end])
 }
 
+/// What every node is drawn with: the tree, the theme, and the mouse
+/// input over lines.
+struct Draw<'a> {
+    tree: &'a Tree,
+    t: &'a theme::Theme,
+    lines: &'a Lines,
+}
+
 /// A node of the view tree, drawn natively. Scroll handles are kept in
 /// `scrolls` by node key, so a new tree keeps each position; a table or
-/// list scrolls to its selection when the selection moves.
+/// list scrolls to its selection when the selection moves. Every line of
+/// a table, list, log, form, or text takes mouse presses and drags by its
+/// node's key and the index `line_text` reads it at; wheel steps over a
+/// table or list move its selection.
 fn node(
     n: &Node,
-    tree: &Tree,
-    t: &theme::Theme,
+    dr: &Draw<'_>,
     scrolls: &mut HashMap<String, gpui::ScrollHandle>,
     scrolled_to: &mut HashMap<String, Option<String>>,
 ) -> gpui::AnyElement {
+    let (tree, t, lines) = (dr.tree, dr.t, dr.lines);
     let focused = tree.focus.as_deref() == Some(n.key.as_str());
     let id = SharedString::from(format!("app-node-{}", n.key));
-    let mut child = |c: &Node| node(c, tree, t, scrolls, scrolled_to);
+    let mut child = |c: &Node| node(c, dr, scrolls, scrolled_to);
     let content = match &n.kind {
         Kind::Column | Kind::Scroll => {
             let d = div()
@@ -812,9 +1271,15 @@ fn node(
                 .when(log, |d| d.justify_end().overflow_hidden())
                 .when(!log, |d| d.overflow_y_scroll().track_scroll(&handle))
                 .children(items.iter().enumerate().map(|(i, r)| {
-                    line(t, !log && Some(start + i) == selected)
-                        .children(r.cells().iter().map(|s| cell(s.clone())))
+                    lines.wrap(
+                        &n.key,
+                        start + i,
+                        !log,
+                        line(t, !log && Some(start + i) == selected)
+                            .children(r.cells().iter().map(|s| cell(s.clone()))),
+                    )
                 }));
+            let rows = if log { rows } else { lines.wheel(&n.key, rows) };
             div()
                 .flex()
                 .flex_col()
@@ -838,8 +1303,13 @@ fn node(
         Kind::Item { cells } => line(t, false)
             .children(cells.iter().map(|s| cell(s.clone())))
             .into_any_element(),
-        Kind::Text { text } => div()
-            .child(SharedString::from(text.clone()))
+        Kind::Text { text } => lines
+            .wrap(
+                &n.key,
+                0,
+                false,
+                div().child(SharedString::from(text.clone())),
+            )
             .into_any_element(),
         Kind::Gauge { ratio, label } => div()
             .flex()
@@ -887,13 +1357,18 @@ fn node(
                     (false, v) => v.to_owned(),
                 };
                 let star = if f.required { "*" } else { "" };
-                line(t, focused && i == *focus)
-                    .child(
-                        div()
-                            .text_color(c(t.muted))
-                            .child(format!("{}{star}", f.label)),
-                    )
-                    .child(cell(shown))
+                lines.wrap(
+                    &n.key,
+                    i,
+                    true,
+                    line(t, focused && i == *focus)
+                        .child(
+                            div()
+                                .text_color(c(t.muted))
+                                .child(format!("{}{star}", f.label)),
+                        )
+                        .child(cell(shown)),
+                )
             }))
             .into_any_element(),
     };
@@ -921,27 +1396,140 @@ fn node(
 mod tests {
     use super::*;
 
-    fn keystroke(s: &'static str) -> gpui::Keystroke {
-        gpui::Keystroke::parse(s).expect("keystroke")
-    }
-
-    #[test]
-    fn pasted_text_becomes_one_key_per_character() {
-        assert_eq!(
-            paste_keys("a b\r\nc\u{7}é"),
-            ["a", " ", "b", " ", " ", "c", "é"]
+    fn table() -> App {
+        let m = app_model::manifest::Manifest::parse(
+            r#"
+schema_version = 1
+id = "t.app"
+version = "1"
+title = "T"
+[data.s]
+method = "tmux.topology"
+path = "panes"
+[view]
+type = "table"
+source = "s"
+columns = ["id", "name"]
+"#,
+        )
+        .expect("manifest");
+        let mut a = App::new(m);
+        a.set_rows(
+            vec![
+                serde_json::json!({"id": 1, "name": "one"}),
+                serde_json::json!({"id": 2, "name": "two"}),
+            ],
+            0,
         );
+        a
     }
 
     #[test]
-    fn keys_get_the_names_the_model_uses() {
-        let name = |s: &'static str| key_name(&keystroke(s));
-        assert_eq!(name("enter").as_deref(), Some("Enter"));
-        assert_eq!(name("down").as_deref(), Some("Down"));
-        assert_eq!(name("ctrl-c").as_deref(), Some("Ctrl-c"));
-        assert_eq!(name("f2").as_deref(), Some("F2"));
-        assert_eq!(name("space").as_deref(), Some(" "));
-        // The desktop's own shortcuts stay with the desktop.
-        assert_eq!(name("cmd-shift-p"), None);
+    fn copy_takes_a_lines_text_as_drawn() {
+        let a = table();
+        let tree = a.frame();
+        let tree = tree.as_ref();
+        assert_eq!(line_text(tree, &a, "view", 1).as_deref(), Some("2\ttwo"));
+        assert_eq!(line_text(tree, &a, "view", 2), None);
+        assert_eq!(copy_text(tree, &a).as_deref(), Some("1\tone"));
+    }
+
+    #[test]
+    fn copy_from_a_tree_takes_the_focused_nodes_selected_row() {
+        let m = app_model::manifest::Manifest::parse(
+            r#"
+schema_version = 2
+id = "t.tree"
+version = "1"
+title = "Tree"
+root = "main"
+[data.panes]
+method = "tmux.topology"
+path = "panes"
+[data.windows]
+method = "tmux.topology"
+path = "windows"
+[nodes.main]
+type = "split"
+children = ["left", "names"]
+[nodes.left]
+type = "table"
+source = "panes"
+row_key = "id"
+columns = ["id", "cmd"]
+[nodes.names]
+type = "list"
+source = "windows"
+row_key = "id"
+field = "name"
+"#,
+        )
+        .expect("tree manifest");
+        let mut a = App::new(m);
+        a.set_source(
+            "panes",
+            vec![
+                serde_json::json!({"id": 1, "cmd": "sh"}),
+                serde_json::json!({"id": 2, "cmd": "vim"}),
+            ],
+            0,
+        );
+        a.set_source(
+            "windows",
+            vec![
+                serde_json::json!({"id": 7, "name": "build"}),
+                serde_json::json!({"id": 8, "name": "logs"}),
+            ],
+            0,
+        );
+        // A click on the list's second row, as the host takes it.
+        a.select_at(Some("names"), 1);
+        let tree = a.frame().expect("a tree");
+        assert_eq!(copy_text(Some(&tree), &a).as_deref(), Some("logs"));
+        // Wheel steps over the table: its selected row is copied.
+        a.scroll(Some("left"), 1);
+        let tree = a.frame().expect("a tree");
+        assert_eq!(copy_text(Some(&tree), &a).as_deref(), Some("2\tvim"));
+        // A mouse selection reads lines of the node it is in.
+        assert_eq!(
+            line_text(Some(&tree), &a, "names", 0).as_deref(),
+            Some("build")
+        );
+        assert!(!tree_takes_text(&tree));
+    }
+
+    #[test]
+    fn every_input_reaches_the_host_as_one_apps_input() {
+        let text = to_remote(7, Input::Text("a b".into())).expect("text");
+        assert_eq!((text.pane, text.text.as_deref()), (7, Some("a b")));
+        assert!(text.key.is_empty() && text.select.is_none() && text.scroll.is_none());
+        let click = to_remote(
+            7,
+            Input::Select {
+                node: Some("names".into()),
+                index: 3,
+            },
+        )
+        .expect("click");
+        assert_eq!(
+            (click.select, click.node.as_deref()),
+            (Some(3), Some("names"))
+        );
+        assert_eq!(
+            to_remote(
+                7,
+                Input::Scroll {
+                    node: None,
+                    steps: -2
+                }
+            )
+            .and_then(|i| i.scroll),
+            Some(-2)
+        );
+        assert_eq!(
+            to_remote(7, Input::Key("Enter".into())).map(|i| i.key),
+            Some("Enter".into())
+        );
+        assert!(to_remote(7, Input::Redraw).is_none());
     }
 }

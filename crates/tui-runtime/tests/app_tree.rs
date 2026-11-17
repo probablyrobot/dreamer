@@ -267,6 +267,7 @@ fn a_tree_app_reaches_the_desktop_as_patches_and_the_terminal_as_a_tui() {
             Request::AppsInput(api::AppInput {
                 pane,
                 key: "Tab".into(),
+                ..api::AppInput::default()
             }),
         )
         .await;
@@ -281,6 +282,32 @@ fn a_tree_app_reaches_the_desktop_as_patches_and_the_terminal_as_a_tui() {
             now.outline().lines().count(),
             frame.outline().lines().count()
         );
+
+        // A click on the table's last row, from the desktop, names the
+        // node: the table takes the focus and that row is selected.
+        let last = now.root.find("panes").map_or(0, |n| n.children.len() - 1);
+        let last_key = now
+            .root
+            .find("panes")
+            .and_then(|n| n.children.last())
+            .map(|r| r.key.clone());
+        call(
+            &c,
+            Request::AppsInput(api::AppInput {
+                pane,
+                select: Some(u32::try_from(last).expect("index")),
+                node: Some("panes".into()),
+                ..api::AppInput::default()
+            }),
+        )
+        .await;
+        tree_until(&c, pane, &mut mirror, &mut after, "took the click", |f| {
+            f.focus.as_deref() == Some("panes")
+                && f.root.find("panes").is_some_and(|n| {
+                    matches!(&n.kind, view_tree::Kind::Table { selected, .. } if *selected == last_key)
+                })
+        })
+        .await;
 
         // The model is still published beside the tree.
         let Response::AppsView(v) = call(
@@ -301,6 +328,7 @@ fn a_tree_app_reaches_the_desktop_as_patches_and_the_terminal_as_a_tui() {
             Request::AppsInput(api::AppInput {
                 pane,
                 key: "q".into(),
+                ..api::AppInput::default()
             }),
         )
         .await;

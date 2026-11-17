@@ -112,6 +112,10 @@ pub(crate) struct Workspace {
     selecting: Option<(u32, std::time::Instant)>,
     /// The pane keyboard input goes to (local; tmux is told on a click).
     focused: Option<u32>,
+    /// tmux's active pane of the shown window as last seen: when tmux
+    /// selects another (`select-pane` from any client, or the prefix and
+    /// an arrow), focus follows it here.
+    tmux_active: Option<u32>,
     pub(crate) focus: FocusHandle,
     title: String,
     /// The pane area in cells as last painted, the size last requested for
@@ -205,6 +209,7 @@ impl Workspace {
             hidden: HashMap::new(),
             selecting: None,
             focused: None,
+            tmux_active: None,
             focus: cx.focus_handle(),
             title: String::new(),
             area: None,
@@ -1426,9 +1431,7 @@ impl Workspace {
             .rounded_sm()
             .bg(c(t.selected))
             .child("Copy")
-            .on_click(cx.listener(move |_, _, _, cx| {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))
-            }));
+            .on_click(cx.listener(move |_, _, _, cx| crate::clip::write(cx, copy.clone())));
         let open_button = launch.map(|argv| {
             div()
                 .id(("fallback-open", id))
@@ -1569,6 +1572,7 @@ impl Workspace {
         }
         self.current = Some(t);
         self.sync_panes(window, cx);
+        self.follow_active(window, cx);
         self.focus_drawer(window, cx);
         self.follow_decorations(window, cx);
         self.follow_contributions(window, cx);
@@ -1638,6 +1642,23 @@ impl Workspace {
         if let Some(view) = pane.and_then(|p| self.panes.get(&p)) {
             let handle = view.focus(cx);
             window.focus(&handle, cx);
+        }
+    }
+
+    /// tmux selected another pane of the shown window (`select-pane` from
+    /// any client, or the prefix and an arrow typed here, in a terminal or
+    /// an app pane): focus follows it, as it would in tmux.
+    fn follow_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self.active_window().and_then(|w| w.active_pane);
+        if active == self.tmux_active {
+            return;
+        }
+        self.tmux_active = active;
+        if self.drawer_focus.is_some() {
+            return;
+        }
+        if let Some(a) = active.filter(|a| self.panes.contains_key(a)) {
+            self.set_focus(Some(a), window, cx);
         }
     }
 
@@ -2459,13 +2480,24 @@ pub(crate) fn follow_topology(
     .detach();
 }
 
+/// Which smoke a workspace window runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SmokeRun {
+    /// `--smoke-workspace`.
+    Workspace,
+    /// `--smoke-workspace-restore`: the second launch.
+    Restore,
+    /// `--smoke-clipboard`: copy and paste in every kind of pane.
+    Clipboard,
+}
+
 /// Open a workspace window following the daemon `launch` names. With
-/// `smoke` (the daemon's arguments, to find the isolated tmux), run the
-/// workspace smoke.
+/// `smoke` (the daemon's arguments, to find the isolated tmux), run that
+/// smoke.
 pub(crate) fn open(
     cx: &mut gpui::App,
     launch: client::Launch,
-    smoke: Option<(Vec<String>, bool)>,
+    smoke: Option<(Vec<String>, SmokeRun)>,
     open_at_start: Vec<String>,
 ) -> Result<(), String> {
     open_via(cx, launch, replica::Via::Local, smoke, open_at_start).map(drop)
@@ -2493,7 +2525,7 @@ pub(crate) fn open_via(
     cx: &mut gpui::App,
     launch: client::Launch,
     via: replica::Via,
-    smoke: Option<(Vec<String>, bool)>,
+    smoke: Option<(Vec<String>, SmokeRun)>,
     open_at_start: Vec<String>,
 ) -> Result<(gpui::AnyWindowHandle, gpui::WeakEntity<Workspace>), String> {
     use gpui::{Bounds, WindowBounds, WindowOptions, size};
@@ -2616,10 +2648,12 @@ pub(crate) fn open_via(
                         && match write {
                             ClipboardWrite::Deny => false,
                             ClipboardWrite::Allow => true,
-                            ClipboardWrite::Focused => window.is_window_active(),
+                            ClipboardWrite::Focused => {
+                                window.is_window_active() || crate::clip::in_memory()
+                            }
                         };
                     if allowed {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                        crate::clip::write(cx, text);
                     }
                 });
             }
@@ -2635,14 +2669,18 @@ pub(crate) fn open_via(
         cx.spawn(async move |cx| crate::bench_gui::run(any, weak, daemon, out.into(), cx).await)
             .detach();
     }
-    if let Some((daemon, restore)) = smoke {
+    if let Some((daemon, run)) = smoke {
         let weak = ws.downgrade();
-        if restore {
-            cx.spawn(async move |cx| smoke::restore(any, weak, cx).await)
-                .detach();
-        } else {
-            cx.spawn(async move |cx| smoke::run(any, weak, daemon, cx).await)
-                .detach();
+        match run {
+            SmokeRun::Restore => cx
+                .spawn(async move |cx| smoke::restore(any, weak, cx).await)
+                .detach(),
+            SmokeRun::Workspace => cx
+                .spawn(async move |cx| smoke::run(any, weak, daemon, cx).await)
+                .detach(),
+            SmokeRun::Clipboard => cx
+                .spawn(async move |cx| smoke::clipboard::run(any, weak, daemon, cx).await)
+                .detach(),
         }
     }
     Ok((any, ws.downgrade()))
@@ -2652,6 +2690,8 @@ mod smoke {
     //! `dreamer --smoke-workspace`: against an isolated tmux whose session
     //! `main` has two windows, the first split into three panes, each pane
     //! having printed `READY-%<pane id>`.
+
+    pub(super) mod clipboard;
 
     use std::time::{Duration, Instant};
 

@@ -723,8 +723,8 @@ async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire:
             let mut keys = state.apps.host(r.pane, &r.instance, &r.app_id, conn.id);
             let (to, pane) = (conn.clone(), r.pane);
             tokio::spawn(async move {
-                while let Some(key) = keys.recv().await {
-                    let input = api::AppInput { pane, key };
+                while let Some(mut input) = keys.recv().await {
+                    input.pane = pane;
                     if !to.event(TOPIC_APP_INPUT, input.encode_to_vec()).await {
                         return;
                     }
