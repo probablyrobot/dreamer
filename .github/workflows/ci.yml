@@ -60,6 +60,11 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Free runner disk
+        # The workspace's debug target fills the runner; drop toolchains this job never uses.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install GUI build dependencies
