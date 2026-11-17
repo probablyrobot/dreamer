@@ -324,7 +324,9 @@ A pane whose program is a registered app host (an app package started
 with `dream app launch` or `dream app run`, see
 [termapp.md](termapp.md#app-panes)) is drawn natively, in the pane's own
 cell rectangle, instead of its terminal: the same table, list, log,
-text, form, gauge, chart, or agent view as a panel. Any number of app
+text, form, gauge, chart, or agent view as a panel, and the text, input,
+and status components of a view tree
+([termapp.md](termapp.md#text-input-and-status-components)). Any number of app
 panes can be shown, in any window, and they follow splits, resizes,
 zoom, and tab switches like terminal panes, because tmux still owns the
 pane and its layout. A plain tmux client attached to the same session
@@ -373,11 +375,11 @@ panes:
 | Input | In an app view |
 | --- | --- |
 | Arrows, Enter, Esc, Tab, Backspace, Delete, Home, End, Page Up/Down, F-keys, Ctrl combinations | A key by the model's names (`Up`, `Enter`, `Ctrl-c`) |
-| Text, Space included | Comes through the platform's text input, so IME composition works: the composition is shown at the bottom of the view and only committed text is sent. It goes into the focused input as one edit (a text or number field, or an agent's prompt); in a view with no input it is the keys it is made of (`j`, `q`, a command's key) |
-| Cmd-C (macOS), Ctrl-Shift-C (Linux) | Copies the lines selected with the mouse; with none, the selected row of the focused table or list (a table's columns separated by tabs), the focused form field, a text view's text, or an agent view's latest answer. The copy goes to the clipboard and, with `clipboard.tmux` `sync` or `to_tmux`, becomes tmux's newest buffer |
+| Text, Space included | Comes through the platform's text input, so IME composition works: the composition is shown at the bottom of the view and only committed text is sent. It goes into the focused input as one edit (a text or number field, an `input` component, or an agent's prompt); in a view with no input it is the keys it is made of (`j`, `q`, a command's key) |
+| Cmd-C (macOS), Ctrl-Shift-C (Linux) | Copies the lines selected with the mouse; with none, the selected row of the focused table or list (a table's columns separated by tabs), the focused form field or `input`, the focused `select`'s option, a text view's text, or an agent view's latest answer. The copy goes to the clipboard and, with `clipboard.tmux` `sync` or `to_tmux`, becomes tmux's newest buffer |
 | Cmd-V (macOS), Ctrl-Shift-V (Linux) | Pastes the clipboard into the focused input as one edit: line breaks become spaces, other control characters are dropped. A view with no focused input takes no paste, so a paste never runs a command |
-| Click | Selects a table's or list's row, or focuses a form field; in a [view tree](termapp.md#view-trees), that table, list, or form takes the focus |
-| Drag over lines | Selects whole lines (rows, form values, transcript entries, a text view's text) of one node for Copy, drawn highlighted. Selection is by line: a part of a line cannot be selected |
+| Click | Selects a table's or list's row, or focuses a form field; presses a `button`, flips a `toggle`, picks a `select`'s option, or focuses an `input`. In a [view tree](termapp.md#view-trees), the node clicked takes the focus |
+| Drag over lines | Selects whole lines (rows, form values, transcript entries, a text view's text, lines of markdown, code, or a diff) of one node for Copy, drawn highlighted. Selection is by line: a part of a line cannot be selected |
 | Middle click | Pastes tmux's newest buffer into the focused input (`clipboard.middle_click: off` turns it off) |
 | Wheel | Moves the selection of the table or list under the pointer (which takes the focus), one row per step |
 | Cmd and Alt combinations | Stay with the desktop |
@@ -565,6 +567,15 @@ by hand) and checks the pixels:
   terminals and the chrome alike;
 - the scheme's green, which the scene prints, is drawn;
 - the image is not flat.
+
+It captures the `app-components` scene in both schemes too: the
+reference app with every text, input, and status component
+(`examples/apps/components/`), drawn natively as an app pane on the left
+and, started from a shell, as its terminal interface on the right. The
+main color is the scheme's background (or the app pane's surface), the
+accent is drawn, and a badge is drawn both ways: natively on its danger
+surface, and in the terminal in the scheme's red. A window that drew
+neither (it stopped repainting) records the step as not run.
 
 The captures stay in `target/gate/screens/`. The step is not run on a
 locked screen, or when the terminal running the gate lacks Screen

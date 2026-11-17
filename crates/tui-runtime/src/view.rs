@@ -7,13 +7,14 @@ use std::collections::HashMap;
 use app_model::App;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction as Axis, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Gauge, List, ListItem, ListState, Paragraph, Row, Sparkline, Table, TableState, Tabs,
     Wrap,
 };
-use view_tree::{Direction, Frame as Tree, Kind, Node};
+use view_tree::rich::{self, Block as RichBlock, Role};
+use view_tree::{Direction, Frame as Tree, Kind, Node, Tone};
 
 /// What the terminal keeps per node key between draws, so an update to
 /// the tree does not lose it: how far each table, list, and scroll node
@@ -77,17 +78,149 @@ fn natural(n: &Node) -> u16 {
         Kind::Gauge { .. } => 1,
         Kind::Chart { .. } => 3,
         Kind::Form { fields, .. } => count(fields.len()),
+        Kind::Markdown { text } => count(rich::markdown(text).len()),
+        Kind::Code { text, .. } | Kind::Diff { text } => count(text.lines().count()),
+        Kind::Button { .. }
+        | Kind::Input { .. }
+        | Kind::Select { .. }
+        | Kind::Toggle { .. }
+        | Kind::Badge { .. }
+        | Kind::Progress { .. }
+        | Kind::Status { .. } => 1,
     };
     own.saturating_add(border)
 }
 
-/// How a child shares a column: text and gauges take what they need, the
-/// rest share what is left.
+/// Takes the rows it needs in a column, not a share of what is left:
+/// text, gauges, controls, badges, progress and status lines, and rows or
+/// columns of only those.
+fn fixed(n: &Node) -> bool {
+    match &n.kind {
+        Kind::Text { .. }
+        | Kind::Gauge { .. }
+        | Kind::Button { .. }
+        | Kind::Input { .. }
+        | Kind::Select { .. }
+        | Kind::Toggle { .. }
+        | Kind::Badge { .. }
+        | Kind::Progress { .. }
+        | Kind::Status { .. } => true,
+        Kind::Row | Kind::Column => !n.children.is_empty() && n.children.iter().all(fixed),
+        _ => false,
+    }
+}
+
+/// How a child shares a column: fixed nodes take what they need, the rest
+/// share what is left.
 fn share(n: &Node) -> Constraint {
-    match n.kind {
-        Kind::Text { .. } | Kind::Gauge { .. } => Constraint::Length(natural(n)),
+    if fixed(n) {
+        Constraint::Length(natural(n))
+    } else {
+        Constraint::Fill(1)
+    }
+}
+
+/// How a child shares a row: a badge or a button takes its own width
+/// (and a space), the rest share what is left.
+fn share_row(n: &Node) -> Constraint {
+    let width = |s: &str| u16::try_from(Line::from(s.to_owned()).width()).unwrap_or(u16::MAX);
+    match &n.kind {
+        Kind::Badge { text, .. } if n.title.is_none() => Constraint::Length(width(text) + 3),
+        Kind::Button { label } if n.title.is_none() => Constraint::Length(width(label) + 5),
         _ => Constraint::Fill(1),
     }
+}
+
+/// Colours come from the terminal's own palette, by ANSI index, never as
+/// RGB: in Dreamer that palette is the one scheme, so the terminal draws
+/// the components in the same colours the desktop takes from it.
+const ACCENT: Color = Color::Blue;
+
+fn tone(t: Tone) -> Style {
+    let fg = match t {
+        Tone::Neutral => return Style::default().add_modifier(Modifier::DIM),
+        Tone::Accent => ACCENT,
+        Tone::Success => Color::Green,
+        Tone::Warning => Color::Yellow,
+        Tone::Danger => Color::Red,
+    };
+    Style::default().fg(fg)
+}
+
+/// How a span of markdown, code, or a diff is drawn.
+fn role(r: Role) -> Style {
+    let s = Style::default();
+    match r {
+        Role::Plain => s,
+        Role::Strong => s.add_modifier(Modifier::BOLD),
+        Role::Emphasis => s.add_modifier(Modifier::ITALIC),
+        Role::Code => s.fg(Color::Cyan),
+        Role::Link => s.fg(ACCENT).add_modifier(Modifier::UNDERLINED),
+        Role::Marker => s.fg(ACCENT),
+        Role::Keyword => s.fg(Color::Magenta),
+        Role::String => s.fg(Color::Green),
+        Role::Number => s.fg(Color::Yellow),
+        Role::Comment => s.add_modifier(Modifier::DIM | Modifier::ITALIC),
+        Role::Type => s.fg(Color::Cyan),
+        Role::Added => s.fg(Color::Green),
+        Role::Removed => s.fg(Color::Red),
+        Role::Hunk => s.fg(Color::Cyan),
+        Role::Meta => s.add_modifier(Modifier::BOLD),
+    }
+}
+
+/// Rich lines as Ratatui lines, `width` columns wide (for rules).
+fn rich_lines(lines: Vec<rich::Line>, width: u16) -> Vec<Line<'static>> {
+    lines
+        .into_iter()
+        .map(|l| {
+            let spans: Vec<Span<'static>> = l
+                .spans
+                .iter()
+                .map(|s| Span::styled(s.text.clone(), role(s.role)))
+                .collect();
+            match l.block {
+                RichBlock::Heading(level) => {
+                    let mut style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+                    if level == 1 {
+                        style = style.add_modifier(Modifier::UNDERLINED);
+                    }
+                    Line::from(spans).style(style)
+                }
+                RichBlock::Quote => {
+                    let mut all = vec![Span::styled("│ ", Style::default().fg(ACCENT))];
+                    all.extend(spans);
+                    Line::from(all).style(Style::default().add_modifier(Modifier::ITALIC))
+                }
+                RichBlock::Code => {
+                    let mut all = vec![Span::raw("  ")];
+                    all.extend(spans);
+                    Line::from(all)
+                }
+                RichBlock::Rule => Line::from("─".repeat(usize::from(width)))
+                    .style(Style::default().add_modifier(Modifier::DIM)),
+                RichBlock::Text => Line::from(spans),
+            }
+        })
+        .collect()
+}
+
+/// The style of a control: reversed while it has the focus.
+fn control(focused: bool, base: Style) -> Style {
+    if focused {
+        base.add_modifier(Modifier::REVERSED)
+    } else {
+        base
+    }
+}
+
+fn label_span(label: &str) -> Option<Span<'static>> {
+    (!label.is_empty()).then(|| {
+        Span::styled(
+            format!("{label} "),
+            Style::default().add_modifier(Modifier::DIM),
+        )
+    })
 }
 
 fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: Rect) {
@@ -109,10 +242,7 @@ fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: 
             let (axis, constraints): (Axis, Vec<Constraint>) = if n.kind == Kind::Column {
                 (Axis::Vertical, n.children.iter().map(share).collect())
             } else {
-                (
-                    Axis::Horizontal,
-                    vec![Constraint::Fill(1); n.children.len()],
-                )
+                (Axis::Horizontal, n.children.iter().map(share_row).collect())
             };
             let areas = Layout::default()
                 .direction(axis)
@@ -255,6 +385,143 @@ fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: 
         Kind::Chart { values } => {
             let data: Vec<u64> = values.iter().map(|v| v.max(0.0).round() as u64).collect();
             f.render_widget(Sparkline::default().data(&data), area);
+        }
+        Kind::Markdown { text } => {
+            let code_width = area.width;
+            f.render_widget(
+                Paragraph::new(rich_lines(rich::markdown(text), code_width))
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
+        }
+        Kind::Code { text, language } => {
+            f.render_widget(
+                Paragraph::new(rich_lines(rich::code(text, language), area.width)),
+                area,
+            );
+        }
+        Kind::Diff { text } => {
+            f.render_widget(
+                Paragraph::new(rich_lines(rich::diff(text), area.width)),
+                area,
+            );
+        }
+        Kind::Button { label } => {
+            let style = control(
+                focused,
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            );
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(format!("[ {label} ]"), style))),
+                area,
+            );
+        }
+        Kind::Input {
+            label,
+            value,
+            placeholder,
+        } => {
+            let mut spans: Vec<Span> = label_span(label).into_iter().collect();
+            let used: usize = spans.iter().map(Span::width).sum();
+            let room = usize::from(area.width).saturating_sub(used).max(1);
+            let (shown, style) = if value.is_empty() && !focused {
+                (
+                    placeholder.clone(),
+                    Style::default().add_modifier(Modifier::DIM),
+                )
+            } else {
+                // The end of a long value stays in view, with the cursor.
+                let cursor = if focused { "▏" } else { "" };
+                let chars: Vec<char> = value.chars().collect();
+                let keep = room.saturating_sub(cursor.chars().count());
+                let tail: String = chars[chars.len().saturating_sub(keep)..].iter().collect();
+                (format!("{tail}{cursor}"), Style::default())
+            };
+            let pad = room.saturating_sub(shown.chars().count());
+            spans.push(Span::styled(
+                format!("{shown}{}", " ".repeat(pad)),
+                control(focused, style.add_modifier(Modifier::UNDERLINED)),
+            ));
+            f.render_widget(Paragraph::new(Line::from(spans)), area);
+        }
+        Kind::Select {
+            label,
+            options,
+            selected,
+        } => {
+            let mut spans: Vec<Span> = label_span(label).into_iter().collect();
+            for (i, o) in options.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::raw(" "));
+                }
+                let style = if i == *selected {
+                    control(
+                        focused,
+                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Style::default().add_modifier(Modifier::DIM)
+                };
+                let mark = if i == *selected { "●" } else { "○" };
+                spans.push(Span::styled(format!("{mark} {o}"), style));
+            }
+            f.render_widget(Paragraph::new(Line::from(spans)), area);
+        }
+        Kind::Toggle { label, on } => {
+            let (mark, base) = if *on {
+                ("[x]", Style::default().fg(ACCENT))
+            } else {
+                ("[ ]", Style::default().add_modifier(Modifier::DIM))
+            };
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(mark, control(focused, base)),
+                    Span::raw(format!(" {label}")),
+                ])),
+                area,
+            );
+        }
+        Kind::Badge { text, tone: t } => {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!(" {text} "),
+                    tone(*t).add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                ))),
+                area,
+            );
+        }
+        Kind::Progress { ratio, label } => {
+            let label = if label.is_empty() {
+                String::new()
+            } else {
+                format!(" {label}")
+            };
+            let room = usize::from(area.width).saturating_sub(label.chars().count());
+            let done = ((ratio.clamp(0.0, 1.0) * room as f64).round() as usize).min(room);
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("━".repeat(done), Style::default().fg(ACCENT)),
+                    Span::styled(
+                        "─".repeat(room - done),
+                        Style::default().add_modifier(Modifier::DIM),
+                    ),
+                    Span::raw(label),
+                ])),
+                area,
+            );
+        }
+        Kind::Status { items } => {
+            let mut spans = Vec::new();
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled(
+                        " · ",
+                        Style::default().add_modifier(Modifier::DIM),
+                    ));
+                }
+                spans.push(Span::styled(item.text.clone(), tone(item.tone)));
+            }
+            f.render_widget(Paragraph::new(Line::from(spans)), area);
         }
         Kind::Form { fields, focus } => {
             let lines: Vec<Line> = fields
@@ -652,5 +919,121 @@ field = "name"
         a.set_source("panes", rows(41), 1);
         term.draw(|f| draw_with(&a, &mut state, f)).expect("draw");
         assert_eq!(state.offsets.get("left"), Some(&scrolled));
+    }
+
+    /// The reference app: every text, input, and status component.
+    const COMPONENTS: &str = include_str!("../../../examples/apps/components/app.toml");
+
+    fn components() -> App {
+        let mut a = App::new(app_model::manifest::Manifest::parse(COMPONENTS).expect("manifest"));
+        a.link = Link::Live;
+        a
+    }
+
+    /// The cell where `what` starts.
+    fn cell_at<'a>(
+        t: &'a ratatui::Terminal<ratatui::backend::TestBackend>,
+        what: &str,
+    ) -> &'a ratatui::buffer::Cell {
+        let (x, y) = at(&screen(t), what);
+        &t.backend().buffer()[(x as u16, y as u16)]
+    }
+
+    fn draw_app(a: &App, w: u16, h: u16) -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        let mut t =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).expect("terminal");
+        t.draw(|f| draw(a, f)).expect("draw");
+        t
+    }
+
+    #[test]
+    fn the_reference_app_draws_every_component_in_the_terminal() {
+        let mut a = components();
+        let t = draw_app(&a, 110, 34);
+        let lines = screen(&t);
+        let shown = lines.join("\n");
+        for what in [
+            " Components ",
+            "Readme",
+            "Text with strong and emphasis, inline code, and a link.",
+            "• a list item",
+            "  • nested",
+            "1. numbered",
+            "│ A quote.",
+            "  fn main() {",
+            "Name ▏",
+            "● dark ○ light ○ follow the system",
+            "[x] Notify when done",
+            "[ Save ]",
+            " passing ",
+            " 1 failing ",
+            "build 62%",
+            "main · 3 ahead · 1 conflict · utf-8",
+            "s save  q quit",
+        ] {
+            assert!(shown.contains(what), "`{what}` is not drawn:\n{shown}");
+        }
+        // Styles: a heading in the accent, emphasis, the focused input
+        // reversed, a badge in its tone, the progress bar's done part.
+        let (x, y) = at(&lines, "│Components");
+        let heading = &t.backend().buffer()[(x as u16 + 1, y as u16)];
+        assert_eq!(heading.fg, ACCENT);
+        assert!(heading.modifier.contains(Modifier::BOLD));
+        let strong = cell_at(&t, "strong");
+        assert!(strong.modifier.contains(Modifier::BOLD));
+        assert!(cell_at(&t, "emphasis").modifier.contains(Modifier::ITALIC));
+        assert_eq!(cell_at(&t, "inline code").fg, Color::Cyan);
+        assert_eq!(cell_at(&t, "link.").fg, ACCENT);
+        assert!(cell_at(&t, "▏").modifier.contains(Modifier::REVERSED));
+        let passing = cell_at(&t, "passing");
+        assert_eq!(passing.fg, Color::Green);
+        assert!(passing.modifier.contains(Modifier::REVERSED));
+        assert_eq!(cell_at(&t, "1 failing").fg, Color::Red);
+        assert_eq!(cell_at(&t, "━").fg, ACCENT);
+        assert_eq!(cell_at(&t, "1 conflict").fg, Color::Red);
+        assert_eq!(cell_at(&t, "fn main").fg, Color::Magenta);
+
+        // The code tab: highlighted by language.
+        a.switch_tab(1);
+        let t = draw_app(&a, 110, 34);
+        assert_eq!(cell_at(&t, "/// Sums").fg, Color::Reset);
+        assert!(cell_at(&t, "/// Sums").modifier.contains(Modifier::DIM));
+        assert_eq!(cell_at(&t, "fn total").fg, Color::Magenta);
+        assert_eq!(cell_at(&t, "\"total\"").fg, Color::Green);
+        assert_eq!(cell_at(&t, "39").fg, Color::Yellow);
+        // The diff tab: added and removed lines.
+        a.switch_tab(1);
+        let t = draw_app(&a, 110, 34);
+        assert_eq!(cell_at(&t, "+    println!").fg, Color::Green);
+        assert_eq!(cell_at(&t, "-    println!").fg, Color::Red);
+        assert_eq!(cell_at(&t, "@@ -1,4").fg, Color::Cyan);
+
+        // Only the scheme's own palette: no colour by RGB or past the 16
+        // ANSI colours, so the terminal draws in the one theme.
+        let buf = t.backend().buffer();
+        for c in buf.content() {
+            for color in [c.fg, c.bg] {
+                assert!(
+                    !matches!(color, Color::Rgb(..) | Color::Indexed(_)),
+                    "{color:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn typed_keys_and_focus_show_in_the_terminal() {
+        let mut a = components();
+        for k in ["h", "i"] {
+            a.control_key(k);
+        }
+        a.focus_next();
+        a.control_key("Down");
+        let t = draw_app(&a, 110, 34);
+        let shown = screen(&t).join("\n");
+        assert!(shown.contains("Name hi "), "{shown}");
+        assert!(!shown.contains("hi▏"), "the cursor leaves with the focus");
+        assert!(cell_at(&t, "● light").modifier.contains(Modifier::REVERSED));
+        assert!(!cell_at(&t, "○ dark").modifier.contains(Modifier::REVERSED));
     }
 }

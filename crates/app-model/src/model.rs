@@ -45,6 +45,33 @@ pub struct App {
     pub selection: BTreeMap<String, usize>,
     pub focused: Option<String>,
     pub tabs: BTreeMap<String, usize>,
+    /// A tree's input components' values by node key: an input's text, a
+    /// select's option, a toggle's `true` or `false`.
+    pub values: BTreeMap<String, String>,
+    /// What the input components did since the host last took them
+    /// ([`App::take_events`]), oldest first.
+    pub events: Vec<Event>,
+}
+
+/// Something an input component did: a button pressed, an input's text
+/// changed or submitted (Enter), a select's option or a toggle changed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Event {
+    /// The node's key.
+    pub node: String,
+    #[serde(rename = "type")]
+    pub kind: EventKind,
+    /// The value after the event: text for an input or a select, a
+    /// boolean for a toggle, null for a button.
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EventKind {
+    Press,
+    Change,
+    Submit,
 }
 
 /// Who said or did a transcript entry.
@@ -194,6 +221,8 @@ impl App {
             selection: BTreeMap::new(),
             focused: None,
             tabs: BTreeMap::new(),
+            values: BTreeMap::new(),
+            events: Vec::new(),
         }
         .with_form()
         .with_focus()
@@ -220,7 +249,10 @@ impl App {
         self
     }
 
+    /// Form values for the manifest's fields, kept by name from `old`;
+    /// and the input components' values, kept by node key.
     pub fn reset_form(&mut self, old: &[(String, String)]) {
+        self.reset_values();
         self.form = self
             .form_fields()
             .iter()
@@ -361,6 +393,7 @@ impl App {
             .manifest
             .commands
             .iter()
+            .filter(|(_, c)| !c.key.is_empty())
             .map(|(name, c)| format!("{} {}", c.key, c.label.as_deref().unwrap_or(name)))
             .chain(std::iter::once("q quit".to_owned()))
             .collect();
@@ -377,6 +410,9 @@ impl App {
     /// text or a number, or the view is an agent's prompt.
     pub fn takes_text(&self) -> bool {
         if !self.manifest.is_tree() && self.manifest.view.kind == ViewKind::Agent {
+            return true;
+        }
+        if self.in_input() {
             return true;
         }
         self.in_form()
@@ -398,6 +434,10 @@ impl App {
         let clean = clean_text(text);
         if !self.manifest.is_tree() && self.manifest.view.kind == ViewKind::Agent {
             self.agent.input.push_str(&clean);
+            return true;
+        }
+        if self.in_input() {
+            self.edit_input(|v| v.push_str(&clean));
             return true;
         }
         let number = self
@@ -446,6 +486,9 @@ impl App {
     /// tree, `node` names the node clicked (else the focused one).
     pub fn select_at(&mut self, node: Option<&str>, index: usize) {
         self.focus_node(node);
+        if self.click_control(index) {
+            return;
+        }
         let Some(v) = self.focused_view() else {
             return;
         };
@@ -698,7 +741,9 @@ impl App {
         if depth > 64 {
             return None;
         }
-        let mut node = if let Some(v) = spec.view() {
+        let mut node = if spec.kind.is_content() || spec.kind.is_control() {
+            Node::new(key, self.component(key, spec))
+        } else if let Some(v) = spec.view() {
             let rows = self.sources.get(&v.source).map_or(&[][..], Vec::as_slice);
             let selected = self.selection.get(key).copied().unwrap_or(0);
             self.data_node(key, &v, rows, selected)
@@ -825,6 +870,274 @@ impl App {
     }
 }
 
+/// A tree's text, input, and status components: what they show, and what
+/// the input components do with keys, clicks, and text.
+impl App {
+    /// The input components' values from the manifest, keeping those by
+    /// the same node key from before (a select's only while still an
+    /// option).
+    pub fn reset_values(&mut self) {
+        let old = std::mem::take(&mut self.values);
+        for (key, n) in &self.manifest.nodes {
+            let kept = old.get(key).cloned();
+            let value = match n.kind {
+                NodeType::Input => kept.or_else(|| n.value.clone()).unwrap_or_default(),
+                NodeType::Select => kept
+                    .filter(|v| n.options.contains(v))
+                    .or_else(|| n.value.clone())
+                    .or_else(|| n.options.first().cloned())
+                    .unwrap_or_default(),
+                NodeType::Toggle => kept.unwrap_or_else(|| n.on.to_string()),
+                _ => continue,
+            };
+            self.values.insert(key.clone(), value);
+        }
+    }
+
+    /// The input components' values by node key, typed: an input's and a
+    /// select's as text, a toggle's as a boolean. Commands read them as
+    /// `${value.<node>}`, handlers as `values`.
+    pub fn values_json(&self) -> Value {
+        let mut out = serde_json::Map::new();
+        for (key, v) in &self.values {
+            out.insert(key.clone(), self.typed_value(key, v));
+        }
+        Value::Object(out)
+    }
+
+    fn typed_value(&self, key: &str, v: &str) -> Value {
+        match self.manifest.nodes.get(key).map(|n| n.kind) {
+            Some(NodeType::Toggle) => Value::Bool(v == "true"),
+            _ => Value::String(v.to_owned()),
+        }
+    }
+
+    /// The events since the last call, oldest first.
+    pub fn take_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    fn emit(&mut self, node: &str, kind: EventKind) {
+        let value = match self.values.get(node) {
+            Some(v) => self.typed_value(node, v),
+            None => Value::Null,
+        };
+        self.events.push(Event {
+            node: node.to_owned(),
+            kind,
+            value,
+        });
+    }
+
+    /// The command an event runs: a button's press, a select's or
+    /// toggle's change (`run`), an input's submit (`submit`).
+    pub fn command_for(&self, e: &Event) -> Option<String> {
+        let n = self.manifest.nodes.get(&e.node)?;
+        match (n.kind, e.kind) {
+            (NodeType::Button, EventKind::Press)
+            | (NodeType::Select | NodeType::Toggle, EventKind::Change) => n.run.clone(),
+            (NodeType::Input, EventKind::Submit) => n.submit.clone(),
+            _ => None,
+        }
+    }
+
+    /// The focused node is an input: keys and text type into it.
+    pub fn in_input(&self) -> bool {
+        self.focused_type() == Some(NodeType::Input)
+    }
+
+    /// Change the focused input's text, and record the change.
+    fn edit_input(&mut self, f: impl FnOnce(&mut String)) {
+        let Some(key) = self.focused.clone() else {
+            return;
+        };
+        let v = self.values.entry(key.clone()).or_default();
+        let before = v.clone();
+        f(v);
+        if *v != before {
+            self.emit(&key, EventKind::Change);
+        }
+    }
+
+    /// A key for the focused input component. An input takes letters,
+    /// digits, Space, and Backspace, and Enter submits it; a button is
+    /// pressed with Enter or Space; a toggle flips with Enter or Space; a
+    /// select moves with Up and Down, and Enter or Space steps to the
+    /// next option. Returns whether the key was taken.
+    pub fn control_key(&mut self, name: &str) -> bool {
+        let Some(key) = self.focused.clone() else {
+            return false;
+        };
+        let Some(kind) = self.focused_type() else {
+            return false;
+        };
+        let activate = matches!(name, "Enter" | " " | "Space");
+        match kind {
+            NodeType::Input => match name {
+                "Enter" => self.emit(&key, EventKind::Submit),
+                "Backspace" => self.edit_input(|v| {
+                    v.pop();
+                }),
+                " " | "Space" => self.edit_input(|v| v.push(' ')),
+                k if k.chars().count() == 1 && !k.chars().all(char::is_control) => {
+                    self.edit_input(|v| v.push_str(k));
+                }
+                _ => return false,
+            },
+            NodeType::Button if activate => self.emit(&key, EventKind::Press),
+            NodeType::Toggle if activate => self.flip(&key),
+            NodeType::Select => {
+                let delta = match name {
+                    "Up" => -1,
+                    "Down" => 1,
+                    _ if activate => {
+                        let n = self.manifest.nodes[&key].options.len().max(1);
+                        let at = self.option_index(&key);
+                        self.choose(&key, (at + 1) % n);
+                        return true;
+                    }
+                    _ => return false,
+                };
+                let at = self.option_index(&key) as i64 + delta;
+                self.choose(&key, at.max(0) as usize);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// A click on the focused input component (`index`: the option of a
+    /// select): presses a button, flips a toggle, picks an option. An
+    /// input only takes the focus. Whether the focused node is one.
+    fn click_control(&mut self, index: usize) -> bool {
+        let (Some(key), Some(kind)) = (self.focused.clone(), self.focused_type()) else {
+            return false;
+        };
+        match kind {
+            NodeType::Button => self.emit(&key, EventKind::Press),
+            NodeType::Toggle => self.flip(&key),
+            NodeType::Select => self.choose(&key, index),
+            NodeType::Input => {}
+            _ => return false,
+        }
+        true
+    }
+
+    fn flip(&mut self, key: &str) {
+        let v = self.values.entry(key.to_owned()).or_default();
+        *v = if v == "true" { "false" } else { "true" }.to_owned();
+        self.emit(key, EventKind::Change);
+    }
+
+    fn option_index(&self, key: &str) -> usize {
+        let options = self
+            .manifest
+            .nodes
+            .get(key)
+            .map_or(&[][..], |n| n.options.as_slice());
+        self.values
+            .get(key)
+            .and_then(|v| options.iter().position(|o| o == v))
+            .unwrap_or(0)
+    }
+
+    /// Pick option `index` (kept in range) of select `key`; a change is
+    /// recorded only when the option changed.
+    fn choose(&mut self, key: &str, index: usize) {
+        let Some(options) = self.manifest.nodes.get(key).map(|n| n.options.clone()) else {
+            return;
+        };
+        let Some(option) = options.get(index.min(options.len().saturating_sub(1))) else {
+            return;
+        };
+        if self.values.get(key) != Some(option) {
+            self.values.insert(key.to_owned(), option.clone());
+            self.emit(key, EventKind::Change);
+        }
+    }
+
+    /// A text, input, or status component as drawn: its text, value, or
+    /// items from the manifest, or from its source's rows.
+    fn component(&self, key: &str, spec: &crate::manifest::NodeSpec) -> Kind {
+        let rows = self
+            .sources
+            .get(&spec.source)
+            .map_or(&[][..], Vec::as_slice);
+        let value_of = |r: &Value| match &spec.field {
+            Some(p) => field(r, p).map(text).unwrap_or_default(),
+            None => text(r),
+        };
+        let shown = || match (&spec.text, spec.source.is_empty()) {
+            (Some(t), true) => t.clone(),
+            _ => rows.first().map(value_of).unwrap_or_default(),
+        };
+        let label = spec.label.clone().unwrap_or_default();
+        let value = self.values.get(key).cloned().unwrap_or_default();
+        match spec.kind {
+            NodeType::Markdown => Kind::Markdown { text: shown() },
+            NodeType::Code => Kind::Code {
+                text: shown(),
+                language: spec.language.clone().unwrap_or_default(),
+            },
+            NodeType::Diff => Kind::Diff { text: shown() },
+            NodeType::Badge => Kind::Badge {
+                text: shown(),
+                tone: spec.tone,
+            },
+            NodeType::Progress => {
+                let row = rows.first();
+                let ratio = match (spec.ratio, row) {
+                    (Some(r), _) if spec.source.is_empty() => r,
+                    (_, Some(r)) => {
+                        let n = match &spec.field {
+                            Some(p) => field(r, p).and_then(Value::as_f64),
+                            None => r.as_f64(),
+                        }
+                        .unwrap_or(0.0);
+                        if n > 1.0 { n / 100.0 } else { n }
+                    }
+                    _ => 0.0,
+                }
+                .clamp(0.0, 1.0);
+                let label = row
+                    .and_then(|r| spec.label.as_deref().and_then(|p| field(r, p)))
+                    .map(text)
+                    .or_else(|| spec.text.clone())
+                    .unwrap_or_else(|| format!("{:.0}%", ratio * 100.0));
+                Kind::Progress { ratio, label }
+            }
+            NodeType::Status => Kind::Status {
+                items: if spec.source.is_empty() {
+                    spec.items.clone()
+                } else {
+                    rows.iter()
+                        .map(|r| view_tree::StatusItem {
+                            text: value_of(r),
+                            tone: view_tree::Tone::Neutral,
+                        })
+                        .collect()
+                },
+            },
+            NodeType::Button => Kind::Button { label },
+            NodeType::Input => Kind::Input {
+                label,
+                value,
+                placeholder: spec.placeholder.clone().unwrap_or_default(),
+            },
+            NodeType::Select => Kind::Select {
+                label,
+                options: spec.options.clone(),
+                selected: self.option_index(key),
+            },
+            NodeType::Toggle => Kind::Toggle {
+                label,
+                on: value == "true",
+            },
+            _ => Kind::Column,
+        }
+    }
+}
+
 /// The model as an app host publishes it (`apps.publish`): the manifest's
 /// text and the state, as JSON. Desktops draw what it holds and run none
 /// of the package.
@@ -904,6 +1217,8 @@ impl App {
             selection: BTreeMap::new(),
             focused: None,
             tabs: BTreeMap::new(),
+            values: BTreeMap::new(),
+            events: Vec::new(),
         })
     }
 }
@@ -1236,5 +1551,187 @@ field = "load"
         assert_eq!(f.outline(), "table view (2 rows)\n");
         assert_eq!(f.title, "T");
         assert_eq!(f.status, a.status_text());
+    }
+
+    /// The reference app: every text, input, and status component.
+    pub(crate) const COMPONENTS: &str = include_str!("../../../examples/apps/components/app.toml");
+
+    fn components() -> App {
+        App::new(Manifest::parse(COMPONENTS).expect("the reference app"))
+    }
+
+    #[test]
+    fn the_reference_app_has_every_component() {
+        let a = components();
+        let f = a.frame().expect("a tree");
+        for kind in [
+            "markdown", "code", "diff", "button", "input", "select", "toggle", "badge", "progress",
+            "status",
+        ] {
+            assert!(
+                f.outline().lines().any(|l| l.trim().starts_with(kind)),
+                "no {kind}:\n{}",
+                f.outline()
+            );
+        }
+        // The first control shown takes the focus; the command run only by
+        // components has no key in the status line.
+        assert_eq!(f.focus.as_deref(), Some("name"));
+        assert_eq!(a.status_text(), "[connecting] s save  q quit");
+        assert!(matches!(
+            f.root.find("skin").map(|n| &n.kind),
+            Some(Kind::Select { selected: 0, options, .. }) if options.len() == 3
+        ));
+        assert!(matches!(
+            f.root.find("build").map(|n| &n.kind),
+            Some(Kind::Progress { ratio, label }) if (*ratio - 0.62).abs() < 1e-9 && label == "build 62%"
+        ));
+    }
+
+    #[test]
+    fn input_components_record_events_that_run_their_commands() {
+        let mut a = components();
+        // The input: keys and pasted text type, Enter submits.
+        assert!(a.takes_text());
+        assert!(a.control_key("h"));
+        assert!(a.control_key("Space"));
+        assert!(a.insert_text("there\n"));
+        assert!(a.control_key("Backspace"));
+        assert!(a.control_key("Enter"));
+        assert_eq!(a.values["name"], "h there");
+        let events = a.take_events();
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[0].kind, EventKind::Change);
+        let submit = events.last().expect("submit");
+        assert_eq!(
+            (submit.kind, &submit.value),
+            (EventKind::Submit, &Value::from("h there"))
+        );
+        assert_eq!(a.command_for(submit).as_deref(), Some("greet"));
+        assert_eq!(a.command_for(&events[0]), None, "a change runs nothing");
+        // Up and Down are no input's: they fall through to the runtime.
+        assert!(!a.control_key("Up"));
+
+        // A click on a select's option picks it, and focuses the select.
+        a.select_at(Some("skin"), 1);
+        assert_eq!(a.focused.as_deref(), Some("skin"));
+        assert!(!a.takes_text(), "a select takes no text");
+        assert!(!a.insert_text("x"));
+        assert!(a.control_key("Down"));
+        assert!(a.control_key("Down"), "the last option stays");
+        let events = a.take_events();
+        assert_eq!(
+            events.iter().map(|e| e.value.clone()).collect::<Vec<_>>(),
+            [Value::from("light"), Value::from("follow the system")]
+        );
+        assert_eq!(a.command_for(&events[0]).as_deref(), Some("pick"));
+        // Picking the option already picked changes nothing.
+        a.select_at(Some("skin"), 2);
+        assert!(a.take_events().is_empty());
+
+        // A toggle flips by a click, Space, or Enter; a button is pressed.
+        a.select_at(Some("notify"), 0);
+        assert!(a.control_key("Space"));
+        a.focus_next();
+        assert_eq!(a.focused.as_deref(), Some("save"));
+        assert!(a.control_key("Enter"));
+        assert!(!a.control_key("x"), "a button leaves letters to commands");
+        let events = a.take_events();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| (e.node.as_str(), e.kind, e.value.clone()))
+                .collect::<Vec<_>>(),
+            [
+                ("notify", EventKind::Change, Value::Bool(false)),
+                ("notify", EventKind::Change, Value::Bool(true)),
+                ("save", EventKind::Press, Value::Null),
+            ]
+        );
+        assert_eq!(a.command_for(&events[2]).as_deref(), Some("save"));
+        assert_eq!(
+            a.values_json(),
+            serde_json::json!({
+                "name": "h there",
+                "skin": "follow the system",
+                "notify": true,
+            })
+        );
+        let filled = crate::manifest::fill_with(
+            &toml::from_str("who = \"${value.name}\"\non = \"${value.notify}\"").expect("toml"),
+            None,
+            None,
+            Some(&a.values_json()),
+        )
+        .expect("filled");
+        assert_eq!(filled, serde_json::json!({"who": "h there", "on": true}));
+    }
+
+    #[test]
+    fn typing_is_one_patch_and_a_reload_keeps_focus_and_values() {
+        let mut a = components();
+        let before = a.frame().expect("tree");
+        a.control_key("x");
+        let after = a.frame().expect("tree");
+        // Only the input changed: no new focus, no other node.
+        assert_eq!(
+            view_tree::diff(&before, &after),
+            vec![view_tree::Op::Props {
+                path: vec![
+                    "main".into(),
+                    "side".into(),
+                    "controls".into(),
+                    "name".into()
+                ],
+                title: None,
+                kind: Kind::Input {
+                    label: "Name".into(),
+                    value: "x".into(),
+                    placeholder: "type a name, Enter greets".into(),
+                },
+            }]
+        );
+        a.select_at(Some("skin"), 1);
+        a.focus_next();
+        // A reload (a new version of the same package) keeps the focus
+        // and each component's value by key.
+        let values = a.form_values();
+        a.manifest = Manifest::parse(&COMPONENTS.replace("Save", "Store")).expect("v2");
+        a.reset_form(&values);
+        assert_eq!(a.focused.as_deref(), Some("notify"));
+        assert_eq!(a.values["name"], "x");
+        assert_eq!(a.values["skin"], "light");
+        let f = a.frame().expect("tree");
+        assert_eq!(f.focus.as_deref(), Some("notify"));
+        assert!(matches!(
+            f.root.find("save").map(|n| &n.kind),
+            Some(Kind::Button { label }) if label == "Store"
+        ));
+    }
+
+    #[test]
+    fn components_are_validated_with_their_node() {
+        let bad = COMPONENTS
+            .replace("run = \"save\"", "run = \"gone\"")
+            .replace(
+                "options = [\"dark\", \"light\", \"follow the system\"]",
+                "options = []",
+            )
+            .replace("ratio = 0.62\n", "")
+            + "\n[commands.orphan]\nhandler = \"save\"\n";
+        let errors = Manifest::parse(&bad).expect_err("invalid");
+        for want in [
+            "nodes.save.run: no command `gone`",
+            "nodes.skin.options: a select needs options",
+            "nodes.build: a progress needs `ratio` or a `source`",
+            "commands.orphan.key: a command needs a key, or a node or form that runs it",
+        ] {
+            assert!(
+                errors.iter().any(|e| e.contains(want)),
+                "{want}: {errors:?}"
+            );
+        }
+        // `save` keeps its key, so it stays valid without a node.
+        assert!(!errors.iter().any(|e| e.starts_with("commands.save.key")));
     }
 }

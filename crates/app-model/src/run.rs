@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::manifest::{Manifest, Source, ViewKind, field, fill, to_json};
-use crate::model::{App, Link};
+use crate::manifest::{Manifest, Source, ViewKind, field, fill, fill_with, to_json};
+use crate::model::{App, Event, Link};
 
 /// What the presentation sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -557,6 +557,83 @@ fn host_trees(client: Arc<client::Client>) -> tokio::sync::watch::Sender<Option<
     tx
 }
 
+/// Run the package's command `name`: a key's, a form's submit, or an
+/// input component's `event`'s. A method gets its parameters filled from
+/// the selected row, the form, and the input components' values; a
+/// handler gets them as `selected`, `form`, `values`, and `event`. The
+/// outcome goes to the status line. Returns whether to fetch again, and
+/// why the connection is gone if it is.
+async fn run_command(
+    app: &mut App,
+    pkg: &Package,
+    conn: Option<&Conn>,
+    name: &str,
+    event: Option<&Event>,
+) -> (bool, Option<String>) {
+    let Some(cmd) = app.manifest.commands.get(name).cloned() else {
+        return (false, None);
+    };
+    let label = cmd.label.clone().unwrap_or_else(|| name.to_owned());
+    let Some(c) = conn else {
+        app.status = Some(format!("{label}: not sent (disconnected)"));
+        return (false, None);
+    };
+    let form_value = if app.in_form() {
+        match app.form_json() {
+            Ok(v) => Some(v),
+            Err(e) => {
+                app.status = Some(format!("{label}: {e}"));
+                return (false, None);
+            }
+        }
+    } else {
+        None
+    };
+    let values = app.values_json();
+    if let Some(h) = &cmd.handler {
+        let Some(script) = pkg.script.as_ref() else {
+            return (false, None);
+        };
+        let arg = serde_json::json!({
+            "selected": app.selected_row().cloned(),
+            "form": form_value,
+            "values": values,
+            "event": event,
+        });
+        app.status = Some(match script.handle(h, &arg).await {
+            Ok(Some(Value::String(said))) => format!("{label}: {said}"),
+            Ok(_) => format!("{label}: done"),
+            Err(e) => format!("{label}: {e}"),
+        });
+        return (true, None);
+    }
+    let Some(method) = cmd.method.clone() else {
+        return (false, None);
+    };
+    let params = match fill_with(
+        &cmd.params,
+        app.selected_row(),
+        form_value.as_ref(),
+        Some(&values),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            app.status = Some(format!("{label}: {e}"));
+            return (false, None);
+        }
+    };
+    match call(&c.client, &method, params).await {
+        Ok(_) => {
+            app.status = Some(format!("{label}: done"));
+            (true, None)
+        }
+        Err((gone, e)) => {
+            app.status = Some(format!("{label}: {e}"));
+            (false, gone.then_some(e))
+        }
+    }
+}
+
 /// Run the package at `path` against the daemon at `endpoint`: connect,
 /// fetch, follow events, run commands for keys from `inputs`, and reload
 /// the package when its files change. `publish` gets the model whenever
@@ -636,23 +713,27 @@ pub async fn run(
             }
             ev = next_input(inputs, &mut remote) => {
                 dirty = true;
+                // Commands to run, by name: a key's, a form's submit, or an
+                // input component's event's.
+                let mut commands: Vec<(String, Option<Event>)> = Vec::new();
                 let name = match ev {
                     None | Some(Input::Quit) => return Ok(()),
                     Some(Input::Redraw) => continue,
                     Some(Input::Text(text)) => {
                         app.insert_text(&text);
-                        continue;
+                        None
                     }
                     Some(Input::Select { node, index }) => {
                         app.select_at(node.as_deref(), index);
-                        continue;
+                        None
                     }
                     Some(Input::Scroll { node, steps }) => {
                         app.scroll(node.as_deref(), steps);
-                        continue;
+                        None
                     }
-                    Some(Input::Key(name)) => name,
+                    Some(Input::Key(name)) => Some(name),
                 };
+                if let Some(name) = name {
                 if app.manifest.view.kind == ViewKind::Agent {
                     match crate::agent::key(&mut app, &name) {
                         crate::agent::Key::Handled => {}
@@ -710,85 +791,46 @@ pub async fn run(
                     }
                 }
                 let form = app.in_form();
-                if form && !matches!(name.as_str(), "Enter" | "Esc" | "Ctrl-c")
+                let typing = app.in_input();
+                if app.control_key(&name) {
+                    // The component's events are handled below.
+                } else if form && !matches!(name.as_str(), "Enter" | "Esc" | "Ctrl-c")
                     && !name.starts_with('F')
                 {
                     app.form_key(if name == " " { "Space" } else { &name });
-                    continue;
-                }
-                let name = if form && name == "Enter" {
-                    app.form_submit()
-                        .and_then(|c| app.manifest.commands.get(&c))
-                        .map_or(name, |c| c.key.clone())
+                } else if form && name == "Enter" {
+                    commands.extend(app.form_submit().map(|c| (c, None)));
                 } else {
-                    name
-                };
-                match name.as_str() {
-                    "Ctrl-c" => return Ok(()),
-                    "q" if !form => return Ok(()),
-                    "Esc" if form => return Ok(()),
-                    "Up" | "k" => app.move_by(-1),
-                    "Down" | "j" => app.move_by(1),
-                    "PageUp" => app.move_by(-10),
-                    "PageDown" => app.move_by(10),
-                    _ => {
-                        let Some((label, cmd)) = app
-                            .manifest
-                            .commands
-                            .iter()
-                            .find(|(_, c)| c.key == name)
-                            .map(|(n, c)| (c.label.clone().unwrap_or_else(|| n.clone()), c.clone()))
-                        else {
-                            continue;
-                        };
-                        let Some(c) = conn.as_ref() else {
-                            app.status = Some(format!("{label}: not sent (disconnected)"));
-                            continue;
-                        };
-                        let form_value = if form {
-                            match app.form_json() {
-                                Ok(v) => Some(v),
-                                Err(e) => {
-                                    app.status = Some(format!("{label}: {e}"));
-                                    continue;
-                                }
-                            }
-                        } else {
-                            None
-                        };
-                        if let Some(h) = &cmd.handler {
-                            let Some(script) = pkg.script.as_ref() else { continue };
-                            let arg = serde_json::json!({
-                                "selected": app.selected_row().cloned(),
-                                "form": form_value,
-                            });
-                            app.status = Some(match script.handle(h, &arg).await {
-                                Ok(Some(Value::String(said))) => format!("{label}: {said}"),
-                                Ok(_) => format!("{label}: done"),
-                                Err(e) => format!("{label}: {e}"),
-                            });
-                            refetch = true;
-                        } else if let Some(method) = cmd.method.clone() {
-                            let params = match fill(&cmd.params, app.selected_row(), form_value.as_ref()) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    app.status = Some(format!("{label}: {e}"));
-                                    continue;
-                                }
-                            };
-                            match call(&c.client, &method, params).await {
-                                Ok(_) => {
-                                    app.status = Some(format!("{label}: done"));
-                                    refetch = true;
-                                }
-                                Err((gone, e)) => {
-                                    app.status = Some(format!("{label}: {e}"));
-                                    if gone {
-                                        lost = Some(e);
-                                    }
-                                }
-                            }
-                        }
+                    match name.as_str() {
+                        "Ctrl-c" => return Ok(()),
+                        "q" if !form && !typing => return Ok(()),
+                        "Esc" if form || typing => return Ok(()),
+                        "Up" | "k" => app.move_by(-1),
+                        "Down" | "j" => app.move_by(1),
+                        "PageUp" => app.move_by(-10),
+                        "PageDown" => app.move_by(10),
+                        _ => commands.extend(
+                            app.manifest
+                                .commands
+                                .iter()
+                                .find(|(_, c)| !c.key.is_empty() && c.key == name)
+                                .map(|(n, _)| (n.clone(), None)),
+                        ),
+                    }
+                }
+                }
+                for e in app.take_events() {
+                    if let Some(c) = app.command_for(&e) {
+                        commands.push((c, Some(e)));
+                    }
+                }
+                for (name, event) in commands {
+                    let (again, gone) =
+                        run_command(&mut app, &pkg, conn.as_ref(), &name, event.as_ref()).await;
+                    refetch |= again;
+                    if gone.is_some() {
+                        lost = gone;
+                        break;
                     }
                 }
             }

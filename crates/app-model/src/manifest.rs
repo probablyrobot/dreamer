@@ -420,6 +420,16 @@ pub enum NodeType {
     Gauge,
     Chart,
     Form,
+    Markdown,
+    Code,
+    Diff,
+    Button,
+    Input,
+    Select,
+    Toggle,
+    Badge,
+    Progress,
+    Status,
 }
 
 impl NodeType {
@@ -430,9 +440,34 @@ impl NodeType {
         )
     }
 
-    /// Takes keys when focused: moves a selection, or edits fields.
+    /// Takes keys when focused: moves a selection, edits fields, or is a
+    /// control.
     pub fn focusable(self) -> bool {
-        matches!(self, NodeType::Table | NodeType::List | NodeType::Form)
+        matches!(self, NodeType::Table | NodeType::List | NodeType::Form) || self.is_control()
+    }
+
+    /// A button, input, select, or toggle: an input component whose
+    /// value the model keeps and whose events it records.
+    pub fn is_control(self) -> bool {
+        matches!(
+            self,
+            NodeType::Button | NodeType::Input | NodeType::Select | NodeType::Toggle
+        )
+    }
+
+    /// Shows text or a value given by `text` (or `ratio`, `items`) or
+    /// read from its `source`: markdown, code, a diff, a badge, a
+    /// progress line, or a status line.
+    pub fn is_content(self) -> bool {
+        matches!(
+            self,
+            NodeType::Markdown
+                | NodeType::Code
+                | NodeType::Diff
+                | NodeType::Badge
+                | NodeType::Progress
+                | NodeType::Status
+        )
     }
 
     pub fn name(self) -> &'static str {
@@ -449,6 +484,16 @@ impl NodeType {
             NodeType::Gauge => "gauge",
             NodeType::Chart => "chart",
             NodeType::Form => "form",
+            NodeType::Markdown => "markdown",
+            NodeType::Code => "code",
+            NodeType::Diff => "diff",
+            NodeType::Button => "button",
+            NodeType::Input => "input",
+            NodeType::Select => "select",
+            NodeType::Toggle => "toggle",
+            NodeType::Badge => "badge",
+            NodeType::Progress => "progress",
+            NodeType::Status => "status",
         }
     }
 }
@@ -484,8 +529,42 @@ pub struct NodeSpec {
     pub label: Option<String>,
     #[serde(default)]
     pub fields: Vec<FormField>,
+    /// Form: the command Enter runs. Input: the command Enter runs.
     #[serde(default)]
     pub submit: Option<String>,
+    /// Markdown, code, diff, and badge: the text shown, when it does not
+    /// come from `source` (the first row's `field`). Progress: its label.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Code: the language highlighted (`rust`, `ts`, `python`, `sh`, ...).
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Badge: what the text means, which picks its colour.
+    #[serde(default)]
+    pub tone: view_tree::Tone,
+    /// Progress: the ratio (0 to 1) when it does not come from `source`.
+    #[serde(default)]
+    pub ratio: Option<f64>,
+    /// Status: its items, when they do not come from `source` (one per
+    /// row, its `field`).
+    #[serde(default)]
+    pub items: Vec<view_tree::StatusItem>,
+    /// Select: the options.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// Input: the starting text; select: the starting option.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// Input: shown while the value is empty.
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    /// Toggle: on at the start.
+    #[serde(default)]
+    pub on: bool,
+    /// Button: the command a press runs. Select and toggle: the command a
+    /// change runs.
+    #[serde(default)]
+    pub run: Option<String>,
 }
 
 impl NodeSpec {
@@ -517,6 +596,9 @@ impl NodeSpec {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
+    /// The key that runs it. A command that a button, input, select, or
+    /// toggle runs (or a form submits) may have none.
+    #[serde(default)]
     pub key: String,
     /// An API method to call, or
     #[serde(default)]
@@ -581,10 +663,13 @@ fn check_templates(v: &toml::Value, at: &str, errors: &mut Vec<String>) {
                 let ok = inner
                     .strip_prefix("selected.")
                     .or_else(|| inner.strip_prefix("form."))
-                    .is_some_and(path_ok);
+                    .is_some_and(path_ok)
+                    || inner
+                        .strip_prefix("value.")
+                        .is_some_and(|k| path_ok(k) && !k.contains('.'));
                 if !ok {
                     errors.push(format!(
-                        "{at}: `${{{inner}}}` is not `${{selected.<field>}}` or `${{form.<field>}}`"
+                        "{at}: `${{{inner}}}` is not `${{selected.<field>}}`, `${{form.<field>}}`, or `${{value.<node>}}`"
                     ));
                 }
                 rest = &after[end + 1..];
@@ -658,6 +743,19 @@ impl Manifest {
         }
     }
 
+    /// Whether a node (a button's or control's `run`, an input's or a
+    /// form's `submit`), the version 1 form, or a contributed command runs
+    /// the command `name`.
+    pub fn runs_command(&self, name: &str) -> bool {
+        let named = |c: &Option<String>| c.as_deref() == Some(name);
+        named(&self.view.submit)
+            || self
+                .nodes
+                .values()
+                .any(|n| named(&n.run) || named(&n.submit))
+            || self.contributes.commands.iter().any(|c| named(&c.run))
+    }
+
     /// Its view is a tree of nodes (version 2).
     pub fn is_tree(&self) -> bool {
         self.schema_version == TREE_SCHEMA_VERSION
@@ -707,9 +805,18 @@ impl Manifest {
     /// The data sources the view shows.
     pub fn shown_sources(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for (_, v) in self.data_views() {
-            if self.data.contains_key(&v.source) && !out.contains(&v.source) {
-                out.push(v.source);
+        let content = self.tree_order().into_iter().filter_map(|k| {
+            let n = self.nodes.get(&k)?;
+            n.kind.is_content().then(|| n.source.clone())
+        });
+        let views: Vec<String> = self
+            .data_views()
+            .into_iter()
+            .map(|(_, v)| v.source)
+            .collect();
+        for source in views.into_iter().chain(content) {
+            if self.data.contains_key(&source) && !out.contains(&source) {
+                out.push(source);
             }
         }
         out
@@ -835,7 +942,13 @@ impl Manifest {
         let mut keys = BTreeMap::new();
         for (name, c) in &self.commands {
             let at = format!("commands.{name}");
-            if !key_ok(&c.key) {
+            if c.key.is_empty() {
+                if !self.runs_command(name) {
+                    errors.push(format!(
+                        "{at}.key: a command needs a key, or a node or form that runs it"
+                    ));
+                }
+            } else if !key_ok(&c.key) {
                 errors.push(format!("{at}.key: `{}` is not a key", c.key));
             } else if RESERVED_KEYS.contains(&c.key.as_str()) {
                 errors.push(format!("{at}.key: `{}` is the runtime's", c.key));
@@ -957,6 +1070,7 @@ impl Manifest {
                 if let Some(v) = n.view() {
                     self.validate_view(&v, &at, errors);
                 }
+                self.validate_component(n, &at, errors);
             }
             if !n.sizes.is_empty()
                 && (n.kind != NodeType::Split
@@ -992,6 +1106,79 @@ impl Manifest {
                     "commands.{name}.key: `{}` moves the focus or the tab in a tree",
                     c.key
                 ));
+            }
+        }
+    }
+
+    /// A text, input, or status component's own checks.
+    fn validate_component(&self, n: &NodeSpec, at: &str, errors: &mut Vec<String>) {
+        let kind = n.kind.name();
+        if n.kind.is_content() {
+            let given = match n.kind {
+                NodeType::Progress => n.ratio.is_some(),
+                NodeType::Status => !n.items.is_empty(),
+                _ => n.text.is_some(),
+            };
+            if n.source.is_empty() && !given {
+                let what = match n.kind {
+                    NodeType::Progress => "ratio",
+                    NodeType::Status => "items",
+                    _ => "text",
+                };
+                errors.push(format!("{at}: a {kind} needs `{what}` or a `source`"));
+            }
+            if !n.source.is_empty() && !self.data.contains_key(&n.source) {
+                errors.push(format!("{at}.source: no data source `{}`", n.source));
+            }
+            if n.ratio.is_some_and(|r| !(0.0..=1.0).contains(&r)) {
+                errors.push(format!("{at}.ratio: 0 to 1"));
+            }
+            if let Some(f) = &n.field
+                && !path_ok(f)
+            {
+                errors.push(format!("{at}: `{f}` is not a dotted field name"));
+            }
+        }
+        if n.kind.is_control() && !n.source.is_empty() {
+            errors.push(format!("{at}.source: a {kind} holds its own value"));
+        }
+        match n.kind {
+            NodeType::Button if n.label.as_deref().is_none_or(str::is_empty) => {
+                errors.push(format!("{at}.label: a button needs a label"));
+            }
+            NodeType::Toggle if n.label.as_deref().is_none_or(str::is_empty) => {
+                errors.push(format!("{at}.label: a toggle needs a label"));
+            }
+            NodeType::Select => {
+                if n.options.is_empty() {
+                    errors.push(format!("{at}.options: a select needs options"));
+                }
+                if let Some(v) = &n.value
+                    && !n.options.contains(v)
+                {
+                    errors.push(format!("{at}.value: `{v}` is not one of the options"));
+                }
+            }
+            _ => {}
+        }
+        let mut runs = Vec::new();
+        if let Some(c) = &n.run {
+            if !matches!(
+                n.kind,
+                NodeType::Button | NodeType::Select | NodeType::Toggle
+            ) {
+                errors.push(format!("{at}.run: a {kind} runs nothing"));
+            }
+            runs.push(("run", c));
+        }
+        if let Some(c) = &n.submit
+            && n.kind == NodeType::Input
+        {
+            runs.push(("submit", c));
+        }
+        for (what, c) in runs {
+            if !self.commands.contains_key(c) {
+                errors.push(format!("{at}.{what}: no command `{c}`"));
             }
         }
     }
@@ -1176,8 +1363,29 @@ pub fn fill(
     selected: Option<&serde_json::Value>,
     form: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    type Ctx<'a> = (Option<&'a serde_json::Value>, Option<&'a serde_json::Value>);
-    fn lookup(inner: &str, (row, form): Ctx) -> Result<serde_json::Value, String> {
+    fill_with(params, selected, form, None)
+}
+
+/// [`fill`], with the values of a tree's input components by node key
+/// for `${value.<node>}`.
+pub fn fill_with(
+    params: &toml::Table,
+    selected: Option<&serde_json::Value>,
+    form: Option<&serde_json::Value>,
+    values: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    type Ctx<'a> = (
+        Option<&'a serde_json::Value>,
+        Option<&'a serde_json::Value>,
+        Option<&'a serde_json::Value>,
+    );
+    fn lookup(inner: &str, (row, form, values): Ctx) -> Result<serde_json::Value, String> {
+        if let Some(key) = inner.strip_prefix("value.") {
+            return values
+                .and_then(|v| v.get(key))
+                .cloned()
+                .ok_or_else(|| format!("no input component `{key}`"));
+        }
         if let Some(path) = inner.strip_prefix("form.") {
             let form = form.ok_or("there is no form")?;
             return field(form, path)
@@ -1226,7 +1434,7 @@ pub fn fill(
     }
     go(
         &to_json(&toml::Value::Table(params.clone())),
-        (selected, form),
+        (selected, form, values),
     )
 }
 

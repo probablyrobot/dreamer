@@ -94,6 +94,7 @@ config, and names the file to save. Close each window to move on.
 | `sidebar-open` | The sessions sidebar with three sessions |
 | `command-palette` | The palette over two panes |
 | `error-state` | A pane in tmux copy mode, marked with the attach fallback |
+| `app-components` | The reference app with every text, input, and status component, drawn natively and as a terminal interface |
 
 Captures go outside the repository, in
 `~/Devel/analysis/dreamer/design/`, named

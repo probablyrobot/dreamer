@@ -1,0 +1,158 @@
+# Every text, input, and status component in one app: the reference
+# scenes draw it in a terminal and on the desktop, in both skins.
+# Run it with: dreamer-termapp examples/apps/components/app.toml
+schema_version = 2
+id = "dreamer.components"
+version = "0.1.0"
+title = "Components"
+module = "app.luau"
+root = "main"
+
+[nodes.main]
+type = "split"
+sizes = [55, 45]
+children = ["text", "side"]
+
+[nodes.text]
+type = "tabs"
+children = ["readme", "source", "change"]
+
+[nodes.readme]
+type = "markdown"
+title = "Readme"
+text = """
+# Components
+
+Text with **strong** and *emphasis*, `inline code`, and a [link](https://example.org).
+
+- a list item
+- another, with a nested one:
+  - nested
+1. numbered
+
+> A quote.
+
+```rust
+fn main() {
+    println!("a fenced block");
+}
+```
+"""
+
+[nodes.source]
+type = "code"
+title = "Code"
+language = "rust"
+text = """
+/// Sums the values.
+fn total(values: &[u32]) -> u32 {
+    let mut sum = 0; // the running total
+    for v in values {
+        sum += v;
+    }
+    sum
+}
+
+fn main() {
+    let label = "total";
+    println!("{label}: {}", total(&[1, 2, 39]));
+}
+"""
+
+[nodes.change]
+type = "diff"
+title = "Diff"
+text = """
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,4 +1,4 @@
+ fn main() {
+-    println!("hello");
++    println!("hello, world");
+ }
+"""
+
+[nodes.side]
+type = "column"
+children = ["controls", "badges", "build", "status"]
+
+[nodes.controls]
+type = "column"
+title = "Controls"
+children = ["name", "skin", "notify", "save"]
+
+[nodes.name]
+type = "input"
+label = "Name"
+placeholder = "type a name, Enter greets"
+submit = "greet"
+
+[nodes.skin]
+type = "select"
+label = "Skin"
+options = ["dark", "light", "follow the system"]
+run = "pick"
+
+[nodes.notify]
+type = "toggle"
+label = "Notify when done"
+on = true
+run = "notify"
+
+[nodes.save]
+type = "button"
+label = "Save"
+run = "save"
+
+[nodes.badges]
+type = "row"
+children = ["passing", "review", "failing", "draft"]
+
+[nodes.passing]
+type = "badge"
+text = "passing"
+tone = "success"
+
+[nodes.review]
+type = "badge"
+text = "review"
+tone = "warning"
+
+[nodes.failing]
+type = "badge"
+text = "1 failing"
+tone = "danger"
+
+[nodes.draft]
+type = "badge"
+text = "draft"
+tone = "accent"
+
+[nodes.build]
+type = "progress"
+ratio = 0.62
+text = "build 62%"
+
+[nodes.status]
+type = "status"
+items = [
+  { text = "main", tone = "accent" },
+  { text = "3 ahead", tone = "success" },
+  { text = "1 conflict", tone = "danger" },
+  { text = "utf-8" },
+]
+
+[commands.greet]
+handler = "greet"
+
+[commands.pick]
+handler = "pick"
+
+[commands.notify]
+handler = "notify"
+
+[commands.save]
+key = "s"
+label = "save"
+handler = "save"

@@ -175,23 +175,110 @@ columns = ["name", "width", "height"]
   and `form`, with the same fields as a version 1 `[view]` (`source`,
   `row_key`, `columns`, `field`, `label`, `fields`, `submit`). A tree
   has at most one form.
+- **Text, input, and status components** (`markdown`, `code`, `diff`,
+  `button`, `input`, `select`, `toggle`, `badge`, `progress`, `status`)
+  are described [below](#text-input-and-status-components).
 - **`title`**, on any node, is a heading; in a terminal the node gets a
   border with it.
 - **Keys** of nodes are lowercase letters, digits, `-`, and `_`. Every
   node except the root has exactly one parent, and every node must be
   reached from the root. Validation names each mistake with its node.
 
-Keys: Tab moves the focus to the next table, list, or form shown; Left
-and Right switch the page of the tabs holding the focus (or the first
-tabs). Up and Down move the focused table's or list's selection, and in
-a focused form they move between fields. Commands act on the focused
+Keys: Tab moves the focus to the next table, list, form, or input
+component shown; Left and Right switch the page of the tabs holding the
+focus (or the first tabs). Up and Down move the focused table's or
+list's selection, and in a focused form they move between fields. Commands act on the focused
 node's selected row (`${selected.<field>}`). Tab, Left, and Right are
 the runtime's in a tree, so commands may not use them.
 
-On the desktop, a click on a row or field and wheel steps over a table
-or list go to the node under the pointer, which takes the focus; Copy
-takes the focused node's selected row or form field
+On the desktop, a click on a row, field, or input component and wheel
+steps over a table or list go to the node under the pointer, which
+takes the focus; Copy takes the focused node's selected row, form
+field, input's text, or select's option
 ([desktop.md](desktop.md#input-in-app-views)).
+
+### Text, input, and status components
+
+Each is a node like the others, drawn natively on the desktop and as a
+terminal interface in the pane, in the colours of the one scheme: the
+desktop takes them from the theme its chrome uses, and the terminal from
+its own palette (the scheme's ANSI colours), never as fixed colours.
+`examples/apps/components/` in the source tree shows every one.
+
+| `type` | Shows | Fields |
+| --- | --- | --- |
+| `markdown` | Headings, paragraphs, `-`/`*`/`+` and numbered lists, quotes, rules, fenced code blocks (highlighted by their language), inline code, strong and emphasis, and links as their text | `text`, or `source` and `field` |
+| `code` | Source code, highlighted: keywords, strings, numbers, comments, and types | `text` (or `source`, `field`), `language` |
+| `diff` | A unified diff: file and hunk headers, added and removed lines marked | `text`, or `source` and `field` |
+| `badge` | A short label in a tone | `text` (or `source`, `field`), `tone` |
+| `progress` | A ratio as one thin bar, with its label | `ratio` (0 to 1) and `text` (the label), or `source`, `field`, and `label` as for a gauge |
+| `status` | A status line: short items side by side, each in a tone | `items` (`{ text, tone }`), or `source` and `field` (one item per row) |
+| `button` | A button | `label`, `run` |
+| `input` | One line of text | `label`, `value` (the starting text), `placeholder`, `submit` |
+| `select` | One of a few options | `label`, `options`, `value` (the starting option; the first otherwise), `run` |
+| `toggle` | On or off | `label`, `on` (at the start), `run` |
+
+- **Content.** `text` gives the content in the manifest. With a
+  `source` instead, it is the first row's `field` (the whole row when
+  there is no `field`), and it changes as the source is fetched again.
+- **Tones** are `neutral` (the default), `accent`, `success`, `warning`,
+  and `danger`.
+- **Languages** highlighted are `rust`, `ts` (and `typescript`, `js`,
+  `javascript`), `python`, `sh` (and `bash`, `zsh`, `shell`), `go`, `c`
+  (and `cpp`), `json`, `toml`, `yaml`, and `lua` (and `luau`). Any other
+  language is shown plain. Highlighting is by tokens, not a parser.
+- **Values.** The app keeps each input component's value by its key: an
+  input's text, a select's option, and a toggle's state. A reload keeps
+  them (a select's only while it is still an option), and so does every
+  update to the tree, as it keeps the focus.
+
+The input components take the focus with Tab or a click, like a table:
+
+| Component | Keys | Click | Event |
+| --- | --- | --- | --- |
+| `button` | Enter or Space presses it | Presses it | `press`: runs `run` |
+| `input` | Letters, digits, and Space type (so `q` is a letter here; Esc or Ctrl-C quits), Backspace deletes, Enter submits | Focuses it | `change` on every edit; `submit` on Enter: runs `submit` |
+| `select` | Up and Down move to the option before or after; Enter or Space to the next, wrapping | Picks the option clicked | `change`: runs `run` |
+| `toggle` | Enter or Space flips it | Flips it | `change`: runs `run` |
+
+Text typed through the desktop's text input or pasted goes into a
+focused `input` as one edit, as into a form field. A key the focused
+component does not take (a command's letter while a button is focused)
+works as usual.
+
+A command a component runs, and any other command, reads the values:
+as `${value.<node>}` in a method's `params` (an input's and a select's
+as text, a toggle's as a boolean), and as `values` (by node key) in a
+handler's argument, beside `selected` and `form`. A handler also gets
+the `event` that ran it: `node`, `type` (`press`, `change`, or
+`submit`), and `value` (the component's value after it; null for a
+button). A command only components or a form run needs no `key`:
+
+```toml
+[nodes.name]
+type = "input"
+label = "Name"
+submit = "greet"            # Enter
+
+[nodes.save]
+type = "button"
+label = "Save"
+run = "save"
+
+[commands.greet]
+handler = "greet"           # function greet(arg) return "hello, " .. arg.values.name end
+
+[commands.save]
+method = "actions.submit"
+params = { action = { kind = { rename_window = { window = "@1", name = "${value.name}" } } } }
+```
+
+Validation names each mistake with its node: a `run` or `submit` that is
+no command, a text or status component with neither its content
+(`text`, `ratio`, or `items`) nor a `source`, a select
+without options or with a `value` not among them, a button or toggle
+without a `label`, an input component with a `source`, and a command
+with no key that nothing runs.
 
 Every data source a node shows is fetched as in version 1, and the
 sources' `events` and the shortest `refresh_ms` apply. A module's
@@ -223,6 +310,15 @@ its content, and `children`:
 | `gauge` | `ratio` (0 to 1) and `label` |
 | `chart` | `values` |
 | `form` | `fields` (`label`, `value`, `toggle`, `required`) and `focus`, the field being edited |
+| `markdown`, `diff` | `text` |
+| `code` | `text` and `language` |
+| `button` | `label` |
+| `input` | `label`, `value`, `placeholder` |
+| `select` | `label`, `options`, and `selected`, the index of the option shown |
+| `toggle` | `label` and `on` |
+| `badge` | `text` and `tone` |
+| `progress` | `ratio` (0 to 1) and `label` |
+| `status` | `items`, each with `text` and `tone` |
 
 A row's key is its `row_key` value, or its place when the view has
 none. A change is one of these ops, each naming its node by the keys on
