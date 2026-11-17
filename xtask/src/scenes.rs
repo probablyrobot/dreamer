@@ -29,6 +29,11 @@ struct Scene {
     args: &'static [&'static str],
     /// tmux commands once the app is up.
     after: &'static [&'static [&'static str]],
+    /// An app package (its manifest, from the repository root) shown in a
+    /// new window once the app is up: on the left as a registered app,
+    /// which the desktop draws natively; on the right started from a
+    /// shell, unregistered, so the desktop shows its terminal interface.
+    app: Option<&'static str>,
 }
 
 const SCENES: &[Scene] = &[
@@ -39,6 +44,7 @@ const SCENES: &[Scene] = &[
         type_all: Some("ls -la /; printf '\\033[1mbold\\033[0m \\033[32mgreen\\033[0m 世界 ✓\\n'"),
         args: &[],
         after: &[],
+        app: None,
     },
     Scene {
         name: "theme-switch",
@@ -50,6 +56,7 @@ const SCENES: &[Scene] = &[
         // the pane is attached: a color set before the daemon attaches is
         // not restored yet.
         after: &[],
+        app: None,
     },
     Scene {
         name: "dense-splits",
@@ -64,6 +71,7 @@ const SCENES: &[Scene] = &[
         type_all: Some("echo pane $TMUX_PANE; date; uname -a"),
         args: &[],
         after: &[],
+        app: None,
     },
     Scene {
         name: "sidebar-open",
@@ -76,6 +84,7 @@ const SCENES: &[Scene] = &[
         type_all: Some("echo session $(tmux display -p '#S' 2>/dev/null)"),
         args: &["--open-sidebar"],
         after: &[],
+        app: None,
     },
     Scene {
         name: "command-palette",
@@ -84,6 +93,7 @@ const SCENES: &[Scene] = &[
         type_all: Some("echo ready"),
         args: &["--open-palette"],
         after: &[],
+        app: None,
     },
     Scene {
         name: "error-state",
@@ -92,8 +102,21 @@ const SCENES: &[Scene] = &[
         type_all: Some("seq 1 50"),
         args: &[],
         after: &[&["copy-mode", "-t", "%1"]],
+        app: None,
+    },
+    Scene {
+        name: "app-components",
+        what: "the reference app with every text, input, and status component: drawn natively (left) and as a terminal interface (right)",
+        setup: &[],
+        type_all: None,
+        args: &[],
+        after: &[],
+        app: Some(COMPONENTS_APP),
     },
 ];
+
+/// The reference app with every text, input, and status component.
+pub const COMPONENTS_APP: &str = "examples/apps/components/app.toml";
 
 fn build(root: &Path) -> Result<(), String> {
     let build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
@@ -104,12 +127,16 @@ fn build(root: &Path) -> Result<(), String> {
             "dreamer-app",
             "-p",
             "dreamer-server",
+            "-p",
+            "dreamer-cli",
+            "-p",
+            "dreamer-termapp",
         ])
         .current_dir(root)
         .status()
         .map_err(|e| format!("cargo build: {e}"))?;
     if !build.success() {
-        return Err("building dreamer and dreamerd failed".into());
+        return Err("building dreamer, dreamerd, dream, and dreamer-termapp failed".into());
     }
     Ok(())
 }
@@ -245,12 +272,74 @@ fn launch(root: &Path, scene: &Scene, skin: &str, extra: &str) -> Result<Running
             t(cmd);
         }
     }
+    if let Some(app) = scene.app {
+        show_app(root, &dir, &tmux, &socket, app)?;
+    }
     Ok(Running {
         app,
         tmux,
         socket,
         dir,
     })
+}
+
+/// Show the app package `app` in a new window of session `main`, once the
+/// app's daemon answers: registered (`dream app run`) on the left, and
+/// started from a shell on the right. Both get only the scene's private
+/// directories.
+fn show_app(root: &Path, dir: &Path, tmux: &str, socket: &str, app: &str) -> Result<(), String> {
+    let debug = root.join("target/debug");
+    let manifest = root.join(app);
+    let rt = dir.join("rt");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !rt.join("dreamerd.sock").exists() {
+        if std::time::Instant::now() > deadline {
+            return Err("the scene's daemon did not start".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let env = [
+        ("DREAMER_RUNTIME_DIR", rt.clone()),
+        ("DREAMER_STATE_DIR", dir.join("st")),
+        ("DREAMER_CONFIG_DIR", dir.join("config")),
+    ];
+    let termapp = debug.join("dreamer-termapp");
+    let out = Command::new(debug.join("dream"))
+        .args([
+            "app",
+            "run",
+            "dreamer.components",
+            "-L",
+            socket,
+            "--tmux",
+            tmux,
+        ])
+        .args(["--name", "components", "--"])
+        .arg(&termapp)
+        .arg(&manifest)
+        .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
+        .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+        .output()
+        .map_err(|e| format!("dream app run: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "dream app run: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let mut split = Command::new(tmux);
+    split.args(["-L", socket, "split-window", "-h", "-t", "main:{end}"]);
+    for (k, v) in &env {
+        split.args(["-e", &format!("{k}={}", v.display())]);
+    }
+    split
+        .args(["-e", "DREAMER_FORBID_DEFAULT_TMUX=1"])
+        .arg(format!("{} {}", termapp.display(), manifest.display()));
+    let _ = split.status();
+    let _ = Command::new(tmux)
+        .args(["-L", socket, "select-window", "-t", "main:{end}"])
+        .status();
+    Ok(())
 }
 
 const SCREENSHOT_USAGE: &str = "\

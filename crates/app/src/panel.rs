@@ -36,7 +36,8 @@ use gpui::{
     MouseUpEvent, ParentElement, Pixels, Render, ScrollEvent, SharedString,
     StatefulInteractiveElement, Styled, UTF16Selection, Window, div, prelude::FluentBuilder, px,
 };
-use view_tree::{Direction, Frame as Tree, Kind, Node};
+use view_tree::rich::{self, Block as RichBlock, Role};
+use view_tree::{Direction, Frame as Tree, Kind, Node, Tone};
 
 use crate::input::{self, AppKey};
 use crate::theme::{self, c, ca};
@@ -604,6 +605,7 @@ fn tree_takes_text(tree: &Tree) -> bool {
     };
     match &n.kind {
         Kind::Form { fields, focus } => fields.get(*focus).is_some_and(|f| !f.toggle),
+        Kind::Input { .. } => true,
         _ => false,
     }
 }
@@ -625,7 +627,22 @@ fn line_text(tree: Option<&Tree>, app: &App, key: &str, i: usize) -> Option<Stri
         }
         Kind::Form { fields, .. } => fields.get(i).map(|f| f.value.clone()),
         Kind::Text { text } => (i == 0).then(|| text.clone()),
+        Kind::Markdown { .. } | Kind::Code { .. } | Kind::Diff { .. } => {
+            rich_of(&n.kind).get(i).map(rich::Line::text)
+        }
+        Kind::Input { value, .. } => (i == 0).then(|| value.clone()),
+        Kind::Select { options, .. } => options.get(i).cloned(),
         _ => None,
+    }
+}
+
+/// A text component's lines, as drawn.
+fn rich_of(kind: &Kind) -> Vec<rich::Line> {
+    match kind {
+        Kind::Markdown { text } => rich::markdown(text),
+        Kind::Code { text, language } => rich::code(text, language),
+        Kind::Diff { text } => rich::diff(text),
+        _ => Vec::new(),
     }
 }
 
@@ -826,12 +843,13 @@ fn copy_text(tree: Option<&Tree>, app: &App) -> Option<String> {
                 .map(|r| r.cells().join("\t")),
             Kind::Log => n.children.last().map(|r| r.cells().join("\t")),
             Kind::Form { fields, focus } => fields.get(*focus).map(|f| f.value.clone()),
+            Kind::Input { value, .. } => Some(value.clone()),
+            Kind::Select {
+                options, selected, ..
+            } => options.get(*selected).cloned(),
             _ => None,
         },
-        None => match &tree.root.kind {
-            Kind::Text { text } => Some(text.clone()),
-            _ => None,
-        },
+        None => tree.root.kind.text().map(str::to_owned),
     };
     text.filter(|t| !t.is_empty())
 }
@@ -1160,8 +1178,7 @@ fn node(
                 .gap_1()
                 .size_full()
                 .children(n.children.iter().map(|c| {
-                    let fixed = matches!(c.kind, Kind::Text { .. } | Kind::Gauge { .. })
-                        || n.kind == Kind::Scroll;
+                    let fixed = fixed_height(c) || n.kind == Kind::Scroll;
                     div()
                         .min_h_0()
                         .when(fixed, |d| d.flex_none())
@@ -1183,11 +1200,16 @@ fn node(
             .flex_row()
             .gap_2()
             .size_full()
-            .children(
-                n.children
-                    .iter()
-                    .map(|c| div().flex_1().min_w_0().h_full().child(child(c))),
-            )
+            .children(n.children.iter().map(|c| {
+                // A badge or a button keeps its own width.
+                let own =
+                    c.title.is_none() && matches!(c.kind, Kind::Badge { .. } | Kind::Button { .. });
+                div()
+                    .min_w_0()
+                    .when(own, |d| d.flex_none())
+                    .when(!own, |d| d.flex_1().h_full())
+                    .child(child(c))
+            }))
             .into_any_element(),
         Kind::Split { direction, sizes } => {
             let total: f32 = if sizes.len() == n.children.len() {
@@ -1371,6 +1393,16 @@ fn node(
                 )
             }))
             .into_any_element(),
+        Kind::Markdown { .. }
+        | Kind::Code { .. }
+        | Kind::Diff { .. }
+        | Kind::Button { .. }
+        | Kind::Input { .. }
+        | Kind::Select { .. }
+        | Kind::Toggle { .. }
+        | Kind::Badge { .. }
+        | Kind::Progress { .. }
+        | Kind::Status { .. } => component(n, focused, t, lines, scrolls),
     };
     match &n.title {
         Some(title) => div()
@@ -1389,6 +1421,354 @@ fn node(
             .child(div().flex_1().min_h_0().px_1().child(content))
             .into_any_element(),
         None => content,
+    }
+}
+
+/// Takes the height it needs in a column, not a share of what is left:
+/// text, gauges, controls, badges, progress and status lines, and rows or
+/// columns of only those.
+fn fixed_height(n: &Node) -> bool {
+    match &n.kind {
+        Kind::Text { .. }
+        | Kind::Gauge { .. }
+        | Kind::Button { .. }
+        | Kind::Input { .. }
+        | Kind::Select { .. }
+        | Kind::Toggle { .. }
+        | Kind::Badge { .. }
+        | Kind::Progress { .. }
+        | Kind::Status { .. } => true,
+        Kind::Row | Kind::Column => !n.children.is_empty() && n.children.iter().all(fixed_height),
+        _ => false,
+    }
+}
+
+/// A tone's colours from the theme: the text, and the wash behind it.
+fn tone_colors(t: &theme::Theme, tone: Tone) -> (u32, gpui::Rgba) {
+    // A wash of a theme colour: the colour at a fifth of its strength.
+    let wash = |hex: u32| ca((hex << 8) | 0x33);
+    match tone {
+        Tone::Neutral => (t.muted, c(t.selected)),
+        Tone::Accent => (t.accent, wash(t.accent)),
+        Tone::Success => (t.success, wash(t.success)),
+        Tone::Warning => (t.warning_text, c(t.warning_surface)),
+        Tone::Danger => (t.danger_text, c(t.danger_surface)),
+    }
+}
+
+/// How a span of markdown, code, or a diff is drawn, from the theme.
+fn role_style(t: &theme::Theme, r: Role) -> gpui::HighlightStyle {
+    let color = |hex: u32| Some(gpui::Hsla::from(c(hex)));
+    let mut s = gpui::HighlightStyle::default();
+    match r {
+        Role::Plain => {}
+        Role::Strong => s.font_weight = Some(gpui::FontWeight::BOLD),
+        Role::Emphasis => s.font_style = Some(gpui::FontStyle::Italic),
+        Role::Code => {
+            s.color = color(t.kind);
+            s.background_color = color(t.selected);
+        }
+        Role::Link => {
+            s.color = color(t.accent);
+            s.underline = Some(gpui::UnderlineStyle {
+                thickness: px(1.0),
+                color: color(t.accent),
+                wavy: false,
+            });
+        }
+        Role::Marker | Role::Hunk => s.color = color(t.accent),
+        Role::Keyword => s.color = color(t.keyword),
+        Role::String => s.color = color(t.string),
+        Role::Number => s.color = color(t.number),
+        Role::Comment => {
+            s.color = color(t.faint);
+            s.font_style = Some(gpui::FontStyle::Italic);
+        }
+        Role::Type => s.color = color(t.kind),
+        Role::Added => s.color = color(t.success),
+        Role::Removed => s.color = color(t.danger),
+        Role::Meta => {
+            s.color = color(t.muted);
+            s.font_weight = Some(gpui::FontWeight::BOLD);
+        }
+    }
+    s
+}
+
+/// One line of rich text as styled text.
+fn rich_text(t: &theme::Theme, l: &rich::Line) -> gpui::StyledText {
+    let mut text = String::new();
+    let mut runs = Vec::new();
+    for s in &l.spans {
+        let start = text.len();
+        text.push_str(&s.text);
+        if s.role != Role::Plain {
+            runs.push((start..text.len(), role_style(t, s.role)));
+        }
+    }
+    gpui::StyledText::new(text).with_highlights(runs)
+}
+
+/// A text, input, or status component, drawn natively. Each line of
+/// markdown, code, or a diff takes mouse selection (for Copy); a click on
+/// a control goes to the app as a `select` of its node (an option's index
+/// for a select), which presses, flips, picks, or focuses it there.
+fn component(
+    n: &Node,
+    focused: bool,
+    t: &theme::Theme,
+    lines: &Lines,
+    scrolls: &mut HashMap<String, gpui::ScrollHandle>,
+) -> gpui::AnyElement {
+    let label = |s: &str| {
+        (!s.is_empty()).then(|| {
+            div()
+                .flex_none()
+                .text_color(c(t.muted))
+                .child(SharedString::from(s.to_owned()))
+        })
+    };
+    match &n.kind {
+        Kind::Markdown { .. } | Kind::Code { .. } | Kind::Diff { .. } => {
+            let markdown = matches!(n.kind, Kind::Markdown { .. });
+            let handle = scrolls.entry(n.key.clone()).or_default().clone();
+            div()
+                .id(SharedString::from(format!("app-node-{}", n.key)))
+                .flex()
+                .flex_col()
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&handle)
+                .when(!markdown, |d| d.p_1().rounded_sm().bg(c(t.raised)))
+                .children(rich_of(&n.kind).iter().enumerate().map(|(i, l)| {
+                    let d = div().min_h(px(LINE_HEIGHT));
+                    let d = match l.block {
+                        RichBlock::Heading(level) => d
+                            .when(level == 1, |d| d.text_size(px(16.0)).mt_1())
+                            .when(level == 2, |d| d.text_size(px(14.0)))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .child(rich_text(t, l)),
+                        RichBlock::Quote => d
+                            .border_l_2()
+                            .border_color(c(t.accent))
+                            .pl_2()
+                            .italic()
+                            .text_color(c(t.muted))
+                            .child(rich_text(t, l)),
+                        // A code block in markdown sits on the raised colour;
+                        // a code or diff node already does.
+                        RichBlock::Code => d
+                            .whitespace_nowrap()
+                            .when(markdown, |d| d.px_2().bg(c(t.raised)))
+                            .child(rich_text(t, l)),
+                        RichBlock::Rule => d
+                            .flex()
+                            .items_center()
+                            .child(div().h(px(1.0)).w_full().bg(c(t.divider))),
+                        RichBlock::Text => d.child(rich_text(t, l)),
+                    };
+                    lines.wrap(&n.key, i, false, d)
+                }))
+                .into_any_element()
+        }
+        Kind::Button { label: text } => div()
+            .flex()
+            .child(
+                lines.wrap(
+                    &n.key,
+                    0,
+                    true,
+                    div()
+                        .flex_none()
+                        .cursor_pointer()
+                        .px_2()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(c(if focused { t.focus } else { t.divider }))
+                        .bg(c(if focused { t.accent } else { t.raised }))
+                        .text_color(c(if focused { t.background } else { t.text }))
+                        .child(SharedString::from(text.clone())),
+                ),
+            )
+            .into_any_element(),
+        Kind::Input {
+            label: name,
+            value,
+            placeholder,
+        } => {
+            let empty = value.is_empty();
+            lines
+                .wrap(
+                    &n.key,
+                    0,
+                    true,
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .children(label(name))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_row()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .px_1()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(c(if focused { t.focus } else { t.divider }))
+                                .bg(c(t.background))
+                                .when(!empty, |d| d.child(SharedString::from(value.clone())))
+                                .when(focused, |d| {
+                                    d.child(div().text_color(c(t.accent)).child("▏"))
+                                })
+                                .when(empty, |d| {
+                                    d.child(
+                                        div()
+                                            .text_color(c(t.faint))
+                                            .child(SharedString::from(placeholder.clone())),
+                                    )
+                                }),
+                        ),
+                )
+                .into_any_element()
+        }
+        Kind::Select {
+            label: name,
+            options,
+            selected,
+        } => div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .children(label(name))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap_1()
+                    .p(px(1.0))
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(c(if focused { t.focus } else { t.divider }))
+                    .children(options.iter().enumerate().map(|(i, o)| {
+                        let on = i == *selected;
+                        lines.wrap(
+                            &n.key,
+                            i,
+                            true,
+                            div()
+                                .cursor_pointer()
+                                .px_1()
+                                .rounded_sm()
+                                .when(on, |d| d.bg(c(t.selected)).text_color(c(t.text)))
+                                .when(!on, |d| d.text_color(c(t.muted)))
+                                .child(SharedString::from(o.clone())),
+                        )
+                    })),
+            )
+            .into_any_element(),
+        Kind::Toggle { label: name, on } => lines
+            .wrap(
+                &n.key,
+                0,
+                true,
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .when(*on, |d| d.justify_end())
+                            .w(px(24.0))
+                            .h(px(14.0))
+                            .p(px(2.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(c(if focused { t.focus } else { t.divider }))
+                            .bg(c(if *on { t.accent } else { t.selected }))
+                            .child(div().size(px(8.0)).rounded_full().bg(c(if *on {
+                                t.background
+                            } else {
+                                t.faint
+                            }))),
+                    )
+                    .child(
+                        div()
+                            .text_color(c(if focused { t.text } else { t.muted }))
+                            .child(SharedString::from(name.clone())),
+                    ),
+            )
+            .into_any_element(),
+        Kind::Badge { text, tone } => {
+            let (fg, bg) = tone_colors(t, *tone);
+            div()
+                .flex()
+                .child(
+                    div()
+                        .flex_none()
+                        .px_1()
+                        .rounded_sm()
+                        .bg(bg)
+                        .text_color(c(fg))
+                        .text_size(px(11.0))
+                        .child(SharedString::from(text.clone())),
+                )
+                .into_any_element()
+        }
+        Kind::Progress { ratio, label: text } => div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(4.0))
+                    .rounded_full()
+                    .bg(c(t.selected))
+                    .child(
+                        div()
+                            .h_full()
+                            .rounded_full()
+                            .w(gpui::relative(ratio.clamp(0.0, 1.0) as f32))
+                            .bg(c(t.accent)),
+                    ),
+            )
+            .children(label(text))
+            .into_any_element(),
+        Kind::Status { items } => div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_2()
+            .text_size(px(11.0))
+            .children(items.iter().enumerate().flat_map(|(i, item)| {
+                let fg = match item.tone {
+                    Tone::Neutral => t.muted,
+                    Tone::Accent => t.accent,
+                    Tone::Success => t.success,
+                    Tone::Warning => t.warning,
+                    Tone::Danger => t.danger,
+                };
+                let sep = (i > 0).then(|| div().text_color(c(t.faint)).child("·"));
+                sep.into_iter().chain(std::iter::once(
+                    div()
+                        .text_color(c(fg))
+                        .child(SharedString::from(item.text.clone())),
+                ))
+            }))
+            .into_any_element(),
+        _ => div().into_any_element(),
     }
 }
 
@@ -1496,6 +1876,34 @@ field = "name"
             Some("build")
         );
         assert!(!tree_takes_text(&tree));
+    }
+
+    #[test]
+    fn components_take_text_copy_and_lines_as_drawn() {
+        let m = app_model::manifest::Manifest::parse(include_str!(
+            "../../../examples/apps/components/app.toml"
+        ))
+        .expect("the reference app");
+        let mut a = App::new(m);
+        // The focused input takes text, and Copy takes its value.
+        a.insert_text("Ada");
+        let tree = a.frame().expect("a tree");
+        assert!(tree_takes_text(&tree));
+        assert_eq!(copy_text(Some(&tree), &a).as_deref(), Some("Ada"));
+        // A click on an option, as the host takes it: Copy takes it.
+        a.select_at(Some("skin"), 1);
+        let tree = a.frame().expect("a tree");
+        assert!(!tree_takes_text(&tree));
+        assert_eq!(copy_text(Some(&tree), &a).as_deref(), Some("light"));
+        // A mouse selection reads the lines of markdown as drawn.
+        assert_eq!(
+            line_text(Some(&tree), &a, "readme", 2).as_deref(),
+            Some("Text with strong and emphasis, inline code, and a link.")
+        );
+        assert_eq!(
+            line_text(Some(&tree), &a, "change", 5).as_deref(),
+            Some("-    println!(\"hello\");")
+        );
     }
 
     #[test]

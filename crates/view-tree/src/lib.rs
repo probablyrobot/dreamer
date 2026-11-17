@@ -14,6 +14,8 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
+pub mod rich;
+
 /// The whole view: the chrome around the tree, and the tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
@@ -108,6 +110,84 @@ pub enum Kind {
         #[serde(default)]
         focus: usize,
     },
+    /// Markdown text: headings, emphasis, lists, quotes, code, links as
+    /// text ([`rich::markdown`]).
+    Markdown {
+        text: String,
+    },
+    /// Source code, highlighted by `language` ([`rich::code`]).
+    Code {
+        text: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        language: String,
+    },
+    /// A unified diff, its added and removed lines marked ([`rich::diff`]).
+    Diff {
+        text: String,
+    },
+    /// Pressed with Enter or Space when focused, or a click.
+    Button {
+        label: String,
+    },
+    /// One line of text being edited; the cursor is at its end.
+    Input {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        label: String,
+        value: String,
+        /// Shown, dimmed, while the value is empty.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        placeholder: String,
+    },
+    /// One of `options`, by index.
+    Select {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        label: String,
+        options: Vec<String>,
+        #[serde(default)]
+        selected: usize,
+    },
+    /// On or off.
+    Toggle {
+        label: String,
+        on: bool,
+    },
+    /// A short label in a tone.
+    Badge {
+        text: String,
+        #[serde(default)]
+        tone: Tone,
+    },
+    /// A ratio from 0 to 1, as one thin line with its label.
+    Progress {
+        ratio: f64,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        label: String,
+    },
+    /// A status line: short items side by side, each in a tone.
+    Status {
+        items: Vec<StatusItem>,
+    },
+}
+
+/// What a badge or a status item means, which picks its colour from the
+/// theme: plain, the accent, success, a warning, or danger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tone {
+    #[default]
+    Neutral,
+    Accent,
+    Success,
+    Warning,
+    Danger,
+}
+
+/// One item of a status line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusItem {
+    pub text: String,
+    #[serde(default)]
+    pub tone: Tone,
 }
 
 /// A form's field as shown.
@@ -138,6 +218,36 @@ impl Kind {
             Kind::Gauge { .. } => "gauge",
             Kind::Chart { .. } => "chart",
             Kind::Form { .. } => "form",
+            Kind::Markdown { .. } => "markdown",
+            Kind::Code { .. } => "code",
+            Kind::Diff { .. } => "diff",
+            Kind::Button { .. } => "button",
+            Kind::Input { .. } => "input",
+            Kind::Select { .. } => "select",
+            Kind::Toggle { .. } => "toggle",
+            Kind::Badge { .. } => "badge",
+            Kind::Progress { .. } => "progress",
+            Kind::Status { .. } => "status",
+        }
+    }
+
+    /// Takes keys and clicks of its own: a button, input, select, or
+    /// toggle.
+    pub fn is_control(&self) -> bool {
+        matches!(
+            self,
+            Kind::Button { .. } | Kind::Input { .. } | Kind::Select { .. } | Kind::Toggle { .. }
+        )
+    }
+
+    /// The text a text node holds: markdown, code, a diff, or text.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Kind::Text { text }
+            | Kind::Markdown { text }
+            | Kind::Code { text, .. }
+            | Kind::Diff { text } => Some(text),
+            _ => None,
         }
     }
 

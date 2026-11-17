@@ -792,6 +792,9 @@ fn screens(dir: &Path) -> Result<Done, String> {
         let summary = crate::scenes::check_capture(&path, background, green)?;
         println!("gate:   screen: {} ({summary})", path.display());
     }
+    if components_scene(dir, &out)? == Done::NotRun {
+        return Ok(Done::NotRun);
+    }
     // The theme switched live (#265): every pane and the chrome take the
     // new scheme in the same window, and a program's own background
     // (OSC 11) stays as it set it.
@@ -848,6 +851,55 @@ fn screens(dir: &Path) -> Result<Done, String> {
     println!(
         "gate:   screen: the switch to gruvbox-dark reached every pane and the chrome; the OSC 11 background stayed"
     );
+    Ok(Done::Passed)
+}
+
+/// The reference app's components in both skins: the app as a registered
+/// app pane, drawn natively, beside the same app started from a shell,
+/// drawn as a terminal interface. Checked: the scheme's background (or the
+/// app pane's surface) is the main color, the accent is drawn, a native
+/// badge is on its danger surface, and the terminal's badge is in the
+/// scheme's red. A window that drew neither app (it stopped repainting
+/// after its first frame) is recorded as not run.
+fn components_scene(dir: &Path, out: &Path) -> Result<Done, String> {
+    // Per skin: background, the chrome's surface, the accent, the danger
+    // surface (a native badge), and ANSI red (the terminal's badge).
+    for (skin, background, surface, accent, danger_surface, red) in [
+        (
+            "dark", 0x14_16_1a, 0x10_1216, 0x8a_b4_f8, 0x5a_2a_2a, 0xf2_8b_82,
+        ),
+        (
+            "light", 0xf6_f6_f4, 0xec_eb_e7, 0x2f_6f_de, 0xfb_e3_e0, 0xb3_26_1e,
+        ),
+    ] {
+        let path = out.join(format!("app-components-{skin}.png"));
+        crate::scenes::capture(dir, "app-components", skin, &path)?;
+        let native = crate::scenes::share_of(&path, danger_surface)?;
+        let terminal = crate::scenes::share_of(&path, red)?;
+        if native < 0.000_2 && terminal < 0.000_2 {
+            println!(
+                "gate: the window did not draw the reference app (screen locked, or not in front); the component scenes are recorded as not run"
+            );
+            return Ok(Done::NotRun);
+        }
+        let summary = crate::scenes::check_capture(&path, background, accent)
+            .or_else(|_| crate::scenes::check_capture(&path, surface, accent))?;
+        for (share, what) in [(native, "natively"), (terminal, "as a terminal interface")] {
+            if share < 0.000_2 {
+                return Err(format!(
+                    "{}: the reference app's badges are not drawn {what} ({:.3}%)",
+                    path.display(),
+                    share * 100.0
+                ));
+            }
+        }
+        println!(
+            "gate:   screen: {} ({summary}; badges natively {:.2}%, in the terminal {:.2}%)",
+            path.display(),
+            native * 100.0,
+            terminal * 100.0
+        );
+    }
     Ok(Done::Passed)
 }
 

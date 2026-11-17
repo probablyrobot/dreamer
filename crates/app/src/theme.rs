@@ -47,6 +47,14 @@ pub(crate) struct Theme {
     pub flash: u32,
     /// A highlighted line's wash (a filter's decoration): RGBA.
     pub mark: u32,
+    /// Success: a passing badge, a diff's added lines.
+    pub success: u32,
+    /// Highlighted code: keywords, strings, numbers, and types (comments
+    /// are `faint`). From the scheme's ANSI colours.
+    pub keyword: u32,
+    pub string: u32,
+    pub number: u32,
+    pub kind: u32,
 }
 
 pub(crate) const DARK: Theme = Theme {
@@ -69,6 +77,12 @@ pub(crate) const DARK: Theme = Theme {
     warning_text: 0xf0dcb0,
     flash: 0xffffff22,
     mark: 0x8ab4f833,
+    // dreamer-dark's green, magenta, yellow, and cyan.
+    success: 0x81c995,
+    keyword: 0xd7aefb,
+    string: 0x81c995,
+    number: 0xfdd663,
+    kind: 0x78d9ec,
 };
 
 /// Warm neutrals rather than an inverted dark: paper-like background,
@@ -93,6 +107,12 @@ pub(crate) const LIGHT: Theme = Theme {
     warning_text: 0x4d3600,
     flash: 0x0000001a,
     mark: 0x2f6fde2e,
+    // dreamer-light's green, magenta, yellow, and cyan.
+    success: 0x1e7a3c,
+    keyword: 0x8a3ab9,
+    string: 0x1e7a3c,
+    number: 0x7d5600,
+    kind: 0x0b7285,
 };
 
 /// The window's skin: the one for the scheme in force (see `live`).
@@ -233,6 +253,11 @@ fn derived(scheme: &Scheme) -> Theme {
         warning_text: readable(fg, warning, 0.0, &[mix(bg, warning, 0.16)]),
         flash: (if light { 0x0000_0000 } else { 0xffff_ff00 }) | 0x22,
         mark: (accent << 8) | 0x33,
+        success: readable(ansi(2), bg, 0.0, &[surface]),
+        keyword: ansi(5),
+        string: ansi(2),
+        number: ansi(3),
+        kind: ansi(6),
     }
 }
 
@@ -271,6 +296,20 @@ mod tests {
                 let r = contrast(fg, bg);
                 assert!(r >= 4.5, "{}: {name} is {r:.2}:1", t.name);
             }
+        }
+    }
+
+    #[test]
+    fn dreamers_skins_take_component_colours_from_their_schemes() {
+        for (t, s) in [
+            (DARK, terminal_core::schemes::dreamer_dark()),
+            (LIGHT, terminal_core::schemes::dreamer_light()),
+        ] {
+            assert_eq!(for_scheme(s).success, t.success);
+            assert_eq!(t.success, hex(s.ansi[2]), "{}", t.name);
+            assert_eq!(t.keyword, hex(s.ansi[5]), "{}", t.name);
+            assert_eq!(t.number, hex(s.ansi[3]), "{}", t.name);
+            assert_eq!(t.kind, hex(s.ansi[6]), "{}", t.name);
         }
     }
 

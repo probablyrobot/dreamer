@@ -10,6 +10,7 @@ mod model;
 mod run;
 
 pub use model::{
-    AgentState, App, Entry, Link, ManifestCache, Record, Said, TRANSCRIPT, Taken, clean_text, text,
+    AgentState, App, Entry, Event, EventKind, Link, ManifestCache, Record, Said, TRANSCRIPT, Taken,
+    clean_text, text,
 };
 pub use run::{Endpoint, Input, Session, check_module, load, preview, run};
