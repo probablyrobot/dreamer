@@ -334,6 +334,56 @@ the path from the root:
 Renderers keep what they hold per key (scroll positions, the selection
 last scrolled to) across changes, so an update never resets them.
 
+## Process apps
+
+A process app's own program draws its view tree, in any language. The
+manifest names the program and has the `process` capability:
+
+```toml
+schema_version = 2
+id = "local.counter"
+version = "0.1.0"
+title = "Counter"
+capabilities = ["process", "tmux.topology"]
+
+[process]
+command = ["./counter", "--fast"]   # the program and its arguments; no shell
+```
+
+- **The program.** A program with a `/` in it is relative to the package
+  directory; a bare name is looked up on `PATH`. It runs in the package
+  directory, with the app host's environment minus the launch ticket.
+- **The capability.** A `[process]` without `process` in
+  `capabilities` is refused with that reason, by `--check`, `dream app
+  check` and `install`, and when the app is run. `process` is not an API
+  method, so it is not part of the grant the app needs; the other
+  capabilities are.
+- **What the program replaces.** A process app has no `[view]`, `root`,
+  `[nodes]`, `[data]`, `[commands]`, `module`, `[agent]`, or
+  `[contributes]`; its program does that work.
+- **The conversation.** The program speaks the
+  [app process protocol](app-protocol.md) on its standard input and
+  output: it sends its tree (whole, then keyed patches), gets input as
+  events, and calls the API through the host. The Rust SDK
+  (`dreamer-sdk`) does this part for Rust apps.
+- **Its grant.** The host forwards a call only when its method is among
+  the manifest's capabilities, and makes it on the host's own
+  connection: with the grant from `dream app run` or `launch`, or, when
+  started without a ticket, a connection narrowed to those capabilities.
+  The `process` capability does not sandbox the program: it runs with
+  your privileges, like any program you start.
+- **In a pane.** The tree is drawn and published like any app's, so the
+  desktop draws it natively ([app panes](#app-panes)). Every key goes to
+  the program except `Ctrl-c`, which quits.
+- **Supervision.** The program's I/O never holds up the pane. When it
+  exits with status 0 the app ends. When it fails, its last view stays,
+  marked `stale:` with why and the last line of its standard error; `r`
+  starts it again and `q` quits. The manifest is not reloaded while it
+  runs.
+- **Preview.** `--preview` (and `dream app preview`) runs the program
+  with no daemon and draws its first view; its calls are answered with
+  an error.
+
 ## Building an app
 
 Building an app takes five steps, each a `dream app` command

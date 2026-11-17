@@ -73,7 +73,7 @@ impl Endpoint {
     }
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
@@ -84,7 +84,7 @@ pub fn load(path: &str) -> Result<Manifest, String> {
 }
 
 /// The manifest at `path`, and its text.
-fn load_with_text(path: &str) -> Result<(Manifest, String), String> {
+pub(crate) fn load_with_text(path: &str) -> Result<(Manifest, String), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     let m = Manifest::parse(&text).map_err(|errors| {
         errors
@@ -177,20 +177,20 @@ fn stamps(path: &Path, m: &Manifest) -> Vec<Option<std::time::SystemTime>> {
         .collect()
 }
 
-struct Conn {
-    client: Arc<client::Client>,
-    pushed: tokio::sync::mpsc::Receiver<client::Pushed>,
+pub(crate) struct Conn {
+    pub(crate) client: Arc<client::Client>,
+    pub(crate) pushed: tokio::sync::mpsc::Receiver<client::Pushed>,
 }
 
 /// The launch ticket, when started by `dream app run`.
-fn ticket() -> Option<(String, String)> {
+pub(crate) fn ticket() -> Option<(String, String)> {
     let id = std::env::var("DREAMER_LAUNCH_ID").ok()?;
     let path = std::env::var("DREAMER_LAUNCH_TICKET").ok()?;
     let t = std::fs::read_to_string(path).ok()?;
     Some((id, t.trim().to_owned()))
 }
 
-async fn connect(
+pub(crate) async fn connect(
     endpoint: &Endpoint,
     registered: &mut bool,
     events: &[String],
@@ -459,7 +459,7 @@ fn source_events(m: &Manifest) -> (Vec<String>, Option<Duration>) {
 
 /// The next input: the presentation's, or a key a desktop sent.
 /// An input a desktop sent through the daemon (`apps.input`).
-fn from_remote(i: &api::AppInput) -> Option<Input> {
+pub(crate) fn from_remote(i: &api::AppInput) -> Option<Input> {
     if let Some(t) = &i.text {
         Some(Input::Text(t.clone()))
     } else if let Some(s) = i.select {
@@ -490,7 +490,7 @@ async fn next_input(
 /// Publish the newest model given to the returned sender, one at a time:
 /// a model superseded while one is being sent is skipped. Ends when the
 /// connection does.
-fn host_views(client: Arc<client::Client>) -> tokio::sync::watch::Sender<String> {
+pub(crate) fn host_views(client: Arc<client::Client>) -> tokio::sync::watch::Sender<String> {
     let (tx, mut rx) = tokio::sync::watch::channel(String::new());
     tokio::spawn(async move {
         while rx.changed().await.is_ok() {
@@ -512,7 +512,9 @@ fn host_views(client: Arc<client::Client>) -> tokio::sync::watch::Sender<String>
 /// from the last one sent. A daemon that lost track asks for the whole
 /// tree again; one without the method ends the task. Ends when the
 /// connection does.
-fn host_trees(client: Arc<client::Client>) -> tokio::sync::watch::Sender<Option<view_tree::Frame>> {
+pub(crate) fn host_trees(
+    client: Arc<client::Client>,
+) -> tokio::sync::watch::Sender<Option<view_tree::Frame>> {
     let (tx, mut rx) = tokio::sync::watch::channel(None::<view_tree::Frame>);
     tokio::spawn(async move {
         let mut out = view_tree::Outgoing::default();

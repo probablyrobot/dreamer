@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 api = { path = "../api" }
+app-protocol = { path = "../app-protocol" }
 client = { path = "../client" }
 platform = { path = "../platform" }
 providers = { path = "../providers" }
@@ -16,7 +17,7 @@ script-runtime = { path = "../script-runtime" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
 view-tree = { path = "../view-tree" }
-tokio = { version = "1.54.1", features = ["rt", "macros", "time", "sync", "net"] }
+tokio = { version = "1.54.1", features = ["rt", "macros", "time", "sync", "net", "process", "io-util"] }
 toml = "0.8.23"
 
 [lints]

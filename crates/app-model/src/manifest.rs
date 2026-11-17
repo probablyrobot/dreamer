@@ -52,6 +52,24 @@ pub struct Manifest {
     /// What the package adds to the desktop when installed (spec 12.2.1).
     #[serde(default)]
     pub contributes: Contributes,
+    /// A process app: a program that speaks the app process protocol on
+    /// its standard input and output, and draws its own view tree. Needs
+    /// the `process` capability.
+    #[serde(default)]
+    pub process: Option<ProcessSpec>,
+}
+
+/// The capability a package needs to run a program of its own.
+pub const PROCESS: &str = "process";
+
+/// A process app's program.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessSpec {
+    /// The program and its arguments; no shell. A program with a `/` in
+    /// it is relative to the package directory; else it is looked up on
+    /// `PATH`.
+    pub command: Vec<String>,
 }
 
 /// What an agentic pane is for, and so how much it may do.
@@ -707,7 +725,12 @@ impl Manifest {
     /// The methods the package calls: its capabilities, and `collect.query`
     /// when a data source is a collector.
     pub fn methods(&self) -> Vec<String> {
-        let mut methods = self.capabilities.clone();
+        let mut methods: Vec<String> = self
+            .capabilities
+            .iter()
+            .filter(|c| *c != PROCESS)
+            .cloned()
+            .collect();
         let declared = methods
             .iter()
             .any(|c| c == COLLECT_QUERY || c == "collect.*");
@@ -754,6 +777,11 @@ impl Manifest {
                 .values()
                 .any(|n| named(&n.run) || named(&n.submit))
             || self.contributes.commands.iter().any(|c| named(&c.run))
+    }
+
+    /// A process app: its program draws its view.
+    pub fn is_process(&self) -> bool {
+        self.process.is_some()
     }
 
     /// Its view is a tree of nodes (version 2).
@@ -828,7 +856,11 @@ impl Manifest {
         let has_view = raw.contains_key("view");
         let m: Manifest = toml::from_str(text).map_err(|e| vec![e.to_string()])?;
         let mut errors = Vec::new();
-        if m.is_tree() {
+        if m.is_process() {
+            if has_view {
+                errors.push("view: a process app draws its own view; it has no [view]".into());
+            }
+        } else if m.is_tree() {
             if has_view {
                 errors.push("view: a tree manifest has `root` and [nodes], not [view]".into());
             }
@@ -866,7 +898,7 @@ impl Manifest {
                 Some(s) => api::METHODS
                     .iter()
                     .any(|m| m.name.starts_with(&format!("{s}."))),
-                None => method_info(c).is_some() || c == api::MANAGE_FILTERS,
+                None => method_info(c).is_some() || c == api::MANAGE_FILTERS || c == PROCESS,
             };
             if !known {
                 errors.push(format!(
@@ -925,7 +957,11 @@ impl Manifest {
                 errors.push(format!("{at}.params: placeholders belong to commands"));
             }
         }
-        if self.is_tree() {
+        if self.is_process() {
+            self.validate_process(&mut errors);
+        } else if self.capabilities.iter().any(|c| c == PROCESS) {
+            errors.push("capabilities: `process` is for a package with a [process] command".into());
+        } else if self.is_tree() {
             self.validate_tree(&mut errors);
         } else {
             self.validate_agent(&mut errors);
@@ -1021,6 +1057,56 @@ impl Manifest {
         {
             if !path_ok(c) {
                 errors.push(format!("{at}: `{c}` is not a dotted field name"));
+            }
+        }
+    }
+
+    /// A process app has a program, the `process` capability, and none of
+    /// the parts its program replaces.
+    fn validate_process(&self, errors: &mut Vec<String>) {
+        let Some(p) = &self.process else { return };
+        if !self.capabilities.iter().any(|c| c == PROCESS) {
+            errors.push(
+                "process: running a program needs the `process` capability; add \"process\" to capabilities"
+                    .into(),
+            );
+        }
+        if self.schema_version != TREE_SCHEMA_VERSION {
+            errors.push(format!(
+                "schema_version: a process app draws a view tree; use {TREE_SCHEMA_VERSION}"
+            ));
+        }
+        match p.command.first() {
+            None => errors.push("process.command: give the program, then its arguments".into()),
+            Some(prog) if prog.is_empty() || prog.split('/').any(|s| s == "..") => {
+                errors.push(format!(
+                    "process.command: `{prog}` is not a program in the package or on PATH"
+                ));
+            }
+            Some(_) => {}
+        }
+        if p.command.iter().any(|a| a.contains('\0')) {
+            errors.push("process.command: an argument holds a NUL".into());
+        }
+        let parts = [
+            ("data", !self.data.is_empty()),
+            ("root", self.root.is_some()),
+            ("nodes", !self.nodes.is_empty()),
+            ("commands", !self.commands.is_empty()),
+            ("module", self.module.is_some()),
+            ("agent", self.agent.is_some()),
+            (
+                "contributes",
+                !(self.contributes.commands.is_empty()
+                    && self.contributes.sidebar.is_empty()
+                    && self.contributes.status.is_empty()),
+            ),
+        ];
+        for (name, there) in parts {
+            if there {
+                errors.push(format!(
+                    "{name}: a process app's program does this; remove it"
+                ));
             }
         }
     }
@@ -1465,6 +1551,48 @@ key = "r"
 method = "actions.submit"
 params = { action = { rename_window = { window = "${selected.window}", name = "w-${selected.id}" } } }
 "#;
+
+    const PROCESS_APP: &str = r#"
+schema_version = 2
+id = "local.counter"
+version = "0.1.0"
+title = "Counter"
+capabilities = ["process", "tmux.topology"]
+
+[process]
+command = ["./bin/counter", "--fast"]
+"#;
+
+    #[test]
+    fn a_process_app_needs_the_process_capability() {
+        let m = Manifest::parse(PROCESS_APP).expect("valid");
+        assert!(m.is_process());
+        // `process` is not an API method: the grant does not carry it.
+        assert_eq!(m.needs().methods, ["tmux.topology"]);
+
+        let without = PROCESS_APP.replace("\"process\", ", "");
+        let errors = Manifest::parse(&without).expect_err("refused");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("needs the `process` capability")),
+            "{errors:?}"
+        );
+
+        let mixed = format!("{PROCESS_APP}\n[view]\ntype = \"text\"\nsource = \"x\"\n");
+        let errors = Manifest::parse(&mixed).expect_err("refused");
+        assert!(errors.iter().any(|e| e.starts_with("view:")), "{errors:?}");
+
+        let escape = PROCESS_APP.replace("./bin/counter", "../counter");
+        assert!(Manifest::parse(&escape).is_err());
+
+        let stray = GOOD.replace("\"tmux.topology\", \"actions.*\"", "\"process\"");
+        let errors = Manifest::parse(&stray).expect_err("refused");
+        assert!(
+            errors.iter().any(|e| e.contains("[process] command")),
+            "{errors:?}"
+        );
+    }
 
     #[test]
     fn a_manifest_parses_and_fills_typed_placeholders() {
