@@ -16,7 +16,8 @@ use serde_json::Value;
 use crate::daemon::DaemonArgs;
 
 pub const USAGE: &str = "usage:
-  dream app check PATH [--json]           validate a package (a directory or its app.toml); build its app.ts
+  dream app check PATH [--json]           validate a package (a directory or its app.toml); build and check its app.ts
+  dream app types DIR                     write types/dreamer.d.ts (and a tsconfig.json) for editors
   dream app preview PATH [--size WxH]     draw it once from fixtures/<source>.json, no daemon
   dream app install PATH [--name NAME]    check, preview, and install; the replaced version is kept
   dream app rollback NAME                 put the last good version back
@@ -95,12 +96,28 @@ pub fn check(args: &[String]) -> Result<(), String> {
     let m = manifest(path);
     if let Err(e) = crate::strip::build(&m) {
         if json {
-            println!("{}", serde_json::json!({ "ok": false, "error": e }));
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": e, "problems": [] })
+            );
             std::process::exit(1);
         }
         return Err(e);
     }
-    let v = checked(&m)?;
+    let problems = crate::strip::type_problems(&m);
+    let v = match checked(&m) {
+        Ok(v) => v,
+        Err(e) if !problems.is_empty() => serde_json::json!({ "ok": false, "error": e }),
+        Err(e) => return Err(e),
+    };
+    let v = with_problems(v, &problems);
+    if !json && !problems.is_empty() {
+        let mut lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        if let Some(e) = v["error"].as_str().filter(|e| *e != lines[0]) {
+            lines.push(e.to_owned());
+        }
+        return Err(lines.join("\n"));
+    }
     if json {
         println!("{v}");
         if ok_or_error(&v).is_err() {
@@ -117,6 +134,58 @@ pub fn check(args: &[String]) -> Result<(), String> {
         v["title"].as_str().unwrap_or(""),
         needs_text(&v["needs"])
     );
+    Ok(())
+}
+
+/// The check's JSON with a script app's type-level mistakes as `problems`
+/// (`file`, `line`, `column`, `message`); any of them fails the check, and
+/// the first is the `error` when the package has none of its own.
+fn with_problems(mut v: Value, problems: &[crate::typecheck::Problem]) -> Value {
+    v["problems"] = serde_json::to_value(problems).unwrap_or_default();
+    if let Some(first) = problems.first() {
+        v["ok"] = Value::Bool(false);
+        if !v["error"].is_string() {
+            v["error"] = Value::String(first.to_string());
+        }
+    }
+    v
+}
+
+/// The declarations an editor needs beside app.ts.
+const TSCONFIG: &str = r#"{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true
+  },
+  "include": ["*.ts", "types/dreamer.d.ts"]
+}
+"#;
+
+/// `dream app types DIR`: write `types/dreamer.d.ts` into a package, and a
+/// `tsconfig.json` that uses it when the package has none.
+pub fn types(args: &[String]) -> Result<(), String> {
+    let [path] = args else {
+        return Err(USAGE.into());
+    };
+    let dir = PathBuf::from(path);
+    if !dir.is_dir() {
+        return Err(format!("{path} is not a directory"));
+    }
+    let fail = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let types = dir.join("types");
+    std::fs::create_dir_all(&types).map_err(|e| fail(&types, e))?;
+    let dts = types.join("dreamer.d.ts");
+    std::fs::write(&dts, api::TYPESCRIPT_DECLARATIONS).map_err(|e| fail(&dts, e))?;
+    println!("wrote {}", dts.display());
+    let tsconfig = dir.join("tsconfig.json");
+    if !tsconfig.exists() {
+        std::fs::write(&tsconfig, TSCONFIG).map_err(|e| fail(&tsconfig, e))?;
+        println!("wrote {}", tsconfig.display());
+    }
     Ok(())
 }
 
@@ -196,6 +265,11 @@ pub fn install(args: &[String]) -> Result<(), String> {
     let m = manifest(path);
     let dir = m.parent().ok_or("no package directory")?.to_path_buf();
     crate::strip::build(&m)?;
+    let problems = crate::strip::type_problems(&m);
+    if !problems.is_empty() {
+        let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        return Err(lines.join("\n"));
+    }
     let v = checked(&m)?;
     ok_or_error(&v)?;
     let id = v["id"].as_str().unwrap_or_default().to_owned();

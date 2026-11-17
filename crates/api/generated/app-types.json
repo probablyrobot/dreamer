@@ -1,0 +1,4960 @@
+{
+  "enums": {
+    "ActLevel": [
+      "unspecified",
+      "observe",
+      "own",
+      "elsewhere"
+    ],
+    "ActionState": [
+      "unspecified",
+      "accepted",
+      "prepared",
+      "dispatching",
+      "completed",
+      "failed",
+      "cancelled",
+      "outcome_unknown"
+    ],
+    "AgentSessionState": [
+      "unspecified",
+      "starting",
+      "idle",
+      "working",
+      "waiting",
+      "detached",
+      "closed"
+    ],
+    "AgentStopReason": [
+      "unspecified",
+      "end_turn",
+      "cancelled",
+      "error"
+    ],
+    "AgentToolStatus": [
+      "unspecified",
+      "started",
+      "updated",
+      "finished",
+      "failed"
+    ],
+    "ApprovalDecision": [
+      "unspecified",
+      "once",
+      "pane",
+      "deny"
+    ],
+    "CollectorState": [
+      "unspecified",
+      "running",
+      "stopped"
+    ],
+    "DecorationStyle": [
+      "unspecified",
+      "highlight",
+      "dim",
+      "fold",
+      "badge"
+    ],
+    "DrawerWant": [
+      "unspecified",
+      "toggle",
+      "show",
+      "hide",
+      "new"
+    ],
+    "EndReason": [
+      "unspecified",
+      "lagged",
+      "pane_closed",
+      "respawned",
+      "connection_lost",
+      "unsubscribed",
+      "reattached",
+      "host_lost",
+      "host_restarted"
+    ],
+    "EventGapReason": [
+      "unspecified",
+      "lagging",
+      "expired",
+      "restarted"
+    ],
+    "ExtensionState": [
+      "unspecified",
+      "starting",
+      "running",
+      "restarting",
+      "failed",
+      "disabled",
+      "stopped"
+    ],
+    "FilterState": [
+      "unspecified",
+      "running",
+      "paused",
+      "tripped"
+    ],
+    "HostFailure": [
+      "unspecified",
+      "transient",
+      "auth",
+      "host_key",
+      "incompatible",
+      "not_installed"
+    ],
+    "JobState": [
+      "unspecified",
+      "running",
+      "succeeded",
+      "failed",
+      "killed",
+      "lost"
+    ],
+    "LinkState": [
+      "unspecified",
+      "connecting",
+      "live",
+      "closed",
+      "failed"
+    ],
+    "MemoryKind": [
+      "unspecified",
+      "user",
+      "feedback",
+      "project",
+      "reference"
+    ],
+    "MemoryScope": [
+      "unspecified",
+      "user",
+      "host",
+      "project",
+      "session"
+    ],
+    "MirrorState": [
+      "unspecified",
+      "attaching",
+      "live",
+      "failed",
+      "cold"
+    ],
+    "MouseAction": [
+      "unspecified",
+      "press",
+      "release",
+      "motion"
+    ],
+    "MouseButton": [
+      "none",
+      "left",
+      "middle",
+      "right",
+      "wheel_up",
+      "wheel_down"
+    ],
+    "ScriptState": [
+      "unspecified",
+      "running",
+      "restarting",
+      "failed",
+      "stopped"
+    ],
+    "SplitDirection": [
+      "unspecified",
+      "horizontal",
+      "vertical"
+    ],
+    "SubscribeMode": [
+      "unspecified",
+      "checkpoint",
+      "replay"
+    ],
+    "TapLevel": [
+      "unspecified",
+      "raw",
+      "text",
+      "meta"
+    ],
+    "Tier": [
+      "unspecified",
+      "hot",
+      "warm",
+      "cold"
+    ],
+    "WatchOutcome": [
+      "unspecified",
+      "matched",
+      "quiet",
+      "exited",
+      "closed",
+      "timeout"
+    ]
+  },
+  "messages": {
+    "Action": {
+      "fields": {},
+      "oneof": {
+        "name": "kind",
+        "variants": {
+          "kill_pane": "KillPane",
+          "kill_window": "KillWindow",
+          "move_pane": "MovePane",
+          "new_window": "NewWindow",
+          "rename_session": "RenameSession",
+          "rename_window": "RenameWindow",
+          "resize_pane": "ResizePane",
+          "select_pane": "SelectPane",
+          "select_window": "SelectWindow",
+          "send_input": "SendInput",
+          "send_keys": "SendKeys",
+          "split_pane": "SplitPane",
+          "zoom_pane": "ZoomPane"
+        }
+      }
+    },
+    "ActionList": {
+      "fields": {
+        "actions": {
+          "repeated": true,
+          "type": "ActionRecord"
+        }
+      }
+    },
+    "ActionListParams": {
+      "fields": {
+        "limit": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "ActionQuery": {
+      "fields": {
+        "id": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "ActionRecord": {
+      "fields": {
+        "action": {
+          "repeated": false,
+          "type": "Action"
+        },
+        "created_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "repeated": false,
+          "type": "string"
+        },
+        "new_pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "observed": {
+          "repeated": false,
+          "type": "string"
+        },
+        "reason": {
+          "repeated": false,
+          "type": "string"
+        },
+        "state": {
+          "repeated": false,
+          "type": "ActionState"
+        },
+        "updated_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "AgentApprovalAnswer": {
+      "fields": {
+        "allowed": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "by": {
+          "repeated": false,
+          "type": "string"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "option": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentApprovalRequest": {
+      "fields": {
+        "expires_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "message": {
+          "repeated": false,
+          "type": "string"
+        },
+        "options": {
+          "repeated": true,
+          "type": "string"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentError": {
+      "fields": {
+        "message": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentEvent": {
+      "fields": {
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "detail": {
+          "repeated": false,
+          "type": "string"
+        },
+        "event": {
+          "repeated": false,
+          "type": "string"
+        },
+        "hook_pid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "provider": {
+          "repeated": false,
+          "type": "string"
+        },
+        "session_id": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentPlan": {
+      "fields": {
+        "entries": {
+          "repeated": true,
+          "type": "AgentPlanEntry"
+        }
+      }
+    },
+    "AgentPlanEntry": {
+      "fields": {
+        "content": {
+          "repeated": false,
+          "type": "string"
+        },
+        "priority": {
+          "repeated": false,
+          "type": "string"
+        },
+        "status": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentRun": {
+      "fields": {
+        "age_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "confidence": {
+          "repeated": false,
+          "type": "string"
+        },
+        "cpu_permille": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "evidence": {
+          "repeated": false,
+          "type": "string"
+        },
+        "helpers": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "host": {
+          "repeated": false,
+          "type": "string"
+        },
+        "instrumentation": {
+          "repeated": false,
+          "type": "string"
+        },
+        "last_event_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "provider": {
+          "repeated": false,
+          "type": "string"
+        },
+        "rss_kib": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "session_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "started_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "state": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentRunList": {
+      "fields": {
+        "notes": {
+          "repeated": true,
+          "type": "string"
+        },
+        "runs": {
+          "repeated": true,
+          "type": "AgentRun"
+        }
+      }
+    },
+    "AgentRunQuery": {
+      "fields": {
+        "hosts": {
+          "repeated": true,
+          "type": "string"
+        },
+        "provider": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentSession": {
+      "fields": {
+        "created_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "detail": {
+          "repeated": false,
+          "type": "string"
+        },
+        "grant": {
+          "repeated": false,
+          "type": "Grant"
+        },
+        "harness": {
+          "repeated": false,
+          "type": "string"
+        },
+        "harness_session": {
+          "repeated": false,
+          "type": "string"
+        },
+        "harness_version": {
+          "repeated": false,
+          "type": "string"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "last_seq": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "model": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "state": {
+          "repeated": false,
+          "type": "AgentSessionState"
+        }
+      }
+    },
+    "AgentSessionAnswer": {
+      "fields": {
+        "approval": {
+          "repeated": false,
+          "type": "string"
+        },
+        "for_pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "option": {
+          "repeated": false,
+          "type": "string"
+        },
+        "session": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentSessionCreate": {
+      "fields": {
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "grant": {
+          "repeated": false,
+          "type": "Grant"
+        },
+        "harness": {
+          "repeated": false,
+          "type": "string"
+        },
+        "model": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentSessionEvent": {
+      "fields": {
+        "seq": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        }
+      },
+      "oneof": {
+        "name": "kind",
+        "variants": {
+          "approval_answer": "AgentApprovalAnswer",
+          "approval_request": "AgentApprovalRequest",
+          "error": "AgentError",
+          "plan": "AgentPlan",
+          "status": "AgentSessionStatus",
+          "text_delta": "AgentText",
+          "thinking_delta": "AgentText",
+          "tool_call": "AgentToolCall",
+          "turn_end": "AgentTurnEnd",
+          "usage": "AgentUsage",
+          "user_message": "AgentText"
+        }
+      }
+    },
+    "AgentSessionEvents": {
+      "fields": {
+        "events": {
+          "repeated": true,
+          "type": "AgentSessionEvent"
+        },
+        "more": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "session": {
+          "repeated": false,
+          "type": "string"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "AgentSessionEventsQuery": {
+      "fields": {
+        "after": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "follow": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "for_pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "limit": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "session": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentSessionList": {
+      "fields": {
+        "sessions": {
+          "repeated": true,
+          "type": "AgentSession"
+        }
+      }
+    },
+    "AgentSessionRef": {
+      "fields": {
+        "session": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentSessionSend": {
+      "fields": {
+        "session": {
+          "repeated": false,
+          "type": "string"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentSessionStatus": {
+      "fields": {
+        "detail": {
+          "repeated": false,
+          "type": "string"
+        },
+        "harness_session": {
+          "repeated": false,
+          "type": "string"
+        },
+        "state": {
+          "repeated": false,
+          "type": "AgentSessionState"
+        }
+      }
+    },
+    "AgentText": {
+      "fields": {
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AgentToolCall": {
+      "fields": {
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "input": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "output": {
+          "repeated": false,
+          "type": "string"
+        },
+        "status": {
+          "repeated": false,
+          "type": "AgentToolStatus"
+        }
+      }
+    },
+    "AgentTurnEnd": {
+      "fields": {
+        "stop_reason": {
+          "repeated": false,
+          "type": "AgentStopReason"
+        }
+      }
+    },
+    "AgentUsage": {
+      "fields": {
+        "cache_read_tokens": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "cache_write_tokens": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "cost_micro_usd": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "input_tokens": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "output_tokens": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "AppInput": {
+      "fields": {
+        "key": {
+          "repeated": false,
+          "type": "string"
+        },
+        "node": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "scroll": {
+          "repeated": false,
+          "type": "i32"
+        },
+        "select": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AppTree": {
+      "fields": {
+        "app_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "instance": {
+          "repeated": false,
+          "type": "string"
+        },
+        "live": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "patches": {
+          "repeated": true,
+          "type": "string"
+        },
+        "revision": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "seq": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "tree": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AppTreePublish": {
+      "fields": {
+        "patch": {
+          "repeated": false,
+          "type": "string"
+        },
+        "seq": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "tree": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AppTreeQuery": {
+      "fields": {
+        "after": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "seq": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "wait_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "AppView": {
+      "fields": {
+        "app_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "instance": {
+          "repeated": false,
+          "type": "string"
+        },
+        "live": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "revision": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "view": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AppViewPublish": {
+      "fields": {
+        "view": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AppViewQuery": {
+      "fields": {
+        "after": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "wait_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "Approval": {
+      "fields": {
+        "action": {
+          "repeated": false,
+          "type": "string"
+        },
+        "closing": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "created_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "expires_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "method": {
+          "repeated": false,
+          "type": "string"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "requester": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "ApprovalAnswer": {
+      "fields": {
+        "decision": {
+          "repeated": false,
+          "type": "ApprovalDecision"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "ApprovalList": {
+      "fields": {
+        "approvals": {
+          "repeated": true,
+          "type": "Approval"
+        }
+      }
+    },
+    "CheckpointData": {
+      "fields": {
+        "epoch": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "snapshot": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "CollectCapture": {
+      "fields": {
+        "after": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "before": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "fields": {
+          "repeated": true,
+          "type": "CollectField"
+        },
+        "json": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "lines": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "screen": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "CollectField": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "value": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "CollectFrom": {
+      "fields": {
+        "all": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "command": {
+          "repeated": false,
+          "type": "string"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "session": {
+          "repeated": false,
+          "type": "string"
+        },
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "CollectGroup": {
+      "fields": {
+        "count": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "latest_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "value": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "CollectKeep": {
+      "fields": {
+        "max_age_s": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "rows": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "CollectList": {
+      "fields": {
+        "collectors": {
+          "repeated": true,
+          "type": "CollectorStatus"
+        }
+      }
+    },
+    "CollectQuery": {
+      "fields": {
+        "after": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "fields": {
+          "repeated": true,
+          "type": "CollectField"
+        },
+        "group_by": {
+          "repeated": false,
+          "type": "string"
+        },
+        "limit": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "since_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "until_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "CollectRef": {
+      "fields": {
+        "delete": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "CollectResult": {
+      "fields": {
+        "dropped": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "groups": {
+          "repeated": true,
+          "type": "CollectGroup"
+        },
+        "matched": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "rows": {
+          "repeated": true,
+          "type": "CollectRow"
+        },
+        "truncated": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "CollectRow": {
+      "fields": {
+        "after": {
+          "repeated": true,
+          "type": "string"
+        },
+        "before": {
+          "repeated": true,
+          "type": "string"
+        },
+        "collector": {
+          "repeated": false,
+          "type": "string"
+        },
+        "command": {
+          "repeated": false,
+          "type": "string"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "dropped": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "exit_status": {
+          "repeated": false,
+          "type": "i32"
+        },
+        "fields": {
+          "repeated": true,
+          "type": "CollectField"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "line": {
+          "repeated": false,
+          "type": "string"
+        },
+        "lines": {
+          "repeated": true,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "session": {
+          "repeated": false,
+          "type": "string"
+        },
+        "time_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "trigger": {
+          "repeated": false,
+          "type": "string"
+        },
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "CollectWhen": {
+      "fields": {
+        "bell": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "command_end": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "every_s": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "exit": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "idle_ms": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "ignore_case": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "line": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "CollectorSpec": {
+      "fields": {
+        "capture": {
+          "repeated": false,
+          "type": "CollectCapture"
+        },
+        "from": {
+          "repeated": false,
+          "type": "CollectFrom"
+        },
+        "keep": {
+          "repeated": false,
+          "type": "CollectKeep"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "per_second": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "preset": {
+          "repeated": false,
+          "type": "string"
+        },
+        "when": {
+          "repeated": false,
+          "type": "CollectWhen"
+        }
+      }
+    },
+    "CollectorStatus": {
+      "fields": {
+        "collected": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "created_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "dropped": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "last_error": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "rows": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "spec": {
+          "repeated": false,
+          "type": "CollectorSpec"
+        },
+        "state": {
+          "repeated": false,
+          "type": "CollectorState"
+        }
+      }
+    },
+    "DaemonEvent": {
+      "fields": {
+        "host": {
+          "repeated": false,
+          "type": "string"
+        },
+        "kind": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "revision": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "state": {
+          "repeated": false,
+          "type": "string"
+        },
+        "subject": {
+          "repeated": false,
+          "type": "string"
+        },
+        "time_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "DaemonStatus": {
+      "fields": {
+        "clients": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "endpoints": {
+          "repeated": true,
+          "type": "EndpointStatus"
+        },
+        "heap_in_use": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "log_path": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "socket_path": {
+          "repeated": false,
+          "type": "string"
+        },
+        "started_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "uptime_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "version": {
+          "repeated": false,
+          "type": "VersionInfo"
+        }
+      }
+    },
+    "Decoration": {
+      "fields": {
+        "badge": {
+          "repeated": false,
+          "type": "string"
+        },
+        "cols": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "filter": {
+          "repeated": false,
+          "type": "string"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "row": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "style": {
+          "repeated": false,
+          "type": "DecorationStyle"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "DecorationList": {
+      "fields": {
+        "decorations": {
+          "repeated": true,
+          "type": "Decoration"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "DecorationQuery": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "DrawerRequest": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "session": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "want": {
+          "repeated": false,
+          "type": "DrawerWant"
+        },
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "DrawerStatus": {
+      "fields": {
+        "command": {
+          "repeated": true,
+          "type": "string"
+        },
+        "created": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "focused": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "from_pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "harness": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "problem": {
+          "repeated": false,
+          "type": "string"
+        },
+        "session": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "shown": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "zoomed": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "Empty": {
+      "fields": {}
+    },
+    "EndpointStatus": {
+      "fields": {
+        "detail": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "socket": {
+          "repeated": false,
+          "type": "string"
+        },
+        "state": {
+          "repeated": false,
+          "type": "LinkState"
+        },
+        "tmux_version": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "EnvVar": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "value": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "EventBatch": {
+      "fields": {
+        "cursor": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "events": {
+          "repeated": true,
+          "type": "DaemonEvent"
+        },
+        "gap": {
+          "repeated": false,
+          "type": "EventGap"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "EventGap": {
+      "fields": {
+        "first": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "last": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "reason": {
+          "repeated": false,
+          "type": "EventGapReason"
+        }
+      }
+    },
+    "EventSubscribe": {
+      "fields": {
+        "after": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "instance": {
+          "repeated": false,
+          "type": "string"
+        },
+        "kinds": {
+          "repeated": true,
+          "type": "string"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "quota": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "EventSubscription": {
+      "fields": {
+        "cursor": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "instance": {
+          "repeated": false,
+          "type": "string"
+        },
+        "oldest": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "ExtensionList": {
+      "fields": {
+        "config_error": {
+          "repeated": false,
+          "type": "string"
+        },
+        "extensions": {
+          "repeated": true,
+          "type": "ExtensionStatus"
+        }
+      }
+    },
+    "ExtensionRef": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "ExtensionStatus": {
+      "fields": {
+        "failures": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "grant": {
+          "repeated": false,
+          "type": "Grant"
+        },
+        "last_error": {
+          "repeated": false,
+          "type": "string"
+        },
+        "log": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "next_start_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "restarts": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "started_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "state": {
+          "repeated": false,
+          "type": "ExtensionState"
+        },
+        "version": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "FilterInput": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "FilterList": {
+      "fields": {
+        "filters": {
+          "repeated": true,
+          "type": "FilterStatus"
+        }
+      }
+    },
+    "FilterRef": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "FilterSpec": {
+      "fields": {
+        "badge": {
+          "repeated": false,
+          "type": "string"
+        },
+        "breaker": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "decorate": {
+          "repeated": false,
+          "type": "DecorationStyle"
+        },
+        "event": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "every_pane": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "grant": {
+          "repeated": false,
+          "type": "ScriptGrant"
+        },
+        "ignore_case": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "input": {
+          "repeated": false,
+          "type": "FilterInput"
+        },
+        "literal": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "literals": {
+          "repeated": true,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "pattern": {
+          "repeated": false,
+          "type": "string"
+        },
+        "per_second": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "recipient": {
+          "repeated": false,
+          "type": "string"
+        },
+        "topic": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "FilterStatus": {
+      "fields": {
+        "dropped": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "last_error": {
+          "repeated": false,
+          "type": "string"
+        },
+        "matched": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "reason": {
+          "repeated": false,
+          "type": "string"
+        },
+        "skipped_own": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "state": {
+          "repeated": false,
+          "type": "FilterState"
+        },
+        "triggered": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "FocusInput": {
+      "fields": {
+        "gained": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "Grant": {
+      "fields": {
+        "all_panes": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "expires_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "level": {
+          "repeated": false,
+          "type": "ActLevel"
+        },
+        "methods": {
+          "repeated": true,
+          "type": "string"
+        },
+        "owner": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        }
+      }
+    },
+    "HostCall": {
+      "fields": {
+        "method": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "payload": {
+          "repeated": false,
+          "type": "bytes"
+        }
+      }
+    },
+    "HostConnect": {
+      "fields": {
+        "auto_reconnect": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "destination": {
+          "repeated": false,
+          "type": "string"
+        },
+        "dream": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "tmux": {
+          "repeated": false,
+          "type": "string"
+        },
+        "tmux_socket": {
+          "repeated": false,
+          "type": "string"
+        },
+        "tmux_socket_path": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "HostList": {
+      "fields": {
+        "hosts": {
+          "repeated": true,
+          "type": "HostStatus"
+        },
+        "profiles_error": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "HostRef": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "HostReply": {
+      "fields": {
+        "payload": {
+          "repeated": false,
+          "type": "bytes"
+        }
+      }
+    },
+    "HostStatus": {
+      "fields": {
+        "attempts": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "auto_reconnect": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "destination": {
+          "repeated": false,
+          "type": "string"
+        },
+        "detail": {
+          "repeated": false,
+          "type": "string"
+        },
+        "failure": {
+          "repeated": false,
+          "type": "HostFailure"
+        },
+        "last_contact_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "next_retry_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "profile": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "remote": {
+          "repeated": false,
+          "type": "VersionInfo"
+        },
+        "remote_host": {
+          "repeated": false,
+          "type": "string"
+        },
+        "remote_instance": {
+          "repeated": false,
+          "type": "string"
+        },
+        "remote_pid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "state": {
+          "repeated": false,
+          "type": "LinkState"
+        },
+        "tags": {
+          "repeated": true,
+          "type": "string"
+        },
+        "workspace": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "HostSubscribe": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "subscribe": {
+          "repeated": false,
+          "type": "TerminalSubscribe"
+        }
+      }
+    },
+    "InputResult": {
+      "fields": {
+        "batches": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "bytes": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "InstallParams": {
+      "fields": {
+        "artifacts": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "plan_id": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "InstallPlan": {
+      "fields": {
+        "archive": {
+          "repeated": false,
+          "type": "string"
+        },
+        "destination": {
+          "repeated": false,
+          "type": "string"
+        },
+        "home": {
+          "repeated": false,
+          "type": "string"
+        },
+        "installed": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "plan_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "remote_arch": {
+          "repeated": false,
+          "type": "string"
+        },
+        "remote_dir": {
+          "repeated": false,
+          "type": "string"
+        },
+        "remote_os": {
+          "repeated": false,
+          "type": "string"
+        },
+        "sha256": {
+          "repeated": false,
+          "type": "string"
+        },
+        "size": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "steps": {
+          "repeated": true,
+          "type": "string"
+        },
+        "target": {
+          "repeated": false,
+          "type": "string"
+        },
+        "version": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "InstallPlanParams": {
+      "fields": {
+        "artifacts": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "InstallResult": {
+      "fields": {
+        "check": {
+          "repeated": false,
+          "type": "string"
+        },
+        "previous": {
+          "repeated": false,
+          "type": "string"
+        },
+        "remote_dream": {
+          "repeated": false,
+          "type": "string"
+        },
+        "version": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "JobArtifacts": {
+      "fields": {
+        "directory": {
+          "repeated": false,
+          "type": "string"
+        },
+        "files": {
+          "repeated": true,
+          "type": "JobFile"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "JobFile": {
+      "fields": {
+        "bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "path": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "JobList": {
+      "fields": {
+        "jobs": {
+          "repeated": true,
+          "type": "JobRecord"
+        }
+      }
+    },
+    "JobRecord": {
+      "fields": {
+        "argv": {
+          "repeated": true,
+          "type": "string"
+        },
+        "artifacts": {
+          "repeated": false,
+          "type": "string"
+        },
+        "cancelled": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "ended_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "exit_code": {
+          "repeated": false,
+          "type": "i32"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "signal": {
+          "repeated": false,
+          "type": "i32"
+        },
+        "started_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "state": {
+          "repeated": false,
+          "type": "JobState"
+        }
+      }
+    },
+    "JobRef": {
+      "fields": {
+        "id": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "JobStart": {
+      "fields": {
+        "argv": {
+          "repeated": true,
+          "type": "string"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "env": {
+          "repeated": true,
+          "type": "EnvVar"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "session": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "KeyInput": {
+      "fields": {
+        "held": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "key": {
+          "repeated": false,
+          "type": "string"
+        },
+        "mods": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "KeyOptions": {
+      "fields": {
+        "mode_keys": {
+          "repeated": false,
+          "type": "string"
+        },
+        "mode_style": {
+          "repeated": false,
+          "type": "string"
+        },
+        "prefix": {
+          "repeated": false,
+          "type": "string"
+        },
+        "prefix2": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "KeyOptionsParams": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "KillPane": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "KillWindow": {
+      "fields": {
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "LaunchApp": {
+      "fields": {
+        "app_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "argv": {
+          "repeated": true,
+          "type": "string"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "grant": {
+          "repeated": false,
+          "type": "Grant"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "session": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "ttl_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "LaunchedApp": {
+      "fields": {
+        "expires_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "launch_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "Lease": {
+      "fields": {
+        "expires_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "LeaseAcquire": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "ttl_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "LeaseRef": {
+      "fields": {
+        "id": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MemoryContext": {
+      "fields": {
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "session": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MemoryItem": {
+      "fields": {
+        "created_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "description": {
+          "repeated": false,
+          "type": "string"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "kind": {
+          "repeated": false,
+          "type": "MemoryKind"
+        },
+        "links": {
+          "repeated": true,
+          "type": "string"
+        },
+        "path": {
+          "repeated": false,
+          "type": "string"
+        },
+        "scope": {
+          "repeated": false,
+          "type": "MemoryScope"
+        },
+        "score": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        },
+        "updated_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "MemoryItems": {
+      "fields": {
+        "items": {
+          "repeated": true,
+          "type": "MemoryItem"
+        },
+        "problems": {
+          "repeated": true,
+          "type": "MemoryProblem"
+        },
+        "provider": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MemoryListQuery": {
+      "fields": {
+        "context": {
+          "repeated": false,
+          "type": "MemoryContext"
+        },
+        "kind": {
+          "repeated": false,
+          "type": "MemoryKind"
+        },
+        "scope": {
+          "repeated": false,
+          "type": "MemoryScope"
+        }
+      }
+    },
+    "MemoryProblem": {
+      "fields": {
+        "message": {
+          "repeated": false,
+          "type": "string"
+        },
+        "path": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MemoryRecall": {
+      "fields": {
+        "context": {
+          "repeated": false,
+          "type": "MemoryContext"
+        },
+        "limit": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "query": {
+          "repeated": false,
+          "type": "string"
+        },
+        "scope": {
+          "repeated": false,
+          "type": "MemoryScope"
+        }
+      }
+    },
+    "MemoryRef": {
+      "fields": {
+        "context": {
+          "repeated": false,
+          "type": "MemoryContext"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MemoryRemember": {
+      "fields": {
+        "context": {
+          "repeated": false,
+          "type": "MemoryContext"
+        },
+        "description": {
+          "repeated": false,
+          "type": "string"
+        },
+        "kind": {
+          "repeated": false,
+          "type": "MemoryKind"
+        },
+        "links": {
+          "repeated": true,
+          "type": "string"
+        },
+        "scope": {
+          "repeated": false,
+          "type": "MemoryScope"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MemoryUpdate": {
+      "fields": {
+        "clear_links": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "context": {
+          "repeated": false,
+          "type": "MemoryContext"
+        },
+        "description": {
+          "repeated": false,
+          "type": "string"
+        },
+        "id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "kind": {
+          "repeated": false,
+          "type": "MemoryKind"
+        },
+        "links": {
+          "repeated": true,
+          "type": "string"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MessageDelivery": {
+      "fields": {
+        "envelope": {
+          "repeated": false,
+          "type": "MessageEnvelope"
+        },
+        "missed": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "MessageEnvelope": {
+      "fields": {
+        "cause": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "claimed_sender": {
+          "repeated": false,
+          "type": "string"
+        },
+        "correlation": {
+          "repeated": false,
+          "type": "string"
+        },
+        "depth": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "expires_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "origin": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "payload": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "recipient": {
+          "repeated": false,
+          "type": "string"
+        },
+        "request": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "schema": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sender": {
+          "repeated": false,
+          "type": "MessageSender"
+        },
+        "time_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "topic": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MessagePublish": {
+      "fields": {
+        "cause": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "correlation": {
+          "repeated": false,
+          "type": "string"
+        },
+        "expires_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "payload": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "recipient": {
+          "repeated": false,
+          "type": "string"
+        },
+        "schema": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sender": {
+          "repeated": false,
+          "type": "string"
+        },
+        "topic": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MessageReply": {
+      "fields": {
+        "payload": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "request": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "schema": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "MessageRequest": {
+      "fields": {
+        "cause": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "correlation": {
+          "repeated": false,
+          "type": "string"
+        },
+        "payload": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "recipient": {
+          "repeated": false,
+          "type": "string"
+        },
+        "schema": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sender": {
+          "repeated": false,
+          "type": "string"
+        },
+        "timeout_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "MessageSender": {
+      "fields": {
+        "app_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "instance": {
+          "repeated": false,
+          "type": "string"
+        },
+        "owner": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "MessageSent": {
+      "fields": {
+        "delivered": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "depth": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "MessageSubscribe": {
+      "fields": {
+        "topics": {
+          "repeated": true,
+          "type": "string"
+        }
+      }
+    },
+    "MessageSubscription": {
+      "fields": {
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "instance": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "MirrorList": {
+      "fields": {
+        "host_journal_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "journal_host_limit": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "journal_max_age_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "journal_pane_limit": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "mirrors": {
+          "repeated": true,
+          "type": "MirrorStatus"
+        },
+        "workers": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "MirrorStatus": {
+      "fields": {
+        "cols": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "detail": {
+          "repeated": false,
+          "type": "string"
+        },
+        "epoch": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "ingested_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "journal_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "journal_first_sequence": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "journal_records": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "reattaches": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "rows": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "state": {
+          "repeated": false,
+          "type": "MirrorState"
+        },
+        "tier": {
+          "repeated": false,
+          "type": "Tier"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        },
+        "worker": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "MouseInput": {
+      "fields": {
+        "action": {
+          "repeated": false,
+          "type": "MouseAction"
+        },
+        "button": {
+          "repeated": false,
+          "type": "MouseButton"
+        },
+        "buttons_held": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "col": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "mods": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "row": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "MovePane": {
+      "fields": {
+        "new_window": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "NewWindow": {
+      "fields": {
+        "argv": {
+          "repeated": true,
+          "type": "string"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "session": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "Pane": {
+      "fields": {
+        "active": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "app": {
+          "repeated": false,
+          "type": "PaneApp"
+        },
+        "current_command": {
+          "repeated": false,
+          "type": "string"
+        },
+        "dead": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "drawer_of": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "height": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "left": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "mode": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        },
+        "top": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "width": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "PaneApp": {
+      "fields": {
+        "app_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "instance": {
+          "repeated": false,
+          "type": "string"
+        },
+        "live": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "PasteInput": {
+      "fields": {
+        "data": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "more": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "PrefixKey": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "key": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "PrefixKeyResult": {
+      "fields": {
+        "mode_cancelled": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "ProcessList": {
+      "fields": {
+        "processes": {
+          "repeated": true,
+          "type": "ProcessRecord"
+        },
+        "taken_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "ProcessQuery": {
+      "fields": {
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "provider": {
+          "repeated": false,
+          "type": "string"
+        },
+        "runs_only": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "ProcessRecord": {
+      "fields": {
+        "args": {
+          "repeated": false,
+          "type": "string"
+        },
+        "command": {
+          "repeated": false,
+          "type": "string"
+        },
+        "confidence": {
+          "repeated": false,
+          "type": "string"
+        },
+        "cpu_permille": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "evidence": {
+          "repeated": false,
+          "type": "string"
+        },
+        "helper_of": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pane_evidence": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pgid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "ppid": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "provider": {
+          "repeated": false,
+          "type": "string"
+        },
+        "rss_kib": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "started_unix_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "tty": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "QueryMatch": {
+      "fields": {
+        "host": {
+          "repeated": false,
+          "type": "string"
+        },
+        "line": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "match_end": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "match_start": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "QueryResult": {
+      "fields": {
+        "matches": {
+          "repeated": true,
+          "type": "QueryMatch"
+        },
+        "notes": {
+          "repeated": true,
+          "type": "string"
+        },
+        "panes_searched": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "truncated": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "ReadParams": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "history": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "RecordBatch": {
+      "fields": {
+        "effects": {
+          "repeated": true,
+          "type": "TerminalEffect"
+        },
+        "epoch": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "records": {
+          "repeated": true,
+          "type": "TerminalRecord"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "RegisterApp": {
+      "fields": {
+        "launch_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "ticket": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "Registration": {
+      "fields": {
+        "app_id": {
+          "repeated": false,
+          "type": "string"
+        },
+        "grant": {
+          "repeated": false,
+          "type": "Grant"
+        },
+        "instance": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "RenameSession": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "session": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "RenameWindow": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "ResizePane": {
+      "fields": {
+        "height": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "width": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "RpcError": {
+      "fields": {
+        "code": {
+          "repeated": false,
+          "type": "i32"
+        },
+        "data": {
+          "repeated": false,
+          "type": "string"
+        },
+        "message": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "RunResult": {
+      "fields": {
+        "finished": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "job": {
+          "repeated": false,
+          "type": "JobRecord"
+        },
+        "output": {
+          "repeated": true,
+          "type": "string"
+        },
+        "truncated": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "ScriptCheck": {
+      "fields": {
+        "error": {
+          "repeated": false,
+          "type": "string"
+        },
+        "ok": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "ScriptGrant": {
+      "fields": {
+        "all_panes": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "methods": {
+          "repeated": true,
+          "type": "string"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        }
+      }
+    },
+    "ScriptLimits": {
+      "fields": {
+        "call_ms": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "host_call_ms": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "memory_bytes": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "ScriptList": {
+      "fields": {
+        "scripts": {
+          "repeated": true,
+          "type": "ScriptStatus"
+        }
+      }
+    },
+    "ScriptLoad": {
+      "fields": {
+        "events": {
+          "repeated": true,
+          "type": "string"
+        },
+        "grant": {
+          "repeated": false,
+          "type": "ScriptGrant"
+        },
+        "limits": {
+          "repeated": false,
+          "type": "ScriptLimits"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "source": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "ScriptRef": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "ScriptSource": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "source": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "ScriptStatus": {
+      "fields": {
+        "errors": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "events": {
+          "repeated": true,
+          "type": "string"
+        },
+        "failures": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "grant": {
+          "repeated": false,
+          "type": "Grant"
+        },
+        "handled": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "last_error": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "restarts": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "revision": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "state": {
+          "repeated": false,
+          "type": "ScriptState"
+        }
+      }
+    },
+    "SelectPane": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "SelectWindow": {
+      "fields": {
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "SendInput": {
+      "fields": {
+        "data": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "lease": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "SendKeys": {
+      "fields": {
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "keys": {
+          "repeated": true,
+          "type": "string"
+        },
+        "lease": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "Session": {
+      "fields": {
+        "active_window": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "holding": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "windows": {
+          "repeated": true,
+          "type": "u32"
+        }
+      }
+    },
+    "SetTier": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "tier": {
+          "repeated": false,
+          "type": "Tier"
+        }
+      }
+    },
+    "ShutdownResult": {
+      "fields": {
+        "effect": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "SizeResult": {
+      "fields": {
+        "applied": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "owner": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "owner_client": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "SizeWindow": {
+      "fields": {
+        "client": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "cols": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "release": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "rows": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "SplitPane": {
+      "fields": {
+        "argv": {
+          "repeated": true,
+          "type": "string"
+        },
+        "cells": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "direction": {
+          "repeated": false,
+          "type": "SplitDirection"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "percent": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "SubmitAction": {
+      "fields": {
+        "action": {
+          "repeated": false,
+          "type": "Action"
+        },
+        "deadline_ms": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "idempotency_key": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "Subscription": {
+      "fields": {
+        "checkpoint_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "checkpoint_pause_us": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "epoch": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "mode": {
+          "repeated": false,
+          "type": "SubscribeMode"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "scrollback_lines": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "SubscriptionEnd": {
+      "fields": {
+        "detail": {
+          "repeated": false,
+          "type": "string"
+        },
+        "reason": {
+          "repeated": false,
+          "type": "EndReason"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "TapData": {
+      "fields": {
+        "cols": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "ended": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "gap": {
+          "repeated": false,
+          "type": "TapGap"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "lines": {
+          "repeated": true,
+          "type": "string"
+        },
+        "meta": {
+          "repeated": false,
+          "type": "TapMeta"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "raw": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "rows": {
+          "repeated": true,
+          "type": "u64"
+        },
+        "screen": {
+          "repeated": true,
+          "type": "TapRow"
+        },
+        "tap": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "TapGap": {
+      "fields": {
+        "lines": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "reason": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TapMeta": {
+      "fields": {
+        "alt_screen": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "cols": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "rows": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TapRow": {
+      "fields": {
+        "row": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TapSubscribe": {
+      "fields": {
+        "every_pane": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "for_pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "interval_ms": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "level": {
+          "repeated": false,
+          "type": "TapLevel"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        }
+      }
+    },
+    "TapSubscription": {
+      "fields": {
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        }
+      }
+    },
+    "TerminalEffect": {
+      "fields": {
+        "bells": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "clipboard": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TerminalInfo": {
+      "fields": {
+        "active": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "cols": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "command": {
+          "repeated": false,
+          "type": "string"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "dead": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "owned": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "quiet_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "rows": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "session": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "session_name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "tier": {
+          "repeated": false,
+          "type": "Tier"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        },
+        "window": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "window_index": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "window_name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TerminalInput": {
+      "fields": {
+        "client": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "lease": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      },
+      "oneof": {
+        "name": "event",
+        "variants": {
+          "focus": "FocusInput",
+          "key": "KeyInput",
+          "mouse": "MouseInput",
+          "paste": "PasteInput",
+          "text": "TextInput"
+        }
+      }
+    },
+    "TerminalList": {
+      "fields": {
+        "terminals": {
+          "repeated": true,
+          "type": "TerminalInfo"
+        }
+      }
+    },
+    "TerminalQuery": {
+      "fields": {
+        "hosts": {
+          "repeated": true,
+          "type": "string"
+        },
+        "ignore_case": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "lines": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "literal": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "literals": {
+          "repeated": true,
+          "type": "string"
+        },
+        "max_bytes": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "max_matches": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "pattern": {
+          "repeated": false,
+          "type": "string"
+        },
+        "timeout_ms": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TerminalRecord": {
+      "fields": {
+        "cols": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "data": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "rows": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "TerminalRun": {
+      "fields": {
+        "argv": {
+          "repeated": true,
+          "type": "string"
+        },
+        "cwd": {
+          "repeated": false,
+          "type": "string"
+        },
+        "direction": {
+          "repeated": false,
+          "type": "SplitDirection"
+        },
+        "env": {
+          "repeated": true,
+          "type": "EnvVar"
+        },
+        "lines": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "session": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "split": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "timeout_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "TerminalSubscribe": {
+      "fields": {
+        "client": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "resume_epoch": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "resume_generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "resume_sequence": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "TerminalText": {
+      "fields": {
+        "cols": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "cursor_x": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "cursor_y": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "epoch": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "history_lines": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "lines": {
+          "repeated": true,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "rows": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "TerminalWatch": {
+      "fields": {
+        "exit": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "ignore_case": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "literal": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pattern": {
+          "repeated": false,
+          "type": "string"
+        },
+        "quiet_ms": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "timeout_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "TextInput": {
+      "fields": {
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TmuxBuffer": {
+      "fields": {
+        "found": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TmuxBufferInfo": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "sample": {
+          "repeated": false,
+          "type": "string"
+        },
+        "size": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "TmuxBufferList": {
+      "fields": {
+        "buffers": {
+          "repeated": true,
+          "type": "TmuxBufferInfo"
+        }
+      }
+    },
+    "TmuxBufferListParams": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TmuxBufferRead": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TmuxBufferWrite": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "Topology": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "incarnation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "Pane"
+        },
+        "sessions": {
+          "repeated": true,
+          "type": "Session"
+        },
+        "windows": {
+          "repeated": true,
+          "type": "Window"
+        }
+      }
+    },
+    "TopologyParams": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "TopologyUpdate": {
+      "fields": {
+        "revision": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "topology": {
+          "repeated": false,
+          "type": "Topology"
+        }
+      }
+    },
+    "Unsubscribe": {
+      "fields": {
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "UpgradeParams": {
+      "fields": {
+        "allow_older": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "artifacts": {
+          "repeated": false,
+          "type": "string"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "plan_id": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "UpgradeResult": {
+      "fields": {
+        "from": {
+          "repeated": false,
+          "type": "string"
+        },
+        "note": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pid_after": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pid_before": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "restarted": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "to": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "VersionInfo": {
+      "fields": {
+        "build_family": {
+          "repeated": false,
+          "type": "string"
+        },
+        "daemon_version": {
+          "repeated": false,
+          "type": "string"
+        },
+        "ghostty_commit": {
+          "repeated": false,
+          "type": "string"
+        },
+        "platform": {
+          "repeated": false,
+          "type": "string"
+        },
+        "protocol_major": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "protocol_minor": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "WatchResult": {
+      "fields": {
+        "elapsed_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "exit_code": {
+          "repeated": false,
+          "type": "i32"
+        },
+        "match_end": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "match_start": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "outcome": {
+          "repeated": false,
+          "type": "WatchOutcome"
+        },
+        "signal": {
+          "repeated": false,
+          "type": "i32"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "Window": {
+      "fields": {
+        "active_pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "height": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "id": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "index": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "layout_supported": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "panes": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "sessions": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "width": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "zoomed": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
+    "ZoomPane": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    }
+  },
+  "methods": {
+    "actions.get": "ActionQuery",
+    "actions.list": "ActionListParams",
+    "actions.submit": "SubmitAction",
+    "agent.sessions.approve": "AgentSessionAnswer",
+    "agent.sessions.cancel": "AgentSessionRef",
+    "agent.sessions.close": "AgentSessionRef",
+    "agent.sessions.create": "AgentSessionCreate",
+    "agent.sessions.deny": "AgentSessionAnswer",
+    "agent.sessions.events": "AgentSessionEventsQuery",
+    "agent.sessions.list": "Empty",
+    "agent.sessions.resume": "AgentSessionRef",
+    "agent.sessions.send": "AgentSessionSend",
+    "agents.event": "AgentEvent",
+    "agents.runs": "AgentRunQuery",
+    "approvals.answer": "ApprovalAnswer",
+    "approvals.list": "Empty",
+    "apps.input": "AppInput",
+    "apps.launch": "LaunchApp",
+    "apps.publish": "AppViewPublish",
+    "apps.publish_tree": "AppTreePublish",
+    "apps.register": "RegisterApp",
+    "apps.tree": "AppTreeQuery",
+    "apps.view": "AppViewQuery",
+    "clipboard.list_tmux_buffers": "TmuxBufferListParams",
+    "clipboard.read_tmux_buffer": "TmuxBufferRead",
+    "clipboard.write_tmux_buffer": "TmuxBufferWrite",
+    "collect.create": "CollectorSpec",
+    "collect.list": "Empty",
+    "collect.query": "CollectQuery",
+    "collect.stop": "CollectRef",
+    "daemon.shutdown": "Empty",
+    "daemon.status": "Empty",
+    "daemon.version": "Empty",
+    "decorations.list": "DecorationQuery",
+    "drawer.status": "DrawerRequest",
+    "drawer.toggle": "DrawerRequest",
+    "events.subscribe": "EventSubscribe",
+    "events.unsubscribe": "Unsubscribe",
+    "extensions.list": "Empty",
+    "extensions.restart": "ExtensionRef",
+    "filters.install": "FilterSpec",
+    "filters.list": "Empty",
+    "filters.pause": "FilterRef",
+    "filters.remove": "FilterRef",
+    "filters.resume": "FilterRef",
+    "grants.current": "Empty",
+    "grants.narrow": "Grant",
+    "hosts.call": "HostCall",
+    "hosts.connect": "HostConnect",
+    "hosts.disconnect": "HostRef",
+    "hosts.install": "InstallParams",
+    "hosts.install_plan": "InstallPlanParams",
+    "hosts.list": "Empty",
+    "hosts.reconnect": "HostRef",
+    "hosts.subscribe": "HostSubscribe",
+    "hosts.upgrade": "UpgradeParams",
+    "hosts.watch": "HostRef",
+    "jobs.artifacts": "JobRef",
+    "jobs.cancel": "JobRef",
+    "jobs.get": "JobRef",
+    "jobs.list": "Empty",
+    "jobs.start": "JobStart",
+    "leases.acquire": "LeaseAcquire",
+    "leases.release": "LeaseRef",
+    "memory.forget": "MemoryRef",
+    "memory.get": "MemoryRef",
+    "memory.list": "MemoryListQuery",
+    "memory.recall": "MemoryRecall",
+    "memory.remember": "MemoryRemember",
+    "memory.update": "MemoryUpdate",
+    "messages.publish": "MessagePublish",
+    "messages.reply": "MessageReply",
+    "messages.request": "MessageRequest",
+    "messages.subscribe": "MessageSubscribe",
+    "messages.unsubscribe": "Unsubscribe",
+    "processes.list": "ProcessQuery",
+    "scripts.list": "Empty",
+    "scripts.load": "ScriptLoad",
+    "scripts.reload": "ScriptSource",
+    "scripts.stop": "ScriptRef",
+    "scripts.validate": "ScriptSource",
+    "taps.subscribe": "TapSubscribe",
+    "taps.unsubscribe": "Unsubscribe",
+    "terminal.input": "TerminalInput",
+    "terminal.list": "TopologyParams",
+    "terminal.mirrors": "TopologyParams",
+    "terminal.query": "TerminalQuery",
+    "terminal.read": "ReadParams",
+    "terminal.run": "TerminalRun",
+    "terminal.set_tier": "SetTier",
+    "terminal.subscribe": "TerminalSubscribe",
+    "terminal.unsubscribe": "Unsubscribe",
+    "terminal.watch": "TerminalWatch",
+    "tmux.key_options": "KeyOptionsParams",
+    "tmux.prefix_key": "PrefixKey",
+    "tmux.size_window": "SizeWindow",
+    "tmux.topology": "TopologyParams",
+    "tmux.watch": "TopologyParams"
+  },
+  "ui": {
+    "common": {
+      "key": "string | number",
+      "title": "string"
+    },
+    "components": [
+      {
+        "first": null,
+        "form": "layout",
+        "name": "column",
+        "props": {
+          "children": "Child[]"
+        }
+      },
+      {
+        "first": null,
+        "form": "layout",
+        "name": "row",
+        "props": {
+          "children": "Child[]"
+        }
+      },
+      {
+        "first": null,
+        "form": "layout",
+        "name": "scroll",
+        "props": {
+          "children": "Child[]"
+        }
+      },
+      {
+        "first": null,
+        "form": "layout",
+        "name": "tabs",
+        "props": {
+          "active": "number",
+          "children": "Child[]"
+        }
+      },
+      {
+        "first": null,
+        "form": "layout",
+        "name": "split",
+        "props": {
+          "children": "Child[]",
+          "direction": "Direction",
+          "sizes": "number[]"
+        }
+      },
+      {
+        "first": "text",
+        "form": "content",
+        "name": "text",
+        "props": {
+          "text": "string"
+        }
+      },
+      {
+        "first": "text",
+        "form": "content",
+        "name": "markdown",
+        "props": {
+          "text": "string"
+        }
+      },
+      {
+        "first": "text",
+        "form": "content",
+        "name": "code",
+        "props": {
+          "language": "string",
+          "text": "string"
+        }
+      },
+      {
+        "first": "text",
+        "form": "content",
+        "name": "diff",
+        "props": {
+          "text": "string"
+        }
+      },
+      {
+        "first": "text",
+        "form": "content",
+        "name": "badge",
+        "props": {
+          "text": "string",
+          "tone": "Tone"
+        }
+      },
+      {
+        "first": "ratio",
+        "form": "content",
+        "name": "gauge",
+        "props": {
+          "label": "string",
+          "ratio": "number"
+        }
+      },
+      {
+        "first": "ratio",
+        "form": "content",
+        "name": "progress",
+        "props": {
+          "label": "string",
+          "ratio": "number"
+        }
+      },
+      {
+        "first": "values",
+        "form": "content",
+        "name": "chart",
+        "props": {
+          "values": "number[]"
+        }
+      },
+      {
+        "first": "items",
+        "form": "content",
+        "name": "status",
+        "props": {
+          "items": "StatusItem[]"
+        }
+      },
+      {
+        "first": "label",
+        "form": "content",
+        "name": "button",
+        "props": {
+          "label": "string",
+          "onPress": "(ctx: Ctx) => Patch"
+        }
+      },
+      {
+        "first": "value",
+        "form": "content",
+        "name": "input",
+        "props": {
+          "label": "string",
+          "onChange": "(value: string, ctx: Ctx) => Patch",
+          "onEnter": "(value: string, ctx: Ctx) => Patch",
+          "onSubmit": "(value: string, ctx: Ctx) => Patch",
+          "placeholder": "string",
+          "value": "string"
+        }
+      },
+      {
+        "first": "options",
+        "form": "content",
+        "name": "select",
+        "props": {
+          "label": "string",
+          "onChange": "(option: string, index: number, ctx: Ctx) => Patch",
+          "options": "string[]",
+          "selected": "number",
+          "value": "string"
+        }
+      },
+      {
+        "first": "label",
+        "form": "content",
+        "name": "toggle",
+        "props": {
+          "label": "string",
+          "on": "boolean",
+          "onChange": "(on: boolean, ctx: Ctx) => Patch"
+        }
+      },
+      {
+        "first": null,
+        "form": "props",
+        "name": "table",
+        "props": {
+          "columns": "string[]",
+          "onEnter": "(row: any, key: string, ctx: Ctx) => Patch",
+          "onSelect": "(row: any, key: string, ctx: Ctx) => Patch",
+          "rowKey": "string",
+          "rows": "unknown[]",
+          "selected": "string | number"
+        }
+      },
+      {
+        "first": null,
+        "form": "props",
+        "name": "list",
+        "props": {
+          "field": "string",
+          "onEnter": "(row: any, key: string, ctx: Ctx) => Patch",
+          "onSelect": "(row: any, key: string, ctx: Ctx) => Patch",
+          "rowKey": "string",
+          "rows": "unknown[]",
+          "selected": "string | number"
+        }
+      },
+      {
+        "first": "lines",
+        "form": "content",
+        "name": "log",
+        "props": {
+          "lines": "unknown[]"
+        }
+      }
+    ],
+    "screen": {
+      "focus": "string | number",
+      "status": "string",
+      "title": "string"
+    },
+    "types": {
+      "Direction": {
+        "values": [
+          "row",
+          "column"
+        ]
+      },
+      "StatusItem": {
+        "fields": {
+          "text": "string",
+          "tone": "Tone"
+        }
+      },
+      "Tone": {
+        "values": [
+          "neutral",
+          "accent",
+          "success",
+          "warning",
+          "danger"
+        ]
+      }
+    }
+  },
+  "version": "1.51"
+}

@@ -262,3 +262,100 @@ fn syntax_errors_name_their_place() {
     let e = super::check("app.ts", "let a = ;\n").expect_err("a syntax error");
     assert!(e.contains("app.ts:1"), "{e}");
 }
+
+/// A value of a `ui.yaml` type, as JavaScript.
+fn sample(ty: &str, types: &serde_json::Value) -> String {
+    if ty.starts_with('(') {
+        return "() => undefined".into();
+    }
+    let ty = ty.split('|').next().unwrap_or_default().trim();
+    if let Some(inner) = ty.strip_suffix("[]") {
+        return format!("[{}]", sample(inner, types));
+    }
+    match ty {
+        "string" => "\"x\"".into(),
+        "number" => "1".into(),
+        "boolean" => "true".into(),
+        "unknown" | "any" => "{ id: \"r1\", x: 1 }".into(),
+        "Child" => "ui.text(\"c\")".into(),
+        name => {
+            let t = &types[name];
+            if let Some(v) = t["values"].as_array() {
+                format!("{}", v[0])
+            } else {
+                let fields = t["fields"].as_object().expect("a ui.yaml type");
+                let f: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {}", sample(v.as_str().unwrap_or_default(), types)))
+                    .collect();
+                format!("{{ {} }}", f.join(", "))
+            }
+        }
+    }
+}
+
+/// `dreamer.d.ts` declares the builders from `ui.yaml`: it must name every
+/// builder the prelude has, and each builder, given every property it
+/// declares, must make a node of its name that view-tree accepts, with no
+/// field on the wire it does not declare.
+#[tokio::test]
+async fn the_declared_ui_builders_are_the_preludes_and_make_valid_nodes() {
+    let types: serde_json::Value = serde_json::from_str(api::APP_TYPES).expect("app-types.json");
+    let ui = &types["ui"];
+    let components = ui["components"].as_array().expect("components");
+    let mut names: Vec<&str> = components
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .chain(["screen"])
+        .collect();
+    names.sort_unstable();
+    let mut built = Vec::new();
+    for c in components {
+        let name = c["name"].as_str().expect("name");
+        let props = c["props"].as_object().expect("props");
+        let mut p: Vec<String> = props
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{k:?}: {}",
+                    sample(v.as_str().unwrap_or_default(), &ui["types"])
+                )
+            })
+            .collect();
+        p.push(format!("key: {name:?}"));
+        p.push("title: \"t\"".into());
+        built.push(format!("ui.{name}({{ {} }})", p.join(", ")));
+    }
+    let js = format!(
+        "app({{ view() {{ return ui.screen(ui.column({{ key: \"root\", children: [\n\
+         ui.text({{ key: \"keys\", text: Object.keys(ui).sort().join(\",\") }}),\n{}\n] }}), {{ status: \"s\" }}); }} }});\n",
+        built.join(",\n")
+    );
+    let mut h = Host::start(&js, &[], Limits::default());
+    if let Some(end) = h.until("drew", |h| h.view.is_some()).await {
+        panic!("{end:?}\n{js}");
+    }
+    assert_eq!(
+        h.text("keys").unwrap_or_default(),
+        names.join(","),
+        "ui.yaml's components are not the prelude's builders"
+    );
+    let view = h.view.as_ref().expect("view");
+    for c in components {
+        let name = c["name"].as_str().expect("name");
+        let node = view
+            .root
+            .find(name)
+            .unwrap_or_else(|| panic!("no {name} node"));
+        assert_eq!(node.kind.name(), name);
+        let wire = serde_json::to_value(node).expect("node json");
+        for field in wire.as_object().expect("an object").keys() {
+            let declared = ["key", "type", "title", "children"].contains(&field.as_str())
+                || c["props"].get(field).is_some();
+            assert!(
+                declared,
+                "ui.{name} sends `{field}`, which ui.yaml does not declare"
+            );
+        }
+    }
+}
