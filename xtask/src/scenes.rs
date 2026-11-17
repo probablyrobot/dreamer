@@ -491,6 +491,12 @@ pub fn capture_switch(root: &Path, theme: &str, before: &Path, after: &Path) -> 
 /// The share of a capture's pixels within a few steps of `color` (12 per
 /// channel: the display profile moves saturated colors more than grays).
 pub fn share_of(path: &Path, color: u32) -> Result<f64, String> {
+    share_near(path, color, 12)
+}
+
+/// Like [`share_of`], within `tolerance` per channel: a saturated color
+/// can move further than a neutral one when the capture is color managed.
+pub fn share_near(path: &Path, color: u32, tolerance: i32) -> Result<f64, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -513,7 +519,7 @@ pub fn share_of(path: &Path, color: u32) -> Result<f64, String> {
         if px[..3]
             .iter()
             .zip(want)
-            .all(|(a, b)| (i32::from(*a) - i32::from(b)).abs() <= 12)
+            .all(|(a, b)| (i32::from(*a) - i32::from(b)).abs() <= tolerance)
         {
             near += 1;
         }

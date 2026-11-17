@@ -875,7 +875,8 @@ fn components_scene(dir: &Path, out: &Path) -> Result<Done, String> {
         let path = out.join(format!("app-components-{skin}.png"));
         crate::scenes::capture(dir, "app-components", skin, &path)?;
         let native = crate::scenes::share_of(&path, danger_surface)?;
-        let terminal = crate::scenes::share_of(&path, red)?;
+        // The terminal's red is saturated: allow for color management.
+        let terminal = crate::scenes::share_near(&path, red, 28)?;
         if native < 0.000_2 && terminal < 0.000_2 {
             println!(
                 "gate: the window did not draw the reference app (screen locked, or not in front); the component scenes are recorded as not run"
