@@ -426,10 +426,26 @@ async fn terminal(
         0,
         &format!("clear; printf '\\033]52;c;{b64}\\007'; echo OSC''-DONE\r"),
     );
-    wait_for(any, ws, cx, "the program's clipboard write", |w, cx| {
-        pane_has_line(w, cx, 0, "OSC-DONE") && clipboard().as_deref() == Some("OSC52-TEXT")
+    wait_for(any, ws, cx, "the OSC 52 program to finish", |w, cx| {
+        pane_has_line(w, cx, 0, "OSC-DONE")
     })
     .await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while clipboard().as_deref() != Some("OSC52-TEXT") {
+        if Instant::now() > deadline {
+            // The smoke's own clipboard holds only the smoke's strings.
+            let writes = crate::clip::memory().map(|m| m.writes).unwrap_or_default();
+            crate::stalled(
+                any,
+                cx,
+                &format!(
+                    "never saw: the program's clipboard write (the program finished; the clipboard's writes so far: {writes:?})"
+                ),
+            )
+            .await;
+        }
+        pause(cx, 50).await;
+    }
     println!(
         "smoke: terminal pane: a program's OSC 52 write reached the clipboard (\"OSC52-TEXT\")"
     );

@@ -615,6 +615,10 @@ pub fn spawn(
             let mut mirrors: HashMap<TmuxPaneId, Mirror> = HashMap::new();
             // Panes whose engine could not be restored, reported in stats.
             let mut failed: HashMap<TmuxPaneId, LiveStats> = HashMap::new();
+            // The client each pane's focus was last given to. Kept apart
+            // from the mirror so a mirror rebuilt for the same pane (a tier
+            // change, a restore) still sends clipboard writes to it.
+            let mut focus: HashMap<TmuxPaneId, u64> = HashMap::new();
             loop {
                 let msg = match urgent.try_recv() {
                     Ok(m) => m,
@@ -706,7 +710,7 @@ pub fn spawn(
                             title,
                             cwd,
                             effects: 0,
-                            focused: None,
+                            focused: focus.get(&id).copied(),
                             attach,
                             reattaches,
                             colors_from: 0,
@@ -745,6 +749,8 @@ pub fn spawn(
                     WorkerMsg::Drop { pane } => {
                         mirrors.remove(&pane);
                         failed.remove(&pane);
+                        // Focus stays: tmux never reuses a pane id, and a
+                        // pane started again keeps its focused client.
                     }
                     WorkerMsg::Retire { pane, reply } => {
                         let followed = mirrors.get(&pane).map(|m| {
@@ -789,13 +795,14 @@ pub fn spawn(
                         reply,
                     } => {
                         // Focus decides which client clipboard writes go to.
-                        if let (InputEvent::Focus(gained), Some(c), Some(m)) =
-                            (&event, client, mirrors.get_mut(&pane))
-                        {
+                        if let (InputEvent::Focus(gained), Some(c)) = (&event, client) {
                             if *gained {
-                                m.focused = Some(c);
-                            } else if m.focused == Some(c) {
-                                m.focused = None;
+                                focus.insert(pane, c);
+                            } else if focus.get(&pane) == Some(&c) {
+                                focus.remove(&pane);
+                            }
+                            if let Some(m) = mirrors.get_mut(&pane) {
+                                m.focused = focus.get(&pane).copied();
                             }
                         }
                         let r = match mirrors.get(&pane) {

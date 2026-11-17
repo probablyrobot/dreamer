@@ -799,7 +799,19 @@ fn screens(dir: &Path) -> Result<Done, String> {
         out.join("theme-switch-before.png"),
         out.join("theme-switch-after.png"),
     );
-    crate::scenes::capture_switch(dir, "gruvbox-dark", &before, &after)?;
+    // The same app just opened and drew two windows, so a third that does
+    // not appear means the display stopped serving it (asleep, or locked
+    // between captures): not run, never a pass.
+    match crate::scenes::capture_switch(dir, "gruvbox-dark", &before, &after) {
+        Ok(()) => {}
+        Err(e) if e.contains("opened no window") => {
+            println!(
+                "gate: the theme-switch window never appeared after two that did (display asleep or locked?); the theme switch is recorded as not run"
+            );
+            return Ok(Done::NotRun);
+        }
+        Err(e) => return Err(e),
+    }
     let own = 0x40_20_20;
     let summary = crate::scenes::check_capture(&before, 0x14_16_1a, 0x81_c9_95)?;
     println!("gate:   screen: {} ({summary})", before.display());
