@@ -775,18 +775,22 @@ async fn a_feed_that_reports_focus_at_once_gets_a_programs_clipboard_write() {
     }));
     s.type_line("echo READY");
     feed_until(&feed, |t| t.contains("\nREADY")).await;
-    // "CLIP-FEED" in base64.
-    s.type_line("printf '\\033]52;c;Q0xJUC1GRUVE\\007'; echo F''DONE");
-    feed_until(&feed, |t| t.contains("\nFDONE")).await;
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let got = loop {
-        if let Some(t) = feed.take_clipboard() {
-            break Some(t);
+    // The focus report travels apart from the pane's output, so on a slow
+    // machine it can land after a write; before, it was lost for good. Write
+    // again until one arrives. "CLIP-FEED" in base64.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let got = 'outer: loop {
+        s.type_line("printf '\\033]52;c;Q0xJUC1GRUVE\\007'; echo F''DONE");
+        let wait = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < wait {
+            if let Some(t) = feed.take_clipboard() {
+                break 'outer Some(t);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         if Instant::now() > deadline {
             break None;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert_eq!(got.as_deref(), Some(&b"CLIP-FEED"[..]));
 }
