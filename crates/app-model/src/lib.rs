@@ -9,5 +9,7 @@ pub mod manifest;
 mod model;
 mod run;
 
-pub use model::{AgentState, App, Entry, Link, Record, Said, TRANSCRIPT, Taken, text};
+pub use model::{
+    AgentState, App, Entry, Link, ManifestCache, Record, Said, TRANSCRIPT, Taken, text,
+};
 pub use run::{Endpoint, Input, Session, check_module, load, preview, run};

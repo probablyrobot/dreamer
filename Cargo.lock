@@ -1478,7 +1478,9 @@ dependencies = [
 name = "dreamer-termapp"
 version = "0.1.0"
 dependencies = [
+ "api",
  "app-model",
+ "client",
  "crossterm",
  "ratatui",
  "serde_json",

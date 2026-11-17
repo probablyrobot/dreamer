@@ -15,6 +15,14 @@
 //! user: grants confine apps that run under Dreamer's launch, not processes
 //! the user starts by other means (spec 12.2: process separation is not an
 //! OS sandbox).
+//!
+//! A registered app's host is its pane's program. It publishes its current
+//! view (`apps.publish`); the daemon keeps the newest per pane, marks the
+//! pane in the topology, and hands the view to the user's desktops
+//! (`apps.view`), which draw it in the pane's rectangle. Keys typed there
+//! go back to the host (`apps.input`) as events on its connection. When
+//! the host's connection closes, the last view stays, marked not live,
+//! until the pane is gone.
 
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -43,7 +51,31 @@ struct Pending {
 #[derive(Debug, Default)]
 pub struct Apps {
     pending: Mutex<HashMap<String, Pending>>,
+    /// App hosts by pane, and a counter that grows with every change to
+    /// them (the revisions `apps.view` waits on).
+    hosted: std::sync::Mutex<HashMap<u32, Hosted>>,
+    changed: tokio::sync::watch::Sender<u64>,
 }
+
+/// A pane whose program is a registered app host.
+#[derive(Debug)]
+struct Hosted {
+    instance: String,
+    app_id: String,
+    /// The host's connection.
+    conn: u64,
+    live: bool,
+    view: String,
+    revision: u64,
+    /// Keys for the host, while it is connected.
+    keys: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+}
+
+/// The longest key name `apps.input` takes.
+const MAX_KEY: usize = 32;
+/// How long `apps.view` waits by default, and at most.
+const VIEW_WAIT_MS: u32 = 20_000;
+const VIEW_WAIT_MAX_MS: u32 = 60_000;
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -259,9 +291,239 @@ impl Apps {
     }
 }
 
+/// The app panes: what `apps.publish`, `apps.view`, and `apps.input` act
+/// on, and what the topology shows.
+impl Apps {
+    /// The next revision; called with `hosted` locked, so revisions grow
+    /// in the order changes are made.
+    fn bump(&self) -> u64 {
+        let mut next = 0;
+        self.changed.send_modify(|n| {
+            *n += 1;
+            next = *n;
+        });
+        next
+    }
+
+    /// The registered app `instance` hosts pane `pane` on connection
+    /// `conn`. Returns the keys `apps.input` sends it.
+    pub fn host(
+        &self,
+        pane: u32,
+        instance: &str,
+        app_id: &str,
+        conn: u64,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        if let Ok(mut h) = self.hosted.lock() {
+            let revision = self.bump();
+            h.insert(
+                pane,
+                Hosted {
+                    instance: instance.to_owned(),
+                    app_id: app_id.to_owned(),
+                    conn,
+                    live: true,
+                    view: String::new(),
+                    revision,
+                    keys: Some(tx),
+                },
+            );
+        }
+        rx
+    }
+
+    /// The host on connection `conn` published `view` for its pane.
+    pub fn publish(&self, conn: u64, view: String) -> Result<(), RpcError> {
+        let mut h = self
+            .hosted
+            .lock()
+            .map_err(|_| RpcError::new(code::INTERNAL, "app registry poisoned"))?;
+        let Some(entry) = h.values_mut().find(|e| e.conn == conn && e.live) else {
+            return Err(forbidden("only a registered app host publishes a view"));
+        };
+        if entry.view != view {
+            entry.view = view;
+            entry.revision = self.bump();
+        }
+        Ok(())
+    }
+
+    /// Connection `conn` closed: the panes it hosted keep their last view,
+    /// no longer live. Whether anything changed.
+    pub fn closed(&self, conn: u64) -> bool {
+        let Ok(mut h) = self.hosted.lock() else {
+            return false;
+        };
+        if !h.values().any(|e| e.conn == conn && e.live) {
+            return false;
+        }
+        let revision = self.bump();
+        for entry in h.values_mut().filter(|e| e.conn == conn && e.live) {
+            entry.live = false;
+            entry.keys = None;
+            entry.revision = revision;
+        }
+        true
+    }
+
+    /// Mark the app panes in `t`, and forget stopped hosts whose pane is
+    /// gone.
+    pub fn annotate(&self, t: &mut api::Topology) {
+        let Ok(mut h) = self.hosted.lock() else {
+            return;
+        };
+        h.retain(|pane, e| e.live || t.panes.iter().any(|p| p.id == *pane));
+        for p in &mut t.panes {
+            p.app = h.get(&p.id).map(|e| api::PaneApp {
+                instance: e.instance.clone(),
+                app_id: e.app_id.clone(),
+                live: e.live,
+            });
+        }
+    }
+
+    fn view_now(&self, pane: u32) -> Result<api::AppView, RpcError> {
+        let h = self
+            .hosted
+            .lock()
+            .map_err(|_| RpcError::new(code::INTERNAL, "app registry poisoned"))?;
+        let e = h.get(&pane).ok_or_else(|| {
+            RpcError::new(
+                code::NOT_FOUND,
+                format!("pane %{pane} runs no registered app"),
+            )
+        })?;
+        Ok(api::AppView {
+            pane,
+            instance: e.instance.clone(),
+            app_id: e.app_id.clone(),
+            revision: e.revision,
+            live: e.live,
+            view: e.view.clone(),
+        })
+    }
+
+    /// The pane's latest view, once its revision is newer than `after` or
+    /// the wait runs out.
+    pub async fn view(&self, q: &api::AppViewQuery) -> Result<api::AppView, RpcError> {
+        let wait = q.wait_ms.unwrap_or(VIEW_WAIT_MS).min(VIEW_WAIT_MAX_MS);
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(u64::from(wait));
+        let mut changes = self.changed.subscribe();
+        loop {
+            changes.borrow_and_update();
+            let v = self.view_now(q.pane)?;
+            if v.revision > q.after {
+                return Ok(v);
+            }
+            if !matches!(
+                tokio::time::timeout_at(deadline, changes.changed()).await,
+                Ok(Ok(()))
+            ) {
+                return self.view_now(q.pane);
+            }
+        }
+    }
+
+    /// Send a key to the pane's host.
+    pub fn input(&self, i: &api::AppInput) -> Result<(), RpcError> {
+        if i.key.is_empty() || i.key.len() > MAX_KEY || i.key.chars().any(char::is_control) {
+            return Err(RpcError::new(code::INVALID_PARAMS, "not a key name"));
+        }
+        let h = self
+            .hosted
+            .lock()
+            .map_err(|_| RpcError::new(code::INTERNAL, "app registry poisoned"))?;
+        let sent = h
+            .get(&i.pane)
+            .and_then(|e| e.keys.as_ref())
+            .is_some_and(|k| k.send(i.key.clone()).is_ok());
+        if sent {
+            Ok(())
+        } else {
+            Err(RpcError::new(
+                code::PRECONDITION,
+                format!("pane %{} has no running app host", i.pane),
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn topology(panes: &[u32]) -> api::Topology {
+        api::Topology {
+            panes: panes
+                .iter()
+                .map(|id| api::Pane {
+                    id: *id,
+                    ..api::Pane::default()
+                })
+                .collect(),
+            ..api::Topology::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_app_pane_keeps_its_last_view_when_its_host_stops() {
+        let apps = Apps::default();
+        let mut keys = apps.host(7, "local.x-1", "local.x", 3);
+        let mut t = topology(&[7, 8]);
+        apps.annotate(&mut t);
+        assert_eq!(t.panes[0].app.as_ref().map(|a| a.live), Some(true));
+        assert!(t.panes[1].app.is_none());
+
+        // Only the host's own connection publishes.
+        assert!(apps.publish(4, "{}".into()).is_err());
+        apps.publish(3, r#"{"rows":[1]}"#.into()).expect("publish");
+        let q = |after| api::AppViewQuery {
+            pane: 7,
+            after,
+            wait_ms: Some(50),
+        };
+        let v = apps.view(&q(0)).await.expect("view");
+        assert_eq!(v.view, r#"{"rows":[1]}"#);
+        assert!(v.live);
+
+        // A waiting reader wakes for the next view.
+        let waiting = api::AppViewQuery {
+            wait_ms: Some(5_000),
+            ..q(v.revision)
+        };
+        let (next, ()) = tokio::join!(apps.view(&waiting), async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            apps.publish(3, r#"{"rows":[2]}"#.into()).expect("publish");
+        });
+        assert_eq!(next.expect("view").view, r#"{"rows":[2]}"#);
+
+        apps.input(&api::AppInput {
+            pane: 7,
+            key: "Enter".into(),
+        })
+        .expect("input");
+        assert_eq!(keys.recv().await.as_deref(), Some("Enter"));
+
+        // The host's connection closes: the last view stays, not live, and
+        // keys reach nothing.
+        assert!(apps.closed(3));
+        let v = apps.view(&q(0)).await.expect("view");
+        assert!(!v.live);
+        assert_eq!(v.view, r#"{"rows":[2]}"#);
+        let key = api::AppInput {
+            pane: 7,
+            key: "a".into(),
+        };
+        assert!(apps.input(&key).is_err());
+        let mut t = topology(&[7]);
+        apps.annotate(&mut t);
+        assert_eq!(t.panes[0].app.as_ref().map(|a| a.live), Some(false));
+
+        // Its pane closes: the app is forgotten.
+        apps.annotate(&mut topology(&[8]));
+        assert!(apps.view(&q(0)).await.is_err());
+    }
 
     #[test]
     fn tickets_are_compared_in_full() {

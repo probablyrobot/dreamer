@@ -3,6 +3,11 @@
 //! thread of its own, with its own connection to the daemon; the panel
 //! only sends it keys and draws what it published. No package code runs
 //! on the UI thread or in the paint loop.
+//!
+//! The same view draws an app pane: a tmux pane whose program is a
+//! registered app host. There the model is the host's own, as it published
+//! it to the daemon (`apps.view`), and keys go back to the host
+//! (`apps.input`). The desktop runs none of the package.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -22,6 +27,8 @@ const MAX_ROWS: usize = 200;
 
 pub(crate) struct AppPanel {
     pub(crate) path: PathBuf,
+    /// The app pane drawn, and its app instance; `None` for a panel.
+    pub(crate) pane: Option<(u32, String)>,
     /// The model as last published, and why the app ended, if it did.
     latest: Arc<Mutex<Option<App>>>,
     ended: Arc<Mutex<Option<String>>>,
@@ -94,6 +101,59 @@ impl AppPanel {
         .detach();
         AppPanel {
             path,
+            pane: None,
+            latest,
+            ended,
+            inputs,
+            focus: cx.focus_handle(),
+            shown: None,
+        }
+    }
+
+    /// Draw the app pane `pane`, whose host is the app `instance`, from the
+    /// views its host publishes through the daemon at `socket`. When the
+    /// host stops, its last view stays, marked stale.
+    pub(crate) fn follow(
+        pane: u32,
+        instance: String,
+        socket: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> AppPanel {
+        let latest: Arc<Mutex<Option<App>>> = Arc::default();
+        let ended: Arc<Mutex<Option<String>>> = Arc::default();
+        let (inputs, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (wake_tx, wake) = async_channel::bounded::<()>(1);
+        let (l, e) = (latest.clone(), ended.clone());
+        let spawned = std::thread::Builder::new()
+            .name(format!("dreamer-app-pane-{pane}"))
+            .spawn(move || {
+                let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                let wake = move || {
+                    let _ = wake_tx.try_send(());
+                };
+                rt.block_on(follow_pane(pane, socket, rx, l, e, wake));
+            });
+        if let Err(why) = spawned
+            && let Ok(mut e) = ended.lock()
+        {
+            *e = Some(format!("could not start: {why}"));
+        }
+        cx.spawn(async move |this, cx| {
+            while wake.recv().await.is_ok() {
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+        AppPanel {
+            path: PathBuf::new(),
+            pane: Some((pane, instance)),
             latest,
             ended,
             inputs,
@@ -145,6 +205,111 @@ impl AppPanel {
 impl Drop for AppPanel {
     fn drop(&mut self) {
         let _ = self.inputs.send(Input::Quit);
+    }
+}
+
+/// Follow an app pane's published views until `inputs` closes or says
+/// Quit (the view went away; the host keeps running), and send the host
+/// the keys from `inputs`, in order. `ended` says why the view is stale,
+/// while it is.
+async fn follow_pane(
+    pane: u32,
+    socket: PathBuf,
+    mut inputs: tokio::sync::mpsc::UnboundedReceiver<Input>,
+    latest: Arc<Mutex<Option<App>>>,
+    ended: Arc<Mutex<Option<String>>>,
+    wake: impl Fn(),
+) {
+    use std::time::Duration;
+    let set_ended = |why: Option<String>| {
+        if let Ok(mut e) = ended.lock()
+            && *e != why
+        {
+            *e = why;
+            wake();
+        }
+    };
+    let mut cache: app_model::ManifestCache = None;
+    let mut backoff = Duration::from_millis(200);
+    loop {
+        let c = match client::Client::connect(&socket, "app-pane").await {
+            Ok(c) => Arc::new(c),
+            Err(e) => {
+                set_ended(Some(format!("no daemon: {e}")));
+                tokio::select! {
+                    i = inputs.recv() => if matches!(i, None | Some(Input::Quit)) { return },
+                    () = tokio::time::sleep(backoff) => {}
+                }
+                backoff = (backoff * 2).min(Duration::from_secs(5));
+                continue;
+            }
+        };
+        backoff = Duration::from_millis(200);
+        // Keys go on their own task, one call after another, so they keep
+        // their order and never wait for a view.
+        let (keys, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let sender = c.clone();
+        let key_task = tokio::spawn(async move {
+            while let Some(key) = key_rx.recv().await {
+                let _ = sender
+                    .call(api::Request::AppsInput(api::AppInput { pane, key }))
+                    .await;
+            }
+        });
+        let next = |after: u64| {
+            let c = c.clone();
+            Box::pin(async move {
+                c.call(api::Request::AppsView(api::AppViewQuery {
+                    pane,
+                    after,
+                    wait_ms: None,
+                }))
+                .await
+            })
+        };
+        let mut view = next(0);
+        let lost = loop {
+            tokio::select! {
+                i = inputs.recv() => match i {
+                    None | Some(Input::Quit) => {
+                        key_task.abort();
+                        return;
+                    }
+                    Some(Input::Redraw) => {}
+                    Some(Input::Key(key)) => {
+                        let _ = keys.send(key);
+                    }
+                },
+                r = &mut view => match r {
+                    Ok(api::Response::AppsView(v)) => {
+                        view = next(v.revision);
+                        let read = (!v.view.is_empty())
+                            .then(|| App::from_published(&v.view, &mut cache))
+                            .transpose();
+                        match read {
+                            Ok(app) => {
+                                if let Some(app) = app
+                                    && let Ok(mut l) = latest.lock()
+                                {
+                                    *l = Some(app);
+                                }
+                                wake();
+                                set_ended((!v.live).then(|| "the app's host stopped".to_owned()));
+                            }
+                            Err(e) => set_ended(Some(format!("unreadable view: {e}"))),
+                        }
+                    }
+                    Ok(_) => view = next(0),
+                    Err(e) => break e.to_string(),
+                },
+            }
+        };
+        key_task.abort();
+        set_ended(Some(lost));
+        tokio::select! {
+            i = inputs.recv() => if matches!(i, None | Some(Input::Quit)) { return },
+            () = tokio::time::sleep(backoff) => {}
+        }
     }
 }
 
@@ -263,13 +428,19 @@ impl Render for AppPanel {
             .on_click(cx.listener(|p, _, window, cx| {
                 window.focus(&p.focus, cx);
             }))
-            .w(px(360.0))
             .h_full()
             .flex()
             .flex_col()
             .bg(c(t.surface))
-            .border_l_1()
-            .border_color(c(if focused { t.focus } else { t.divider }))
+            .map(|d| match self.pane {
+                // An app pane fills its rectangle; the workspace marks focus.
+                Some(_) => d.size_full(),
+                None => d.w(px(360.0)).border_l_1().border_color(c(if focused {
+                    t.focus
+                } else {
+                    t.divider
+                })),
+            })
             .text_size(px(12.0))
             .text_color(c(t.text));
         let Some(app) = self.shown.as_ref() else {
@@ -285,9 +456,10 @@ impl Render for AppPanel {
         } else {
             app.manifest.title.clone()
         };
-        let status = match &ended {
-            Some(why) => format!("ended: {why}"),
-            None => app.status_text(),
+        let status = match (&ended, &self.pane) {
+            (Some(why), Some(_)) => format!("stale: {why}"),
+            (Some(why), None) => format!("ended: {why}"),
+            (None, _) => app.status_text(),
         };
         root.child(
             div()

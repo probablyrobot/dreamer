@@ -2,12 +2,13 @@
 //! the connection, and the last outcome. Each presentation (the pane app's
 //! Ratatui view, the desktop's native panel) draws this same model.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::manifest::{FieldKind, Manifest, field};
 
 /// The connection to the daemon, as shown.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Link {
     Connecting,
     Live,
@@ -37,7 +38,7 @@ pub struct App {
 }
 
 /// Who said or did a transcript entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Said {
     /// The prompt typed.
     You,
@@ -53,7 +54,7 @@ pub enum Said {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     pub who: Said,
     pub text: String,
@@ -62,7 +63,7 @@ pub struct Entry {
 /// Entries kept at most; the oldest go first.
 pub const TRANSCRIPT: usize = 500;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentState {
     /// The prompt being typed.
     pub input: String,
@@ -82,6 +83,7 @@ pub struct AgentState {
     pub taken: Vec<Taken>,
     /// Tool calls of the current run awaiting their results: (id, name,
     /// input).
+    #[serde(skip)]
     pub calls: Vec<(String, String, Value)>,
     /// A filter pane's filters (those it may manage), by name.
     pub filters: Vec<String>,
@@ -90,7 +92,7 @@ pub struct AgentState {
 /// One thing an operator did: an action or job it started, or a tool call
 /// that failed, with its target and its state as last read (spec 13.2:
 /// errors name the action and its actual target).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Taken {
     /// The tool, as the model called it (`create_pane`).
     pub tool: String,
@@ -107,7 +109,7 @@ pub struct Taken {
 }
 
 /// What a taken step can be followed by.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Record {
     Action(String),
     Job(String),
@@ -326,9 +328,121 @@ impl App {
     }
 }
 
+/// The model as an app host publishes it (`apps.publish`): the manifest's
+/// text and the state, as JSON. Desktops draw what it holds and run none
+/// of the package.
+#[derive(Serialize)]
+struct WireOut<'a> {
+    manifest: &'a str,
+    rows: &'a [Value],
+    selected: usize,
+    link: &'a Link,
+    status: &'a Option<String>,
+    updated_unix_ms: Option<u64>,
+    form: &'a [String],
+    focus: usize,
+    version: u32,
+    agent: &'a AgentState,
+}
+
+#[derive(Deserialize)]
+struct WireIn {
+    manifest: String,
+    rows: Vec<Value>,
+    selected: usize,
+    link: Link,
+    status: Option<String>,
+    updated_unix_ms: Option<u64>,
+    form: Vec<String>,
+    focus: usize,
+    version: u32,
+    agent: AgentState,
+}
+
+/// The manifest last read from a published view, kept so an unchanged
+/// manifest is not parsed again for every view.
+pub type ManifestCache = Option<(String, Manifest)>;
+
+impl App {
+    /// This model as published, with the manifest's text `source`.
+    pub fn to_published(&self, source: &str) -> String {
+        serde_json::to_string(&WireOut {
+            manifest: source,
+            rows: &self.rows,
+            selected: self.selected,
+            link: &self.link,
+            status: &self.status,
+            updated_unix_ms: self.updated_unix_ms,
+            form: &self.form,
+            focus: self.focus,
+            version: self.version,
+            agent: &self.agent,
+        })
+        .unwrap_or_default()
+    }
+
+    /// A model from a published view.
+    pub fn from_published(view: &str, cache: &mut ManifestCache) -> Result<App, String> {
+        let w: WireIn = serde_json::from_str(view).map_err(|e| e.to_string())?;
+        let manifest = match cache {
+            Some((text, m)) if *text == w.manifest => m.clone(),
+            _ => {
+                let m = Manifest::parse(&w.manifest).map_err(|e| e.join("; "))?;
+                *cache = Some((w.manifest, m.clone()));
+                m
+            }
+        };
+        Ok(App {
+            manifest,
+            rows: w.rows,
+            selected: w.selected,
+            link: w.link,
+            status: w.status,
+            updated_unix_ms: w.updated_unix_ms,
+            form: w.form,
+            focus: w.focus,
+            version: w.version,
+            agent: w.agent,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_published_model_reads_back_the_same() {
+        let src = r#"
+schema_version = 1
+id = "t.form"
+version = "1"
+title = "F"
+module = "app.luau"
+[view]
+type = "form"
+source = "none"
+submit = "send"
+fields = [{ name = "name", kind = "text" }, { name = "loud", kind = "toggle" }]
+[commands.send]
+key = "Enter"
+handler = "send"
+"#;
+        let mut a = App::new(Manifest::parse(src).expect("manifest"));
+        a.form_key("x");
+        a.form_key("Tab");
+        a.form_key("Space");
+        a.link = Link::Stale(5, "gone".into());
+        a.agent.say(Said::Agent, "hi");
+        let mut cache = None;
+        let b = App::from_published(&a.to_published(src), &mut cache).expect("read back");
+        assert_eq!(b.form, ["x", "true"]);
+        assert_eq!(b.focus, 1);
+        assert_eq!(b.link, a.link);
+        assert_eq!(b.agent.transcript, a.agent.transcript);
+        assert_eq!(b.manifest.title, "F");
+        assert!(cache.is_some());
+    }
 
     fn app() -> App {
         let m = Manifest::parse(

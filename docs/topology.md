@@ -9,9 +9,29 @@ daemon last read them from tmux:
   process generation, and `drawer_of` names the session whose
   [harness drawer](desktop.md#the-harness-drawer) a pane is;
 - the session `_dreamer_drawers`, where hidden drawers wait, has
-  `holding` set. Clients leave it out of tabs and session lists.
+  `holding` set. Clients leave it out of tabs and session lists;
+- a pane whose program is a registered app host (a package started with
+  `dream app launch` or `dream app run`) has `app`: the app's `instance`
+  and `app_id`, and `live`, false once the host's connection closed.
 
-tmux is authoritative for all of it.
+tmux is authoritative for all of it except `app`, which comes from the
+daemon's own registrations; it goes when the pane closes.
+
+## App panes
+
+The host of an app pane publishes its current model to the daemon
+(`apps.publish`), which keeps only the newest per pane. The user's own
+clients read it with `apps.view` (`pane`, and `after`: wait up to
+`wait_ms`, default 20 s, for a revision newer than that one) and send
+the host keys with `apps.input` (`pane`, `key` by the app model's key
+names). Both are owner only. A key arrives at the host as an
+`apps.input` event on its connection and acts there exactly as if it was
+typed in the pane, so every client, including a plain tmux client, sees
+the same app in the same state. When the host stops, `apps.view` keeps
+returning its last view with `live: false` until the pane closes.
+
+App panes exist on the local daemon only: a remote host's daemon marks
+its own panes, but the coordinator does not forward their views.
 
 ## Following changes
 

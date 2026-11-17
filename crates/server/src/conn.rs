@@ -46,6 +46,7 @@ pub const TOPIC_EVENTS: &str = api::topic::EVENTS_BATCH;
 pub const TOPIC_MESSAGES: &str = api::topic::MESSAGES_DELIVER;
 pub const TOPIC_TAPS: &str = api::topic::TAPS_DATA;
 pub const TOPIC_SESSIONS: &str = api::topic::AGENT_SESSIONS_EVENTS;
+pub const TOPIC_APP_INPUT: &str = api::topic::APPS_INPUT;
 
 /// Connection ids, for the broker; unique within a daemon.
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
@@ -278,6 +279,22 @@ pub async fn connection_as(
                             .await;
                         return;
                     }
+                    if req.method == api::method::APPS_PUBLISH {
+                        let response = match api::AppViewPublish::decode(req.payload.as_slice()) {
+                            Err(e) => {
+                                failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string()))
+                            }
+                            Ok(p) => match state.apps.publish(conn.id, p.view) {
+                                Ok(()) => ok(req.id, api::Empty {}.encode_to_vec()),
+                                Err(e) => failure(req.id, e),
+                            },
+                        };
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(Kind::Response, response.encode_to_vec()))
+                            .await;
+                        return;
+                    }
                     if req.method == api::method::GRANTS_CURRENT {
                         let g = conn.grant.lock().map(|g| g.0.clone()).unwrap_or_default();
                         let _ = conn
@@ -379,6 +396,12 @@ pub async fn connection_as(
     }
     state.leases.drop_conn(conn.id);
     state.approvals.drop_conn(conn.id);
+    // An app host that left: its panes keep their last view, as stale.
+    if state.apps.closed(conn.id)
+        && let Some(ep) = state.endpoint.lock().await.as_ref()
+    {
+        crate::service::publish_topology(&state, ep);
+    }
     let sizers: Vec<u64> = conn.sizers.lock().await.drain().collect();
     crate::service::release_sizing(&state, &sizers).await;
     drop(conn);
@@ -458,6 +481,11 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
             RpcError::new(code::FORBIDDEN, "only the user's own clients launch apps"),
         ));
     }
+    // A registered app host publishes its own view whatever its grant
+    // lists; the registry refuses any other connection.
+    if req.method == api::method::APPS_PUBLISH {
+        return None;
+    }
     // Likewise for starting and stopping extensions and scripts, which
     // hands out their grants.
     // Approvals are the user's to answer: an agent never approves itself.
@@ -469,6 +497,9 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         api::method::APPROVALS_ANSWER,
         // The drawer starts the user's harness with the user's authority.
         api::method::DRAWER_TOGGLE,
+        // App panes are the user's to see and type into.
+        api::method::APPS_VIEW,
+        api::method::APPS_INPUT,
     ]
     .contains(&req.method.as_str())
     {
@@ -669,6 +700,21 @@ async fn register(state: &Arc<State>, conn: &Conn, req: &wire::Request) -> wire:
                     app_id: Some(r.app_id.clone()),
                     pane: Some(r.pane),
                 });
+            }
+            // The pane is an app pane now: keys for it come here, and
+            // watchers see it marked.
+            let mut keys = state.apps.host(r.pane, &r.instance, &r.app_id, conn.id);
+            let (to, pane) = (conn.clone(), r.pane);
+            tokio::spawn(async move {
+                while let Some(key) = keys.recv().await {
+                    let input = api::AppInput { pane, key };
+                    if !to.event(TOPIC_APP_INPUT, input.encode_to_vec()).await {
+                        return;
+                    }
+                }
+            });
+            if let Some(ep) = state.endpoint.lock().await.as_ref() {
+                crate::service::publish_topology(state, ep);
             }
             ok(req.id, r.encode_to_vec())
         }

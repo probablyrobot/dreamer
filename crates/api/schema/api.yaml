@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 44 }
+version: { major: 1, minor: 45 }
 package: dreamer.v1
 
 types:
@@ -114,6 +114,13 @@ types:
       - { n: 12, name: generation, type: u64, doc: Process generation; changes when the pane is respawned. }
       - { n: 13, name: mode, type: string, optional: true, doc: "A tmux-drawn mode the pane is in (copy-mode, tree-mode, ...). Its screen is tmux's, not the program's, and Dreamer does not draw it." }
       - { n: 14, name: drawer_of, type: u32, optional: true, doc: "This pane is the harness drawer of that tmux session (drawer.toggle)." }
+      - { n: 15, name: app, type: PaneApp, doc: "The registered app whose host is this pane's program, if any: desktops draw its view (apps.view) in the pane's rectangle instead of the terminal." }
+
+  - message: PaneApp
+    fields:
+      - { n: 1, name: instance, type: string }
+      - { n: 2, name: app_id, type: string }
+      - { n: 3, name: live, type: bool, doc: "The host is connected. When false, apps.view keeps its last view, to be shown as stale." }
 
   - message: Topology
     fields:
@@ -768,6 +775,30 @@ types:
       - { n: 2, name: app_id, type: string }
       - { n: 3, name: pane, type: u32 }
       - { n: 4, name: grant, type: Grant }
+
+  - message: AppViewPublish
+    fields:
+      - { n: 1, name: view, type: string, doc: "The app's model as JSON, as the app host draws it." }
+
+  - message: AppViewQuery
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: after, type: u64, doc: "Wait for a revision newer than this one; 0 answers at once." }
+      - { n: 3, name: wait_ms, type: u32, optional: true, doc: "How long to wait for a newer revision; default 20000, at most 60000. The current one is returned when it runs out." }
+
+  - message: AppView
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: instance, type: string }
+      - { n: 3, name: app_id, type: string }
+      - { n: 4, name: revision, type: u64, doc: "Grows with every new view and every change of `live`." }
+      - { n: 5, name: live, type: bool, doc: "The host is connected; when false, `view` is its last one." }
+      - { n: 6, name: view, type: string, doc: "The latest model the host published, as JSON; empty before its first." }
+
+  - message: AppInput
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: key, type: string, doc: "A key by the app model's names: a character, Enter, Esc, Tab, Up, Ctrl-c, F2, ..." }
 
   # ---- events -------------------------------------------------------------
 
@@ -1842,6 +1873,9 @@ methods:
   - { method: agent.sessions.list, params: Empty, result: AgentSessionList, doc: "Sessions this caller may see, open and closed, from the state directory." }
   - { method: agent.sessions.resume, params: AgentSessionRef, result: AgentSession, mutation: true, doc: "Start a detached session's harness again on the harness's own session." }
   - { method: agent.sessions.close, params: AgentSessionRef, result: AgentSession, mutation: true, doc: "End the harness process and close the session; its transcript stays." }
+  - { method: apps.publish, params: AppViewPublish, result: Empty, mutation: true, doc: "A registered app host publishes its current view for its pane; only the newest is kept." }
+  - { method: apps.view, params: AppViewQuery, result: AppView, doc: "The view an app pane's host published last, waiting for a newer one (owner only)." }
+  - { method: apps.input, params: AppInput, result: Empty, mutation: true, doc: "Send a key to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only)." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the
@@ -1855,3 +1889,4 @@ notifications:
   - { topic: messages.deliver, payload: MessageDelivery, doc: "A message for a messages.subscribe subscription." }
   - { topic: taps.data, payload: TapData, doc: "Output of a taps.subscribe subscription, for one pane." }
   - { topic: agent.sessions.events, payload: AgentSessionEvents, doc: "Events of a followed agent session, in order." }
+  - { topic: apps.input, payload: AppInput, doc: "A key for this registered app host, sent by the user's desktop (apps.input)." }

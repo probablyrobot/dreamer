@@ -322,6 +322,15 @@ impl Service for Fixed {
     async fn collect_stop(&self, _: api::CollectRef) -> Result<api::CollectorStatus, RpcError> {
         Ok(api::CollectorStatus::default())
     }
+    async fn apps_publish(&self, _: api::AppViewPublish) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
+    async fn apps_view(&self, _: api::AppViewQuery) -> Result<api::AppView, RpcError> {
+        Ok(api::AppView::default())
+    }
+    async fn apps_input(&self, _: api::AppInput) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
     async fn scripts_validate(&self, _: api::ScriptSource) -> Result<api::ScriptCheck, RpcError> {
         Ok(api::ScriptCheck::default())
     }

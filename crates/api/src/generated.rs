@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 44;
+pub const PROTOCOL_MINOR: u32 = 45;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1493,6 +1493,22 @@ pub struct Pane {
     #[prost(uint32, optional, tag = "14")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drawer_of: Option<u32>,
+    /// The registered app whose host is this pane's program, if any: desktops draw its view (apps.view) in the pane's rectangle instead of the terminal.
+    #[prost(message, optional, tag = "15")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<PaneApp>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaneApp {
+    #[prost(string, tag = "1")]
+    pub instance: String,
+    #[prost(string, tag = "2")]
+    pub app_id: String,
+    /// The host is connected. When false, apps.view keeps its last view, to be shown as stale.
+    #[prost(bool, tag = "3")]
+    pub live: bool,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -2617,6 +2633,58 @@ pub struct Registration {
     #[prost(message, optional, tag = "4")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grant: Option<Grant>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppViewPublish {
+    /// The app's model as JSON, as the app host draws it.
+    #[prost(string, tag = "1")]
+    pub view: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppViewQuery {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// Wait for a revision newer than this one; 0 answers at once.
+    #[prost(uint64, tag = "2")]
+    pub after: u64,
+    /// How long to wait for a newer revision; default 20000, at most 60000. The current one is returned when it runs out.
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppView {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(string, tag = "2")]
+    pub instance: String,
+    #[prost(string, tag = "3")]
+    pub app_id: String,
+    /// Grows with every new view and every change of `live`.
+    #[prost(uint64, tag = "4")]
+    pub revision: u64,
+    /// The host is connected; when false, `view` is its last one.
+    #[prost(bool, tag = "5")]
+    pub live: bool,
+    /// The latest model the host published, as JSON; empty before its first.
+    #[prost(string, tag = "6")]
+    pub view: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppInput {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// A key by the app model's names: a character, Enter, Esc, Tab, Up, Ctrl-c, F2, ...
+    #[prost(string, tag = "2")]
+    pub key: String,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -4702,6 +4770,9 @@ pub mod method {
     pub const AGENT_SESSIONS_LIST: &str = "agent.sessions.list";
     pub const AGENT_SESSIONS_RESUME: &str = "agent.sessions.resume";
     pub const AGENT_SESSIONS_CLOSE: &str = "agent.sessions.close";
+    pub const APPS_PUBLISH: &str = "apps.publish";
+    pub const APPS_VIEW: &str = "apps.view";
+    pub const APPS_INPUT: &str = "apps.input";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5302,6 +5373,27 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "End the harness process and close the session; its transcript stays.",
     },
+    MethodInfo {
+        name: "apps.publish",
+        params: "AppViewPublish",
+        result: "Empty",
+        mutation: true,
+        doc: "A registered app host publishes its current view for its pane; only the newest is kept.",
+    },
+    MethodInfo {
+        name: "apps.view",
+        params: "AppViewQuery",
+        result: "AppView",
+        mutation: false,
+        doc: "The view an app pane's host published last, waiting for a newer one (owner only).",
+    },
+    MethodInfo {
+        name: "apps.input",
+        params: "AppInput",
+        result: "Empty",
+        mutation: true,
+        doc: "Send a key to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only).",
+    },
 ];
 
 /// A typed request for one method.
@@ -5391,6 +5483,9 @@ pub enum Request {
     AgentSessionsList(Empty),
     AgentSessionsResume(AgentSessionRef),
     AgentSessionsClose(AgentSessionRef),
+    AppsPublish(AppViewPublish),
+    AppsView(AppViewQuery),
+    AppsInput(AppInput),
 }
 
 impl Request {
@@ -5480,6 +5575,9 @@ impl Request {
             Self::AgentSessionsList(_) => "agent.sessions.list",
             Self::AgentSessionsResume(_) => "agent.sessions.resume",
             Self::AgentSessionsClose(_) => "agent.sessions.close",
+            Self::AppsPublish(_) => "apps.publish",
+            Self::AppsView(_) => "apps.view",
+            Self::AppsInput(_) => "apps.input",
         }
     }
 
@@ -5570,6 +5668,9 @@ impl Request {
             Self::AgentSessionsList(v) => ::prost::Message::encode_to_vec(v),
             Self::AgentSessionsResume(v) => ::prost::Message::encode_to_vec(v),
             Self::AgentSessionsClose(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsPublish(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsView(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsInput(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -5679,6 +5780,9 @@ impl Request {
             "agent.sessions.close" => {
                 Ok(Self::AgentSessionsClose(::prost::Message::decode(bytes)?))
             }
+            "apps.publish" => Ok(Self::AppsPublish(::prost::Message::decode(bytes)?)),
+            "apps.view" => Ok(Self::AppsView(::prost::Message::decode(bytes)?)),
+            "apps.input" => Ok(Self::AppsInput(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5769,6 +5873,9 @@ impl Request {
             Self::AgentSessionsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AgentSessionsResume(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AgentSessionsClose(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsPublish(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsView(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsInput(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -5872,6 +5979,9 @@ impl Request {
                 Ok(Self::AgentSessionsResume(serde_json::from_value(value)?))
             }
             "agent.sessions.close" => Ok(Self::AgentSessionsClose(serde_json::from_value(value)?)),
+            "apps.publish" => Ok(Self::AppsPublish(serde_json::from_value(value)?)),
+            "apps.view" => Ok(Self::AppsView(serde_json::from_value(value)?)),
+            "apps.input" => Ok(Self::AppsInput(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -5964,6 +6074,9 @@ pub enum Response {
     AgentSessionsList(AgentSessionList),
     AgentSessionsResume(AgentSession),
     AgentSessionsClose(AgentSession),
+    AppsPublish(Empty),
+    AppsView(AppView),
+    AppsInput(Empty),
 }
 
 impl Response {
@@ -6053,6 +6166,9 @@ impl Response {
             Self::AgentSessionsList(_) => "agent.sessions.list",
             Self::AgentSessionsResume(_) => "agent.sessions.resume",
             Self::AgentSessionsClose(_) => "agent.sessions.close",
+            Self::AppsPublish(_) => "apps.publish",
+            Self::AppsView(_) => "apps.view",
+            Self::AppsInput(_) => "apps.input",
         }
     }
 
@@ -6143,6 +6259,9 @@ impl Response {
             Self::AgentSessionsList(v) => ::prost::Message::encode_to_vec(v),
             Self::AgentSessionsResume(v) => ::prost::Message::encode_to_vec(v),
             Self::AgentSessionsClose(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsPublish(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsView(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsInput(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -6252,6 +6371,9 @@ impl Response {
             "agent.sessions.close" => {
                 Ok(Self::AgentSessionsClose(::prost::Message::decode(bytes)?))
             }
+            "apps.publish" => Ok(Self::AppsPublish(::prost::Message::decode(bytes)?)),
+            "apps.view" => Ok(Self::AppsView(::prost::Message::decode(bytes)?)),
+            "apps.input" => Ok(Self::AppsInput(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6342,6 +6464,9 @@ impl Response {
             Self::AgentSessionsList(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AgentSessionsResume(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AgentSessionsClose(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsPublish(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsView(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsInput(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -6445,6 +6570,9 @@ impl Response {
                 Ok(Self::AgentSessionsResume(serde_json::from_value(value)?))
             }
             "agent.sessions.close" => Ok(Self::AgentSessionsClose(serde_json::from_value(value)?)),
+            "apps.publish" => Ok(Self::AppsPublish(serde_json::from_value(value)?)),
+            "apps.view" => Ok(Self::AppsView(serde_json::from_value(value)?)),
+            "apps.input" => Ok(Self::AppsInput(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6861,6 +6989,21 @@ pub trait Service: Sync {
         &self,
         params: AgentSessionRef,
     ) -> impl ::core::future::Future<Output = Result<AgentSession, RpcError>> + Send;
+    /// A registered app host publishes its current view for its pane; only the newest is kept.
+    fn apps_publish(
+        &self,
+        params: AppViewPublish,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// The view an app pane's host published last, waiting for a newer one (owner only).
+    fn apps_view(
+        &self,
+        params: AppViewQuery,
+    ) -> impl ::core::future::Future<Output = Result<AppView, RpcError>> + Send;
+    /// Send a key to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only).
+    fn apps_input(
+        &self,
+        params: AppInput,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -7052,6 +7195,9 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .agent_sessions_close(p)
             .await
             .map(Response::AgentSessionsClose),
+        Request::AppsPublish(p) => service.apps_publish(p).await.map(Response::AppsPublish),
+        Request::AppsView(p) => service.apps_view(p).await.map(Response::AppsView),
+        Request::AppsInput(p) => service.apps_input(p).await.map(Response::AppsInput),
     }
 }
 
@@ -7073,6 +7219,8 @@ pub mod topic {
     pub const TAPS_DATA: &str = "taps.data";
     /// Events of a followed agent session, in order.
     pub const AGENT_SESSIONS_EVENTS: &str = "agent.sessions.events";
+    /// A key for this registered app host, sent by the user's desktop (apps.input).
+    pub const APPS_INPUT: &str = "apps.input";
 }
 
 /// Something the daemon pushed, typed by its topic.
@@ -7086,6 +7234,7 @@ pub enum Notification {
     MessagesDeliver(MessageDelivery),
     TapsData(TapData),
     AgentSessionsEvents(AgentSessionEvents),
+    AppsInput(AppInput),
 }
 
 impl Notification {
@@ -7099,6 +7248,7 @@ impl Notification {
             Self::MessagesDeliver(_) => "messages.deliver",
             Self::TapsData(_) => "taps.data",
             Self::AgentSessionsEvents(_) => "agent.sessions.events",
+            Self::AppsInput(_) => "apps.input",
         }
     }
 
@@ -7112,6 +7262,7 @@ impl Notification {
             Self::MessagesDeliver(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsData(v) => ::prost::Message::encode_to_vec(v),
             Self::AgentSessionsEvents(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsInput(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -7127,6 +7278,7 @@ impl Notification {
             "agent.sessions.events" => {
                 Ok(Self::AgentSessionsEvents(::prost::Message::decode(bytes)?))
             }
+            "apps.input" => Ok(Self::AppsInput(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7141,6 +7293,7 @@ impl Notification {
             Self::MessagesDeliver(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsData(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AgentSessionsEvents(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsInput(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -7156,6 +7309,7 @@ impl Notification {
             "agent.sessions.events" => {
                 Ok(Self::AgentSessionsEvents(serde_json::from_value(value)?))
             }
+            "apps.input" => Ok(Self::AppsInput(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
