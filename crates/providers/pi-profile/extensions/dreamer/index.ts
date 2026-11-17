@@ -445,6 +445,26 @@ export default function (pi: ExtensionAPI) {
 			.catch(() => {});
 	});
 
+	// Dreamer pins pi to one subscription provider (`DREAMER_PI_PROVIDER`,
+	// set by `dream agents pi`). Without a pinned model pi picks one itself,
+	// possibly from a provider that bills or that the user never chose, so
+	// before a prompt starts a turn the model is moved to the pinned
+	// provider's, or the prompt is held back.
+	const pinned = process.env.DREAMER_PI_PROVIDER ?? "";
+	if (pinned && !checking) {
+		pi.on("input", async (_event: any, ctx: any) => {
+			if (!ctx?.model || ctx.model.provider === pinned) return { action: "continue" };
+			const available = await Promise.resolve(ctx.modelRegistry?.getAvailable?.()).catch(() => []);
+			const model = (Array.isArray(available) ? available : []).find((m: any) => m?.provider === pinned);
+			if (model && (await pi.setModel(model))) return { action: "continue" };
+			ctx.ui?.notify?.(
+				`Dreamer holds pi to provider ${pinned}, which is not logged in here, so the prompt was not sent. Run /login ${pinned}, or pick one of its models with /model.`,
+				"warning",
+			);
+			return { action: "handled" };
+		});
+	}
+
 	pi.on("session_shutdown", async () => {
 		if (isProfile && !checking) await commit(undefined, false).catch(() => {});
 		session.close();

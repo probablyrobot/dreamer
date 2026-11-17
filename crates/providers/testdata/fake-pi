@@ -12,14 +12,61 @@
 # FAKE_PI_OLD=1 makes it a pi without get_state. It appends its arguments,
 # and whether an API key variable reached it, to fake-pi.log in its agent
 # directory.
+#
+# Logins: `auth check --provider P` reports `ready` for the providers
+# listed one per line in fake-pi-logins in the agent directory, and
+# `not_ready` for the rest; with no such file, every provider is ready.
+# Only those providers' models are available, plus "radius/balanced", which
+# stands for the provider pi picks by itself when nothing is pinned (the
+# model it starts on unless --model says otherwise). Each prompt that
+# starts a turn logs `turn:<provider>`, the provider that turn would reach
+# over the network.
 
 if [ "$1" = "--version" ]; then
 	echo "0.0.0-fake"
 	exit 0
 fi
 
-log="${PI_CODING_AGENT_DIR:-${TMPDIR:-/tmp}}/fake-pi.log"
+dir="${PI_CODING_AGENT_DIR:-${TMPDIR:-/tmp}}"
+log="$dir/fake-pi.log"
+logged_in() {
+	[ ! -f "$dir/fake-pi-logins" ] || grep -qx "$1" "$dir/fake-pi-logins"
+}
+
+if [ "$1" = "auth" ]; then
+	p=""
+	prev=""
+	for a in "$@"; do
+		[ "$prev" = "--provider" ] && p=$a
+		prev=$a
+	done
+	if [ "$2" = "check" ]; then
+		if logged_in "$p"; then st=ready; code=0; else st=not_ready; code=1; fi
+		printf 'auth:%s:%s:offline=%s\n' "$p" "$st" "${PI_OFFLINE:-}" >>"$log"
+		printf '{"status":"%s","provider":"%s"}\n' "$st" "$p"
+		exit $code
+	fi
+	printf 'auth-%s:%s\n' "$2" "$3" >>"$log"
+	exit 1
+fi
+
 printf 'args:%s\n' "$*" >>"$log"
+printf 'start:offline=%s\n' "${PI_OFFLINE:-}" >>"$log"
+provider="radius"
+model="balanced"
+prev=""
+for a in "$@"; do
+	case "$prev" in
+	--provider) provider=$a ;;
+	--model)
+		case "$a" in
+		*/*) provider=${a%%/*}; model=${a#*/} ;;
+		*) model=$a ;;
+		esac
+		;;
+	esac
+	prev=$a
+done
 if [ -n "$OPENAI_API_KEY$ANTHROPIC_API_KEY$ANTHROPIC_AUTH_TOKEN$CODEX_API_KEY" ]; then
 	echo "key:seen" >>"$log"
 else
@@ -58,8 +105,23 @@ while IFS= read -r line; do
 		if [ "$FAKE_PI_OLD" = 1 ]; then
 			emit "{\"id\":\"$id\",\"type\":\"response\",\"command\":\"get_state\",\"success\":false,\"error\":\"Unknown command: get_state\"}"
 		else
-			respond "$id" get_state ",\"data\":{\"sessionId\":\"$sid\",\"sessionFile\":\"$file\",\"isStreaming\":false,\"messageCount\":0}"
+			respond "$id" get_state ",\"data\":{\"sessionId\":\"$sid\",\"sessionFile\":\"$file\",\"isStreaming\":false,\"messageCount\":0,\"model\":{\"provider\":\"$provider\",\"id\":\"$model\"}}"
 		fi
+		;;
+	*'"type":"get_available_models"'*)
+		models='{"provider":"radius","id":"balanced"}'
+		for p in openai openai-codex anthropic; do
+			if logged_in "$p"; then
+				models="$models,{\"provider\":\"$p\",\"id\":\"$p-small\"},{\"provider\":\"$p\",\"id\":\"$p-large\"}"
+			fi
+		done
+		respond "$id" get_available_models ",\"data\":{\"models\":[$models]}"
+		;;
+	*'"type":"set_model"'*)
+		provider=$(printf '%s' "$line" | sed -n 's/.*"provider":"\([^"]*\)".*/\1/p')
+		model=$(printf '%s' "$line" | sed -n 's/.*"modelId":"\([^"]*\)".*/\1/p')
+		printf 'set_model:%s/%s\n' "$provider" "$model" >>"$log"
+		respond "$id" set_model ",\"data\":{\"provider\":\"$provider\",\"id\":\"$model\"}"
 		;;
 	*'"type":"abort"'*)
 		if [ $busy = 1 ]; then
@@ -73,6 +135,7 @@ while IFS= read -r line; do
 	*'"type":"prompt"'*)
 		# Like pi, the session is kept on disk once it has a message.
 		mkdir -p "$(dirname "$file")" && touch "$file"
+		printf 'turn:%s\n' "$provider" >>"$log"
 		respond "$id" prompt ',"data":{"disposition":"started"}'
 		emit '{"type":"agent_start"}'
 		emit '{"type":"turn_start"}'

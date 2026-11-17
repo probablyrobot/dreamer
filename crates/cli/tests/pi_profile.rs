@@ -35,7 +35,9 @@ impl Env {
         let script = r#"#!/bin/sh
 case "$1" in
 --version) echo 9.9.9; exit 0 ;;
-auth) echo '{"status":"not_ready"}'; exit 1 ;;
+auth)
+  if [ -f "$PI_CODING_AGENT_DIR/.logged-in" ]; then echo '{"status":"ready"}'; exit 0; fi
+  echo '{"status":"not_ready"}'; exit 1 ;;
 --mode)
   if grep -rqs BROKEN "$PI_CODING_AGENT_DIR/extensions"; then
     echo "Error: Failed to load extension \"broken\": ParseError" >&2; exit 1
@@ -177,6 +179,17 @@ fn the_profile_evolves_reverts_and_heals() {
     assert!(out.contains("reverted"), "{out}");
     assert!(!env.profile().join("skills/standup").exists());
     assert!(env.profile().join("extensions/clock/index.ts").exists());
+
+    // A scripted prompt while pi reports no login: pi is not started.
+    let out = env.run(&["agents", "pi", "--print", "hello"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("auth login openai-codex"), "{err}");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("args="),
+        "pi was started"
+    );
+    std::fs::write(env.profile().join(".logged-in"), "").expect("login");
 
     // A broken extension, never committed: the next start restores the
     // last version pi loaded, keeping the history.

@@ -112,6 +112,13 @@ pub struct Spec {
     /// pi's agent directory (`PI_CODING_AGENT_DIR`).
     pub agent_dir: Option<PathBuf>,
     pub model: Option<String>,
+    /// The provider the harness is pinned to. Before each prompt the
+    /// adapter makes sure the harness's model is one of this provider's,
+    /// and refuses the prompt when it cannot.
+    pub provider: Option<String>,
+    /// Run with no automatic network use (pi: `PI_OFFLINE=1`): set when
+    /// there is no login.
+    pub offline: bool,
     /// The harness's own session to continue: a file path or an id.
     pub resume: Option<String>,
 }

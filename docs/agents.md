@@ -131,6 +131,53 @@ What pi's `/login` offers for subscriptions, in pi 1.5.2:
 pass `OPENAI_API_KEY`, `CODEX_API_KEY`, `ANTHROPIC_API_KEY`, or
 `ANTHROPIC_AUTH_TOKEN` to pi, so only a login you made in pi is used.
 
+### No model turn without a login
+
+**pi's own default.** When pi is not told which model to use (no
+`--model`, no `defaultModel` with `defaultProvider` in its settings), it
+takes the first model it considers available: one of its built-in
+default models per provider, in a fixed list of its own (in pi's source
+at the time of writing it begins with Amazon Bedrock), else whatever
+available model comes first.
+`defaultProvider` alone does not pin anything. A provider can count as
+available without a login you made (ambient cloud credentials, a
+gateway, a local server), so a pi with no login can still send a prompt
+over the network: pi 1.5.2, with an empty agent directory, no login, and
+no API key variables, sent one to a provider of its choosing, which
+answered `402`. Dreamer never lets pi fall back like this.
+
+**The pinned provider.** Dreamer holds pi to one subscription provider
+(`openai`, `openai-codex`, or `anthropic`): the one `agents.pi.model` (or
+a session's model) names as `provider/id`, else `defaultProvider` in the
+agent directory's `settings.json`, else the one in Dreamer's profile.
+Any other provider is refused with that reason. A model given as a bare
+id is passed as `--provider P --model ID`, so pi looks it up only there.
+
+**The check.** Before each model turn Dreamer starts, it asks pi itself:
+`pi auth check --provider P --json` in the agent directory, with
+`PI_OFFLINE=1` and no API key variables. pi may renew an expired login
+during the check. Only `ready` lets the turn start; Dreamer does not read
+pi's credentials to decide.
+
+| Where | Without a login |
+| --- | --- |
+| `agent.sessions.send` (and `dream agents sessions send`) | Refused with `precondition` and the command that logs in, before the harness is started or sent anything |
+| `agent.sessions.create`, `resume` | The harness starts with `PI_OFFLINE=1`; no prompt is sent |
+| `dream agents pi`, and the drawer that runs it | The login step comes first: the reason and the `pi auth login P` command. In a terminal, pi's own login runs, and pi starts only once the check says `ready`; otherwise nothing starts. Outside a terminal it exits with an error. So `dream agents pi --print ...` (a scripted prompt) never runs without a login |
+
+**Held to the provider.** In a session, before each prompt Dreamer asks
+pi for its current model (`get_state`). When it is not the pinned
+provider's, Dreamer switches it (`set_model`) to `agents.pi.model` if
+that provider has it, else to the first of that provider's models pi
+lists as available (`get_available_models`). If it cannot, the prompt is
+not sent and the turn ends with an error. In pi's own terminal interface,
+Dreamer's extension does the same before each prompt
+(`DREAMER_PI_PROVIDER`, set by `dream agents pi`): it switches to the
+pinned provider's model, or holds the prompt back with a notice.
+
+A drawer with `agents.pi.command` set runs that command exactly as
+given, without these checks; run `dream agents pi` in it to keep them.
+
 ## Dreamer's pi profile
 
 pi reads its settings, extensions, skills, and prompt templates from an
@@ -148,7 +195,7 @@ extension with `--extension` and leaves the directory alone).
 | `skills/dreamer-pi-profile/` | How the agent changes its own profile |
 | `prompts/panes.md`, `prompts/collect.md`, `prompts/apps.md` | `/panes` (what is running), `/collect` (gather output over time), `/apps` (build a pane app) |
 | `APPEND_SYSTEM.md` | Added to pi's system prompt: the terminals, the approval rules, conciseness |
-| `settings.json` | `defaultProvider: openai-codex`; no model, so pi picks that provider's default (see [The base model](#the-base-model)) |
+| `settings.json` | `defaultProvider: openai-codex`, the provider Dreamer pins pi to ([above](#no-model-turn-without-a-login), and [The base model](#the-base-model)); no model, so the pinned provider's default. `/login` and `/model` change it |
 | `.gitignore` | Keeps only the profile's resources in git |
 
 These files are embedded in `dream`, so laying out the profile needs no
@@ -337,7 +384,7 @@ the next start.
 
 | Command | What it does |
 | --- | --- |
-| `dream agents pi [ARGS...]` | Update and check the profile (restoring it if needed), then run pi with `PI_CODING_AGENT_DIR`, `DREAMER_RPC_SOCKET`, `DREAMER_DREAM_BIN`, `agents.pi.model` as `--model`, and `ARGS` |
+| `dream agents pi [ARGS...]` | Update and check the profile (restoring it if needed), check pi's login for the pinned provider (the login step first when there is none), then run pi with `PI_CODING_AGENT_DIR`, `DREAMER_RPC_SOCKET`, `DREAMER_DREAM_BIN`, `DREAMER_PI_PROVIDER`, `agents.pi.model` as `--model`, and `ARGS` |
 | `dream agents profile init` | Lay out the profile, or bring Dreamer's files up to date |
 | `dream agents profile status [--json]` | Where it is, Dreamer's version of the files, the newest and last good commits, shipped files the agent changed, and uncommitted changes |
 | `dream agents profile log [-n N]` | The newest commits; `[loads]` marks good ones |
@@ -356,11 +403,14 @@ for.
 
 - **Which program.** `agents.default` names the harness. With a
   `command`, that program and its arguments run exactly as given (no
-  shell). Without one, pi runs through `dream agents pi`, which checks
-  Dreamer's pi profile (restoring the last good one if a change broke
-  loading), removes API-key variables, and passes `agents.pi.model`; it
-  uses the managed install (`agents/pi/current/pi`), else `pi` on the
-  daemon's `PATH`. `claude`
+  shell). Without one, pi runs only through `dream agents pi`, which
+  checks Dreamer's pi profile (restoring the last good one if a change
+  broke loading), shows the login step when pi has no login
+  ([above](#no-model-turn-without-a-login)), removes API-key variables,
+  and passes `agents.pi.model`; it uses the managed install
+  (`agents/pi/current/pi`), else `pi` on the daemon's `PATH`. When `dream`
+  is not found beside `dreamerd` (or in `DREAMER_DREAM`), the pane says so
+  instead of starting pi. `claude`
   and `codex` are looked up on the daemon's `PATH`. A custom ACP agent
   runs its `command`.
 - **When it is missing,** the pane says so (for pi: run `dream agents
@@ -457,9 +507,12 @@ that never had one starts afresh.
   `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, or `CODEX_API_KEY`, so it uses
   its own login only. It also gets `DREAMER_RUNTIME_DIR`,
   `DREAMER_SESSION_ID`, and `DREAMER_SESSION_TICKET` (see below).
-- pi runs as `pi --mode rpc` (plus `--model` when one is set, and
-  `--session <file>` to resume), with `PI_CODING_AGENT_DIR` set to its
-  agent directory and `PI_SKIP_VERSION_CHECK=1`.
+- pi runs as `pi --mode rpc` (plus `--model` when one is set, with
+  `--provider` for a bare model id, and `--session <file>` to resume),
+  with `PI_CODING_AGENT_DIR` set to its agent directory,
+  `PI_SKIP_VERSION_CHECK=1`, and `PI_OFFLINE=1` when pi reported no login
+  as it started. A prompt needs a login
+  ([above](#no-model-turn-without-a-login)).
 
 **Starting checks the harness.** Dreamer sends pi `get_state` and `abort`
 before the session counts as started. A pi that refuses either, or whose
@@ -469,7 +522,7 @@ mode:
 
 | Direction | Records |
 | --- | --- |
-| To pi | `get_state`, `abort`, `prompt` (with `streamingBehavior: followUp` while a run is going), `extension_ui_response` |
+| To pi | `get_state`, `abort`, `get_available_models` and `set_model` (holding pi to the pinned provider), `prompt` (with `streamingBehavior: followUp` while a run is going), `extension_ui_response` |
 | From pi | `response`, `agent_start`, `agent_settled`, `message_update` (`text_delta`, `thinking_delta`, `toolcall_end`), `message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `auto_retry_end`, `compaction_end`, `extension_error`, `extension_ui_request` |
 
 pi's `confirm` and `select` dialogs become approval requests. Its `input`
@@ -500,7 +553,10 @@ grant limits what it does through Dreamer, not what it does on its own.
 
 `crates/providers/tests/pi_session.rs` drives the adapter against a
 scripted stand-in for pi (`crates/providers/testdata/fake-pi`), so it
-needs no model or login. Its `pi_contract` test runs against a real pi
+needs no model or login. The stand-in answers `auth check` from a list
+of logged-in providers and logs the provider each turn would reach, so
+`crates/server/tests/sessions.rs` and `crates/cli/tests/agents_install.rs`
+show that no turn starts without a login. Its `pi_contract` test runs against a real pi
 when `DREAMER_PI_CONTRACT` names the executable: the start check, pi's
 version, resuming a kept session with `--session`, and closing. It sends
 no prompt, so it calls no model.

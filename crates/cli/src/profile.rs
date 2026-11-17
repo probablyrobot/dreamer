@@ -1,7 +1,7 @@
 //! `dream agents profile ...`: Dreamer's pi profile, its history, and its
 //! check; and `dream agents pi`, which starts pi with it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use providers::pi::Install;
 use providers::pi_profile::{Ensured, Profile, Synced};
@@ -298,6 +298,49 @@ fn status(profile: &Profile, json: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The login step before pi starts: pi must report a ready login for
+/// `provider`. Without one, the way to log in is shown first; in a
+/// terminal, pi's own login (`pi auth login P`) runs, and pi starts only
+/// once it reports the login ready. Nothing is sent to a model here.
+fn login_first(
+    program: &Path,
+    prefix: &[String],
+    agent_dir: &Path,
+    provider: &str,
+) -> Result<(), String> {
+    use std::io::IsTerminal as _;
+    let Err(why) = providers::pi::require_login(program, prefix, agent_dir, provider) else {
+        return Ok(());
+    };
+    eprintln!("dream: {why}");
+    let terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    if !terminal {
+        return Err(format!(
+            "pi was not started: it is not logged in to `{provider}`"
+        ));
+    }
+    eprintln!("dream: logging in to `{provider}` with pi's own login first");
+    let mut login = std::process::Command::new(program);
+    login
+        .args(prefix)
+        .args(["auth", "login", provider])
+        .env("PI_CODING_AGENT_DIR", agent_dir)
+        .env("PI_SKIP_VERSION_CHECK", "1");
+    for v in providers::pi::SCRUBBED {
+        login.env_remove(v);
+    }
+    let _ = login.status();
+    if let Err(why) = providers::pi::require_login(program, prefix, agent_dir, provider) {
+        eprintln!("dream: {why}");
+        eprintln!("Press Enter to close.");
+        let _ = std::io::stdin().read_line(&mut String::new());
+        return Err(format!(
+            "pi was not started: it is not logged in to `{provider}`"
+        ));
+    }
+    Ok(())
+}
+
 /// `dream agents pi [ARGS]`: start pi the way Dreamer runs it. With
 /// Dreamer's profile, the profile is brought up to date and checked first,
 /// and restored to the last version pi loaded if it no longer loads. With
@@ -315,7 +358,11 @@ pub fn launch(args: &[String]) -> Result<(), String> {
                 .ok_or_else(|| format!("agents.pi.command {argv:?} was not found"))?,
             argv[1..].to_vec(),
         ),
-        None => (pi_program()?, Vec::new()),
+        // The managed install, else `pi` on `PATH`.
+        None => (
+            pi_program().or_else(|e| providers::locate_in_path("pi").ok_or(e))?,
+            Vec::new(),
+        ),
     };
     let profile = Profile::default_dir();
     let mut cmd = std::process::Command::new(&program);
@@ -340,11 +387,20 @@ pub fn launch(args: &[String]) -> Result<(), String> {
             profile.dir.clone()
         }
     };
+    // pi is held to one subscription provider, and starts no model turn
+    // without pi's own login for it: otherwise it falls back to a provider
+    // of its own choosing.
+    let provider = providers::pi::pinned_provider(h.model.as_deref(), &agent_dir)?;
+    login_first(&program, &extra, &agent_dir, &provider)?;
     if let Some(m) = &h.model {
+        if !m.contains('/') {
+            cmd.arg("--provider").arg(&provider);
+        }
         cmd.arg("--model").arg(m);
     }
     cmd.args(args)
         .env("PI_CODING_AGENT_DIR", &agent_dir)
+        .env("DREAMER_PI_PROVIDER", &provider)
         .env("DREAMER_RPC_SOCKET", platform::rpc_socket_path())
         // The delegation tools the extension registers.
         .env("DREAMER_PI_DELEGATES", settings.pi_delegates().join(","));

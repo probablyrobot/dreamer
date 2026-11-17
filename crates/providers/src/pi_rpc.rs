@@ -11,6 +11,7 @@
 //! | --- | --- | --- |
 //! | in | `get_state` | the start check; the harness's own session id and file |
 //! | in | `abort` | the start check; cancelling a turn |
+//! | in | `get_state`, `get_available_models`, `set_model` | before each prompt: hold pi to the pinned provider |
 //! | in | `prompt` (`streamingBehavior: followUp` while a run is going) | a prompt |
 //! | in | `extension_ui_response` | answering a `confirm` or `select` |
 //! | out | `message_update` (`text_delta`, `thinking_delta`, `toolcall_end`) | text, thinking, a tool call's input |
@@ -55,7 +56,14 @@ pub async fn start(spec: &Spec) -> Result<Harness, String> {
     let mut cmd = tokio::process::Command::new(&spec.program);
     cmd.args(&spec.args).args(["--mode", "rpc"]);
     if let Some(m) = &spec.model {
+        // A bare model id is looked up only in the pinned provider.
+        if let (Some(p), false) = (&spec.provider, m.contains('/')) {
+            cmd.args(["--provider", p]);
+        }
         cmd.args(["--model", m]);
+    }
+    if spec.offline {
+        cmd.env("PI_OFFLINE", "1");
     }
     if let Some(r) = &spec.resume {
         cmd.args(["--session", r]);
@@ -244,15 +252,31 @@ pub async fn start(spec: &Spec) -> Result<Harness, String> {
 
     // Inputs become commands.
     {
-        let (busy, dialogs, lines_tx, updates_tx, next_id) = (
+        let (busy, dialogs, lines_tx, updates_tx, next_id, pending) = (
             busy.clone(),
             dialogs.clone(),
             lines_tx.clone(),
             updates_tx.clone(),
             next_id.clone(),
+            pending.clone(),
         );
+        let pin = spec.provider.clone().map(|p| Pin {
+            provider: p,
+            model: spec.model.clone(),
+        });
         tokio::spawn(async move {
             while let Some(i) = inputs.recv().await {
+                // No prompt reaches pi unless its model is the pinned
+                // provider's: pi's own choice could be another provider.
+                if let (Input::Prompt(_), Some(pin)) = (&i, &pin) {
+                    let ask =
+                        |v: Value| request(lines_tx.clone(), pending.clone(), next_id.clone(), v);
+                    if let Err(why) = pin.ensure(ask).await {
+                        let _ = updates_tx.send(Update::Error(why));
+                        let _ = updates_tx.send(Update::TurnEnd(StopReason::Error));
+                        continue;
+                    }
+                }
                 let id = format!("dreamer-{}", next_id.fetch_add(1, Ordering::Relaxed));
                 let line = match i {
                     Input::Prompt(text) => {
@@ -365,6 +389,98 @@ async fn version(spec: &Spec) -> Option<String> {
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (out.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// Send one command to pi and wait for its response.
+async fn request(
+    lines: mpsc::UnboundedSender<Value>,
+    pending: Pending,
+    next_id: Arc<AtomicU64>,
+    mut command: Value,
+) -> Result<Value, String> {
+    let id = format!("dreamer-{}", next_id.fetch_add(1, Ordering::Relaxed));
+    let name = command["type"].as_str().unwrap_or_default().to_owned();
+    command["id"] = json!(id);
+    let (tx, rx) = oneshot::channel();
+    if let Ok(mut p) = pending.lock() {
+        p.insert(id.clone(), tx);
+    }
+    lines.send(command).map_err(|_| "pi has ended".to_owned())?;
+    match tokio::time::timeout(START, rx).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(_)) => Err(format!("pi ended before answering `{name}`")),
+        Err(_) => {
+            if let Ok(mut p) = pending.lock() {
+                p.remove(&id);
+            }
+            Err(format!("pi did not answer `{name}` in time"))
+        }
+    }
+}
+
+/// The provider a session is pinned to, and the model asked for.
+#[derive(Debug, Clone)]
+pub struct Pin {
+    pub provider: String,
+    pub model: Option<String>,
+}
+
+impl Pin {
+    /// Make pi's current model one of the pinned provider's: keep it when
+    /// it is, else switch (`set_model`) to the model asked for, or the
+    /// first of that provider's available models. An error refuses the
+    /// prompt; pi gets no prompt then.
+    pub async fn ensure<F, Fut>(&self, mut ask: F) -> Result<(), String>
+    where
+        F: FnMut(Value) -> Fut,
+        Fut: std::future::Future<Output = Result<Value, String>>,
+    {
+        let p = &self.provider;
+        let refused = |why: String| {
+            format!("the prompt was not sent: pi could not be held to provider `{p}` ({why})")
+        };
+        let state = ask(json!({ "type": "get_state" })).await.map_err(refused)?;
+        if state["success"] == true && state["data"]["model"]["provider"] == p.as_str() {
+            return Ok(());
+        }
+        let listed = ask(json!({ "type": "get_available_models" }))
+            .await
+            .map_err(refused)?;
+        if listed["success"] != true {
+            return Err(refused(format!(
+                "`get_available_models`: {}",
+                listed["error"].as_str().unwrap_or("refused")
+            )));
+        }
+        let ids: Vec<&str> = listed["data"]["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["provider"] == p.as_str())
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        let wanted = self
+            .model
+            .as_deref()
+            .map(|m| m.split_once('/').map_or(m, |(_, id)| id));
+        let id = wanted
+            .and_then(|w| ids.iter().find(|i| **i == w))
+            .or(ids.first())
+            .ok_or_else(|| {
+                refused("it lists no model of that provider; is it logged in?".into())
+            })?;
+        let set = ask(json!({ "type": "set_model", "provider": p, "modelId": id }))
+            .await
+            .map_err(refused)?;
+        if set["success"] == true {
+            Ok(())
+        } else {
+            Err(refused(format!(
+                "`set_model`: {}",
+                set["error"].as_str().unwrap_or("refused")
+            )))
+        }
+    }
 }
 
 /// Check a start-check answer; for `get_state`, the session id and file.
