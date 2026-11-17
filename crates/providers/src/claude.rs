@@ -26,6 +26,9 @@ pub(crate) async fn login(program: &Path, login: &mut Option<String>) -> State {
     }
 }
 
+/// Claude Code's built-in tools that only read files.
+const READ_TOOLS: &str = "Read,Grep,Glob";
+
 pub(crate) fn arguments(req: &Request) -> Vec<String> {
     let mut mcp = serde_json::json!({ "mcpServers": {} });
     if let Some(t) = &req.tools {
@@ -42,9 +45,10 @@ pub(crate) fn arguments(req: &Request) -> Vec<String> {
         "--verbose",
         "--include-partial-messages",
         "--no-session-persistence",
-        // No built-in tools (shell, files, web): only Dreamer's.
+        // No built-in tools (shell, files, web) except, when asked, the
+        // read-only file tools: otherwise only Dreamer's.
         "--tools",
-        "",
+        if req.read_files { READ_TOOLS } else { "" },
         "--strict-mcp-config",
         "--mcp-config",
     ]
@@ -52,8 +56,15 @@ pub(crate) fn arguments(req: &Request) -> Vec<String> {
     .map(|s| (*s).to_owned())
     .collect();
     a.push(mcp.to_string());
+    let mut allowed = Vec::new();
+    if req.read_files {
+        allowed.push(READ_TOOLS);
+    }
     if req.tools.is_some() {
-        a.extend(["--allowedTools".into(), "mcp__dreamer".into()]);
+        allowed.push("mcp__dreamer");
+    }
+    if !allowed.is_empty() {
+        a.extend(["--allowedTools".into(), allowed.join(",")]);
     }
     if let Some(s) = &req.system {
         a.extend(["--append-system-prompt".into(), s.clone()]);
@@ -303,5 +314,18 @@ mod tests {
         let mcp: Value =
             serde_json::from_str(&at("--mcp-config").unwrap_or_default()).expect("json");
         assert_eq!(mcp["mcpServers"]["dreamer"]["args"][2], "3");
+    }
+
+    #[test]
+    fn reading_files_adds_only_the_read_only_built_in_tools() {
+        let req = Request {
+            prompt: "hi".into(),
+            read_files: true,
+            ..Request::default()
+        };
+        let a = arguments(&req);
+        let at = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].clone());
+        assert_eq!(at("--tools").as_deref(), Some("Read,Grep,Glob"));
+        assert_eq!(at("--allowedTools").as_deref(), Some("Read,Grep,Glob"));
     }
 }

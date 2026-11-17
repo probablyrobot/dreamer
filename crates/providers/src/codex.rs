@@ -108,6 +108,17 @@ impl Parser for Stream {
                     text: clip(&text),
                 }]
             }
+            // Codex's own shell commands (in its read-only sandbox).
+            (Some("item.started"), Some("command_execution")) => vec![Event::ToolCall {
+                id: item["id"].as_str().unwrap_or_default().to_owned(),
+                name: "command".into(),
+                input: serde_json::json!({ "command": item["command"] }),
+            }],
+            (Some("item.completed"), Some("command_execution")) => vec![Event::ToolResult {
+                id: item["id"].as_str().unwrap_or_default().to_owned(),
+                ok: item["status"] == "completed" && item["exit_code"].as_i64().unwrap_or(0) == 0,
+                text: clip(item["aggregated_output"].as_str().unwrap_or_default()),
+            }],
             (Some("item.completed"), Some("agent_message")) => {
                 let text = item["text"].as_str().unwrap_or_default().to_owned();
                 self.last.clone_from(&text);
@@ -170,6 +181,19 @@ mod tests {
         assert!(matches!(&e[2], Event::ToolResult { ok: true, .. }));
         assert_eq!(e[3], Event::Text("Two panes.".into()));
         assert_eq!(e[5], Event::Done("Two panes.".into()));
+    }
+
+    #[test]
+    fn shell_commands_are_tool_calls() {
+        let e = Stream::all(&[
+            r#"{"type":"item.started","item":{"id":"c1","type":"command_execution","command":"ls","status":"in_progress"}}"#,
+            r#"{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"a","exit_code":2,"status":"failed"}}"#,
+        ]);
+        assert!(matches!(&e[0], Event::ToolCall { name, .. } if name == "command"));
+        assert!(
+            matches!(&e[1], Event::ToolResult { ok: false, .. }),
+            "{e:?}"
+        );
     }
 
     #[test]

@@ -345,7 +345,9 @@ pub fn launch(args: &[String]) -> Result<(), String> {
     }
     cmd.args(args)
         .env("PI_CODING_AGENT_DIR", &agent_dir)
-        .env("DREAMER_RPC_SOCKET", platform::rpc_socket_path());
+        .env("DREAMER_RPC_SOCKET", platform::rpc_socket_path())
+        // The delegation tools the extension registers.
+        .env("DREAMER_PI_DELEGATES", settings.pi_delegates().join(","));
     if let Ok(me) = std::env::current_exe() {
         cmd.env("DREAMER_DREAM_BIN", me);
     }

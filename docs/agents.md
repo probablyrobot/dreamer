@@ -24,8 +24,9 @@ agents:
   default: pi                 # pi (default), claude, codex, or a name below
   pi:
     version: latest           # latest (default), or a release such as 1.5.2
-    model: openai/gpt-5.5     # optional; else pi's own default
+    model: openai-codex/gpt-5.5  # optional; else the profile's provider and its default model
     agent_dir: ~/.pi/agent    # optional; else Dreamer's pi profile
+    delegates: [claude, codex]  # default; the CLIs pi may hand tasks to, [] for none
     command: [pi]             # optional; run this pi instead of Dreamer's install
   claude:
     command: [claude]         # default
@@ -37,7 +38,9 @@ agents:
 ```
 
 - `default` must name `pi`, `claude`, `codex`, or a block under `agents`.
-- `version` and `agent_dir` apply to pi only. `protocol` applies to custom
+- `version`, `agent_dir`, and `delegates` apply to pi only. `delegates`
+  lists `claude`, `codex`, both, or neither (`[]`); see
+  [Delegation](#delegation-to-claude-code-and-codex). `protocol` applies to custom
   harnesses only, and a custom harness needs both `protocol: acp` and a
   `command`.
 - `command` is a program and its arguments. A bare program name is looked
@@ -111,7 +114,7 @@ When none is ready, it prints the command that logs in:
 
 ```sh
 PI_CODING_AGENT_DIR=~/.local/share/dreamer/pi-profile \
-  ~/.local/share/dreamer/agents/pi/current/pi auth login openai
+  ~/.local/share/dreamer/agents/pi/current/pi auth login openai-codex
 ```
 
 or run `/login` inside pi.
@@ -145,12 +148,35 @@ extension with `--extension` and leaves the directory alone).
 | `skills/dreamer-pi-profile/` | How the agent changes its own profile |
 | `prompts/panes.md`, `prompts/collect.md`, `prompts/apps.md` | `/panes` (what is running), `/collect` (gather output over time), `/apps` (build a pane app) |
 | `APPEND_SYSTEM.md` | Added to pi's system prompt: the terminals, the approval rules, conciseness |
-| `settings.json` | `defaultProvider: openai`; no model, so pi picks that provider's default. `/login` and `/model` change it |
+| `settings.json` | `defaultProvider: openai-codex`; no model, so pi picks that provider's default (see [The base model](#the-base-model)) |
 | `.gitignore` | Keeps only the profile's resources in git |
 
 These files are embedded in `dream`, so laying out the profile needs no
 source tree. `dream agents profile init` lays it out, and so does
 `dream agents update` when the profile is not there yet.
+
+### The base model
+
+The profile's base is OpenAI's Codex models on your ChatGPT subscription:
+`settings.json` sets `defaultProvider: openai-codex`, pi's provider for
+ChatGPT Plus or Pro through the Codex backend, and no model, so pi uses
+that provider's default model.
+
+- **Sign in** once with `/login` inside pi and choose "OpenAI (ChatGPT
+  Plus/Pro)", or run the `auth login openai-codex` command above. The
+  login is pi's own, in the profile's `auth.json`; Dreamer never reads it.
+- **Why not `openai`.** pi's `openai` provider also takes an API key, so a
+  key in pi's own settings could bill an API account. `openai-codex` only
+  signs in with a subscription.
+- **Another model for a session:** `/model` inside pi, for example a
+  Claude model once "Claude Pro/Max" is signed in with `/login`.
+- **Another model for every session:** `agents.pi.model` in
+  `dreamer.yaml`, as pi names it (`provider/model`, for example
+  `openai-codex/gpt-5.5`); `dream agents pi` passes it as `--model`.
+- **Another default provider:** edit the profile's `settings.json`
+  (`defaultProvider`), or let the agent do it. The edit is the agent's
+  change in the profile's history, and Dreamer's newer version of the file
+  is then not applied.
 
 ### Dreamer's tools inside pi
 
@@ -168,6 +194,7 @@ API as `dream mcp` ([mcp.md](mcp.md#terminal-tools)):
 | `terminal_send` | `leases.acquire`, `terminal.input` |
 | `layout` (`split`, `select`, `rename`, `move`, `zoom`, `close`) | `actions.submit` |
 | `collector_create`, `collector_query`, `collector_list`, `collector_stop` | `collect.*`, with the parameters of `dream mcp`'s collector tools ([mcp.md](mcp.md#collector-tools)); registered only when the daemon offers `collect.list` |
+| `claude_code`, `codex` | `terminal.run` of `dream agents delegate` ([below](#delegation-to-claude-code-and-codex)); each only when `agents.pi.delegates` lists it, and not at the `observe` level |
 | `dreamer_profile_commit` | `dream agents profile commit` (below) |
 
 It also adds the commands `/dreamer` (whether the daemon is reachable,
@@ -202,6 +229,52 @@ the level, the profile) and `/dreamer-reload` (commit, then reload).
   `dream approvals allow|deny ID`. This keeps an agent from approving its
   own actions through Dreamer. It is not an OS sandbox: pi's own `bash`
   tool runs with your privileges.
+
+### Delegation to Claude Code and Codex
+
+The `claude_code` and `codex` tools hand a task to the Claude Code or
+Codex CLI you installed, run headless on that CLI's own login, and return
+its answer to pi's agent.
+
+- **What runs.** The tool calls `terminal.run` with
+  `dream agents delegate --to claude|codex --cwd DIR -- TASK`. That opens
+  a new window named after the tool, which the agent owns (no approval is
+  needed), so you can watch the run there. `dream agents delegate` runs
+  the CLI as the agent providers do ([providers.md](providers.md#rules)):
+  - Claude Code: `claude -p TASK --output-format stream-json --verbose
+    --include-partial-messages --no-session-persistence --tools
+    Read,Grep,Glob --allowedTools Read,Grep,Glob --strict-mcp-config` with
+    no MCP servers;
+  - Codex: `codex exec --json --skip-git-repo-check --sandbox read-only
+    -- TASK`.
+
+  Both can read files under the directory (pi's working directory unless
+  the agent gives `cwd`) and neither can change them.
+  `agents.claude.model` and `agents.codex.model` choose the model, and
+  `agents.claude.command` and `agents.codex.command` the program (its
+  first word; further arguments are not passed).
+- **Its own login, never a key.** `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, and `CODEX_API_KEY` are
+  removed from the CLI's environment. Before running, the CLI's readiness
+  is checked as `dream agents providers` checks it (`claude auth status`,
+  `codex login status`). A CLI that is not installed, is logged out, or is
+  logged in with an API key is reported to the agent as the tool's error,
+  and nothing runs. A Claude Code run that reports an API key from its
+  own settings is stopped.
+- **What comes back.** The final answer, the window's pane, the model,
+  and a summary of the CLI's tool use (for example `Read ×3, Grep`, or for
+  Codex `command ×2` for its shell commands). The full result is written
+  as JSON to `delegate.json` in the job's artifacts directory.
+- **How long.** 30 minutes unless the agent gives `timeout_s` (at most
+  7200). Cancelling the tool call in pi cancels the job.
+- **Turning it off.** `agents.pi.delegates` lists the tools to offer:
+  `[claude, codex]` by default, `[codex]` for one, `[]` for none.
+  `dream agents pi` passes the list to the extension as
+  `DREAMER_PI_DELEGATES`, and `dream agents delegate` refuses a CLI the
+  setting leaves out. A pi started another way, without that variable,
+  offers both.
+- **The task stands alone.** The delegated CLI does not see pi's
+  conversation, so the agent puts what it needs in the task.
 
 ### History
 

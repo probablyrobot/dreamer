@@ -24,6 +24,12 @@ pub fn split_daemon_args(args: &[&str]) -> Result<(DaemonArgs, Vec<String>), Str
                 d.start.push(flag.to_owned());
                 d.start.push((*v).to_owned());
             }
+            // After `--` everything is the command's own (a prompt, a
+            // program's arguments).
+            "--" => {
+                rest.push("--".to_owned());
+                rest.extend(it.by_ref().map(|s| (*s).to_owned()));
+            }
             other => rest.push(other.to_owned()),
         }
     }

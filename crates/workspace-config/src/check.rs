@@ -190,9 +190,9 @@ pub const SCHEMA: &[Key] = &[
     Key {
         path: "agents.pi.model",
         kind: "model name",
-        default: "(pi's own default)",
+        default: "(the pi profile's provider, openai-codex, and its default model)",
         doc: "The model pi sessions ask for, as pi names it (`provider/model`).",
-        example: "openai/gpt-5.5",
+        example: "openai-codex/gpt-5.5",
         live: false,
     },
     Key {
@@ -201,6 +201,14 @@ pub const SCHEMA: &[Key] = &[
         default: "(Dreamer's pi profile in its data directory)",
         doc: "The pi agent directory (PI_CODING_AGENT_DIR) for Dreamer's pi sessions, such as your own ~/.pi/agent.",
         example: "~/.pi/agent",
+        live: false,
+    },
+    Key {
+        path: "agents.pi.delegates",
+        kind: "list of claude, codex",
+        default: "[claude, codex]",
+        doc: "The CLIs pi's Dreamer extension may hand tasks to (its claude_code and codex tools), each on its own login. An empty list turns delegation off.",
+        example: "[codex]",
         live: false,
     },
     Key {
