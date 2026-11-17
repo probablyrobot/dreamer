@@ -273,22 +273,29 @@ mod tests {
     use super::*;
 
     /// The allocator statistics are read through hand-written C structs; a
-    /// wrong layout would read the wrong field.
+    /// wrong layout would read the wrong field. Other tests share the heap
+    /// and allocate or free a little meanwhile, so the block is large and
+    /// the bounds leave room for them.
     #[test]
     fn heap_in_use_follows_a_large_allocation() {
+        const BLOCK: u64 = 128 << 20;
+        const SLACK: u64 = 32 << 20;
         let Some(before) = heap_in_use() else {
             return;
         };
-        let block = vec![1u8; 16 << 20];
+        let block = vec![1u8; BLOCK as usize];
         let during = heap_in_use().unwrap_or(0);
         assert!(
-            during >= before + (16 << 20),
-            "{before} then {during} with 16 MiB more held"
+            during + SLACK >= before + BLOCK,
+            "{before} then {during} with 128 MiB more held"
         );
         drop(block);
         release_free_memory();
         let after = heap_in_use().unwrap_or(u64::MAX);
-        assert!(after < during, "{during} then {after} after freeing 16 MiB");
+        assert!(
+            after + BLOCK <= during + SLACK,
+            "{during} then {after} after freeing 128 MiB"
+        );
     }
 
     #[test]
