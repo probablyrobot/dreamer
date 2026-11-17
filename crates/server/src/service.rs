@@ -1443,6 +1443,14 @@ impl api::Service for DaemonService {
         self.0.apps.view(&p).await
     }
 
+    async fn apps_publish_tree(&self, _: api::AppTreePublish) -> Result<api::Empty, RpcError> {
+        Err(for_a_connection("apps.publish_tree"))
+    }
+
+    async fn apps_tree(&self, p: api::AppTreeQuery) -> Result<api::AppTree, RpcError> {
+        self.0.apps.tree(&p).await
+    }
+
     async fn apps_input(&self, p: api::AppInput) -> Result<api::Empty, RpcError> {
         self.0.apps.input(&p).map(|()| api::Empty {})
     }

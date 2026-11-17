@@ -30,6 +30,22 @@ typed in the pane, so every client, including a plain tmux client, sees
 the same app in the same state. When the host stops, `apps.view` keeps
 returning its last view with `live: false` until the pane closes.
 
+The host also publishes its view as a tree of components
+([termapp.md](termapp.md#view-trees)), as versions numbered from 1
+(`apps.publish_tree`, `seq`): the whole tree as JSON (`tree`), or the
+changes from the version before (`patch`). The daemon refuses a patch
+that does not follow the version it keeps, with a precondition error;
+the host then sends the whole tree. The daemon keeps the newest tree
+and the changes of the last 64 versions.
+
+A client reads the tree with `apps.tree` (`pane`, `after` as for
+`apps.view`, and `seq`, the version it holds, 0 for none). The answer
+brings it to the newest version `seq`: the whole `tree` when it held
+none or one older than the changes kept, else `patches`, one list of
+changes per version, in order. A client whose patches do not lead to
+`seq`, or do not apply, asks again with `seq` 0. Owner only, like
+`apps.view`.
+
 App panes exist on the local daemon only: a remote host's daemon marks
 its own panes, but the coordinator does not forward their views.
 

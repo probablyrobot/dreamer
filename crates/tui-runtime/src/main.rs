@@ -200,9 +200,11 @@ fn run(path: PathBuf) -> Result<(), String> {
             }
         }
     });
+    // Scroll positions, by node key, kept across updates.
+    let mut state = view::ViewState::default();
     let mut publish = |app: &app_model::App| {
         terminal
-            .draw(|f| view::draw(app, f))
+            .draw(|f| view::draw_with(app, &mut state, f))
             .map(|_| ())
             .map_err(|e| e.to_string())
     };

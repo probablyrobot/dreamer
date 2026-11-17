@@ -1,0 +1,15 @@
+[package]
+name = "view-tree"
+description = "An app's view as a keyed tree of host components, with keyed diffs between versions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

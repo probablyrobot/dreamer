@@ -295,6 +295,22 @@ pub async fn connection_as(
                             .await;
                         return;
                     }
+                    if req.method == api::method::APPS_PUBLISH_TREE {
+                        let response = match api::AppTreePublish::decode(req.payload.as_slice()) {
+                            Err(e) => {
+                                failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string()))
+                            }
+                            Ok(p) => match state.apps.publish_tree(conn.id, &p) {
+                                Ok(()) => ok(req.id, api::Empty {}.encode_to_vec()),
+                                Err(e) => failure(req.id, e),
+                            },
+                        };
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(Kind::Response, response.encode_to_vec()))
+                            .await;
+                        return;
+                    }
                     if req.method == api::method::GRANTS_CURRENT {
                         let g = conn.grant.lock().map(|g| g.0.clone()).unwrap_or_default();
                         let _ = conn
@@ -483,7 +499,7 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
     }
     // A registered app host publishes its own view whatever its grant
     // lists; the registry refuses any other connection.
-    if req.method == api::method::APPS_PUBLISH {
+    if req.method == api::method::APPS_PUBLISH || req.method == api::method::APPS_PUBLISH_TREE {
         return None;
     }
     // Likewise for starting and stopping extensions and scripts, which
@@ -499,6 +515,7 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         api::method::DRAWER_TOGGLE,
         // App panes are the user's to see and type into.
         api::method::APPS_VIEW,
+        api::method::APPS_TREE,
         api::method::APPS_INPUT,
     ]
     .contains(&req.method.as_str())

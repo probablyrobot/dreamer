@@ -2,10 +2,13 @@
 //! the connection, and the last outcome. Each presentation (the pane app's
 //! Ratatui view, the desktop's native panel) draws this same model.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use view_tree::{Frame, Kind, Node};
 
-use crate::manifest::{FieldKind, Manifest, field};
+use crate::manifest::{FieldKind, FormField, Manifest, NodeType, View, ViewKind, field};
 
 /// The connection to the daemon, as shown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +38,13 @@ pub struct App {
     pub version: u32,
     /// An agentic pane's prompt and what happened (agent views only).
     pub agent: AgentState,
+    /// A tree manifest's state: each data source's rows, each table's or
+    /// list's selection (by node key), the focused node, and each tabs
+    /// node's page.
+    pub sources: BTreeMap<String, Vec<Value>>,
+    pub selection: BTreeMap<String, usize>,
+    pub focused: Option<String>,
+    pub tabs: BTreeMap<String, usize>,
 }
 
 /// Who said or did a transcript entry.
@@ -159,8 +169,27 @@ impl App {
             focus: 0,
             version: 1,
             agent: AgentState::default(),
+            sources: BTreeMap::new(),
+            selection: BTreeMap::new(),
+            focused: None,
+            tabs: BTreeMap::new(),
         }
         .with_form()
+        .with_focus()
+    }
+
+    /// A tree's focus on its first table, list, or form shown.
+    fn with_focus(mut self) -> App {
+        self.keep_focus();
+        self
+    }
+
+    /// The form's fields: a version 1 form's, or a tree's form node's.
+    fn form_fields(&self) -> Vec<FormField> {
+        self.manifest
+            .form_view()
+            .map(|v| v.fields)
+            .unwrap_or_default()
     }
 
     /// Form values for the manifest's fields, kept by name across a
@@ -172,9 +201,7 @@ impl App {
 
     pub fn reset_form(&mut self, old: &[(String, String)]) {
         self.form = self
-            .manifest
-            .view
-            .fields
+            .form_fields()
             .iter()
             .map(|f| {
                 old.iter()
@@ -194,9 +221,7 @@ impl App {
 
     /// The form's values by name, to keep across a reload.
     pub fn form_values(&self) -> Vec<(String, String)> {
-        self.manifest
-            .view
-            .fields
+        self.form_fields()
             .iter()
             .zip(&self.form)
             .map(|(f, v)| (f.name.clone(), v.clone()))
@@ -206,7 +231,7 @@ impl App {
     /// The form as a record, with typed values; or what is wrong with it.
     pub fn form_json(&self) -> Result<Value, String> {
         let mut out = serde_json::Map::new();
-        for (f, v) in self.manifest.view.fields.iter().zip(&self.form) {
+        for (f, v) in self.form_fields().iter().zip(&self.form) {
             let label = f.label.clone().unwrap_or_else(|| f.name.clone());
             if f.required && v.is_empty() {
                 return Err(format!("{label} is required"));
@@ -228,7 +253,7 @@ impl App {
 
     /// A key typed into the focused form field.
     pub fn form_key(&mut self, key: &str) {
-        let Some(f) = self.manifest.view.fields.get(self.focus).cloned() else {
+        let Some(f) = self.form_fields().get(self.focus).cloned() else {
             return;
         };
         let Some(v) = self.form.get_mut(self.focus) else {
@@ -285,7 +310,14 @@ impl App {
     }
 
     pub fn selected_row(&self) -> Option<&Value> {
-        self.rows.get(self.selected)
+        if !self.manifest.is_tree() {
+            return self.rows.get(self.selected);
+        }
+        let key = self.focused.as_deref()?;
+        let v = self.manifest.nodes.get(key)?.view()?;
+        self.sources
+            .get(&v.source)?
+            .get(self.selection.get(key).copied().unwrap_or(0))
     }
 
     /// The status line: the connection, the keys, and the last outcome.
@@ -320,11 +352,345 @@ impl App {
     }
 
     pub fn move_by(&mut self, delta: i64) {
+        if self.manifest.is_tree() {
+            self.move_focused(delta);
+            return;
+        }
         if self.rows.is_empty() {
             return;
         }
         let last = self.rows.len() as i64 - 1;
         self.selected = (self.selected as i64 + delta).clamp(0, last) as usize;
+    }
+}
+
+/// A tree manifest's state, and the view as a tree.
+impl App {
+    /// Keys go to a form: a version 1 form, or a tree's focused form node.
+    pub fn in_form(&self) -> bool {
+        if !self.manifest.is_tree() {
+            return self.manifest.view.kind == ViewKind::Form;
+        }
+        self.focused_type() == Some(NodeType::Form)
+    }
+
+    fn focused_type(&self) -> Option<NodeType> {
+        let k = self.focused.as_deref()?;
+        self.manifest.nodes.get(k).map(|n| n.kind)
+    }
+
+    /// The command Enter runs in the form.
+    pub fn form_submit(&self) -> Option<String> {
+        self.manifest.form_view().and_then(|v| v.submit)
+    }
+
+    /// The tables, lists, and forms shown (a tabs node shows its active
+    /// page only), in tree order.
+    pub fn focusable(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack: Vec<&str> = self.manifest.root.as_deref().into_iter().collect();
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(k) = stack.pop() {
+            let Some(n) = self.manifest.nodes.get(k) else {
+                continue;
+            };
+            if !seen.insert(k) {
+                continue;
+            }
+            if n.kind.focusable() {
+                out.push(k.to_owned());
+            }
+            if n.kind == NodeType::Tabs {
+                let active = self.tabs.get(k).copied().unwrap_or(0);
+                stack.extend(n.children.get(active).map(String::as_str));
+            } else {
+                stack.extend(n.children.iter().rev().map(String::as_str));
+            }
+        }
+        out
+    }
+
+    /// Keep the focus on a node that is shown.
+    fn keep_focus(&mut self) {
+        if !self.manifest.is_tree() {
+            return;
+        }
+        let shown = self.focusable();
+        if self.focused.as_ref().is_none_or(|f| !shown.contains(f)) {
+            self.focused = shown.into_iter().next();
+        }
+    }
+
+    /// Tab: the next table, list, or form shown.
+    pub fn focus_next(&mut self) {
+        let shown = self.focusable();
+        let at = self
+            .focused
+            .as_ref()
+            .and_then(|f| shown.iter().position(|k| k == f));
+        self.focused = match at {
+            Some(i) => shown.get((i + 1) % shown.len()).cloned(),
+            None => shown.first().cloned(),
+        };
+    }
+
+    /// Left or Right: the page of the tabs node holding the focus (or the
+    /// first tabs node) moves by `delta`.
+    pub fn switch_tab(&mut self, delta: i64) {
+        let order = self.manifest.tree_order();
+        let holding = |tabs: &str| {
+            let Some(f) = self.focused.as_deref() else {
+                return false;
+            };
+            let mut stack = vec![tabs];
+            while let Some(k) = stack.pop() {
+                if k == f {
+                    return true;
+                }
+                if let Some(n) = self.manifest.nodes.get(k) {
+                    stack.extend(n.children.iter().map(String::as_str));
+                }
+            }
+            false
+        };
+        let tabs: Vec<&String> = order
+            .iter()
+            .filter(|k| {
+                self.manifest
+                    .nodes
+                    .get(*k)
+                    .is_some_and(|n| n.kind == NodeType::Tabs)
+            })
+            .collect();
+        // The innermost tabs node holding the focus comes last in tree
+        // order among those that hold it.
+        let Some(key) = tabs
+            .iter()
+            .rev()
+            .find(|k| holding(k))
+            .or_else(|| tabs.first())
+            .map(|k| (*k).clone())
+        else {
+            return;
+        };
+        let pages = self.manifest.nodes[&key].children.len() as i64;
+        if pages == 0 {
+            return;
+        }
+        let now = self.tabs.get(&key).copied().unwrap_or(0) as i64;
+        self.tabs
+            .insert(key, (now + delta).rem_euclid(pages) as usize);
+        self.focused = None;
+        self.keep_focus();
+    }
+
+    fn move_focused(&mut self, delta: i64) {
+        let Some(key) = self.focused.clone() else {
+            return;
+        };
+        let Some(v) = self.manifest.nodes.get(&key).and_then(|n| n.view()) else {
+            return;
+        };
+        let n = self.sources.get(&v.source).map_or(0, Vec::len);
+        if n == 0 || !matches!(v.kind, ViewKind::Table | ViewKind::List) {
+            return;
+        }
+        let now = self.selection.get(&key).copied().unwrap_or(0) as i64;
+        self.selection
+            .insert(key, (now + delta).clamp(0, n as i64 - 1) as usize);
+    }
+
+    /// New rows for the data source `name`: each node showing it keeps its
+    /// selection on the same row (by its `row_key`) when it is still there.
+    pub fn set_source(&mut self, name: &str, rows: Vec<Value>, now_ms: u64) {
+        if !self.manifest.is_tree() {
+            if self.manifest.view.source == name {
+                self.set_rows(rows, now_ms);
+            }
+            return;
+        }
+        let old = self.sources.get(name).cloned().unwrap_or_default();
+        for (key, v) in self.manifest.data_views() {
+            if v.source != name {
+                continue;
+            }
+            let at = self.selection.get(&key).copied().unwrap_or(0);
+            let current = v
+                .row_key
+                .as_deref()
+                .and_then(|k| old.get(at).and_then(|r| field(r, k)).cloned());
+            let mut i = at;
+            if let (Some(k), Some(cur)) = (v.row_key.as_deref(), current)
+                && let Some(found) = rows.iter().position(|r| field(r, k) == Some(&cur))
+            {
+                i = found;
+            }
+            self.selection
+                .insert(key, i.min(rows.len().saturating_sub(1)));
+        }
+        self.sources.insert(name.to_owned(), rows);
+        self.updated_unix_ms = Some(now_ms);
+    }
+
+    /// The view as a tree of components, for the renderers and to publish;
+    /// `None` for an agentic pane, which is drawn on its own. A version 1
+    /// manifest is one data node keyed `view`.
+    pub fn frame(&self) -> Option<Frame> {
+        let title = if self.version > 1 {
+            format!("{} (reloaded {})", self.manifest.title, self.version - 1)
+        } else {
+            self.manifest.title.clone()
+        };
+        let (root, focus) = if self.manifest.is_tree() {
+            let root = self.manifest.root.as_deref()?;
+            (self.tree_node(root, 0)?, self.focused.clone())
+        } else {
+            let v = &self.manifest.view;
+            if v.kind == ViewKind::Agent {
+                return None;
+            }
+            let focus = matches!(v.kind, ViewKind::Table | ViewKind::List | ViewKind::Form)
+                .then(|| "view".to_owned());
+            (self.data_node("view", v, &self.rows, self.selected), focus)
+        };
+        Some(Frame {
+            title,
+            status: self.status_text(),
+            focus,
+            root,
+        })
+    }
+
+    fn tree_node(&self, key: &str, depth: usize) -> Option<Node> {
+        let spec = self.manifest.nodes.get(key)?;
+        // A manifest is validated as a tree; this only bounds a bad one.
+        if depth > 64 {
+            return None;
+        }
+        let mut node = if let Some(v) = spec.view() {
+            let rows = self.sources.get(&v.source).map_or(&[][..], Vec::as_slice);
+            let selected = self.selection.get(key).copied().unwrap_or(0);
+            self.data_node(key, &v, rows, selected)
+        } else {
+            let kind = match spec.kind {
+                NodeType::Row => Kind::Row,
+                NodeType::Split => Kind::Split {
+                    direction: spec.direction,
+                    sizes: spec.sizes.clone(),
+                },
+                NodeType::Tabs => Kind::Tabs {
+                    active: self.tabs.get(key).copied().unwrap_or(0),
+                },
+                NodeType::Scroll => Kind::Scroll,
+                _ => Kind::Column,
+            };
+            let mut n = Node::new(key, kind);
+            n.children = spec
+                .children
+                .iter()
+                .filter_map(|c| self.tree_node(c, depth + 1))
+                .collect();
+            n
+        };
+        node.title.clone_from(&spec.title);
+        Some(node)
+    }
+
+    /// A data view as a node: rows become `item` children keyed by the
+    /// view's `row_key` (else their place), so a changed row is one
+    /// changed node.
+    fn data_node(&self, key: &str, v: &View, rows: &[Value], selected: usize) -> Node {
+        let value = |r: &Value| match &v.field {
+            Some(p) => field(r, p).map(text).unwrap_or_default(),
+            None => text(r),
+        };
+        let number = |r: &Value| match &v.field {
+            Some(p) => field(r, p).and_then(Value::as_f64),
+            None => r.as_f64(),
+        };
+        let items = |cells: &dyn Fn(&Value) -> Vec<String>| -> Vec<Node> {
+            let mut seen = std::collections::HashSet::new();
+            rows.iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    let mut k = v
+                        .row_key
+                        .as_deref()
+                        .and_then(|p| field(r, p))
+                        .map_or_else(|| i.to_string(), text);
+                    if !seen.insert(k.clone()) {
+                        k = format!("{k}#{i}");
+                        seen.insert(k.clone());
+                    }
+                    Node::new(k, Kind::Item { cells: cells(r) })
+                })
+                .collect()
+        };
+        let mut node = Node::new(key, Kind::Column);
+        match v.kind {
+            ViewKind::Table => {
+                node.children = items(&|r| {
+                    v.columns
+                        .iter()
+                        .map(|c| field(r, c).map(text).unwrap_or_default())
+                        .collect()
+                });
+                node.kind = Kind::Table {
+                    columns: v.columns.clone(),
+                    selected: node.children.get(selected).map(|c| c.key.clone()),
+                };
+            }
+            ViewKind::List => {
+                node.children = items(&|r| vec![value(r)]);
+                node.kind = Kind::List {
+                    selected: node.children.get(selected).map(|c| c.key.clone()),
+                };
+            }
+            ViewKind::Log => {
+                node.children = items(&|r| vec![value(r)]);
+                node.kind = Kind::Log;
+            }
+            ViewKind::Text | ViewKind::Agent => {
+                node.kind = Kind::Text {
+                    text: rows.first().map(value).unwrap_or_default(),
+                };
+            }
+            ViewKind::Gauge => {
+                let row = rows.first();
+                let n = row.and_then(number).unwrap_or(0.0);
+                let ratio = if n > 1.0 { n / 100.0 } else { n }.clamp(0.0, 1.0);
+                let label = row
+                    .and_then(|r| v.label.as_deref().and_then(|p| field(r, p)))
+                    .map(text)
+                    .unwrap_or_else(|| format!("{:.0}%", ratio * 100.0));
+                node.kind = Kind::Gauge { ratio, label };
+            }
+            ViewKind::Chart => {
+                node.kind = Kind::Chart {
+                    values: rows
+                        .iter()
+                        .map(|r| number(r).unwrap_or(0.0).max(0.0))
+                        .collect(),
+                };
+            }
+            ViewKind::Form => {
+                node.kind = Kind::Form {
+                    fields: v
+                        .fields
+                        .iter()
+                        .zip(&self.form)
+                        .map(|(f, val)| view_tree::Field {
+                            label: f.label.clone().unwrap_or_else(|| f.name.clone()),
+                            value: val.clone(),
+                            toggle: f.kind == FieldKind::Toggle,
+                            required: f.required,
+                        })
+                        .collect(),
+                    focus: self.focus,
+                };
+            }
+        }
+        node
     }
 }
 
@@ -403,6 +769,10 @@ impl App {
             focus: w.focus,
             version: w.version,
             agent: w.agent,
+            sources: BTreeMap::new(),
+            selection: BTreeMap::new(),
+            focused: None,
+            tabs: BTreeMap::new(),
         })
     }
 }
@@ -489,5 +859,168 @@ columns = ["id"]
         assert_eq!(a.selected, 0);
         a.move_by(-5);
         assert_eq!(a.selected, 0);
+    }
+
+    /// A nested tree: a table beside tabs holding a list and a gauge.
+    pub(crate) const TREE: &str = r#"
+schema_version = 2
+id = "t.tree"
+version = "1"
+title = "Tree"
+root = "main"
+
+[data.panes]
+method = "tmux.topology"
+path = "panes"
+
+[data.windows]
+method = "tmux.topology"
+path = "windows"
+
+[data.status]
+method = "daemon.status"
+
+[nodes.main]
+type = "split"
+sizes = [60, 40]
+children = ["left", "side"]
+
+[nodes.left]
+type = "table"
+title = "Panes"
+source = "panes"
+row_key = "id"
+columns = ["id", "cmd"]
+
+[nodes.side]
+type = "tabs"
+children = ["names", "load"]
+
+[nodes.names]
+type = "list"
+title = "Windows"
+source = "windows"
+row_key = "id"
+field = "name"
+
+[nodes.load]
+type = "gauge"
+title = "Load"
+source = "status"
+field = "load"
+"#;
+
+    fn tree_app() -> App {
+        let mut a = App::new(Manifest::parse(TREE).expect("tree manifest"));
+        a.set_source(
+            "panes",
+            vec![
+                serde_json::json!({"id": 1, "cmd": "sh"}),
+                serde_json::json!({"id": 2, "cmd": "vim"}),
+            ],
+            0,
+        );
+        a.set_source(
+            "windows",
+            vec![serde_json::json!({"id": 7, "name": "build"})],
+            0,
+        );
+        a.set_source("status", vec![serde_json::json!({"load": 0.5})], 0);
+        a
+    }
+
+    #[test]
+    fn a_tree_manifest_becomes_a_keyed_tree() {
+        let a = tree_app();
+        let f = a.frame().expect("a tree");
+        assert_eq!(
+            f.outline(),
+            "split main\n  table left (2 rows)\n  tabs side\n    list names (1 rows)\n    gauge load\n"
+        );
+        assert_eq!(f.focus.as_deref(), Some("left"));
+        let left = f.root.find("left").expect("left");
+        assert_eq!(left.children[1].key, "2");
+        assert_eq!(left.children[1].cells(), ["2", "vim"]);
+    }
+
+    #[test]
+    fn an_update_to_one_row_is_a_patch_to_that_row_only() {
+        let mut a = tree_app();
+        let before = a.frame().expect("tree");
+        a.set_source(
+            "panes",
+            vec![
+                serde_json::json!({"id": 1, "cmd": "sh"}),
+                serde_json::json!({"id": 2, "cmd": "nvim"}),
+            ],
+            1,
+        );
+        let after = a.frame().expect("tree");
+        let ops = view_tree::diff(&before, &after);
+        assert_eq!(
+            ops,
+            vec![view_tree::Op::Props {
+                path: vec!["main".into(), "left".into(), "2".into()],
+                title: None,
+                kind: view_tree::Kind::Item {
+                    cells: vec!["2".into(), "nvim".into()],
+                },
+            }]
+        );
+        let mut applied = before.clone();
+        view_tree::apply(&mut applied, &ops).expect("apply");
+        assert_eq!(applied, after);
+    }
+
+    #[test]
+    fn focus_selection_and_tabs_survive_updates() {
+        let mut a = tree_app();
+        a.move_by(1);
+        assert_eq!(
+            a.selected_row(),
+            Some(&serde_json::json!({"id": 2, "cmd": "vim"}))
+        );
+        // A row arrives in front: the selection stays on id 2.
+        a.set_source(
+            "panes",
+            vec![
+                serde_json::json!({"id": 0, "cmd": "top"}),
+                serde_json::json!({"id": 1, "cmd": "sh"}),
+                serde_json::json!({"id": 2, "cmd": "vim"}),
+            ],
+            1,
+        );
+        let f = a.frame().expect("tree");
+        assert!(matches!(
+            &f.root.find("left").expect("left").kind,
+            view_tree::Kind::Table { selected: Some(k), .. } if k == "2"
+        ));
+        // Tab moves the focus to the list on the shown tab, and back.
+        a.focus_next();
+        assert_eq!(a.focused.as_deref(), Some("names"));
+        assert_eq!(
+            a.selected_row(),
+            Some(&serde_json::json!({"id": 7, "name": "build"}))
+        );
+        // The next tab holds no list: the focus moves to what is shown.
+        a.switch_tab(1);
+        assert_eq!(a.tabs.get("side"), Some(&1));
+        assert_eq!(a.focused.as_deref(), Some("left"));
+        a.set_source("status", vec![serde_json::json!({"load": 0.9})], 2);
+        assert_eq!(a.focused.as_deref(), Some("left"));
+        assert_eq!(a.tabs.get("side"), Some(&1));
+    }
+
+    #[test]
+    fn a_version_1_manifest_is_one_node_keyed_view() {
+        let mut a = app();
+        a.set_rows(
+            vec![serde_json::json!({"id": 1}), serde_json::json!({"id": 2})],
+            0,
+        );
+        let f = a.frame().expect("tree");
+        assert_eq!(f.outline(), "table view (2 rows)\n");
+        assert_eq!(f.title, "T");
+        assert_eq!(f.status, a.status_text());
     }
 }

@@ -1,5 +1,6 @@
 //! The app manifest (spec 13.3): a versioned TOML file declaring data
-//! sources, one view, and keybound commands. It is data, not code: there
+//! sources, one view (version 1) or a keyed tree of nodes (version 2), and
+//! keybound commands. It is data, not code: there
 //! is no shell, no eval, and no expression language. Commands fill their
 //! parameters only from `${selected.<field>}` placeholders, replaced by the
 //! selected row's value with its type kept.
@@ -9,6 +10,8 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 pub const SCHEMA_VERSION: u32 = 1;
+/// A manifest whose view is a tree of nodes (`root` and `[nodes.*]`).
+pub const TREE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,7 +33,16 @@ pub struct Manifest {
     /// express: `transform(rows)` and command handlers.
     #[serde(default)]
     pub module: Option<String>,
+    /// The one view (version 1). In a tree manifest it is unused and
+    /// left at its default.
+    #[serde(default)]
     pub view: View,
+    /// A tree manifest (version 2): the key of the root node, and every
+    /// node by key.
+    #[serde(default)]
+    pub root: Option<String>,
+    #[serde(default)]
+    pub nodes: BTreeMap<String, NodeSpec>,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
     /// An agentic pane (spec 13.4): the package bound to a provider and a
@@ -377,6 +389,131 @@ pub struct View {
     pub submit: Option<String>,
 }
 
+impl Default for View {
+    fn default() -> View {
+        View {
+            kind: ViewKind::Text,
+            source: String::new(),
+            row_key: None,
+            columns: Vec::new(),
+            field: None,
+            label: None,
+            fields: Vec::new(),
+            submit: None,
+        }
+    }
+}
+
+/// What a node of a tree manifest is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeType {
+    Column,
+    Row,
+    Split,
+    Tabs,
+    Scroll,
+    Table,
+    List,
+    Log,
+    Text,
+    Gauge,
+    Chart,
+    Form,
+}
+
+impl NodeType {
+    pub fn is_layout(self) -> bool {
+        matches!(
+            self,
+            NodeType::Column | NodeType::Row | NodeType::Split | NodeType::Tabs | NodeType::Scroll
+        )
+    }
+
+    /// Takes keys when focused: moves a selection, or edits fields.
+    pub fn focusable(self) -> bool {
+        matches!(self, NodeType::Table | NodeType::List | NodeType::Form)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            NodeType::Column => "column",
+            NodeType::Row => "row",
+            NodeType::Split => "split",
+            NodeType::Tabs => "tabs",
+            NodeType::Scroll => "scroll",
+            NodeType::Table => "table",
+            NodeType::List => "list",
+            NodeType::Log => "log",
+            NodeType::Text => "text",
+            NodeType::Gauge => "gauge",
+            NodeType::Chart => "chart",
+            NodeType::Form => "form",
+        }
+    }
+}
+
+/// A node of a tree manifest: a layout node with `children` (keys of other
+/// nodes), or a data node with a version 1 view's fields.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeSpec {
+    #[serde(rename = "type")]
+    pub kind: NodeType,
+    /// A heading; a tab's name.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Layout nodes: the keys of their children, in order.
+    #[serde(default)]
+    pub children: Vec<String>,
+    /// Split: `row` (side by side, the default) or `column`.
+    #[serde(default)]
+    pub direction: view_tree::Direction,
+    /// Split: a weight per child.
+    #[serde(default)]
+    pub sizes: Vec<u16>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub row_key: Option<String>,
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default)]
+    pub field: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<FormField>,
+    #[serde(default)]
+    pub submit: Option<String>,
+}
+
+impl NodeSpec {
+    /// A data node as a version 1 view; `None` for a layout node.
+    pub fn view(&self) -> Option<View> {
+        let kind = match self.kind {
+            NodeType::Table => ViewKind::Table,
+            NodeType::List => ViewKind::List,
+            NodeType::Log => ViewKind::Log,
+            NodeType::Text => ViewKind::Text,
+            NodeType::Gauge => ViewKind::Gauge,
+            NodeType::Chart => ViewKind::Chart,
+            NodeType::Form => ViewKind::Form,
+            _ => return None,
+        };
+        Some(View {
+            kind,
+            source: self.source.clone(),
+            row_key: self.row_key.clone(),
+            columns: self.columns.clone(),
+            field: self.field.clone(),
+            label: self.label.clone(),
+            fields: self.fields.clone(),
+            submit: self.submit.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
@@ -396,6 +533,10 @@ pub struct Command {
 
 /// Keys the runtime keeps for itself.
 pub const RESERVED_KEYS: [&str; 8] = ["q", "Up", "Down", "k", "j", "PageUp", "PageDown", "Ctrl-c"];
+
+/// Keys a tree's runtime also keeps: Tab moves the focus, Left and Right
+/// switch tabs.
+pub const TREE_RESERVED_KEYS: [&str; 3] = ["Tab", "Left", "Right"];
 
 /// Whether `k` names a key the runtime understands.
 pub fn key_ok(k: &str) -> bool {
@@ -517,10 +658,77 @@ impl Manifest {
         }
     }
 
+    /// Its view is a tree of nodes (version 2).
+    pub fn is_tree(&self) -> bool {
+        self.schema_version == TREE_SCHEMA_VERSION
+    }
+
+    /// The keys of the nodes reached from a tree's root, parents first.
+    pub fn tree_order(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut stack: Vec<&str> = self.root.as_deref().into_iter().collect();
+        while let Some(k) = stack.pop() {
+            if out.iter().any(|o| o == k) {
+                continue;
+            }
+            let Some(n) = self.nodes.get(k) else { continue };
+            out.push(k.to_owned());
+            stack.extend(n.children.iter().rev().map(String::as_str));
+        }
+        out
+    }
+
+    /// The data views by key, in tree order: a tree's data nodes, or a
+    /// version 1 manifest's one view, keyed `view`.
+    pub fn data_views(&self) -> Vec<(String, View)> {
+        if !self.is_tree() {
+            return vec![("view".into(), self.view.clone())];
+        }
+        self.tree_order()
+            .into_iter()
+            .filter_map(|k| {
+                let v = self.nodes.get(&k)?.view()?;
+                Some((k, v))
+            })
+            .collect()
+    }
+
+    /// The form's view: the version 1 view, or a tree's form node.
+    pub fn form_view(&self) -> Option<View> {
+        if !self.is_tree() {
+            return Some(self.view.clone());
+        }
+        self.data_views()
+            .into_iter()
+            .map(|(_, v)| v)
+            .find(|v| v.kind == ViewKind::Form)
+    }
+
+    /// The data sources the view shows.
+    pub fn shown_sources(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (_, v) in self.data_views() {
+            if self.data.contains_key(&v.source) && !out.contains(&v.source) {
+                out.push(v.source);
+            }
+        }
+        out
+    }
+
     /// Parse and validate; every problem, each with where it is.
     pub fn parse(text: &str) -> Result<Manifest, Vec<String>> {
+        let raw: toml::Table = toml::from_str(text).map_err(|e| vec![e.to_string()])?;
+        let has_view = raw.contains_key("view");
         let m: Manifest = toml::from_str(text).map_err(|e| vec![e.to_string()])?;
-        let errors = m.validate();
+        let mut errors = Vec::new();
+        if m.is_tree() {
+            if has_view {
+                errors.push("view: a tree manifest has `root` and [nodes], not [view]".into());
+            }
+        } else if !has_view {
+            errors.push("view: missing (or use schema_version = 2 with a tree)".into());
+        }
+        errors.extend(m.validate());
         if errors.is_empty() {
             Ok(m)
         } else {
@@ -530,9 +738,9 @@ impl Manifest {
 
     fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
-        if self.schema_version != SCHEMA_VERSION {
+        if self.schema_version != SCHEMA_VERSION && self.schema_version != TREE_SCHEMA_VERSION {
             errors.push(format!(
-                "schema_version: {} is not supported (this runtime reads {SCHEMA_VERSION})",
+                "schema_version: {} is not supported (this runtime reads {SCHEMA_VERSION} and {TREE_SCHEMA_VERSION})",
                 self.schema_version
             ));
         }
@@ -610,54 +818,19 @@ impl Manifest {
                 errors.push(format!("{at}.params: placeholders belong to commands"));
             }
         }
-        self.validate_agent(&mut errors);
-        let sourceless = matches!(self.view.kind, ViewKind::Form)
-            || (self.view.kind == ViewKind::Agent && self.view.source.is_empty());
-        if !sourceless && !self.data.contains_key(&self.view.source) {
-            errors.push(format!(
-                "view.source: no data source `{}`",
-                self.view.source
-            ));
-        }
-        if self.view.kind == ViewKind::Form {
-            if self.view.fields.is_empty() {
-                errors.push("view.fields: a form needs fields".into());
+        if self.is_tree() {
+            self.validate_tree(&mut errors);
+        } else {
+            self.validate_agent(&mut errors);
+            if self.root.is_some() || !self.nodes.is_empty() {
+                errors.push("root, nodes: a tree needs schema_version = 2".into());
             }
-            match &self.view.submit {
-                None => errors.push("view.submit: a form needs a submit command".into()),
-                Some(c) if !self.commands.contains_key(c) => {
-                    errors.push(format!("view.submit: no command `{c}`"));
-                }
-                Some(_) => {}
-            }
-            let mut names = std::collections::BTreeSet::new();
-            for f in &self.view.fields {
-                if !path_ok(&f.name) || f.name.contains('.') || !names.insert(f.name.clone()) {
-                    errors.push(format!(
-                        "view.fields: `{}` is not a unique field name",
-                        f.name
-                    ));
-                }
-            }
+            self.validate_view(&self.view, "view", &mut errors);
         }
         if let Some(m) = &self.module
             && (m.is_empty() || m.contains("..") || m.starts_with('/'))
         {
             errors.push(format!("module: `{m}` must be a file beside the manifest"));
-        }
-        if self.view.kind == ViewKind::Table && self.view.columns.is_empty() {
-            errors.push("view.columns: a table needs columns".into());
-        }
-        for c in self
-            .view
-            .columns
-            .iter()
-            .chain(self.view.row_key.iter())
-            .chain(self.view.field.iter())
-        {
-            if !path_ok(c) {
-                errors.push(format!("view: `{c}` is not a dotted field name"));
-            }
         }
         let mut keys = BTreeMap::new();
         for (name, c) in &self.commands {
@@ -693,6 +866,134 @@ impl Manifest {
         }
         self.validate_contributions(&mut errors);
         errors
+    }
+
+    /// A view's own checks: a version 1 `[view]`, or a tree's data node
+    /// at `at`.
+    fn validate_view(&self, v: &View, at: &str, errors: &mut Vec<String>) {
+        let sourceless =
+            matches!(v.kind, ViewKind::Form) || (v.kind == ViewKind::Agent && v.source.is_empty());
+        if !sourceless && !self.data.contains_key(&v.source) {
+            errors.push(format!("{at}.source: no data source `{}`", v.source));
+        }
+        if v.kind == ViewKind::Form {
+            if v.fields.is_empty() {
+                errors.push(format!("{at}.fields: a form needs fields"));
+            }
+            match &v.submit {
+                None => errors.push(format!("{at}.submit: a form needs a submit command")),
+                Some(c) if !self.commands.contains_key(c) => {
+                    errors.push(format!("{at}.submit: no command `{c}`"));
+                }
+                Some(_) => {}
+            }
+            let mut names = std::collections::BTreeSet::new();
+            for f in &v.fields {
+                if !path_ok(&f.name) || f.name.contains('.') || !names.insert(f.name.clone()) {
+                    errors.push(format!(
+                        "{at}.fields: `{}` is not a unique field name",
+                        f.name
+                    ));
+                }
+            }
+        }
+        if v.kind == ViewKind::Table && v.columns.is_empty() {
+            errors.push(format!("{at}.columns: a table needs columns"));
+        }
+        for c in v
+            .columns
+            .iter()
+            .chain(v.row_key.iter())
+            .chain(v.field.iter())
+        {
+            if !path_ok(c) {
+                errors.push(format!("{at}: `{c}` is not a dotted field name"));
+            }
+        }
+    }
+
+    fn validate_tree(&self, errors: &mut Vec<String>) {
+        if self.agent.is_some() {
+            errors.push("agent: an agentic pane has a version 1 `[view]`".into());
+        }
+        let Some(root) = &self.root else {
+            errors.push("root: a tree manifest names its root node".into());
+            return;
+        };
+        if !self.nodes.contains_key(root) {
+            errors.push(format!("root: no node `{root}`"));
+        }
+        let mut parents: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut forms = 0;
+        for (key, n) in &self.nodes {
+            let at = format!("nodes.{key}");
+            let key_ok = !key.is_empty()
+                && key.len() <= 64
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+            if !key_ok {
+                errors.push(format!(
+                    "{at}: a node key is lowercase letters, digits, `-`, and `_`"
+                ));
+            }
+            for c in &n.children {
+                *parents.entry(c.as_str()).or_default() += 1;
+                if !self.nodes.contains_key(c) {
+                    errors.push(format!("{at}.children: no node `{c}`"));
+                }
+            }
+            if n.kind.is_layout() {
+                if n.children.is_empty() {
+                    errors.push(format!("{at}.children: a {} needs children", n.kind.name()));
+                }
+            } else {
+                if !n.children.is_empty() {
+                    errors.push(format!("{at}.children: a {} has none", n.kind.name()));
+                }
+                if n.kind == NodeType::Form {
+                    forms += 1;
+                }
+                if let Some(v) = n.view() {
+                    self.validate_view(&v, &at, errors);
+                }
+            }
+            if !n.sizes.is_empty()
+                && (n.kind != NodeType::Split
+                    || n.sizes.len() != n.children.len()
+                    || n.sizes.contains(&0))
+            {
+                errors.push(format!(
+                    "{at}.sizes: a split has one size above 0 per child"
+                ));
+            }
+        }
+        if forms > 1 {
+            errors.push("nodes: one form per app".into());
+        }
+        for (key, count) in &parents {
+            if *count > 1 {
+                errors.push(format!("nodes.{key}: a node has one parent"));
+            }
+            if *key == root.as_str() {
+                errors.push(format!("nodes.{key}: the root has no parent"));
+            }
+        }
+        // Every node hangs from the root, once: the nodes form a tree.
+        let reached = self.tree_order();
+        for key in self.nodes.keys() {
+            if !reached.contains(key) {
+                errors.push(format!("nodes.{key}: not reached from the root"));
+            }
+        }
+        for (name, c) in &self.commands {
+            if TREE_RESERVED_KEYS.contains(&c.key.as_str()) {
+                errors.push(format!(
+                    "commands.{name}.key: `{}` moves the focus or the tab in a tree",
+                    c.key
+                ));
+            }
+        }
     }
 
     fn validate_contributions(&self, errors: &mut Vec<String>) {
@@ -1176,5 +1477,87 @@ source = "panes"
         assert_eq!(row["test"], "a::b");
         assert_eq!(row["pane"], 1);
         assert_eq!(row["fields"]["pane"], "x");
+    }
+
+    const TREE: &str = r#"
+schema_version = 2
+id = "local.tree"
+version = "0.1.0"
+title = "Tree"
+root = "main"
+
+[data.panes]
+method = "tmux.topology"
+path = "panes"
+
+[nodes.main]
+type = "column"
+children = ["head", "panes"]
+
+[nodes.head]
+type = "text"
+source = "panes"
+field = "id"
+
+[nodes.panes]
+type = "table"
+source = "panes"
+row_key = "id"
+columns = ["id"]
+"#;
+
+    #[test]
+    fn a_tree_manifest_parses_and_names_its_mistakes() {
+        let m = Manifest::parse(TREE).expect("valid");
+        assert!(m.is_tree());
+        assert_eq!(m.tree_order(), ["main", "head", "panes"]);
+        assert_eq!(m.shown_sources(), ["panes"]);
+
+        let bad = TREE
+            .replace(
+                r#"children = ["head", "panes"]"#,
+                r#"children = ["head", "gone"]"#,
+            )
+            .replace("columns = [\"id\"]", "columns = []")
+            + "\n[nodes.extra]\ntype = \"row\"\n\n[view]\ntype = \"text\"\nsource = \"panes\"\n\n[commands.next]\nkey = \"Tab\"\nmethod = \"tmux.topology\"\n";
+        let errors = Manifest::parse(&bad).expect_err("invalid");
+        let has = |s: &str| errors.iter().any(|e| e.contains(s));
+        assert!(has("nodes.main.children: no node `gone`"), "{errors:?}");
+        assert!(
+            has("nodes.panes.columns: a table needs columns"),
+            "{errors:?}"
+        );
+        assert!(
+            has("nodes.extra.children: a row needs children"),
+            "{errors:?}"
+        );
+        assert!(has("nodes.extra: not reached from the root"), "{errors:?}");
+        assert!(has("view: a tree manifest has `root`"), "{errors:?}");
+        assert!(
+            has("commands.next.key: `Tab` moves the focus"),
+            "{errors:?}"
+        );
+
+        let shared = TREE.replace(
+            r#"children = ["head", "panes"]"#,
+            r#"children = ["head", "panes", "head"]"#,
+        );
+        let errors = Manifest::parse(&shared).expect_err("a node with two parents");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("nodes.head: a node has one parent")),
+            "{errors:?}"
+        );
+
+        // A version 1 manifest has no tree, and a tree needs version 2.
+        let v1 = GOOD.replace("title = \"Panes\"", "title = \"Panes\"\nroot = \"x\"");
+        let errors = Manifest::parse(&v1).expect_err("a tree in version 1");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("a tree needs schema_version = 2")),
+            "{errors:?}"
+        );
     }
 }
