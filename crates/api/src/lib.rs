@@ -13,6 +13,16 @@ pub use generated::*;
 /// The Luau module scripts receive; call it with the host's `call` function.
 pub const LUAU_MODULE: &str = include_str!("../generated/dreamer.luau");
 
+/// TypeScript declarations for an app.ts: the API, the `ui` builders, and
+/// the app host's other globals.
+pub const TYPESCRIPT_DECLARATIONS: &str = include_str!("../generated/dreamer.d.ts");
+
+/// What the declarations say, as JSON (`app-types.json`): each method's
+/// parameter record, the records and enums, and the `ui` builders with
+/// their properties (`schema/ui.yaml`). `dream app check` checks an app.ts
+/// against it.
+pub const APP_TYPES: &str = include_str!("../generated/app-types.json");
+
 /// Not a method: the grant entry that lets an app (a filter pane) install
 /// and manage filters that only read, within its own panes. See
 /// `docs/grants.md`.

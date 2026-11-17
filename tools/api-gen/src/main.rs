@@ -1,16 +1,19 @@
-//! Regenerate (or `--check`) every artifact derived from the API schema,
+//! Regenerate (or `--check`) every artifact derived from the API schema
+//! (and, for TypeScript, the `ui` builders in `ui.yaml`),
 //! and enforce the compatibility lock. Run through `cargo xtask api`.
 
 mod compat;
 mod other;
 mod rust;
 mod schema;
+mod ts;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const SCHEMA: &str = "crates/api/schema/api.yaml";
 const LOCK: &str = "crates/api/schema/compat.lock";
+const UI: &str = "crates/api/schema/ui.yaml";
 
 fn main() -> ExitCode {
     let check = match std::env::args().nth(1).as_deref() {
@@ -78,7 +81,10 @@ fn run(check: bool) -> Result<String, Vec<String>> {
         std::fs::read_to_string(root.join(SCHEMA)).map_err(|e| vec![format!("{SCHEMA}: {e}")])?;
     let schema: schema::Schema =
         serde_norway::from_str(&text).map_err(|e| vec![format!("{SCHEMA}: {e}")])?;
-    let problems = schema.validate();
+    let ui_text = std::fs::read_to_string(root.join(UI)).map_err(|e| vec![format!("{UI}: {e}")])?;
+    let ui: ts::Ui = serde_norway::from_str(&ui_text).map_err(|e| vec![format!("{UI}: {e}")])?;
+    let mut problems = schema.validate();
+    problems.extend(ui.validate(&schema));
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -94,7 +100,7 @@ fn run(check: bool) -> Result<String, Vec<String>> {
         }
     }
 
-    let outputs: [(&str, String); 5] = [
+    let outputs: [(&str, String); 7] = [
         (
             "crates/api/src/generated.rs",
             rustfmt(&rust::generate(&schema)).map_err(|e| vec![e])?,
@@ -102,6 +108,11 @@ fn run(check: bool) -> Result<String, Vec<String>> {
         ("crates/api/generated/openrpc.json", other::openrpc(&schema)),
         ("crates/api/generated/dreamer.proto", other::proto(&schema)),
         ("crates/api/generated/dreamer.luau", other::luau(&schema)),
+        ("crates/api/generated/dreamer.d.ts", ts::dts(&schema, &ui)),
+        (
+            "crates/api/generated/app-types.json",
+            ts::data(&schema, &ui),
+        ),
         (LOCK, contract.render()),
     ];
     let mut stale = Vec::new();

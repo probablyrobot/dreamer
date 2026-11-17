@@ -86,6 +86,7 @@ used only by the build tool.
 | `rmcp` (features `server`, `macros`, `transport-io`) | `=3.10.0` | `dream mcp`: the official MCP Rust SDK, MCP up to 2026-07-28 | Apache-2.0 |
 | `rquickjs` (default features off; `std`) | `=0.14.0`, with its vendored QuickJS (`rquickjs-sys` 0.14.0) | `app-script`: script apps (`app.ts`) in `dreamer-termapp` | MIT (QuickJS: MIT) |
 | `swc_ts_fast_strip` | `=60.0.1` (with `swc_common` 27.0.0 and the swc parser crates it pins) | `dream app check`, `preview`, `install`: strips an `app.ts`'s types | Apache-2.0 |
+| `swc_ecma_parser` (default features off; `typescript`), `swc_ecma_ast`, `swc_ecma_visit`, `swc_ecma_transforms_base` | `=47.0.2`, `=30.0.2`, `=30.0.0`, `=51.0.3`: the versions `swc_ts_fast_strip` 60.0.1 already pins | `dream app check`, `install`: parse an `app.ts` and check its uses of `dreamer`, `ui`, and `app` | Apache-2.0 |
 
 All are pure Rust except Luau (C++, built by `mlua` from its vendored
 source) and QuickJS (C, built by `rquickjs-sys` with the `cc` crate from

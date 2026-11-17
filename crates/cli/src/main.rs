@@ -53,6 +53,7 @@ mod remote;
 mod service;
 mod sessions;
 mod strip;
+mod typecheck;
 
 use std::process::ExitCode;
 
@@ -102,7 +103,7 @@ const USAGE: &str = "usage:
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
   dream service uninstall [--no-stop]
-  dream app check|preview|install|rollback|list|launch ... (see `dream app`)
+  dream app check|preview|install|rollback|list|launch|types ... (see `dream app`)
   dream app run APP_ID [--method M]... [--all-panes | --pane %N...] [--session $N] -- PROGRAM [ARGS...]
   dream --version";
 
@@ -170,6 +171,7 @@ fn main() -> ExitCode {
         ["app", "install", rest @ ..] => build::install(&to_owned(rest)),
         ["app", "rollback", rest @ ..] => build::rollback(&to_owned(rest)),
         ["app", "list"] => build::list(),
+        ["app", "types", rest @ ..] => build::types(&to_owned(rest)),
         ["app", "launch", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| build::launch(&d, &extra))
         }

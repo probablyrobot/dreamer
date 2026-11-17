@@ -1,0 +1,159 @@
+# The `ui` builders an app.ts calls, and the properties each takes: the
+# second input, beside api.yaml, of `cargo xtask api`, which declares them
+# in crates/api/generated/dreamer.d.ts. `dream app check` checks calls
+# against this file, and app-script's tests hold it to the builders in
+# crates/app-script/src/prelude.js and the nodes view-tree accepts.
+#
+# Property types: string, number, boolean, unknown, a name under `types`,
+# `T[]` of one of those, `A | B`, or a function type in TypeScript
+# (`(value: string, ctx: Ctx) => Patch`). Every property is optional.
+#
+# `form` says how a builder takes its arguments:
+#   layout   (children, props?) or (props?)
+#   content  (value of `first`, props?) or (props?)
+#   props    (props?)
+
+types:
+  Tone: { values: [neutral, accent, success, warning, danger] }
+  Direction: { values: [row, column] }
+  StatusItem:
+    fields: { text: string, tone: Tone }
+
+# Every builder's props take these too.
+common:
+  key: string | number
+  title: string
+
+components:
+  - name: column
+    form: layout
+    doc: Children one above the other.
+    props: { children: "Child[]" }
+  - name: row
+    form: layout
+    doc: Children side by side.
+    props: { children: "Child[]" }
+  - name: scroll
+    form: layout
+    doc: Children at their natural height, scrolled to keep the focus in view.
+    props: { children: "Child[]" }
+  - name: tabs
+    form: layout
+    doc: One child shown at a time, by index; the others' titles name them.
+    props: { children: "Child[]", active: number }
+  - name: split
+    form: layout
+    doc: Children share the space by `sizes` (weights, one per child; equal when empty).
+    props: { children: "Child[]", direction: Direction, sizes: "number[]" }
+  - name: text
+    form: content
+    first: text
+    props: { text: string }
+  - name: markdown
+    form: content
+    first: text
+    doc: Markdown text.
+    props: { text: string }
+  - name: code
+    form: content
+    first: text
+    doc: Source code, highlighted by `language`.
+    props: { text: string, language: string }
+  - name: diff
+    form: content
+    first: text
+    doc: A unified diff, its added and removed lines marked.
+    props: { text: string }
+  - name: badge
+    form: content
+    first: text
+    doc: A short label in a tone.
+    props: { text: string, tone: Tone }
+  - name: gauge
+    form: content
+    first: ratio
+    doc: A ratio from 0 to 1, as a bar.
+    props: { ratio: number, label: string }
+  - name: progress
+    form: content
+    first: ratio
+    doc: A ratio from 0 to 1, as one thin line with its label.
+    props: { ratio: number, label: string }
+  - name: chart
+    form: content
+    first: values
+    doc: Values, as a sparkline.
+    props: { values: "number[]" }
+  - name: status
+    form: content
+    first: items
+    doc: A status line, short items side by side, each in a tone.
+    props: { items: "StatusItem[]" }
+  - name: button
+    form: content
+    first: label
+    doc: Pressed with Enter or Space when focused, or a click.
+    props:
+      label: string
+      onPress: "(ctx: Ctx) => Patch"
+  - name: input
+    form: content
+    first: value
+    doc: One line of text being edited.
+    props:
+      label: string
+      value: string
+      placeholder: string
+      onChange: "(value: string, ctx: Ctx) => Patch"
+      onSubmit: "(value: string, ctx: Ctx) => Patch"
+      onEnter: "(value: string, ctx: Ctx) => Patch"
+  - name: select
+    form: content
+    first: options
+    doc: One of `options`, chosen by `value` or by index (`selected`).
+    props:
+      label: string
+      options: "string[]"
+      value: string
+      selected: number
+      onChange: "(option: string, index: number, ctx: Ctx) => Patch"
+  - name: toggle
+    form: content
+    first: label
+    doc: On or off.
+    props:
+      label: string
+      "on": boolean
+      onChange: "(on: boolean, ctx: Ctx) => Patch"
+  - name: table
+    form: props
+    doc: "Rows as a table: each row's `columns` fields, as text. A row's key is its `rowKey` field (`id` by default), else its place."
+    props:
+      columns: "string[]"
+      rows: "unknown[]"
+      rowKey: string
+      selected: string | number
+      onSelect: "(row: any, key: string, ctx: Ctx) => Patch"
+      onEnter: "(row: any, key: string, ctx: Ctx) => Patch"
+  - name: list
+    form: props
+    doc: "Rows as a list: each row's `field`, or the row itself, as text."
+    props:
+      rows: "unknown[]"
+      field: string
+      rowKey: string
+      selected: string | number
+      onSelect: "(row: any, key: string, ctx: Ctx) => Patch"
+      onEnter: "(row: any, key: string, ctx: Ctx) => Patch"
+  - name: log
+    form: content
+    first: lines
+    doc: Lines, following the newest.
+    props: { lines: "unknown[]" }
+
+# `ui.screen(root, options)`: the view with its status line, focused
+# node's key, and title.
+screen:
+  status: string
+  focus: string | number
+  title: string

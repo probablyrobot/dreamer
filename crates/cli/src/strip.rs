@@ -53,6 +53,26 @@ pub fn build(manifest: &Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", out.display()))
 }
 
+/// A script app's type-level mistakes ([`crate::typecheck`]); none for
+/// any other package, or a source that cannot be read (the check reports
+/// that).
+pub fn type_problems(manifest: &Path) -> Vec<crate::typecheck::Problem> {
+    let Ok(Some(source)) = script_source(manifest) else {
+        return Vec::new();
+    };
+    if app_protocol::build::kind(&source).is_none()
+        || source.starts_with('/')
+        || source.split('/').any(|p| p == "..")
+    {
+        return Vec::new();
+    }
+    let dir = manifest.parent().unwrap_or(Path::new("."));
+    match std::fs::read_to_string(dir.join(&source)) {
+        Ok(text) => crate::typecheck::check(&source, &text),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Diagnostics as `name:line:column: message`.
 struct Collect {
     cm: Lrc<SourceMap>,

@@ -559,7 +559,9 @@ app({
   the same in `app.ts`, and errors name them: `app.ts:3:1: ...`. Only
   syntax that strips away is accepted: an `enum`, a `namespace` with
   code, a parameter property, or `import x = require(...)` is an error
-  where it is. Types are not checked.
+  where it is. The TypeScript type annotations themselves are not checked;
+  `dream app check` checks the uses of the API and the builders instead
+  ([types and check](#types-and-dream-app-check)).
 - **A build matches its source.** The last line of `build/app.js` records
   which `app.ts` it was built from. The host refuses a build that does
   not match the `app.ts` beside it and says to run `dream app check`. So
@@ -639,6 +641,57 @@ load other code.
   an app has at most 1000 timers pending.
 - **`console`** lines are kept as a process app's standard error is.
 
+### Types and `dream app check`
+
+`dreamer.d.ts` declares everything above for editors: each `dreamer.*`
+method with its parameters and result as interfaces (`Dreamer.Pane`,
+`Dreamer.TopologyParams`, ...), enums as unions of their names, the `ui`
+builders and each one's properties, `app()`, the timers, `console`, and
+the module `"dreamer"`. It is generated from the API schema
+([api.md](api.md)) and the builders' list, so it matches this version of
+Dreamer. Parameters are declared with every field optional, as the API
+takes them; results with the fields the API always sends as required.
+
+`dream app types DIR` writes it to `DIR/types/dreamer.d.ts`, and, when
+`DIR` has no `tsconfig.json`, one that includes `*.ts` and that file with
+only the language's own library (no DOM, as in the app host). Run it
+again after updating Dreamer. An editor's TypeScript service then
+completes and checks `app.ts`. The `types` directory and `tsconfig.json`
+are not used at run time.
+
+`dream app check` (and `dream app install`, which refuses the package)
+also checks `app.ts` against the same declarations, in Rust, with no
+TypeScript compiler or Node. It reports, each with
+`file:line:column`:
+
+- a name after `dreamer.` that is not an API method or group, and a
+  `dreamer.call("...")` whose literal method name is not one, with the
+  closest name when there is one;
+- a property a method's parameters do not have, at any depth (a nested
+  record, or a variant of a one-of such as `actions.submit`'s `kind`);
+- a `ui.*` builder that does not exist, and a property a builder or
+  `ui.screen`'s options do not have;
+- a property `app()` does not take;
+- a value written in place whose kind does not fit: a string, number,
+  boolean, array, object, or function where the declaration takes
+  another; a string that is not one of an enum's names; a fraction or a
+  negative number where the API takes a whole or unsigned number. Items
+  of an array literal are checked the same way.
+
+This is a targeted check of these uses, not a type checker. It follows
+`app`, `ui`, and `dreamer` as the globals or as imported from
+`"dreamer"` (renamed or not), and not once they are shadowed or assigned
+to another name. It does not follow a value through a variable, a
+function's result, or a cast (`as`), and it does not check the app's
+own types, results, or anything else TypeScript would. A `.js` source is
+checked the same way.
+
+With `--json`, the check's object has a `problems` array of `file`,
+`line`, `column`, and `message`; any problem sets `ok` to false and
+makes the first one the `error` when the package has no other. Without
+it, each problem is printed as `app.ts:4:34: message`, and the command
+fails.
+
 ### Keys and focus
 
 The host moves the focus and keeps each control's value, so a control
@@ -695,7 +748,8 @@ them.
    a script app, `app.ts` and a `fixtures/load.json` holding what its
    `load` returns).
 2. **Check:** `dream app check DIR` builds a script app's JavaScript from
-   its `app.ts`, and lists every problem and the grant the app needs: its `capabilities`, plus `events.subscribe` when a source
+   its `app.ts` and checks its uses of the API and the builders
+   ([types](#types-and-dream-app-check)), and lists every problem and the grant the app needs: its `capabilities`, plus `events.subscribe` when a source
    follows events and `collect.query` when a source is a collector, on its
    own pane, its agent's panes, or every pane with `all_panes` (or a
    collector source).

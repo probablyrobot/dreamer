@@ -81,7 +81,8 @@ Building an app package ([termapp.md](termapp.md#building-an-app)):
 
 | Command | Does |
 | --- | --- |
-| `dream app check PATH [--json]` | Validate a package (its directory or `app.toml`) and say what grant it needs |
+| `dream app check PATH [--json]` | Validate a package (its directory or `app.toml`) and say what grant it needs; for a script app, also report type-level mistakes in its `app.ts` ([termapp.md](termapp.md#types-and-dream-app-check)) |
+| `dream app types DIR` | Write `types/dreamer.d.ts` into a package, and a `tsconfig.json` that uses it when there is none, for editors |
 | `dream app preview PATH [--size WxH]` | Draw it once from `fixtures/`, with no daemon, as text |
 | `dream app install PATH [--name NAME]` | Check, preview, and copy it into `<config dir>/apps/`; the version it replaces is kept |
 | `dream app rollback NAME` | Put the kept version back (and keep the one it replaces) |

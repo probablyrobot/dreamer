@@ -2647,3 +2647,90 @@ fn dream_memory_keeps_plain_files_a_person_can_edit() {
     let out = cli.on_tmux(&["memory", "get", "project/small-commits", "--cwd", &cwd]);
     assert!(!out.status.success());
 }
+
+#[test]
+fn app_check_reports_type_mistakes_in_an_app_ts_with_their_places() {
+    let root = PathBuf::from(format!("/tmp/drm-cli-types-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let pkg = root.join("panes");
+    std::fs::create_dir_all(&pkg).expect("package");
+    std::fs::write(
+        pkg.join("app.toml"),
+        "schema_version = 2\nid = \"local.panes\"\nversion = \"0.1.0\"\ntitle = \"Panes\"\n\
+         capabilities = [\"tmux.topology\", \"terminal.read\"]\nall_panes = true\n\n\
+         [script]\nsource = \"app.ts\"\n",
+    )
+    .expect("manifest");
+    let good = "import { app, ui, dreamer } from \"dreamer\";\n\
+                app({\n\
+                \x20 async load() {\n\
+                \x20   const t = await dreamer.tmux.topology();\n\
+                \x20   return await dreamer.terminal.read({ pane: 1 });\n\
+                \x20 },\n\
+                \x20 view: () => ui.text(\"panes\"),\n\
+                });\n";
+    let bad = good
+        .replace("tmux.topology()", "tmux.topolgy()")
+        .replace("pane: 1", "pane: \"1\"");
+    // Checking starts no daemon; the guards are there in case it would.
+    let dream = |args: &[&str]| {
+        Command::new(DREAM)
+            .args(args)
+            .env("DREAMER_RUNTIME_DIR", root.join("rt"))
+            .env("DREAMER_STATE_DIR", root.join("st"))
+            .env("DREAMER_CONFIG_DIR", root.join("config"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .output()
+            .expect("dream")
+    };
+    let path = pkg.display().to_string();
+
+    std::fs::write(pkg.join("app.ts"), &bad).expect("app.ts");
+    let out = dream(&["app", "check", &path, "--json"]);
+    assert!(!out.status.success(), "{out:?}");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(v["ok"], false, "{v}");
+    let problems = v["problems"].as_array().expect("problems");
+    assert_eq!(problems.len(), 2, "{v}");
+    let at = |p: &serde_json::Value| {
+        (
+            p["file"].as_str().unwrap_or_default().to_owned(),
+            p["line"].as_u64().unwrap_or_default(),
+            p["column"].as_u64().unwrap_or_default(),
+        )
+    };
+    assert_eq!(at(&problems[0]), ("app.ts".into(), 4, 34), "{v}");
+    let said = problems[0]["message"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("dreamer.tmux.topolgy") && said.contains("`topology`"),
+        "{said}"
+    );
+    assert_eq!(at(&problems[1]), ("app.ts".into(), 5, 48), "{v}");
+    let said = problems[1]["message"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("`pane`") && said.contains("not a string"),
+        "{said}"
+    );
+
+    // Plain output names the same places.
+    let out = dream(&["app", "check", &path]);
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        text.contains("app.ts:4:34: ") && text.contains("app.ts:5:48: "),
+        "{text}"
+    );
+
+    std::fs::write(pkg.join("app.ts"), good).expect("app.ts");
+    let out = dream(&["app", "check", &path, "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(v["problems"], serde_json::json!([]), "{v}");
+    assert_eq!(v["ok"], true, "{v}");
+
+    // The declarations an editor reads.
+    assert!(dream(&["app", "types", &path]).status.success());
+    let dts = std::fs::read_to_string(pkg.join("types/dreamer.d.ts")).expect("d.ts");
+    assert!(dts.contains("topology(params?: In<TopologyParams>): Promise<Topology>;"));
+    assert!(pkg.join("tsconfig.json").is_file());
+    let _ = std::fs::remove_dir_all(&root);
+}

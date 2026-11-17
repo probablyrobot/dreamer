@@ -9,6 +9,8 @@ generated from it and checked in:
 | `crates/api/src/generated.rs` | Rust SDK types. Each record encodes as Protobuf (prost) for the native wire and as JSON (serde) for JSON-RPC. Also includes the method table, typed `Request` and `Response`, the `Service` trait, and `dispatch` |
 | `crates/api/generated/openrpc.json` | The JSON-RPC 2.0 surface as an OpenRPC 1.3 document |
 | `crates/api/generated/dreamer.luau` | Luau module stubs for sandboxed scripts |
+| `crates/api/generated/dreamer.d.ts` | TypeScript declarations for script apps (`app.ts`): the API, and the `ui` builders from `crates/api/schema/ui.yaml` |
+| `crates/api/generated/app-types.json` | The same declarations as data, which `dream app check` checks an `app.ts` against |
 | `crates/api/generated/dreamer.proto` | The records as a `.proto` file, for clients in other languages |
 | `crates/api/schema/compat.lock` | The accepted contract, used by the compatibility check |
 
@@ -21,6 +23,12 @@ generated from it and checked in:
 
 `cargo xtask api --check` runs in the pre-commit gate and in Linux CI. It
 fails if a generated file is stale or if the change breaks compatibility.
+
+The `ui` builders in `dreamer.d.ts` and `app-types.json` come from
+`crates/api/schema/ui.yaml`, not from the API. When a builder or one of its
+properties changes in the app host (`crates/app-script/src/prelude.js`),
+change `ui.yaml` and run `cargo xtask api`; an `app-script` test fails
+while the two disagree.
 
 ## Evolution rules
 
