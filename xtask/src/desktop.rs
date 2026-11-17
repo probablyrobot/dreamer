@@ -275,6 +275,57 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .collect::<Vec<_>>()
                 .join("\n"),
         });
+        // Copy and paste in a terminal pane, through tmux, in the drawer,
+        // and in a native app pane, with an in-memory clipboard; on X11 a
+        // finished selection must also become the primary selection.
+        let started = Instant::now();
+        let state = crate::gate::desktop_state_dir(&format!("clipboard-{backend}"));
+        let out = crate::gate::clipboard_smoke_output(&root, remove, &state);
+        let _ = std::fs::remove_dir_all(&state);
+        let out = out?;
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let passed = out.status.success()
+            && stdout.contains(&format!("smoke: backend {expected}"))
+            && stdout
+                .contains("smoke: terminal pane: a program's OSC 52 write reached the clipboard")
+            && stdout
+                .contains("smoke: tmux: a buffer set by another client reached the clipboard once")
+            && stdout.contains("smoke: harness drawer:")
+            && stdout.contains("smoke: app pane: the prefix and an arrow moved focus")
+            && (backend != "x11"
+                || stdout.contains("smoke: a finished selection became the primary selection"));
+        let not_run = !passed && out.status.code() == Some(5);
+        println!(
+            "linux-desktop: {backend:<7} {:<18} {}",
+            "clipboard",
+            if passed {
+                "passed"
+            } else if not_run {
+                "NOT RUN (the display did not refresh: monitor asleep or session locked?)"
+            } else {
+                "FAILED"
+            }
+        );
+        if not_run {
+            problems.push(format!(
+                "{backend} clipboard: not run; wake the monitor (or unlock) and run again"
+            ));
+        } else if !passed {
+            problems.push(format!("{backend} clipboard: {}", out.status));
+        }
+        runs.push(Run {
+            backend,
+            input: "clipboard".into(),
+            passed,
+            not_run,
+            millis: started.elapsed().as_millis(),
+            detail: [stdout.trim(), String::from_utf8_lossy(&out.stderr).trim()]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
         // A host's session through the coordinator and a stand-in ssh:
         // typing reaches it, disconnect marks it stale, reconnect resumes.
         let started = Instant::now();

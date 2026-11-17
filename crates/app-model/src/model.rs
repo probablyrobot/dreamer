@@ -147,6 +147,27 @@ impl AgentState {
     }
 }
 
+/// Text as an input takes it: a line break (`\r\n`, `\r`, or `\n`) or a
+/// tab becomes one space, and other control characters are dropped.
+pub fn clean_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push(' ');
+            }
+            '\n' | '\t' => out.push(' '),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// A value as one line of text.
 pub fn text(v: &Value) -> String {
     match v {
@@ -349,6 +370,116 @@ impl App {
             s.push_str(st);
         }
         s
+    }
+
+    /// Whether typed or pasted text has somewhere to go: the focused form
+    /// field (a version 1 form's, or a tree's focused form node's) takes
+    /// text or a number, or the view is an agent's prompt.
+    pub fn takes_text(&self) -> bool {
+        if !self.manifest.is_tree() && self.manifest.view.kind == ViewKind::Agent {
+            return true;
+        }
+        self.in_form()
+            && self
+                .form_fields()
+                .get(self.focus)
+                .is_some_and(|f| f.kind != FieldKind::Toggle)
+    }
+
+    /// Text typed (committed by the platform's text input) or pasted into
+    /// the focused input, as one edit: line breaks become spaces, other
+    /// control characters are dropped, and a number field keeps only what
+    /// a number may hold. A view with no input takes none, so pasted text
+    /// never runs a command. Returns whether the text was taken.
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        if !self.takes_text() {
+            return false;
+        }
+        let clean = clean_text(text);
+        if !self.manifest.is_tree() && self.manifest.view.kind == ViewKind::Agent {
+            self.agent.input.push_str(&clean);
+            return true;
+        }
+        let number = self
+            .form_fields()
+            .get(self.focus)
+            .is_some_and(|f| f.kind == FieldKind::Number);
+        let Some(v) = self.form.get_mut(self.focus) else {
+            return false;
+        };
+        if number {
+            v.extend(
+                clean
+                    .chars()
+                    .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-'),
+            );
+        } else {
+            v.push_str(&clean);
+        }
+        true
+    }
+
+    /// In a tree, a click or wheel steps on the node `node` focus it first
+    /// when it is a table, list, or form shown; an unknown or hidden node
+    /// leaves the focus where it is.
+    fn focus_node(&mut self, node: Option<&str>) {
+        if let Some(k) = node
+            && self.manifest.is_tree()
+            && self.focusable().iter().any(|f| f == k)
+        {
+            self.focused = Some(k.to_owned());
+        }
+    }
+
+    /// The kind of the data view that takes clicks and the wheel: a
+    /// version 1 view's, or a tree's focused node's.
+    fn focused_view(&self) -> Option<View> {
+        if !self.manifest.is_tree() {
+            return Some(self.manifest.view.clone());
+        }
+        let k = self.focused.as_deref()?;
+        self.manifest.nodes.get(k)?.view()
+    }
+
+    /// A click on the `index`th row of a table or list selects it; on a
+    /// form's field, focuses it. Other views have nothing to select. In a
+    /// tree, `node` names the node clicked (else the focused one).
+    pub fn select_at(&mut self, node: Option<&str>, index: usize) {
+        self.focus_node(node);
+        let Some(v) = self.focused_view() else {
+            return;
+        };
+        match v.kind {
+            ViewKind::Table | ViewKind::List => {
+                if !self.manifest.is_tree() {
+                    if !self.rows.is_empty() {
+                        self.selected = index.min(self.rows.len() - 1);
+                    }
+                    return;
+                }
+                let n = self.sources.get(&v.source).map_or(0, Vec::len);
+                if let (Some(k), true) = (self.focused.clone(), n > 0) {
+                    self.selection.insert(k, index.min(n - 1));
+                }
+            }
+            ViewKind::Form if !self.form.is_empty() => {
+                self.focus = index.min(self.form.len() - 1);
+            }
+            _ => {}
+        }
+    }
+
+    /// Wheel steps move a table's or list's selection (positive down). In
+    /// a tree, `node` names the node under the pointer (else the focused
+    /// one).
+    pub fn scroll(&mut self, node: Option<&str>, steps: i64) {
+        self.focus_node(node);
+        if self
+            .focused_view()
+            .is_some_and(|v| matches!(v.kind, ViewKind::Table | ViewKind::List))
+        {
+            self.move_by(steps);
+        }
     }
 
     pub fn move_by(&mut self, delta: i64) {
@@ -835,6 +966,66 @@ columns = ["id"]
         App::new(m)
     }
 
+    fn form() -> App {
+        App::new(
+            Manifest::parse(
+                r#"
+schema_version = 1
+id = "t.form"
+version = "1"
+title = "F"
+[view]
+type = "form"
+source = "none"
+submit = "send"
+fields = [{ name = "name", kind = "text" }, { name = "n", kind = "number" }, { name = "on", kind = "toggle" }]
+[commands.send]
+key = "Enter"
+method = "actions.submit"
+"#,
+            )
+            .expect("manifest"),
+        )
+    }
+
+    #[test]
+    fn text_goes_into_the_focused_input_as_one_edit() {
+        let mut f = form();
+        assert!(f.insert_text("two\r\nlines\u{7}"));
+        assert_eq!(f.form[0], "two lines");
+        f.select_at(None, 1);
+        assert!(f.insert_text("-1.5e3x"));
+        assert_eq!(f.form[1], "-1.53");
+        // A toggle is no text input: nothing is typed into it.
+        f.select_at(None, 9);
+        assert_eq!(f.focus, 2);
+        assert!(!f.takes_text());
+        assert!(!f.insert_text("true"));
+        assert_eq!(f.form[2], "false");
+    }
+
+    #[test]
+    fn a_view_with_no_input_ignores_text_so_a_paste_runs_nothing() {
+        let mut a = app();
+        a.set_rows(vec![serde_json::json!({"id": 1})], 0);
+        assert!(!a.insert_text("q"));
+        assert_eq!(a.rows.len(), 1);
+    }
+
+    #[test]
+    fn clicks_select_rows_and_the_wheel_moves_the_selection() {
+        let mut a = app();
+        a.set_rows((0..5).map(|i| serde_json::json!({"id": i})).collect(), 0);
+        a.select_at(None, 3);
+        assert_eq!(a.selected, 3);
+        a.select_at(None, 40);
+        assert_eq!(a.selected, 4);
+        a.scroll(None, -2);
+        assert_eq!(a.selected, 2);
+        a.scroll(None, 9);
+        assert_eq!(a.selected, 4);
+    }
+
     #[test]
     fn the_selection_follows_its_row_across_updates() {
         let mut a = app();
@@ -1009,6 +1200,29 @@ field = "load"
         a.set_source("status", vec![serde_json::json!({"load": 0.9})], 2);
         assert_eq!(a.focused.as_deref(), Some("left"));
         assert_eq!(a.tabs.get("side"), Some(&1));
+    }
+
+    #[test]
+    fn clicks_and_the_wheel_reach_the_node_they_name_in_a_tree() {
+        let mut a = tree_app();
+        // A click on the list's row focuses the list and selects that row.
+        a.select_at(Some("names"), 5);
+        assert_eq!(a.focused.as_deref(), Some("names"));
+        assert_eq!(
+            a.selected_row(),
+            Some(&serde_json::json!({"id": 7, "name": "build"}))
+        );
+        // Wheel steps over the table move its selection, not the list's.
+        a.scroll(Some("left"), 3);
+        assert_eq!(a.focused.as_deref(), Some("left"));
+        assert_eq!(a.selection.get("left"), Some(&1));
+        assert_eq!(a.selection.get("names"), Some(&0));
+        // A node that is not shown or takes no focus changes nothing.
+        a.select_at(Some("load"), 0);
+        assert_eq!(a.focused.as_deref(), Some("left"));
+        assert_eq!(a.selection.get("left"), Some(&0));
+        // No form is focused: text has nowhere to go.
+        assert!(!a.insert_text("q"));
     }
 
     #[test]

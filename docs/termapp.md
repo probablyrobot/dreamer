@@ -188,6 +188,11 @@ a focused form they move between fields. Commands act on the focused
 node's selected row (`${selected.<field>}`). Tab, Left, and Right are
 the runtime's in a tree, so commands may not use them.
 
+On the desktop, a click on a row or field and wheel steps over a table
+or list go to the node under the pointer, which takes the focus; Copy
+takes the focused node's selected row or form field
+([desktop.md](desktop.md#input-in-app-views)).
+
 Every data source a node shows is fetched as in version 1, and the
 sources' `events` and the shortest `refresh_ms` apply. A module's
 command handlers work as before; `transform` is not called for a tree.
@@ -338,11 +343,23 @@ model and its [view tree](#the-tree-on-the-wire) to the daemon whenever
 they change (only the newest model is kept, and a model or tree
 superseded while one is being sent is skipped), and the daemon marks
 its pane in the topology. The desktop then draws that pane natively
-from the published tree instead of its terminal, and sends
-it the keys typed there; see [desktop.md](desktop.md#app-panes). Keys
-from the desktop and keys typed in the pane go through the same input
+from the published tree instead of its terminal, and sends it the input
+made there; see [desktop.md](desktop.md#input-in-app-views). Keys from
+the desktop and keys typed in the pane go through the same input
 handling, so `q` from either quits the app. A plain tmux client keeps
 seeing the text interface.
+
+Besides keys, the desktop sends (each as one `apps.input` event):
+
+| Field | Means |
+| --- | --- |
+| `text` | Text for the focused input as one edit: text committed by the desktop's text input (IME) or pasted. Line breaks become spaces, other control characters are dropped, and a number field keeps only digits, `.`, and `-`. A view with no focused input (a table, a toggle field) ignores it, so pasted text never runs a command |
+| `select` | A click: select this row of a table or list, or focus this form field, by index |
+| `scroll` | Wheel steps: move a table's or list's selection, positive down |
+| `node` | With `select` or `scroll`, in a [view tree](#view-trees): the key of the node clicked or under the pointer. A table, list, or form shown takes the focus first, so the click or wheel steps reach that node; without it they go to the focused node |
+
+Text pasted into the pane's terminal (a bracketed paste, from tmux or a
+terminal) is handled the same way as `text`.
 
 An app started without a launch ticket (`dreamer-termapp app.toml` in a
 shell) is not registered: the desktop draws its pane as a terminal.

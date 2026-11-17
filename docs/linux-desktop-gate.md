@@ -36,7 +36,14 @@ It is required to close milestones M0, M2, M3, and M8.
    session), the run is reported as NOT RUN with `"not_run": true` in the
    report, not as a failure. The gate still exits non-zero, because the
    evidence is incomplete: wake the monitor and run it again.
-6. Writes `target/gate/linux-desktop/<commit>.json` with distribution,
+6. Runs the clipboard smoke (`dreamer --smoke-clipboard`, see
+   [desktop.md](desktop.md#clipboard-check)) on each backend: copy and
+   paste in a terminal pane, through tmux's buffers, in the harness
+   drawer, and in a native app pane, with an in-memory clipboard. On X11
+   the run must also show that a finished selection became the primary
+   selection. A window that does not refresh is reported as NOT RUN, as
+   for the workspace smoke.
+7. Writes `target/gate/linux-desktop/<commit>.json` with distribution,
    kernel, desktop, session type, compositor, which X server answered the
    X11 runs (`xwayland` or `xorg`), whether the run was over SSH, and each
    run's result and output.

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 49;
+pub const PROTOCOL_MINOR: u32 = 50;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2848,9 +2848,25 @@ pub struct AppTree {
 pub struct AppInput {
     #[prost(uint32, tag = "1")]
     pub pane: u32,
-    /// A key by the app model's names: a character, Enter, Esc, Tab, Up, Ctrl-c, F2, ...
+    /// A key by the app model's names: a character, Enter, Esc, Tab, Up, Ctrl-c, F2, ... Empty when the input is one of the fields below; exactly one is given.
     #[prost(string, tag = "2")]
     pub key: String,
+    /// Text for the view's focused input (a text or number field, a prompt) as one edit: text committed by the platform's text input (IME) or pasted. Line breaks become spaces and other control characters are dropped. A view with no focused input ignores it, so pasted text never runs a command.
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A click: select this row of a table or list, or focus this form field, by index.
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<u32>,
+    /// Wheel steps: positive moves a table's or list's selection down, negative up.
+    #[prost(int32, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scroll: Option<i32>,
+    /// In a view tree (manifest version 2), the node a click or wheel steps are for, by key; the host focuses it first. Without it they go to the focused node. Only with select or scroll.
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -5850,7 +5866,7 @@ pub const METHODS: &[MethodInfo] = &[
         params: "AppInput",
         result: "Empty",
         mutation: true,
-        doc: "Send a key to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only).",
+        doc: "Send a key, text, a click, or wheel steps to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only).",
     },
     MethodInfo {
         name: "memory.recall",
@@ -7668,7 +7684,7 @@ pub trait Service: Sync {
         &self,
         params: AppViewQuery,
     ) -> impl ::core::future::Future<Output = Result<AppView, RpcError>> + Send;
-    /// Send a key to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only).
+    /// Send a key, text, a click, or wheel steps to an app pane's host; it arrives as an `apps.input` event on the host's connection (owner only).
     fn apps_input(
         &self,
         params: AppInput,
@@ -7952,7 +7968,7 @@ pub mod topic {
     pub const TAPS_DATA: &str = "taps.data";
     /// Events of a followed agent session, in order.
     pub const AGENT_SESSIONS_EVENTS: &str = "agent.sessions.events";
-    /// A key for this registered app host, sent by the user's desktop (apps.input).
+    /// A key, text, click, or wheel steps for this registered app host, sent by the user's desktop (apps.input).
     pub const APPS_INPUT: &str = "apps.input";
 }
 

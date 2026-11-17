@@ -303,9 +303,9 @@ panes, as well as running as a pane app. "Open an app package as a
 panel…" in the palette asks for the manifest's path (`~/` works). The
 desktop draws the package's view itself (table, list, log, text, form,
 gauge, or chart) from the same model `dreamer-termapp` draws in a pane,
-the `app-model` crate. Keys typed while the panel has focus (click it)
-go to the app, with the same names and the same commands as in a pane.
-Cmd and Alt shortcuts stay with the desktop.
+the `app-model` crate. Input while the panel has focus (click it)
+goes to the app as described in [Input in app views](#input-in-app-views),
+with the same names and the same commands as in a pane.
 
 The model runs on a thread of its own, with its own connection to the
 local daemon, and reloads the package when its files change. That
@@ -333,10 +333,22 @@ sees the app's text interface in that pane.
 The desktop runs none of the package. Each app pane's view has a thread
 of its own that follows the view tree the pane's host publishes through
 the daemon, the whole tree once and then only what changed
-([topology.md](topology.md#app-panes)), and sends the keys typed
-while the pane has focus (click it) back to the host, where they act
-exactly as keys typed in the pane. Cmd and Alt shortcuts stay with the
-desktop.
+([topology.md](topology.md#app-panes)), and sends the input made while
+the pane has focus back to the host (`apps.input`), where keys act
+exactly as keys typed in the pane.
+
+Focus moves between terminal panes and app panes the same way:
+
+- A click on a pane focuses it and makes it tmux's active pane.
+- When tmux selects another pane of the window shown, focus follows:
+  `select-pane` from any client, the palette's "Focus next pane", or
+  tmux's prefix and an arrow typed here. In an app pane the prefix works
+  as in a terminal pane: the key after it runs your tmux binding for it,
+  and the prefix and `]` pastes tmux's newest buffer into the focused
+  input.
+- Dreamer's shortcuts (the palette, zoom, the drawer, Find, and the rest
+  in [Menus and shortcuts](#menus-and-shortcuts)) work whichever kind of
+  pane has focus.
 
 The desktop draws the tree's layout ([termapp.md](termapp.md#view-trees))
 natively: splits by their sizes with a divider, tabs with the active
@@ -352,6 +364,28 @@ showing the last view, with `stale:` and the reason in its status line.
 When a pane's program becomes an app host, or stops being one, its view
 is replaced on the next topology update. App panes are drawn for local
 windows only; a remote host's app panes show their terminals.
+
+### Input in app views
+
+App panes and app panels take input through the same policy as terminal
+panes:
+
+| Input | In an app view |
+| --- | --- |
+| Arrows, Enter, Esc, Tab, Backspace, Delete, Home, End, Page Up/Down, F-keys, Ctrl combinations | A key by the model's names (`Up`, `Enter`, `Ctrl-c`) |
+| Text, Space included | Comes through the platform's text input, so IME composition works: the composition is shown at the bottom of the view and only committed text is sent. It goes into the focused input as one edit (a text or number field, or an agent's prompt); in a view with no input it is the keys it is made of (`j`, `q`, a command's key) |
+| Cmd-C (macOS), Ctrl-Shift-C (Linux) | Copies the lines selected with the mouse; with none, the selected row of the focused table or list (a table's columns separated by tabs), the focused form field, a text view's text, or an agent view's latest answer. The copy goes to the clipboard and, with `clipboard.tmux` `sync` or `to_tmux`, becomes tmux's newest buffer |
+| Cmd-V (macOS), Ctrl-Shift-V (Linux) | Pastes the clipboard into the focused input as one edit: line breaks become spaces, other control characters are dropped. A view with no focused input takes no paste, so a paste never runs a command |
+| Click | Selects a table's or list's row, or focuses a form field; in a [view tree](termapp.md#view-trees), that table, list, or form takes the focus |
+| Drag over lines | Selects whole lines (rows, form values, transcript entries, a text view's text) of one node for Copy, drawn highlighted. Selection is by line: a part of a line cannot be selected |
+| Middle click | Pastes tmux's newest buffer into the focused input (`clipboard.middle_click: off` turns it off) |
+| Wheel | Moves the selection of the table or list under the pointer (which takes the focus), one row per step |
+| Cmd and Alt combinations | Stay with the desktop |
+
+A pane's host gets text, clicks, and wheel steps as `apps.input` events
+with `text`, `select`, or `scroll` instead of `key`; a click or wheel
+steps also carry `node`, the key of the tree node they landed on
+([termapp.md](termapp.md#app-panes)).
 
 ### Contributions
 
@@ -465,6 +499,7 @@ The macOS gate runs these after building the app:
 | `matrix` | Every fixture in `crates/terminal-render/fixtures` paints the statistics listed in its `expected.txt`. These are derived from the fixture content: ASCII, combining marks, CJK, emoji, fallback glyphs, box drawing, five underline styles, strikethrough, inverse, dim, and the block, bar, underline, and hidden cursor | A GUI session |
 | `cache` | `dreamer --smoke-repaint`: painting the same frame again reshapes nothing | A display that keeps refreshing |
 | `live` | The live pane check below | A display that keeps refreshing |
+| `clipboard` | The [clipboard check](#clipboard-check) | A window that is being drawn |
 
 A locked screen still paints a window's first frame, but macOS then stops
 refreshing it. `cache` and `live` are recorded as not run while the screen
@@ -483,6 +518,43 @@ run. A repaint loop in the pane would show as view wakeups. A passing count is t
 repaint as a control: if the window does not paint (occluded, or the
 display asleep), the result is status 5, not a pass. The `live` step runs
 this against an isolated tmux server and private daemon directories.
+
+### Clipboard check
+
+`dreamer --smoke-clipboard` checks copy and paste in every kind of pane
+there is, against an isolated tmux server, private daemon directories,
+and a private configuration whose harness drawer runs a shell. A smoke
+run never reads or replaces the clipboard you use: every desktop smoke
+uses an in-memory clipboard and primary selection instead. Every gesture
+is dispatched to the window as input, so the window's own input policy
+decides what it does.
+
+- **Terminal pane:** a drag, a double click, and a triple click select a
+  part of a line, a word, and the line; Cmd-C (Ctrl-Shift-C) copies each.
+  A finished selection becomes tmux's newest buffer at once and reaches
+  the clipboard only on Copy, or on its own with `copy_on_select`. On
+  Linux it is also the primary selection. Cmd-V (Ctrl-Shift-V) arrives as
+  a bracketed paste in a program that asked for one; a middle click
+  pastes tmux's newest buffer; a program's OSC 52 write reaches the
+  clipboard.
+- **tmux:** a buffer set by another tmux client reaches the clipboard
+  once, and a Dreamer copy becomes tmux's newest buffer without coming
+  back to the clipboard.
+- **Harness drawer:** a drag and Copy copy from it, and Paste types into
+  it, as in a terminal pane.
+- **App pane:** a form app launched as a registered app and joined beside
+  the terminal pane. A click focuses it; typed keys and an IME commit go
+  into its first field; the palette shortcut opens the palette over it,
+  and closing the palette leaves it focused; Tab moves to the second
+  field; Paste and a middle click type into it; Copy takes the field to
+  the clipboard and tmux's newest buffer; tmux's prefix and Left move
+  focus to the terminal pane, and the prefix and Right back.
+- **Web pane:** reported as not applicable; there are no web panes yet.
+
+The macOS gate runs this as the `clipboard` step, and the Linux desktop
+gate on each backend ([linux-desktop-gate.md](linux-desktop-gate.md)).
+A window that is not being drawn (a locked screen, a display asleep)
+exits with status 5 and the step is recorded as not run, never failed.
 
 ### Pixel evidence
 

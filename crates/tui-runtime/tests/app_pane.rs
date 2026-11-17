@@ -56,8 +56,10 @@ impl Drop for Setup {
     }
 }
 
-fn setup() -> Setup {
-    let root = PathBuf::from(format!("/tmp/drm-apane-{}", std::process::id()));
+/// An isolated tmux server and daemon; `name` keeps tests that run at
+/// the same time apart.
+fn setup(name: &str) -> Setup {
+    let root = PathBuf::from(format!("/tmp/drm-apane-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("root");
     let tmux = TmuxServer::start(120, 30, "/bin/sh").expect("tmux");
@@ -147,7 +149,7 @@ async fn view_until(
 
 #[test]
 fn an_app_pane_is_marked_drawn_from_its_host_and_typed_into() {
-    let s = setup();
+    let s = setup("table");
     let manifest = s.root.join("app.toml");
     std::fs::write(&manifest, MANIFEST).expect("manifest");
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -242,6 +244,7 @@ fn an_app_pane_is_marked_drawn_from_its_host_and_typed_into() {
             Request::AppsInput(api::AppInput {
                 pane,
                 key: "r".into(),
+                ..api::AppInput::default()
             }),
         )
         .await;
@@ -273,6 +276,7 @@ fn an_app_pane_is_marked_drawn_from_its_host_and_typed_into() {
             Request::AppsInput(api::AppInput {
                 pane,
                 key: "q".into(),
+                ..api::AppInput::default()
             }),
         )
         .await;
@@ -294,6 +298,7 @@ fn an_app_pane_is_marked_drawn_from_its_host_and_typed_into() {
             .call(Request::AppsInput(api::AppInput {
                 pane,
                 key: "r".into(),
+                ..api::AppInput::default()
             }))
             .await;
         assert!(refused.is_err(), "a stopped host takes no keys");
@@ -315,6 +320,123 @@ fn an_app_pane_is_marked_drawn_from_its_host_and_typed_into() {
             assert!(Instant::now() < deadline, "the closed pane's app stayed");
             // Anything that reads the topology prunes it.
             let _ = topology_pane(&c, pane).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+}
+
+const FORM: &str = r#"
+schema_version = 1
+id = "test.form"
+version = "0.1.0"
+title = "Form"
+capabilities = ["messages.publish"]
+
+[view]
+type = "form"
+source = "none"
+submit = "send"
+fields = [{ name = "name", kind = "text" }, { name = "count", kind = "number" }]
+
+[commands.send]
+key = "Enter"
+method = "messages.publish"
+params = { topic = "smoke.form", payload = "${form.name}" }
+"#;
+
+#[test]
+fn a_desktop_types_clicks_and_pastes_into_an_app_panes_form() {
+    let s = setup("form");
+    let manifest = s.root.join("form.toml");
+    std::fs::write(&manifest, FORM).expect("manifest");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let socket = s.root.join("rt/dreamerd.sock");
+        let c = client::Client::connect(&socket, "test")
+            .await
+            .expect("connect");
+        let Response::TmuxTopology(t) = call(&c, Request::TmuxTopology(Default::default())).await
+        else {
+            panic!("not a topology");
+        };
+        let Response::AppsLaunch(launched) = call(
+            &c,
+            Request::AppsLaunch(api::LaunchApp {
+                app_id: "test.form".into(),
+                grant: Some(api::Grant::default()),
+                argv: vec![APP.into(), manifest.display().to_string()],
+                session: t.sessions[0].id,
+                ..api::LaunchApp::default()
+            }),
+        )
+        .await
+        else {
+            panic!("not launched");
+        };
+        let pane = launched.pane;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while topology_pane(&c, pane).await.and_then(|p| p.app).is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "the pane was never marked:\n{}",
+                s.tmux
+                    .run_checked(&["capture-pane", "-p", "-t", &format!("%{pane}")])
+                    .unwrap_or_default()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        view_until(&c, pane, "showed the form live", |v, a| {
+            v.live && a.link == app_model::Link::Live
+        })
+        .await;
+        let inputs = [
+            // Committed text goes into the focused field as one edit; a
+            // key still acts as a key.
+            api::AppInput {
+                text: Some("ab\ncd".into()),
+                ..api::AppInput::default()
+            },
+            api::AppInput {
+                key: "Backspace".into(),
+                ..api::AppInput::default()
+            },
+            // A click focuses the second field; text there keeps only what
+            // a number holds.
+            api::AppInput {
+                select: Some(1),
+                ..api::AppInput::default()
+            },
+            api::AppInput {
+                text: Some("4q2".into()),
+                ..api::AppInput::default()
+            },
+        ];
+        for input in inputs {
+            call(&c, Request::AppsInput(api::AppInput { pane, ..input })).await;
+        }
+        let app = view_until(&c, pane, "took the text and the click", |_, a| {
+            a.form == ["ab c", "42"]
+        })
+        .await;
+        assert_eq!(app.focus, 1);
+        // The plain tmux client sees the same values.
+        let target = format!("%{pane}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let screen = s
+                .tmux
+                .run_checked(&["capture-pane", "-p", "-t", &target])
+                .unwrap_or_default();
+            if screen.contains("ab c") && screen.contains("42") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the TUI never showed it:\n{screen}"
+            );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     });

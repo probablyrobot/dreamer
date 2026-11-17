@@ -227,6 +227,11 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         });
         stages.push(Stage {
+            name: "clipboard",
+            action: Builtin(clipboard_smoke),
+            when: When::Code,
+        });
+        stages.push(Stage {
             name: "screens",
             action: Builtin(screens),
             when: When::Code,
@@ -510,6 +515,79 @@ pub fn workspace_restore_output(
         env_remove,
         &[("DREAMER_DESKTOP_STATE_DIR", &state.to_string_lossy())],
     )
+}
+
+/// The clipboard smoke: copy and paste in a terminal pane, through tmux's
+/// buffers, in the harness drawer (a shell here), and in a native app
+/// pane, with an in-memory clipboard. Session `main` has one shell pane
+/// that printed `READY-%0`; the configuration is private.
+pub fn clipboard_smoke_output(
+    dir: &Path,
+    env_remove: &[&str],
+    state: &Path,
+) -> Result<std::process::Output, String> {
+    const SH: &str = "env PS1='$ ' /bin/sh";
+    // The app pane's host runs beside the app.
+    let build = clean_git_env(Command::new("cargo"))
+        .args(["build", "--locked", "-p", "dreamer-termapp"])
+        .current_dir(dir)
+        .status()
+        .map_err(|e| format!("cargo build: {e}"))?;
+    if !build.success() {
+        return Err("building dreamer-termapp failed".into());
+    }
+    let config = state.join("config");
+    std::fs::create_dir_all(&config).map_err(|e| format!("{}: {e}", config.display()))?;
+    // The drawer's harness is a plain shell: the check is about the
+    // drawer's terminal, not about any agent.
+    std::fs::write(
+        config.join("dreamer.yaml"),
+        "agents:\n  pi:\n    command: [env, 'PS1=$ ', /bin/sh]\n",
+    )
+    .map_err(|e| format!("{}: {e}", config.display()))?;
+    isolated_app_output(
+        dir,
+        "clipboard",
+        SH,
+        None,
+        &[&["send-keys", "-t", "%0", "echo READY-$TMUX_PANE", "Enter"]],
+        &["--smoke-clipboard"],
+        env_remove,
+        &[
+            ("DREAMER_DESKTOP_STATE_DIR", &state.to_string_lossy()),
+            ("DREAMER_CONFIG_DIR", &config.to_string_lossy()),
+        ],
+    )
+}
+
+/// Copy and paste in every kind of pane there is, with an in-memory
+/// clipboard. Needs a window that is being drawn: one that is not (screen
+/// locked, display asleep) exits 5 and is recorded as not run.
+fn clipboard_smoke(dir: &Path) -> Result<Done, String> {
+    if !require_gui()? {
+        return Ok(Done::NotRun);
+    }
+    let state = desktop_state_dir("clipboard");
+    let out = clipboard_smoke_output(dir, &[], &state);
+    let _ = std::fs::remove_dir_all(&state);
+    let out = out?;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        println!("gate:   {line}");
+    }
+    match out.status.code() {
+        Some(0) => Ok(Done::Passed),
+        Some(5) => {
+            println!(
+                "gate: the clipboard smoke window was not being drawn; copy and paste checks recorded as not run"
+            );
+            Ok(Done::NotRun)
+        }
+        _ => Err(format!(
+            "clipboard smoke failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+    }
 }
 
 /// A private directory for the desktop state of one gate run.

@@ -110,6 +110,15 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
     cx.refresh_windows();
 }
 
+/// Change the settings in force directly, with no file (smoke runs).
+pub(crate) fn adjust(f: impl FnOnce(&mut Live)) {
+    if let Ok(mut l) = LIVE.write()
+        && let Some(l) = l.as_mut()
+    {
+        f(l);
+    }
+}
+
 /// Keep the settings in force, and say why the change was not applied.
 pub(crate) fn refuse(cx: &mut App, why: String) {
     if let Ok(mut l) = LIVE.write()

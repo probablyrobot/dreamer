@@ -24,6 +24,21 @@ use crate::model::{App, Link};
 pub enum Input {
     /// A key by name: `a`, `Enter`, `Ctrl-c`, `F2`, `Up`, `Space`, ...
     Key(String),
+    /// Text for the focused input as one edit (committed by the platform's
+    /// text input, or pasted); a view with no input ignores it.
+    Text(String),
+    /// A click: select this row, or focus this form field, by index. In a
+    /// view tree, `node` names the node clicked (else the focused one).
+    Select {
+        node: Option<String>,
+        index: usize,
+    },
+    /// Wheel steps; positive moves the selection down. In a view tree,
+    /// `node` names the node under the pointer (else the focused one).
+    Scroll {
+        node: Option<String>,
+        steps: i64,
+    },
     /// Draw again (the presentation was resized or exposed).
     Redraw,
     Quit,
@@ -443,6 +458,25 @@ fn source_events(m: &Manifest) -> (Vec<String>, Option<Duration>) {
 }
 
 /// The next input: the presentation's, or a key a desktop sent.
+/// An input a desktop sent through the daemon (`apps.input`).
+fn from_remote(i: &api::AppInput) -> Option<Input> {
+    if let Some(t) = &i.text {
+        Some(Input::Text(t.clone()))
+    } else if let Some(s) = i.select {
+        Some(Input::Select {
+            node: i.node.clone(),
+            index: s as usize,
+        })
+    } else if let Some(s) = i.scroll {
+        Some(Input::Scroll {
+            node: i.node.clone(),
+            steps: i64::from(s),
+        })
+    } else {
+        (!i.key.is_empty()).then(|| Input::Key(i.key.clone()))
+    }
+}
+
 async fn next_input(
     inputs: &mut tokio::sync::mpsc::UnboundedReceiver<Input>,
     remote: &mut tokio::sync::mpsc::UnboundedReceiver<Input>,
@@ -605,6 +639,18 @@ pub async fn run(
                 let name = match ev {
                     None | Some(Input::Quit) => return Ok(()),
                     Some(Input::Redraw) => continue,
+                    Some(Input::Text(text)) => {
+                        app.insert_text(&text);
+                        continue;
+                    }
+                    Some(Input::Select { node, index }) => {
+                        app.select_at(node.as_deref(), index);
+                        continue;
+                    }
+                    Some(Input::Scroll { node, steps }) => {
+                        app.scroll(node.as_deref(), steps);
+                        continue;
+                    }
                     Some(Input::Key(name)) => name,
                 };
                 if app.manifest.view.kind == ViewKind::Agent {
@@ -749,8 +795,10 @@ pub async fn run(
             p = pushed => match p {
                 Some(client::Pushed::Event { topic, payload, .. }) => {
                     let n = api::Notification::decode(&topic, &payload);
-                    if let Ok(api::Notification::AppsInput(i)) = &n {
-                        let _ = remote_tx.send(Input::Key(i.key.clone()));
+                    if let Ok(api::Notification::AppsInput(i)) = &n
+                        && let Some(input) = from_remote(i)
+                    {
+                        let _ = remote_tx.send(input);
                     }
                     if let Ok(api::Notification::EventsBatch(b)) = n
                         && (b.gap.is_some() || !b.events.is_empty())

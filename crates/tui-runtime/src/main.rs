@@ -156,6 +156,7 @@ impl Screen {
         crossterm::execute!(
             std::io::stdout(),
             crossterm::terminal::EnterAlternateScreen,
+            crossterm::event::EnableBracketedPaste,
             crossterm::cursor::Hide
         )
         .map_err(|e| e.to_string())?;
@@ -168,6 +169,7 @@ impl Drop for Screen {
         let _ = crossterm::execute!(
             std::io::stdout(),
             crossterm::cursor::Show,
+            crossterm::event::DisableBracketedPaste,
             crossterm::terminal::LeaveAlternateScreen
         );
         let _ = crossterm::terminal::disable_raw_mode();
@@ -193,6 +195,8 @@ fn run(path: PathBuf) -> Result<(), String> {
                     Some(name) => input.send(Input::Key(name)),
                     None => continue,
                 },
+                // A paste is text for the focused input, never keys.
+                Event::Paste(text) => input.send(Input::Text(text)),
                 _ => input.send(Input::Redraw),
             };
             if sent.is_err() {
