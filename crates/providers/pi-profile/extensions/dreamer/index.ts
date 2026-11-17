@@ -1,10 +1,11 @@
 // Dreamer's extension for pi: the terminals, layout, and collectors of the
-// Dreamer daemon as native pi tools, delegation to Claude Code and Codex,
-// and the profile's history.
+// Dreamer daemon as native pi tools, durable memory, delegation to Claude
+// Code and Codex, and the profile's history.
 //
 // Each tool is one call to the daemon over its JSON-RPC socket, on a
 // connection that has narrowed itself to an agent's grant
-// (`DREAMER_AGENT_LEVEL`, default `elsewhere`). The daemon checks every
+// (`DREAMER_AGENT_LEVEL`, default `elsewhere`), or, in an agent session
+// the daemon runs, holds that session's grant. The daemon checks every
 // call; acting on a pane this session did not create waits for the user's
 // approval. This extension shows those approvals and never answers them.
 // The app tools run `dream app` in the apps directory, and open an
@@ -23,11 +24,14 @@ import {
 	Apps,
 	COLLECTOR_PRESETS,
 	DELEGATES,
+	MEMORY_KINDS,
+	MEMORY_SCOPES,
 	Session,
 	collectorQuery,
 	collectorSpec,
 	delegates,
 	inputEvents,
+	memoryText,
 	readResult,
 	sendToPaneEvents,
 } from "./daemon.ts";
@@ -361,6 +365,100 @@ export default function (pi: ExtensionAPI) {
 		run: (p) => appTools().launch(p),
 	});
 
+	// Durable memory (docs/memory.md): the agent recalls and remembers with
+	// these tools, and they show in the chat as tool calls; the first
+	// prompt of a session gets the index of what there is to recall; and
+	// `/memory` lists, shows, edits, and forgets items from the chat.
+	const memoryResult = (text: string, details: unknown) => ({
+		content: [{ type: "text" as const, text }],
+		details,
+	});
+	const scopeT = (what: string) => Type.Union(MEMORY_SCOPES.map((s) => Type.Literal(s)), { description: what });
+
+	pi.registerTool({
+		name: "memory_recall",
+		label: "Recall",
+		description:
+			"Recall durable memory: notes kept across sessions and agents about the user, this host, this project, and this session. Finds memories by words (no query: the newest), best first, each with its id, kind, title, and text. Recall before asking the user something they may have told an agent before.",
+		parameters: Type.Object({
+			query: Type.Optional(Type.String({ description: "Words to look for." })),
+			scope: Type.Optional(scopeT("Only this scope; default every scope this session reaches.")),
+			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "Default 10." })),
+		}),
+		async execute(_id: string, params: any, _signal: unknown, _onUpdate: unknown, ctx: any) {
+			if (ctx?.hasUI) ui = ctx.ui;
+			const r = await session.recall(params);
+			const items: any[] = r?.items ?? [];
+			const text = items.length === 0 ? "Nothing recalled." : items.map(memoryText).join("\n\n");
+			return memoryResult(text, r);
+		},
+	});
+
+	pi.registerTool({
+		name: "memory_remember",
+		label: "Remember",
+		description:
+			"Remember a fact worth having in a later session, with any agent: something the user told you about themselves or how to work, a decision in this project, or where to find something. One fact per memory; do not store secrets or what the code or git history already records. Returns the new memory's id and file.",
+		parameters: Type.Object({
+			text: Type.String({ description: "The fact, in a sentence or a short paragraph." }),
+			kind: Type.Union(MEMORY_KINDS.map((k) => Type.Literal(k)), {
+				description:
+					"user (the user's role, preferences, knowledge), feedback (guidance on how to work), project (decisions, people, dates in the work), or reference (where to find something).",
+			}),
+			scope: scopeT("user (everywhere), host (this machine), project (this project), or session (this session only)."),
+			title: Type.Optional(Type.String({ description: "A short title; default the text's first line." })),
+			description: Type.Optional(Type.String({ description: "One line saying what it is about, for the index." })),
+			links: Type.Optional(Type.Array(Type.String(), { description: "Paths, URLs, or other memories' ids." })),
+		}),
+		async execute(_id: string, params: any, _signal: unknown, _onUpdate: unknown, ctx: any) {
+			if (ctx?.hasUI) ui = ctx.ui;
+			const m = await session.remember(params);
+			return memoryResult(`Remembered ${m.id}: ${m.title}${m.path ? ` (${m.path})` : ""}`, m);
+		},
+	});
+
+	// Forgetting may delete what the user wrote: from `own` up.
+	if (session.level !== "observe") {
+		pi.registerTool({
+			name: "memory_forget",
+			label: "Forget",
+			description:
+				"Forget a memory that is wrong or no longer true: deletes its file. Only when the user asks, or a memory you kept turned out wrong.",
+			parameters: Type.Object({ id: Type.String({ description: "The memory's id, such as project/small-commits." }) }),
+			async execute(_id: string, params: any, _signal: unknown, _onUpdate: unknown, ctx: any) {
+				if (ctx?.hasUI) ui = ctx.ui;
+				const m = await session.forget(params.id);
+				return memoryResult(`Forgot ${m.id}${m.path ? `; removed ${m.path}` : ""}`, m);
+			},
+		});
+	}
+
+	pi.registerCommand("memory", {
+		description: "Dreamer memory: list (default), recall WORDS, show ID, edit ID, or forget ID",
+		getArgumentCompletions: (prefix: string) =>
+			["list", "recall", "show", "edit", "forget"].filter((v) => v.startsWith(prefix)).map((v) => ({ value: v, label: v })),
+		handler: async (args: string, ctx: any) => {
+			if (ctx?.hasUI) ui = ctx.ui;
+			try {
+				const text = await session.memoryCommand(args ?? "", (t) => ctx.ui.editor("Edit the memory's text", t));
+				ui?.notify(text, "info");
+			} catch (e) {
+				ui?.notify(`/memory: ${e instanceof Error ? e.message : String(e)}`, "error");
+			}
+		},
+	});
+
+	// The memory index goes with the session's first prompt. In an agent
+	// session the daemon runs, the daemon adds it instead.
+	let indexed = false;
+	pi.on("before_agent_start", async (event: any) => {
+		if (checking || indexed || session.daemonSession || event?.messageType !== "user") return;
+		indexed = true;
+		const content = await session.memoryIndex().catch(() => undefined);
+		if (!content) return;
+		return { message: { customType: "dreamer-memory", content, display: true } };
+	});
+
 	// Delegation: hand a task to Claude Code or Codex, run headless on the
 	// CLI's own login by `dream agents delegate`, as a job in a window this
 	// session owns so the user can watch it. `agents.pi.delegates` chooses
@@ -593,6 +691,13 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event: any, ctx: any) => {
 		if (ctx?.hasUI) ui = ctx.ui;
 		sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
+		// Memory's session scope is pi's session, unless the daemon runs
+		// this one as its own agent session.
+		if (!session.daemonSession) session.memory.session = sessionId;
+		if (typeof ctx?.cwd === "string" && ctx.cwd !== "") session.memory.cwd = ctx.cwd;
+		// A session that already had its first prompt (resumed) is indexed.
+		const entries: any[] = ctx?.sessionManager?.getEntries?.() ?? [];
+		indexed = entries.some((e) => e?.customType === "dreamer-memory" || e?.message?.role === "user");
 		if (checking) return;
 		// Collector tools appear when the daemon offers them; a daemon that
 		// is not running yet is tried again on the first tool call.

@@ -158,7 +158,47 @@ at every level, since reading notes and adding one are not acting.
 the user wrote, so they come from `own` up. Neither asks for approval.
 
 The daemon's socket belongs to the user, so `dream memory` run by the
-user (or by a harness in the user's shell) holds the owner grant.
+user holds the owner grant. Run by an agent, it holds the agent's grant
+instead: inside an agent session the daemon runs (`DREAMER_SESSION_ID`
+and `DREAMER_SESSION_TICKET` set), it takes the session's grant; under a
+harness started with `DREAMER_AGENT_LEVEL` (`dream agents pi` sets it),
+it narrows to an agent's grant at that level. So an agent at `observe`
+can recall and remember but not forget, whichever way it calls.
+
+## Agents
+
+Every harness uses memory the same way ([agents.md](agents.md#memory)):
+
+- **Tools.** `memory_recall`, `memory_remember`, and `memory_forget`, as
+  pi tools in Dreamer's pi extension and as MCP tools in `dream mcp`
+  ([mcp.md](mcp.md#memory-tools)) for Claude Code, Codex, and other MCP
+  clients. From a shell, `dream memory`. A tool call shows in the chat
+  with what was recalled, remembered, or forgotten.
+- **Context.** The project is the session's working directory; the
+  session scope is the agent session's id.
+- **In the chat.** pi's `/memory` lists, recalls, shows, edits, and
+  forgets memories ([agents.md](agents.md#memory)).
+
+### The index in the first prompt
+
+A session's first prompt starts with the **index** of the scopes it
+reaches (user, host, its project, and its session): a line saying what
+the index is and which tools read and add memories, then one line per
+memory, newest first:
+
+```text
+- project/small-commits: Small commits — One change per commit, subject under 60 characters
+```
+
+The line is the id, the title, and the description (left out when it
+equals the title). It lists at most 40 memories in at most 4096 bytes,
+each line at most 160 characters; a last line counts the memories left
+out. With no memories there is no index. Later prompts go as they are.
+
+For a session the daemon runs (`agent.sessions.send`) the daemon puts the
+index before the first prompt; the transcript keeps the prompt as sent.
+In the harness drawer, Dreamer's pi extension adds it to pi's first
+prompt as a `dreamer-memory` message.
 
 ## CLI
 

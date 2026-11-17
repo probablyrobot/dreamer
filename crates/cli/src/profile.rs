@@ -404,6 +404,11 @@ pub fn launch(args: &[String]) -> Result<(), String> {
         .env("DREAMER_RPC_SOCKET", platform::rpc_socket_path())
         // The delegation tools the extension registers.
         .env("DREAMER_PI_DELEGATES", settings.pi_delegates().join(","));
+    // pi is an agent: its extension, and `dream` commands it runs (such as
+    // `dream memory`), narrow to an agent's grant at this level.
+    if std::env::var_os("DREAMER_AGENT_LEVEL").is_none_or(|v| v.is_empty()) {
+        cmd.env("DREAMER_AGENT_LEVEL", "elsewhere");
+    }
     if let Ok(me) = std::env::current_exe() {
         cmd.env("DREAMER_DREAM_BIN", me);
     }

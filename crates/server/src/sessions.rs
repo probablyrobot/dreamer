@@ -786,6 +786,7 @@ impl Sessions {
         self: &Arc<Self>,
         caller: &Caller,
         p: api::AgentSessionSend,
+        memory: &crate::memories::Memory,
     ) -> Result<api::AgentSession, RpcError> {
         let s = self.get(caller, &p.session)?;
         if s.state() == St::Closed {
@@ -809,6 +810,7 @@ impl Sessions {
             return Err(RpcError::new(code::PRECONDITION, why));
         }
         self.start(&s).await?;
+        let prompt = first_prompt(&s, memory, p.text.clone()).await;
         let run = s.run.lock().await;
         let r = run
             .as_ref()
@@ -820,7 +822,7 @@ impl Sessions {
         ));
         s.set_state(St::Working, None);
         r.control
-            .send(Input::Prompt(p.text))
+            .send(Input::Prompt(prompt))
             .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
         drop(run);
         Ok(s.snapshot())
@@ -1017,6 +1019,24 @@ impl Sessions {
             pane: 0,
             grant: Some(grant),
         })
+    }
+}
+
+/// The prompt the harness gets for `text`: the session's first prompt
+/// starts with the memory index of its scopes (docs/memory.md); later ones
+/// go as they are. The transcript keeps `text` as the user wrote it.
+async fn first_prompt(s: &Session, memory: &crate::memories::Memory, text: String) -> String {
+    let (first, _) = s.read(0, usize::MAX);
+    if first
+        .iter()
+        .any(|e| matches!(e.kind, Some(api::agent_session_event::Kind::UserMessage(_))))
+    {
+        return text;
+    }
+    let cwd = s.info.lock().map(|i| i.s.cwd.clone()).unwrap_or_default();
+    match memory.index(&cwd, &s.id).await {
+        Some(index) => format!("{index}\n\n{text}"),
+        None => text,
     }
 }
 

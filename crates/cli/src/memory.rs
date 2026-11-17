@@ -187,6 +187,8 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     let json = p.json;
     rt()?.block_on(async {
         let mut c = crate::remote::session(d).await?;
+        // Run by an agent, it holds the agent's grant, not the owner's.
+        crate::mcp::as_agent(&c).await?;
         let reply = call(&mut c, request).await?;
         if json {
             let text = match &reply {

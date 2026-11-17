@@ -12,12 +12,14 @@
 //! the daemon runs them off its event loop.
 
 mod files;
+mod index;
 pub mod search;
 mod time;
 
 use std::path::PathBuf;
 
 pub use files::Files;
+pub use index::{INDEX_BYTES, INDEX_HEAD, INDEX_LINES, index};
 
 /// Where a memory applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
