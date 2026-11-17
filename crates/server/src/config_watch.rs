@@ -65,6 +65,7 @@ async fn apply(state: &State) {
             return;
         }
     };
+    state.memory.configure(&settings.memory);
     let policy = tiers(&settings.tiers);
     {
         let mut current = state.tiers.lock().await;

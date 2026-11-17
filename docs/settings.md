@@ -16,7 +16,8 @@ The file is the one place to configure Dreamer, and changes apply live.
     window, including on other machines;
   - the font, chrome, appearance, links, clipboard, and fallback apply in
     every window;
-  - the tier budgets apply to the daemon's panes.
+  - the tier budgets apply to the daemon's panes;
+  - the memory provider applies to the next memory call.
 - **Refusing.** A file that does not read changes nothing. Dreamer keeps
   the settings in force, and the window's tab strip says
   `dreamer.yaml not applied: …` with the reason until the file reads
@@ -65,6 +66,8 @@ tiers:
 drawer:
   side: bottom                           # bottom (default), right, or left
   size: 35                               # default; percent of the window, 10 to 90
+memory:
+  provider: files                        # default; the only provider so far
 ```
 
 ## Font
@@ -279,6 +282,18 @@ the window it is shown in. A change applies the next time it is shown.
 drawer:
   side: bottom     # bottom (default), right, or left; always the whole window's width or height
   size: 35         # percent of the window's height (bottom) or width (sides), 10 to 90; `35%` also reads
+```
+
+## Memory
+
+`memory:` chooses what keeps durable memory: `provider: files` (the
+default) keeps one markdown file per memory and a `MEMORY.md` index, under
+`<config dir>/memory/` for the user and `.dreamer/memory/` in a project.
+A change applies to the next memory call. See [memory.md](memory.md).
+
+```yaml
+memory:
+  provider: files
 ```
 
 ## Agent providers

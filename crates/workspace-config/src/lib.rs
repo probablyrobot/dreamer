@@ -26,8 +26,8 @@ pub use plan::{Arrange, PanePlan, PaneRef, Plan, SizeArg, SplitStep, Start, Wind
 pub use schema::{Direction, NodeSpec, Size, WindowSpec, WorkspaceFile};
 pub use settings::{
     Appearance, ClipboardSettings, ClipboardTmux, ClipboardWrite, DrawerSettings, DrawerSide,
-    FallbackSettings, FontSettings, LinkSettings, MiddleClick, Settings, TierSettings,
-    load_settings, settings_path,
+    FallbackSettings, FontSettings, LinkSettings, MemoryProvider, MemorySettings, MiddleClick,
+    Settings, TierSettings, load_settings, settings_path,
 };
 
 use std::path::{Path, PathBuf};

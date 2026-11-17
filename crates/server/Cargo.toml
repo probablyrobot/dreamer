@@ -15,6 +15,7 @@ path = "src/main.rs"
 api = { path = "../api" }
 client = { path = "../client" }
 matcher = { path = "../matcher" }
+memory = { path = "../memory" }
 procreg = { path = "../procreg" }
 script-runtime = { path = "../script-runtime" }
 serde_json = "1.0.154"

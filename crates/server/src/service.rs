@@ -106,6 +106,8 @@ pub struct State {
     pub filters: crate::filters::Filters,
     /// Collectors and their tables.
     pub collectors: crate::collectors::Collectors,
+    /// Durable memory, through the configured provider.
+    pub memory: crate::memories::Memory,
     /// Marks filters put on lines, for clients to draw.
     pub decorations: crate::decorations::Decorations,
     /// What provider hooks report about their sessions.
@@ -1395,6 +1397,30 @@ impl api::Service for DaemonService {
         p: api::CollectorSpec,
     ) -> Result<api::CollectorStatus, RpcError> {
         crate::collectors::create(&self.0, p).await
+    }
+
+    async fn memory_recall(&self, p: api::MemoryRecall) -> Result<api::MemoryItems, RpcError> {
+        self.0.memory.recall(p).await
+    }
+
+    async fn memory_remember(&self, p: api::MemoryRemember) -> Result<api::MemoryItem, RpcError> {
+        self.0.memory.remember(p).await
+    }
+
+    async fn memory_list(&self, p: api::MemoryListQuery) -> Result<api::MemoryItems, RpcError> {
+        self.0.memory.list(p).await
+    }
+
+    async fn memory_get(&self, p: api::MemoryRef) -> Result<api::MemoryItem, RpcError> {
+        self.0.memory.get(p).await
+    }
+
+    async fn memory_update(&self, p: api::MemoryUpdate) -> Result<api::MemoryItem, RpcError> {
+        self.0.memory.update(p).await
+    }
+
+    async fn memory_forget(&self, p: api::MemoryRef) -> Result<api::MemoryItem, RpcError> {
+        self.0.memory.forget(p).await
     }
 
     async fn collect_list(&self, _: api::Empty) -> Result<api::CollectList, RpcError> {

@@ -2592,3 +2592,58 @@ fn the_drawer_toggles_from_a_shell_and_asks_before_replacing_its_harness() {
     assert_eq!(fresh["created"], true);
     assert_ne!(fresh["pane"].as_u64(), Some(pane));
 }
+
+/// `dream memory`: what it remembers is a plain file in the project, a
+/// person's edit is what it shows next, and forget takes the file.
+#[test]
+fn dream_memory_keeps_plain_files_a_person_can_edit() {
+    let cli = Cli::new();
+    let project = cli.root.join("work/app");
+    std::fs::create_dir_all(project.join(".git")).expect("project");
+    let cwd = project.display().to_string();
+    let out = cli.ok(&[
+        "memory",
+        "remember",
+        "--kind",
+        "feedback",
+        "--scope",
+        "project",
+        "--cwd",
+        &cwd,
+        "--title",
+        "Small commits",
+        "--",
+        "Keep",
+        "commits",
+        "small",
+    ]);
+    assert!(out.starts_with("remembered project/small-commits"), "{out}");
+    let file = project.join(".dreamer/memory/small-commits.md");
+    let text = std::fs::read_to_string(&file).expect("file");
+    assert!(text.starts_with("---\nname: Small commits\n"), "{text}");
+    assert!(text.ends_with("---\n\nKeep commits small\n"), "{text}");
+    std::fs::write(
+        &file,
+        text.replace("Keep commits small", "Keep commits tiny"),
+    )
+    .expect("edit");
+
+    let list: serde_json::Value =
+        serde_json::from_str(&cli.ok(&["memory", "list", "--cwd", &cwd, "--json"])).expect("json");
+    assert_eq!(list["items"][0]["id"], "project/small-commits");
+    assert_eq!(list["items"][0]["kind"], "feedback");
+    assert_eq!(list["items"][0]["text"], "Keep commits tiny");
+    let recalled = cli.ok(&["memory", "recall", "tiny", "--cwd", &cwd]);
+    assert!(recalled.contains("Keep commits tiny"), "{recalled}");
+    assert!(
+        cli.ok(&["memory", "recall", "tiny", "--cwd", &cwd, "--scope", "user"])
+            .contains("nothing recalled")
+    );
+
+    cli.ok(&["memory", "forget", "project/small-commits", "--cwd", &cwd]);
+    assert!(!file.exists());
+    let index = std::fs::read_to_string(project.join(".dreamer/memory/MEMORY.md")).expect("index");
+    assert_eq!(index, "");
+    let out = cli.on_tmux(&["memory", "get", "project/small-commits", "--cwd", &cwd]);
+    assert!(!out.status.success());
+}

@@ -38,6 +38,13 @@ pub fn agent_methods(level: i32) -> Vec<String> {
         method::COLLECT_CREATE,
         method::COLLECT_LIST,
         method::COLLECT_QUERY,
+        // Memory is the agent's own notes, not the user's terminals:
+        // reading and adding a memory are open to every level. Changing
+        // or deleting one, which may be the user's, is an action.
+        method::MEMORY_RECALL,
+        method::MEMORY_LIST,
+        method::MEMORY_GET,
+        method::MEMORY_REMEMBER,
     ];
     if level >= ActLevel::Own as i32 {
         m.extend([
@@ -47,6 +54,8 @@ pub fn agent_methods(level: i32) -> Vec<String> {
             method::JOBS_START,
             method::JOBS_CANCEL,
             method::COLLECT_STOP,
+            method::MEMORY_UPDATE,
+            method::MEMORY_FORGET,
         ]);
     }
     m.into_iter().map(str::to_owned).collect()

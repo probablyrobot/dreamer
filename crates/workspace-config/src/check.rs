@@ -283,6 +283,14 @@ pub const SCHEMA: &[Key] = &[
         example: "256",
         live: true,
     },
+    Key {
+        path: "memory.provider",
+        kind: "files",
+        default: "files",
+        doc: "What keeps durable memory (dream memory, the memory.* API): files is one markdown file per memory and a MEMORY.md index, under <config dir>/memory/ for the user and .dreamer/memory/ in a project.",
+        example: "files",
+        live: true,
+    },
 ];
 
 /// What the live configuration files look like now: `dreamer.yaml` and

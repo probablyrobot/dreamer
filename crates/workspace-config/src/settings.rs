@@ -28,6 +28,29 @@ pub struct Settings {
     pub tiers: TierSettings,
     pub agents: crate::agents::AgentSettings,
     pub drawer: DrawerSettings,
+    pub memory: MemorySettings,
+}
+
+/// Durable memory (see `docs/memory.md`): which provider keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MemorySettings {
+    pub provider: MemoryProvider,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryProvider {
+    /// Markdown files with frontmatter and a `MEMORY.md` index.
+    #[default]
+    Files,
+}
+
+impl MemoryProvider {
+    pub fn name(self) -> &'static str {
+        match self {
+            MemoryProvider::Files => "files",
+        }
+    }
 }
 
 /// Where the harness drawer docks in a window, and how much of it it takes.
@@ -337,6 +360,7 @@ impl Default for Settings {
             tiers: TierSettings::default(),
             agents: crate::agents::AgentSettings::default(),
             drawer: DrawerSettings::default(),
+            memory: MemorySettings::default(),
         }
     }
 }
@@ -362,6 +386,14 @@ struct File {
     agents: Option<serde_norway::Value>,
     #[serde(default)]
     drawer: DrawerFile,
+    #[serde(default)]
+    memory: MemoryFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryFile {
+    provider: Option<MemoryProvider>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -728,6 +760,9 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
             }
         };
     }
+    if let Some(p) = file.memory.provider {
+        s.memory.provider = p;
+    }
     Ok(s)
 }
 
@@ -754,6 +789,15 @@ mod tests {
         assert_eq!(s, Settings::default());
         assert_eq!(s.font.family, "JetBrainsMono Nerd Font Mono");
         assert_eq!(s.font.size, 13.0);
+    }
+
+    #[test]
+    fn memory_takes_a_known_provider() {
+        let s = parse_settings("memory:\n  provider: files\n", None).expect("files");
+        assert_eq!(s.memory.provider, MemoryProvider::Files);
+        let e = parse_settings("memory:\n  provider: notes\n", None).expect_err("notes");
+        assert!(e.message.contains("files"), "{e}");
+        assert!(parse_settings("memory:\n  path: x\n", None).is_err());
     }
 
     #[test]

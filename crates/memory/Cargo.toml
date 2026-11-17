@@ -1,0 +1,15 @@
+[package]
+name = "memory"
+description = "Durable memory: the provider interface and the files provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_norway = "0.9.42"
+
+[lints]
+workspace = true

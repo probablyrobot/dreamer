@@ -37,6 +37,7 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `jobs.start`, `jobs.cancel` | `all_panes` (a job gets its own window; cancelling signals a process) |
 | `collect.create` | The listed panes in scope when `from` lists panes; any other `from` needs `all_panes` (see [collectors.md](collectors.md#grants)) |
 | `collect.list`, `collect.query`, `collect.stop` | `all_panes` |
+| `memory.*` | Only the method; memory touches no pane (see [memory.md](memory.md#grants)) |
 | `terminal.query` | The listed panes in scope; no panes (every pane) or any `hosts` needs `all_panes` |
 | `actions.submit` on a pane (split, resize, select, zoom, input, keys, kill) | That pane in scope |
 | `actions.submit` on a window or session (select, rename, kill, new window) | `all_panes` |
@@ -90,6 +91,10 @@ Reading, searching, watching, and listing are never acting. Neither is
 starting or querying a collector: collectors only read panes, so any
 level may create and query them. Stopping one is an action (it may be the
 user's), given from `own` up ([collectors.md](collectors.md#grants)).
+Memory is not acting either: every level may recall, list, get, and
+remember. Changing or forgetting a memory, which may be one the user
+wrote, is given from `own` up and never asks
+([memory.md](memory.md#grants)).
 
 **Ownership.** A connection owns the panes it creates: the new pane of a
 split or new window, a job's pane, a `terminal.run` pane. Ownership
