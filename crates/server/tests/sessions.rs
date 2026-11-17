@@ -520,12 +520,74 @@ async fn a_session_grant_stays_within_its_creators_and_binds_its_harness() {
         .await
         .expect_err("refused");
     assert!(e.to_string().contains("wrong session ticket"), "{e}");
+    close_session(&owner, &s.id).await;
+}
+
+async fn close_session(c: &Client, id: &str) {
     session_of(
-        owner
-            .call(Request::AgentSessionsClose(api::AgentSessionRef {
-                session: s.id.clone(),
-            }))
-            .await
-            .expect("close"),
+        c.call(Request::AgentSessionsClose(api::AgentSessionRef {
+            session: id.into(),
+        }))
+        .await
+        .expect("close"),
     );
+}
+
+#[tokio::test]
+async fn no_prompt_reaches_pi_without_a_login_and_turns_stay_on_the_pinned_provider() {
+    let setup = Setup::new();
+    let agent_dir = setup.root.join("data/pi-profile");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    // pi reports no login for any provider.
+    std::fs::write(agent_dir.join("fake-pi-logins"), "").expect("logins");
+    let c = setup.client().await;
+
+    // A session starts without a login, with no automatic network use.
+    let s = create(&c, &setup.root).await;
+    assert_eq!(s.state, api::AgentSessionState::Idle as i32);
+    let log = setup.harness_log();
+    assert!(log.contains("start:offline=1"), "{log}");
+    assert!(
+        log.contains("auth:openai-codex:not_ready:offline=1"),
+        "{log}"
+    );
+
+    // A prompt is refused before pi is asked anything, saying how to log in.
+    let r = c
+        .call(Request::AgentSessionsSend(api::AgentSessionSend {
+            session: s.id.clone(),
+            text: "hello".into(),
+        }))
+        .await;
+    match r {
+        Err(client::ClientError::Rpc(e)) => {
+            assert_eq!(e.code, api::code::PRECONDITION, "{e}");
+            assert!(e.message.contains("auth login openai-codex"), "{e}");
+        }
+        other => panic!("a prompt without a login was not refused: {other:?}"),
+    }
+    let log = setup.harness_log();
+    assert!(
+        !log.contains("turn:"),
+        "pi was asked for a model turn:\n{log}"
+    );
+
+    // With pi's own login reported, the prompt goes through, and the turn
+    // is held to the pinned provider, not the one pi picked by itself.
+    std::fs::write(agent_dir.join("fake-pi-logins"), "openai-codex\n").expect("logins");
+    let mut f = Follower::new(&setup, &s.id).await;
+    send(&c, &s.id, "hello").await;
+    let k = f.until(turn_end).await;
+    assert_eq!(stop_reason(&k), api::AgentStopReason::EndTurn);
+    let log = setup.harness_log();
+    assert!(
+        log.contains("set_model:openai-codex/openai-codex-small"),
+        "{log}"
+    );
+    assert!(log.contains("turn:openai-codex"), "{log}");
+    assert!(
+        !log.contains("turn:radius"),
+        "a turn reached pi's own default:\n{log}"
+    );
+    close_session(&c, &s.id).await;
 }

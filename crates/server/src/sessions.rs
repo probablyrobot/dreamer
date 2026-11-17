@@ -348,6 +348,25 @@ fn resolve(program: &str) -> Option<PathBuf> {
     }
 }
 
+/// pi's own login check for the provider `spec` is pinned to, off the
+/// daemon's async threads.
+async fn login_gate(spec: &providers::session::Spec) -> Result<(), String> {
+    let (program, args) = (spec.program.clone(), spec.args.clone());
+    let dir = spec
+        .agent_dir
+        .clone()
+        .unwrap_or_else(providers::pi::profile_dir);
+    let provider = spec
+        .provider
+        .clone()
+        .ok_or("no provider is pinned for pi")?;
+    tokio::task::spawn_blocking(move || {
+        providers::pi::require_login(&program, &args, &dir, &provider)
+    })
+    .await
+    .map_err(|e| format!("the login check failed: {e}"))?
+}
+
 /// How to start `harness` for a session, from the settings in force.
 fn spec(info: &Info, env: Vec<(String, String)>) -> Result<providers::session::Spec, String> {
     let settings = workspace_config::load_settings().map_err(|e| e.to_string())?;
@@ -381,13 +400,18 @@ fn spec(info: &Info, env: Vec<(String, String)>) -> Result<providers::session::S
             d
         }
     };
+    let model = info.s.model.clone().or(h.model);
+    let provider = providers::pi::pinned_provider(model.as_deref(), &agent_dir)?;
     Ok(providers::session::Spec {
         program,
         args,
         cwd: PathBuf::from(&info.s.cwd),
         env,
         agent_dir: Some(agent_dir),
-        model: info.s.model.clone().or(h.model),
+        model,
+        provider: Some(provider),
+        // Decided by the login check when the harness starts.
+        offline: true,
         // pi keeps a session on disk once it has a message; resuming one
         // that never had any would fail, and loses nothing when skipped.
         resume: info.harness_file.clone().filter(|f| Path::new(f).is_file()),
@@ -606,7 +630,11 @@ impl Sessions {
             spec(&info, env)
         };
         let started = match spec {
-            Ok(spec) => providers::pi_rpc::start(&spec).await,
+            Ok(mut spec) => {
+                // Without a login, pi runs with no automatic network use.
+                spec.offline = login_gate(&spec).await.is_err();
+                providers::pi_rpc::start(&spec).await
+            }
             Err(e) => Err(e),
         };
         let mut h = match started {
@@ -672,6 +700,17 @@ impl Sessions {
         }
         if p.text.trim().is_empty() {
             return Err(RpcError::new(code::INVALID_PARAMS, "the prompt is empty"));
+        }
+        // No model turn without a real login: refused before pi is started
+        // or sent anything.
+        let spec = {
+            let info = s.info.lock().unwrap_or_else(|e| e.into_inner());
+            spec(&info, Vec::new())
+        }
+        .map_err(|e| RpcError::new(code::UNAVAILABLE, e))?;
+        if let Err(why) = login_gate(&spec).await {
+            log::info(format!("agent session {}: prompt refused: {why}", s.id));
+            return Err(RpcError::new(code::PRECONDITION, why));
         }
         self.start(&s).await?;
         let run = s.run.lock().await;

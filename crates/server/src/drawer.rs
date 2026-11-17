@@ -97,12 +97,15 @@ pub fn harness_launch(settings: &Settings, session: TmuxSessionId) -> HarnessLau
     }
     let mut problem = None;
     let argv = if let Some(c) = &block.command {
+        // The user's own command, run exactly as given.
         c.clone()
     } else if name == "pi" {
         let install = providers::pi::Install::default();
-        // `dream agents pi` checks Dreamer's profile (restoring the last
-        // good one if a change broke loading), removes API-key variables,
-        // passes the configured model, then runs pi.
+        // pi starts only through `dream agents pi`: it checks Dreamer's
+        // profile (restoring the last good one if a change broke loading),
+        // shows the login step when pi has no login (so no turn starts on
+        // a provider pi picks itself), pins the provider, removes API-key
+        // variables, then runs pi.
         let dream = std::env::var_os("DREAMER_DREAM")
             .map(std::path::PathBuf::from)
             .or_else(|| {
@@ -112,18 +115,24 @@ pub fn harness_launch(settings: &Settings, session: TmuxSessionId) -> HarnessLau
             })
             .filter(|p| p.is_file());
         let have_pi = install.current().is_some() || which("pi").is_some();
-        if let (Some(dream), true) = (dream, have_pi) {
-            vec![dream.display().to_string(), "agents".into(), "pi".into()]
-        } else if install.current().is_some() {
-            vec![install.command().display().to_string()]
-        } else if let Some(p) = which("pi") {
-            vec![p]
-        } else {
-            problem = Some(
-                "pi is not installed. Run `dream agents update` to install it, then open the drawer again."
-                    .to_owned(),
-            );
-            Vec::new()
+        match (dream, have_pi) {
+            (Some(dream), true) => {
+                vec![dream.display().to_string(), "agents".into(), "pi".into()]
+            }
+            (_, false) => {
+                problem = Some(
+                    "pi is not installed. Run `dream agents update` to install it, then open the drawer again."
+                        .to_owned(),
+                );
+                Vec::new()
+            }
+            (None, true) => {
+                problem = Some(
+                    "`dream` was not found beside dreamerd (or in DREAMER_DREAM); Dreamer starts pi only through `dream agents pi`, which checks pi's login first."
+                        .to_owned(),
+                );
+                Vec::new()
+            }
         }
     } else if let Some(p) = which(&name) {
         vec![p]

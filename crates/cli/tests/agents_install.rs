@@ -254,3 +254,42 @@ fn config_check_reports_each_harness_and_refuses_a_bad_block() {
         "{text}"
     );
 }
+
+/// `dream agents pi` with no login shows the login step and does not start
+/// pi; with pi's own login reported, it starts pi, sending it nothing.
+#[test]
+fn dream_agents_pi_shows_the_login_step_before_starting_pi() {
+    let e = Env::new("login");
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/testdata/fake-pi");
+    let agent = e.root.join("agent");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    std::fs::write(agent.join("fake-pi-logins"), "").expect("logins");
+    e.settings(&format!(
+        "agents:\n  pi:\n    command: [/bin/sh, {}]\n    agent_dir: {}\n",
+        fake.display(),
+        agent.display()
+    ));
+    let log = || std::fs::read_to_string(agent.join("fake-pi.log")).unwrap_or_default();
+
+    let out = e.run(&["agents", "pi"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "pi started without a login: {err}");
+    assert!(err.contains("auth login openai-codex"), "{err}");
+    assert!(
+        log().contains("auth:openai-codex:not_ready:offline=1"),
+        "{}",
+        log()
+    );
+    assert!(!log().contains("args:"), "pi was started:\n{}", log());
+
+    std::fs::write(agent.join("fake-pi-logins"), "openai-codex\n").expect("logins");
+    let out = e.run(&["agents", "pi"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(log().contains("args:"), "pi was not started:\n{}", log());
+    assert!(log().contains("key:none"), "{}", log());
+    assert!(!log().contains("turn:"), "a turn was started:\n{}", log());
+}

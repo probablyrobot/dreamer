@@ -495,16 +495,27 @@ pub struct Login {
 /// variables are left out, so only pi's own login counts. pi never prints
 /// a credential for this command.
 pub fn login(program: &Path, agent_dir: &Path, provider: &str) -> Login {
+    auth_check(program, &[], agent_dir, provider, false)
+}
+
+/// `pi auth check --provider P --json` in agent directory `agent_dir`.
+/// `prefix` are the arguments a configured command puts before pi's own
+/// (`agents.pi.command`). With `refresh`, pi may renew an expired login
+/// itself, as it would before a turn; without it, `--no-refresh`. It runs
+/// with `PI_OFFLINE=1` and without API key variables.
+pub fn auth_check(
+    program: &Path,
+    prefix: &[String],
+    agent_dir: &Path,
+    provider: &str,
+    refresh: bool,
+) -> Login {
     let mut c = pi_command(program);
-    c.args([
-        "auth",
-        "check",
-        "--provider",
-        provider,
-        "--no-refresh",
-        "--json",
-    ])
-    .env("PI_CODING_AGENT_DIR", agent_dir);
+    c.args(prefix)
+        .args(["auth", "check", "--provider", provider])
+        .args((!refresh).then_some("--no-refresh"))
+        .arg("--json")
+        .env("PI_CODING_AGENT_DIR", agent_dir);
     for v in SCRUBBED {
         c.env_remove(v);
     }
@@ -531,9 +542,139 @@ pub fn login(program: &Path, agent_dir: &Path, provider: &str) -> Login {
     }
 }
 
+/// pi's subscription providers, the only ones Dreamer starts a model turn
+/// on: OpenAI and OpenAI Codex (a ChatGPT subscription signs in to either)
+/// and Anthropic (Claude Pro or Max).
+pub const SUBSCRIPTION_PROVIDERS: [&str; 3] = ["openai", "openai-codex", "anthropic"];
+
+/// The provider Dreamer pins pi to: the one a `provider/id` model names,
+/// else `defaultProvider` in the agent directory's `settings.json`, else
+/// the one in Dreamer's own profile. Anything but a subscription provider
+/// is refused, so pi never chooses a provider of its own.
+pub fn pinned_provider(model: Option<&str>, agent_dir: &Path) -> Result<String, String> {
+    let check = |p: &str, from: &str| {
+        if SUBSCRIPTION_PROVIDERS.contains(&p) {
+            Ok(p.to_owned())
+        } else {
+            Err(format!(
+                "{from} names pi provider `{p}`; Dreamer runs pi only on a subscription login ({})",
+                SUBSCRIPTION_PROVIDERS.join(", ")
+            ))
+        }
+    };
+    if let Some((p, _)) = model.and_then(|m| m.split_once('/')) {
+        return check(p, &format!("the model `{}`", model.unwrap_or_default()));
+    }
+    let settings = agent_dir.join("settings.json");
+    if let Ok(text) = std::fs::read_to_string(&settings) {
+        let v: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("{}: not JSON ({e})", settings.display()))?;
+        if let Some(p) = v["defaultProvider"].as_str() {
+            return check(p, &settings.display().to_string());
+        }
+    }
+    let shipped = crate::pi_profile::BASE
+        .iter()
+        .find(|(p, _)| *p == "settings.json")
+        .and_then(|(_, t)| serde_json::from_str::<serde_json::Value>(t).ok())
+        .and_then(|v| v["defaultProvider"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| SUBSCRIPTION_PROVIDERS[0].to_owned());
+    check(&shipped, "Dreamer's pi profile")
+}
+
+/// A word for a shell command line, quoted when it needs to be.
+pub fn shell_word(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+=:".contains(c))
+    {
+        s.to_owned()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// The command that logs pi in to `provider`, for a person to run.
+pub fn login_command(
+    program: &Path,
+    prefix: &[String],
+    agent_dir: &Path,
+    provider: &str,
+) -> String {
+    let mut words = vec![
+        format!(
+            "PI_CODING_AGENT_DIR={}",
+            shell_word(&agent_dir.display().to_string())
+        ),
+        shell_word(&program.display().to_string()),
+    ];
+    words.extend(prefix.iter().map(|a| shell_word(a)));
+    words.extend(["auth".into(), "login".into(), provider.to_owned()]);
+    words.join(" ")
+}
+
+/// The gate before every model turn Dreamer starts in pi: pi itself must
+/// report a ready login for `provider` (`pi auth check`, which may renew an
+/// expired login). The error says how to log in. Dreamer never reads pi's
+/// credentials to decide this.
+pub fn require_login(
+    program: &Path,
+    prefix: &[String],
+    agent_dir: &Path,
+    provider: &str,
+) -> Result<(), String> {
+    let l = auth_check(program, prefix, agent_dir, provider, true);
+    if l.status == "ready" {
+        return Ok(());
+    }
+    let why = match &l.reason {
+        Some(r) if !r.is_empty() => format!("{}: {r}", l.status),
+        _ => l.status.clone(),
+    };
+    Err(format!(
+        "pi is not logged in to `{provider}` ({why}), so Dreamer starts no model turn \
+         (without a login pi would fall back to a provider of its own). Log in with \
+         `{}`, or run `/login {provider}` inside `dream agents pi`",
+        login_command(program, prefix, agent_dir, provider)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_provider_is_pinned_and_only_to_a_subscription() {
+        let dir = std::env::temp_dir().join(format!("drm-pin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        // Nothing in the agent directory: Dreamer's profile decides.
+        let shipped = pinned_provider(None, &dir).expect("shipped");
+        assert!(SUBSCRIPTION_PROVIDERS.contains(&shipped.as_str()));
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"defaultProvider":"anthropic"}"#,
+        )
+        .expect("settings");
+        assert_eq!(pinned_provider(None, &dir).as_deref(), Ok("anthropic"));
+        assert_eq!(
+            pinned_provider(Some("openai-codex/gpt-x"), &dir).as_deref(),
+            Ok("openai-codex")
+        );
+        // A bare model id keeps the settings' provider.
+        assert_eq!(
+            pinned_provider(Some("gpt-x"), &dir).as_deref(),
+            Ok("anthropic")
+        );
+        assert!(pinned_provider(Some("radius/balanced"), &dir).is_err());
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"defaultProvider":"openrouter"}"#,
+        )
+        .expect("settings");
+        assert!(pinned_provider(None, &dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn release_numbers_are_strict_and_sort_by_number() {
