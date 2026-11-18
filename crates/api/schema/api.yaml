@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 58 }
+version: { major: 1, minor: 59 }
 package: dreamer.v1
 
 types:
@@ -861,6 +861,8 @@ types:
       - { n: 2, name: pane, type: u32 }
       - { n: 3, name: path, type: string }
       - { n: 4, name: seq, type: u64 }
+      - { n: 5, name: method, type: string, doc: "A web.* method (web.read, web.screenshot, web.click, web.type) to run on the pane's page instead of taking an image; empty for apps.capture." }
+      - { n: 6, name: params, type: string, doc: "That method's parameters, as the API's JSON." }
 
   - message: AppCaptureDone
     fields:
@@ -868,6 +870,7 @@ types:
       - { n: 2, name: error, type: string, optional: true, doc: "Why this desktop wrote no image (for example, it does not show the pane); absent when it wrote one." }
       - { n: 3, name: width, type: u32 }
       - { n: 4, name: height, type: u32 }
+      - { n: 5, name: result, type: string, doc: "For a request with a method, its result as the API's JSON." }
 
   - message: AppCall
     doc: >-
@@ -1791,6 +1794,66 @@ types:
       - { n: 2, name: url, type: string, doc: "A URL or a typed address, as in WebOpen." }
       - { n: 3, name: endpoint, type: string, optional: true }
 
+  - message: WebRead
+    doc: >-
+      Read the page of a web pane, or of an app pane whose view is a page
+      (a web app), from the desktop showing it. Needs web.inspect in the
+      caller's grant.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: tree, type: bool, doc: "Also the page's accessibility tree." }
+      - { n: 3, name: wait_ms, type: u32, optional: true, doc: "How long to wait for the desktop's answer; default 10000, at most 60000." }
+
+  - message: WebNode
+    doc: "A node of a page's accessibility tree, in document order."
+    fields:
+      - { n: 1, name: node, type: u64, doc: "The element's id for web.click and web.type, valid while the page stays loaded; 0 when the node is not an element." }
+      - { n: 2, name: depth, type: u32, doc: "How many of the nodes listed contain it." }
+      - { n: 3, name: role, type: string, doc: "Its role, such as heading, link, textbox, or button." }
+      - { n: 4, name: name, type: string, doc: "Its accessible name." }
+      - { n: 5, name: value, type: string, doc: "Its value, for a field." }
+
+  - message: WebPage
+    fields:
+      - { n: 1, name: url, type: string }
+      - { n: 2, name: title, type: string }
+      - { n: 3, name: text, type: string, doc: "The page's text as it is rendered (the body's innerText), at most 100000 characters." }
+      - { n: 4, name: nodes, type: WebNode, repeated: true, doc: "With tree: the accessibility tree without ignored, generic, and inline text nodes, at most 2000 nodes." }
+      - { n: 5, name: truncated, type: bool, doc: "The text or the tree was cut at its bound." }
+
+  - message: WebScreenshot
+    doc: "An image of the page of a web pane (or a web app's pane) as Chromium draws it, written as a PNG file by the desktop showing it. Needs web.inspect."
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: path, type: string, doc: "Absolute path of the PNG file; replaced when it exists." }
+      - { n: 3, name: wait_ms, type: u32, optional: true }
+
+  - message: WebClick
+    doc: >-
+      Click an element of the page of a web pane (or a web app's pane): a
+      mouse click in the middle of the element, once it is scrolled into
+      view. Name the element by node (from web.read's tree) or by a CSS
+      selector (its first match). Needs web.inspect.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: node, type: u64, optional: true }
+      - { n: 3, name: selector, type: string, optional: true }
+      - { n: 4, name: wait_ms, type: u32, optional: true }
+
+  - message: WebType
+    doc: >-
+      Type text into the page of a web pane (or a web app's pane): into the
+      element named by node or selector, focused first, else into what has
+      the page's focus. The text is inserted at the caret as typed; the
+      clipboard is not used. Needs web.inspect.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: node, type: u64, optional: true }
+      - { n: 3, name: selector, type: string, optional: true }
+      - { n: 4, name: text, type: string }
+      - { n: 5, name: submit, type: bool, doc: "Then press Enter, which submits a form from one of its fields." }
+      - { n: 6, name: wait_ms, type: u32, optional: true }
+
   # ---- agent sessions -----------------------------------------------------
 
   - enum: AgentSessionState
@@ -2161,6 +2224,10 @@ methods:
   - { method: web.open, params: WebOpen, result: WebOpened, mutation: true, doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner, or an agent at own or elsewhere, which asks before splitting a pane it did not create)." }
   - { method: web.state, params: WebState, result: Empty, mutation: true, doc: "Keep a web pane's page title and scroll position in its placeholder (owner only; the desktop drawing the page reports them)." }
   - { method: web.navigate, params: WebNavigate, result: Empty, mutation: true, doc: "Load another address in a web pane: its URL in tmux changes, and the desktop drawing it navigates there (owner, or an agent at own or elsewhere, which asks for a pane it did not create)." }
+  - { method: web.read, params: WebRead, result: WebPage, doc: "A page's address, title, text, and (tree) accessibility tree, from the desktop showing it (needs web.inspect in the grant)." }
+  - { method: web.screenshot, params: WebScreenshot, result: AppCaptured, mutation: true, doc: "A page as Chromium draws it, written as a PNG file by the desktop showing it (needs web.inspect)." }
+  - { method: web.click, params: WebClick, result: Empty, mutation: true, doc: "Click an element of a page, by node or CSS selector (needs web.inspect; an agent acts on the pane, under its act level)." }
+  - { method: web.type, params: WebType, result: Empty, mutation: true, doc: "Type text into a page, into an element focused first if named, then optionally press Enter (needs web.inspect; an agent acts on the pane, under its act level)." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the

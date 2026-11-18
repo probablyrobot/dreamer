@@ -601,6 +601,51 @@ struct BrowserOpen {
     new_window: bool,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WebRead {
+    /// A web pane, or the pane of a web app.
+    pane: u32,
+    /// Also the page's accessibility tree: each node's id (for web_click
+    /// and web_type), depth, role, name, and value.
+    #[serde(default)]
+    tree: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WebPane {
+    /// A web pane, or the pane of a web app.
+    pane: u32,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WebClick {
+    /// A web pane, or the pane of a web app.
+    pane: u32,
+    /// The element: a node id from web_read's tree.
+    node: Option<u64>,
+    /// Or the element: a CSS selector (its first match).
+    selector: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WebType {
+    /// A web pane, or the pane of a web app.
+    pane: u32,
+    /// The text, inserted at the caret.
+    text: String,
+    /// The element to focus first: a node id from web_read's tree.
+    node: Option<u64>,
+    /// Or the element to focus first: a CSS selector (its first match).
+    selector: Option<String>,
+    /// Then press Enter, which submits a form from one of its fields.
+    #[serde(default)]
+    submit: bool,
+}
+
 fn direction(d: Option<&str>) -> Result<api::SplitDirection, String> {
     match d {
         None | Some("vertical") => Ok(api::SplitDirection::Vertical),
@@ -1698,6 +1743,87 @@ impl Dreamer {
     }
 
     #[tool(
+        description = "Read a page the user's Dreamer window shows, in a web pane or a web app's pane: its address, title, and text, and with `tree` its accessibility tree (each node's id, depth, role, name, and value). Needs the web.inspect capability in your grant."
+    )]
+    async fn web_read(
+        &self,
+        Parameters(p): Parameters<WebRead>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::WebRead(api::WebRead {
+            pane: p.pane,
+            tree: p.tree,
+            wait_ms: None,
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "Click an element of a page in a web pane or a web app's pane, named by `node` (an id from web_read's tree) or `selector` (CSS, its first match): it is scrolled into view and clicked in its middle, as with a mouse. Needs web.inspect; in a pane you did not open it may wait for the user's approval."
+    )]
+    async fn web_click(
+        &self,
+        Parameters(p): Parameters<WebClick>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::WebClick(api::WebClick {
+            pane: p.pane,
+            node: p.node,
+            selector: p.selector,
+            wait_ms: None,
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "Type text into a page in a web pane or a web app's pane: into the element named by `node` or `selector` (focused first), else where the page's focus is; with `submit`, then press Enter, which submits a form from its field. The clipboard is not used. Needs web.inspect; in a pane you did not open it may wait for the user's approval."
+    )]
+    async fn web_type(
+        &self,
+        Parameters(p): Parameters<WebType>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::WebType(api::WebType {
+            pane: p.pane,
+            node: p.node,
+            selector: p.selector,
+            text: p.text,
+            submit: p.submit,
+            wait_ms: None,
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "An image of a page in a web pane or a web app's pane, as Chromium draws it in the user's Dreamer window: the page only, at the display's scale. Needs web.inspect."
+    )]
+    async fn web_screenshot(
+        &self,
+        Parameters(p): Parameters<WebPane>,
+    ) -> Result<CallToolResult, ErrorData> {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file =
+            std::env::temp_dir().join(format!("dreamer-mcp-web-{}-{n}.png", std::process::id()));
+        let shot = self
+            .client
+            .call(api::Request::WebScreenshot(api::WebScreenshot {
+                pane: p.pane,
+                path: file.display().to_string(),
+                wait_ms: None,
+            }))
+            .await;
+        let png = std::fs::read(&file);
+        let _ = std::fs::remove_file(&file);
+        Ok(match (shot, png) {
+            (Ok(api::Response::WebScreenshot(got)), Ok(bytes)) => CallToolResult::success(vec![
+                ContentBlock::image(crate::appdir::base64(&bytes), "image/png"),
+                ContentBlock::text(format!("{}x{} pixels", got.width, got.height)),
+            ]),
+            (Ok(_), Ok(_)) => failed("web.screenshot: unexpected answer".into()),
+            (Ok(_), Err(e)) => failed(format!("{}: {e}", file.display())),
+            (Err(e), _) => failed(e.to_string()),
+        })
+    }
+
+    #[tool(
         description = "Open an installed app for the user in a pane beside the pane you run in (or `beside` another pane, or in a new window), with the grant it declares; that grant must be within yours. You own the new pane. Splitting a pane you did not create may wait for the user's approval."
     )]
     async fn app_launch(
@@ -1820,13 +1946,20 @@ pub(crate) async fn as_agent(c: &client::Client) -> Result<(), String> {
 }
 
 /// `dream mcp [--level L] [--method M]... [--pane %N]... [--all-panes]
-/// [tmux options]`.
+/// [--web-inspect] [tmux options]`.
 pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     let mut grant = api::Grant::default();
     let mut narrow = false;
+    let mut web = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
+            // Adds reading and driving pages to a narrowed grant; the
+            // owner's has it already.
+            "--web-inspect" => {
+                web = true;
+                continue;
+            }
             "--method" => grant
                 .methods
                 .push(it.next().ok_or("--method needs a name")?.clone()),
@@ -1858,6 +1991,9 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         if grant.methods.is_empty() {
             grant.methods = agent_methods(grant.level);
         }
+    }
+    if web && narrow {
+        grant.methods.push(api::INSPECT_WEB.to_owned());
     }
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -86,7 +86,7 @@ Building an app package ([termapp.md](termapp.md#building-an-app)):
 | `dream app types DIR` | Write `types/dreamer.d.ts` into a package, and a `tsconfig.json` that uses it when there is none, for editors |
 | `dream app preview PATH [--text] [--size WxH]` | Draw it once from `fixtures/`, with no daemon, as text (80x24 by default) |
 | `dream app preview PATH --open [--session $N]` | Open a live preview in a new tmux window, drawn natively by the desktop; it reloads when the package changes ([termapp.md](termapp.md#live-preview)) |
-| `dream app preview PATH --png FILE` | Write the desktop's drawing of the app's preview pane as a PNG, opening a preview first when none is open; fails with `no Dreamer window is running; --png needs one` when no desktop is running. With `--level observe\|own\|elsewhere` it takes the image as an agent at that level: its connection narrows itself to the agent's grant, opens a preview pane of its own, and closes it afterwards |
+| `dream app preview PATH --png FILE` | Write the desktop's drawing of the app's preview pane as a PNG (for a web app, its page as Chromium draws it), opening a preview first when none is open; fails with `no Dreamer window is running; --png needs one` when no desktop is running. With `--level observe\|own\|elsewhere` it takes the image as an agent at that level: its connection narrows itself to the agent's grant, opens a preview pane of its own, and closes it afterwards |
 | `dream app test PATH [--update] [--size WxH]` | Replay `fixtures/events.jsonl` with no daemon and compare the screen after each event with `fixtures/expect/`; `--update` records them ([termapp.md](termapp.md#testing-an-app)) |
 | `dream app install PATH [--name NAME]` | Check, preview, and copy it into `<config dir>/apps/`; the version it replaces is kept |
 | `dream app rollback NAME` | Put the kept version back (and keep the one it replaces) |
@@ -128,8 +128,8 @@ one again now. See [extensions.md](extensions.md).
 ## MCP
 
 `dream mcp [--level observe|own|elsewhere] [--method M]... [--pane %N]...
-[--all-panes]` serves Dreamer's tools to an MCP client on standard input
-and output. See [mcp.md](mcp.md).
+[--all-panes] [--web-inspect]` serves Dreamer's tools to an MCP client on
+standard input and output. See [mcp.md](mcp.md).
 
 ## Harness drawer
 

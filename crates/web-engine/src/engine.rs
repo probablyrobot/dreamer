@@ -1361,6 +1361,30 @@ impl WebView {
         }
     }
 
+    /// Call DevTools `method` with `params` (an object); `done` gets the
+    /// result, or the error's message, on the main thread. Dropped
+    /// unanswered if the page closes first.
+    pub fn call(
+        &self,
+        method: &str,
+        params: &serde_json::Value,
+        done: impl FnOnce(Result<serde_json::Value, String>) + Send + 'static,
+    ) {
+        self.devtools(
+            method,
+            &params.to_string(),
+            Box::new(move |r| {
+                done(match r {
+                    Ok(json) => serde_json::from_slice(&json).map_err(|e| e.to_string()),
+                    Err(json) => Err(serde_json::from_slice::<serde_json::Value>(&json)
+                        .ok()
+                        .and_then(|v| Some(v.get("message")?.as_str()?.to_owned()))
+                        .unwrap_or_else(|| String::from_utf8_lossy(&json).into_owned())),
+                });
+            }),
+        );
+    }
+
     /// Ask for an image of the page as drawn now (DevTools
     /// `Page.captureScreenshot`, a PNG at the display's scale). `done` gets
     /// the reply's JSON, with the PNG base64 in `data`, on the main thread:

@@ -292,6 +292,14 @@ async fn act_of(state: &State, r: &Request) -> Result<Option<Act>, RpcError> {
             vec![p.pane],
             format!("load {} in web pane %{}", address(&p.url), p.pane),
         ),
+        Request::WebClick(p) => act(
+            vec![p.pane],
+            format!("click in the page in pane %{}", p.pane),
+        ),
+        Request::WebType(p) => act(
+            vec![p.pane],
+            format!("type into the page in pane %{}", p.pane),
+        ),
         Request::JobsCancel(j) => {
             let pane = crate::jobs::get(&j.id)?.pane;
             Some(Act {

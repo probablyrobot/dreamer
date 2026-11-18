@@ -297,6 +297,69 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// Reading and driving pages the user's desktop shows: refused unless
+	// the grant holds web.inspect (docs/grants.md).
+	const webPane = Type.Integer({ minimum: 0, description: "A web pane, or the pane of a web app." });
+	const node = Type.Optional(Type.Integer({ minimum: 1, description: "The element: a node id from web_read's tree." }));
+	const selector = Type.Optional(Type.String({ description: "Or the element: a CSS selector (its first match)." }));
+
+	tool({
+		name: "web_read",
+		label: "Read a page",
+		description:
+			"Read a page the user's Dreamer window shows, in a web pane or a web app's pane: its address, title, and text, and with tree its accessibility tree (each node's id, depth, role, name, and value). Needs the web.inspect capability in your grant.",
+		parameters: Type.Object({ pane: webPane, tree: Type.Optional(Type.Boolean()) }),
+		run: async (p) => {
+			await session.connection();
+			return session.call("web.read", { pane: p.pane, tree: p.tree ?? false });
+		},
+	});
+
+	tool({
+		name: "web_click",
+		label: "Click in a page",
+		description:
+			"Click an element of a page in a web pane or a web app's pane, named by node (an id from web_read's tree) or selector: it is scrolled into view and clicked in its middle, as with a mouse. Needs web.inspect; in a pane you did not open it waits for the user's approval.",
+		parameters: Type.Object({ pane: webPane, node, selector }),
+		run: async (p) => {
+			await session.connection();
+			return session.acting_on(p.pane, () => session.call("web.click", { pane: p.pane, node: p.node, selector: p.selector }));
+		},
+	});
+
+	tool({
+		name: "web_type",
+		label: "Type in a page",
+		description:
+			"Type text into a page in a web pane or a web app's pane: into the element named by node or selector (focused first), else where the page's focus is; with submit, then press Enter, which submits a form from its field. The clipboard is not used. Needs web.inspect; in a pane you did not open it waits for the user's approval.",
+		parameters: Type.Object({ pane: webPane, text: Type.String(), node, selector, submit: Type.Optional(Type.Boolean()) }),
+		run: async (p) => {
+			await session.connection();
+			const params = { pane: p.pane, text: p.text, node: p.node, selector: p.selector, submit: p.submit ?? false };
+			return session.acting_on(p.pane, () => session.call("web.type", params));
+		},
+	});
+
+	pi.registerTool({
+		name: "web_screenshot",
+		label: "Page image",
+		description:
+			"An image of a page in a web pane or a web app's pane, as Chromium draws it in the user's Dreamer window: the page only. Needs web.inspect.",
+		parameters: Type.Object({ pane: webPane }),
+		async execute(_id: string, params: any, _signal: unknown, _onUpdate: unknown, ctx: any) {
+			if (ctx?.hasUI) ui = ctx.ui;
+			await session.connection();
+			const r = await session.webScreenshot(params.pane);
+			return {
+				content: [
+					{ type: "image", data: r.image, mimeType: "image/png" },
+					{ type: "text", text: `${r.width}x${r.height} pixels` },
+				],
+				details: {},
+			};
+		},
+	});
+
 	// Building apps: `dream app` in the apps directory (DREAMER_APPS_ROOT,
 	// else pi's working directory; nothing outside it), and opening an
 	// installed app on this session's connection, under its grant.

@@ -8,21 +8,35 @@
 //! the view tree version asked for (it waits for that on a timer, never
 //! blocking). The capture itself runs on a thread of its own: on macOS it
 //! records the window with `screencapture -l` (the same as the gate's
-//! screenshots) and crops the pane's rectangle. A window that does not
-//! show the pane answers why, so does a platform with no capture yet.
+//! screenshots) and crops the pane's rectangle. A pane that shows a page
+//! (a web pane, or a web app's) is the page's own image instead, from
+//! Chromium (inspect.rs). A window that does not show the pane answers
+//! why, so does a platform with no capture yet.
+//!
+//! A request that names a `web.*` method is run on the page of the pane
+//! in the window that shows it (inspect.rs), and answered with its result.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use gpui::{AppContext as _, Bounds, Pixels};
+use gpui::{AppContext as _, Bounds, Entity, Pixels};
 
 use crate::workspace::Workspace;
 
 /// How long the pane's tree may take to reach the frame drawn.
 const DRAWN_WAIT: Duration = Duration::from_secs(5);
 
-/// The answer to a request: `Ok((width, height))` or why not.
-type Answer = (u64, Result<(u32, u32), String>);
+/// What a desktop answers a request with.
+#[derive(Debug, Default)]
+pub(crate) struct Done {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    /// A web method's result, as the API's JSON.
+    pub(crate) result: String,
+}
+
+/// The answer to a request, or why there is none.
+type Answer = (u64, Result<Done, String>);
 
 /// Serve captures for the daemon at `socket`, once per process.
 pub(crate) fn serve(socket: PathBuf, cx: &mut gpui::App) {
@@ -51,12 +65,27 @@ pub(crate) fn serve(socket: PathBuf, cx: &mut gpui::App) {
             let answers = answers.clone();
             cx.spawn(async move |cx| {
                 let answer = match find(&r, cx).await {
-                    Ok(target) => take(r.id, target, PathBuf::from(&r.path), answers.clone()),
                     Err(why) => Err(why),
+                    Ok((_, page)) if !r.method.is_empty() => {
+                        crate::inspect::answer(page, &r, cx).await
+                    }
+                    #[cfg(feature = "web")]
+                    Ok((_, Some(page))) => crate::inspect::image(&page, Path::new(&r.path), cx)
+                        .await
+                        .map(|(width, height)| Done {
+                            width,
+                            height,
+                            ..Done::default()
+                        }),
+                    Ok((target, _)) => {
+                        match take(r.id, target, PathBuf::from(&r.path), answers.clone()) {
+                            // The capture's thread answers.
+                            Ok(()) => return,
+                            Err(why) => Err(why),
+                        }
+                    }
                 };
-                if let Err(why) = answer {
-                    let _ = answers.send((r.id, Err(why)));
-                }
+                let _ = answers.send((r.id, answer));
             })
             .detach();
         }
@@ -111,18 +140,21 @@ async fn wait_for_requests(
                 },
                 a = answers.recv() => {
                     let Some((id, answer)) = a else { return };
-                    let (error, width, height) = match answer {
-                        Ok((w, h)) => (None, w, h),
-                        Err(why) => (Some(why), 0, 0),
-                    };
-                    let _ = c
-                        .call(api::Request::AppsCaptureDone(api::AppCaptureDone {
+                    let done = match answer {
+                        Ok(d) => api::AppCaptureDone {
                             id,
-                            error,
-                            width,
-                            height,
-                        }))
-                        .await;
+                            error: None,
+                            width: d.width,
+                            height: d.height,
+                            result: d.result,
+                        },
+                        Err(why) => api::AppCaptureDone {
+                            id,
+                            error: Some(why),
+                            ..api::AppCaptureDone::default()
+                        },
+                    };
+                    let _ = c.call(api::Request::AppsCaptureDone(done)).await;
                 }
             }
         }
@@ -139,9 +171,15 @@ struct Target {
     pane: Bounds<Pixels>,
 }
 
+/// The page a pane shows, if it shows one (see [`Workspace::page_of`]).
+type Page = Option<Entity<crate::web::WebPane>>;
+
 /// Find the window showing `r.pane` and wait (on a timer) until its frame
-/// has the tree version asked for.
-async fn find(r: &api::AppCaptureRequest, cx: &mut gpui::AsyncApp) -> Result<Target, String> {
+/// has the tree version asked for; where it is, and its page.
+async fn find(
+    r: &api::AppCaptureRequest,
+    cx: &mut gpui::AsyncApp,
+) -> Result<(Target, Page), String> {
     let started = std::time::Instant::now();
     loop {
         let mut found = None;
@@ -152,7 +190,7 @@ async fn find(r: &api::AppCaptureRequest, cx: &mut gpui::AsyncApp) -> Result<Tar
             };
             let shown = handle.update(cx, |ws, window, cx| {
                 ws.pane_shown(r.pane, cx)
-                    .map(|(pane, painted)| (window.bounds(), pane, painted))
+                    .map(|(pane, painted)| (window.bounds(), pane, painted, ws.page_of(r.pane, cx)))
             });
             if let Ok(Some(s)) = shown {
                 found = Some((any, s));
@@ -161,7 +199,7 @@ async fn find(r: &api::AppCaptureRequest, cx: &mut gpui::AsyncApp) -> Result<Tar
         }
         // A window just opened in tmux reaches this window's topology a
         // moment later.
-        let Some((any, (window, pane, painted))) = found else {
+        let Some((any, (window, pane, painted, page))) = found else {
             if started.elapsed() > DRAWN_WAIT {
                 return Err(format!("pane %{} is not shown in a Dreamer window", r.pane));
             }
@@ -176,7 +214,7 @@ async fn find(r: &api::AppCaptureRequest, cx: &mut gpui::AsyncApp) -> Result<Tar
             cx.background_executor()
                 .timer(Duration::from_millis(150))
                 .await;
-            return Ok(Target { window, pane });
+            return Ok((Target { window, pane }, page));
         }
         if started.elapsed() > DRAWN_WAIT {
             return Err(format!(
@@ -203,7 +241,12 @@ fn take(
     std::thread::Builder::new()
         .name("dreamer-capture-shot".into())
         .spawn(move || {
-            let _ = answers.send((id, capture(target, &path)));
+            let done = capture(target, &path).map(|(width, height)| Done {
+                width,
+                height,
+                ..Done::default()
+            });
+            let _ = answers.send((id, done));
         })
         .map(drop)
         .map_err(|e| format!("could not start the capture: {e}"))

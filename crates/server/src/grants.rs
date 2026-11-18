@@ -53,6 +53,10 @@ fn targets(r: &Request) -> Targets {
             None => Targets::Everything,
         },
         Request::WebNavigate(p) => Targets::Panes(vec![p.pane]),
+        Request::WebRead(p) => Targets::Panes(vec![p.pane]),
+        Request::WebScreenshot(p) => Targets::Panes(vec![p.pane]),
+        Request::WebClick(p) => Targets::Panes(vec![p.pane]),
+        Request::WebType(p) => Targets::Panes(vec![p.pane]),
         Request::AppsTree(p) => Targets::Panes(vec![p.pane]),
         Request::AppsCapture(p) => Targets::Panes(vec![p.pane]),
         // A collector reads its panes for as long as it runs; one that
@@ -180,6 +184,11 @@ impl Grant {
         if method == api::method::LEASES_ACQUIRE || method == api::method::LEASES_RELEASE {
             return self.method_allowed(api::method::TERMINAL_INPUT)
                 || self.method_allowed(api::method::ACTIONS_SUBMIT);
+        }
+        // Reading and driving pages is one capability, never a method
+        // listed by name.
+        if api::INSPECT_METHODS.contains(&method) {
+            return self.method_allowed(api::INSPECT_WEB);
         }
         self.0.owner
             || self.0.methods.iter().any(|m| {
@@ -351,6 +360,25 @@ mod tests {
         let mut sooner = read3.clone();
         sooner.expires_unix_ms = Some(5);
         assert!(within(&expiring, &sooner).is_ok());
+    }
+
+    #[test]
+    fn pages_are_read_and_driven_only_under_web_inspect() {
+        let read = |pane| {
+            Request::WebRead(api::WebRead {
+                pane,
+                ..api::WebRead::default()
+            })
+        };
+        for m in api::INSPECT_METHODS {
+            assert!(!narrow(&[m], &[]).method_allowed(m), "{m} by name");
+            assert!(narrow(&[api::INSPECT_WEB], &[]).method_allowed(m), "{m}");
+        }
+        assert!(!narrow(&["web.open", "web.navigate"], &[]).method_allowed("web.read"));
+        let g = narrow(&[api::INSPECT_WEB], &[3]);
+        assert!(g.check("web.read", &read(3)).is_ok());
+        let e = g.check("web.read", &read(4)).expect_err("other pane");
+        assert!(e.message.contains("%4"), "{e}");
     }
 
     #[test]

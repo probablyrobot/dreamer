@@ -40,6 +40,21 @@
 //! the same profile, and checks that the login's session cookie is still
 //! sent ([`restart`]).
 //!
+//! The web app's checks also include that its bridge is refused
+//! `web.read` (its grant has no `web.inspect`), and that `apps.capture` of
+//! its pane, as `dream app preview --png` asks, is its page's own image
+//! (written as `app-page.png`).
+//!
+//! Last, an agent and a page, through the daemon's `web.*` methods on
+//! connections narrowed to an agent's grant at `own`: the agent opens the
+//! test site's form in a web pane of its own (`web.open`); without
+//! `web.inspect` in the grant, `web.read` is refused; with it, `web.read`
+//! reads the form's text and finds its field in the accessibility tree,
+//! `web.type` fills the field by its node and presses Enter (the site
+//! records the name sent), `web.click` follows a link by its selector, and
+//! `web.screenshot` writes the page (`web-inspect.png`). Each passed check
+//! is a `smoke: web inspect:` line.
+//!
 //! Writes to DIR the captures of the window (from `screencapture`) and
 //! `checks.txt`, what the gate checks in them: a line `window WIDTH
 //! HEIGHT`, then one line per check, `FILE COLOR min|max SHARE X Y WIDTH
@@ -526,6 +541,7 @@ pub(crate) async fn run(
     input(any, &ws, cx, pane).await;
     app_page(any, &ws, cx, pane, &out, window).await;
     browser(any, &ws, cx, pane).await;
+    inspect(any, &ws, cx, &out).await;
 
     if let Err(e) = std::fs::write(out.join("checks.txt"), &checks.0) {
         fail(&format!("checks.txt: {e}"));
@@ -824,6 +840,7 @@ async fn app_page(
         termapp.display().to_string(),
         dir.join("app.toml").display().to_string(),
     ];
+    let owner = Agent::start(socket.clone(), None);
     let launched = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -936,6 +953,45 @@ async fn app_page(
         ));
     }
     println!("smoke: web app: terminal.list, outside its grant, is refused ({refused})");
+
+    // Reading pages is not the bridge's without web.inspect in the grant.
+    let inspect = eval(
+        any,
+        ws,
+        cx,
+        pane,
+        &format!("window.dreamer.call('web.read', {{ pane: {web} }}).then(() => 'allowed', (e) => 'refused ' + e.code)"),
+    )
+    .await;
+    if inspect.as_ref().and_then(serde_json::Value::as_str)
+        != Some(format!("refused {}", api::code::FORBIDDEN).as_str())
+    {
+        fail(&format!(
+            "web.read through the bridge, without web.inspect, was not refused: {inspect:?}"
+        ));
+    }
+    println!("smoke: web app: web.read through its bridge, without web.inspect, is refused");
+
+    // Its image, as `dream app preview --png` takes it: the page's own,
+    // from Chromium.
+    let shot = out.join("app-page.png");
+    let captured = owner
+        .call(api::Request::AppsCapture(api::AppCapture {
+            pane,
+            path: shot.display().to_string(),
+            seq: 0,
+            wait_ms: Some(20_000),
+        }))
+        .await;
+    match captured {
+        Ok(api::Response::AppsCapture(c)) if c.width > 100 && c.height > 100 && shot.is_file() => {
+            println!(
+                "smoke: web app: apps.capture took its page's image from Chromium ({}x{})",
+                c.width, c.height
+            );
+        }
+        other => fail(&format!("apps.capture of the web app's pane: {other:?}")),
+    }
 
     // Another origin, inside the page: no bridge.
     let other = eval(any, ws, cx, pane, OTHER_ORIGIN).await;
@@ -1124,6 +1180,199 @@ fn daemon_call(socket: std::path::PathBuf, request: api::Request) -> Result<api:
     })
     .join()
     .unwrap_or_else(|_| Err("the call's thread panicked".into()))
+}
+
+/// A connection to the daemon of its own, on a thread of its own, narrowed
+/// to a grant (or the owner's, with none). Its calls are awaited, never
+/// blocking the UI thread, which answers the daemon's `web.*` requests.
+struct Agent(
+    async_channel::Sender<(
+        api::Request,
+        async_channel::Sender<Result<api::Response, String>>,
+    )>,
+);
+
+impl Agent {
+    fn start(socket: PathBuf, grant: Option<api::Grant>) -> Agent {
+        type Asked = (
+            api::Request,
+            async_channel::Sender<Result<api::Response, String>>,
+        );
+        let (tx, rx) = async_channel::unbounded::<Asked>();
+        std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async move {
+                let ready = async {
+                    let c = client::Client::connect(&socket, "smoke-agent")
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if let Some(g) = grant {
+                        c.call(api::Request::GrantsNarrow(g))
+                            .await
+                            .map_err(|e| format!("grants.narrow: {e}"))?;
+                    }
+                    Ok::<_, String>(c)
+                }
+                .await;
+                while let Ok((request, back)) = rx.recv().await {
+                    let answer = match &ready {
+                        Ok(c) => c.call(request).await.map_err(|e| e.to_string()),
+                        Err(e) => Err(e.clone()),
+                    };
+                    let _ = back.send(answer).await;
+                }
+            });
+        });
+        Agent(tx)
+    }
+
+    async fn call(&self, request: api::Request) -> Result<api::Response, String> {
+        let (back, answer) = async_channel::bounded(1);
+        self.0
+            .send((request, back))
+            .await
+            .map_err(|_| "the connection's thread ended".to_owned())?;
+        answer
+            .recv()
+            .await
+            .map_err(|_| "the connection's thread ended".to_owned())?
+    }
+}
+
+/// What the form page's field is called (`/form` on the test site).
+const FIELD: &str = "Your name";
+/// What the agent types into it.
+const NAME: &str = "Ada Lovelace";
+
+/// An agent reads and drives a page (see the module's description): each
+/// passed check is a `smoke: web inspect:` line.
+async fn inspect(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncApp, out: &Path) {
+    let host = site();
+    let (socket, session) = read(any, ws, cx, |w, _| Some((w.socket.clone(), w.session?)))
+        .flatten()
+        .unwrap_or_else(|| fail("no daemon socket or session"));
+    let level = api::ActLevel::Own as i32;
+    let mut grant = api::Grant {
+        methods: api::agent_methods(level),
+        all_panes: true,
+        level,
+        ..api::Grant::default()
+    };
+    let blind = Agent::start(socket.clone(), Some(grant.clone()));
+    grant.methods.push(api::INSPECT_WEB.to_owned());
+    let agent = Agent::start(socket, Some(grant));
+    // The agent opens the form in a window of its own: its own pane.
+    let opened = agent
+        .call(api::Request::WebOpen(api::WebOpen {
+            url: format!("http://{host}/form"),
+            session: Some(session),
+            ..api::WebOpen::default()
+        }))
+        .await;
+    let pane = match opened {
+        Ok(api::Response::WebOpen(o)) => o.pane,
+        other => fail(&format!("web.open as an agent: {other:?}")),
+    };
+    wait_long(
+        any,
+        ws,
+        cx,
+        "the form loaded in the agent's web pane",
+        Duration::from_secs(30),
+        move |w, cx| {
+            w.page_of(pane, cx).is_some_and(|p| {
+                let p = p.read(cx);
+                p.view
+                    .as_ref()
+                    .is_some_and(|v| v.load_status().is_some() && v.title() == "form")
+            })
+        },
+    )
+    .await;
+
+    let read_form = api::Request::WebRead(api::WebRead {
+        pane,
+        tree: true,
+        wait_ms: None,
+    });
+    match blind.call(read_form.clone()).await {
+        Err(e) if e.contains("not in this connection's grant") => {
+            println!("smoke: web inspect: web.read without web.inspect is refused ({e})");
+        }
+        other => fail(&format!("web.read without web.inspect: {other:?}")),
+    }
+
+    let page = match agent.call(read_form).await {
+        Ok(api::Response::WebRead(p)) => p,
+        other => fail(&format!("web.read: {other:?}")),
+    };
+    let field = page
+        .nodes
+        .iter()
+        .find(|n| n.role == "textbox" && n.name == FIELD && n.node != 0)
+        .map(|n| n.node);
+    let Some(field) = field.filter(|_| page.text.contains(FIELD)) else {
+        fail(&format!(
+            "web.read did not show the form's field: {:?} {:?}",
+            page.text, page.nodes
+        ));
+    };
+    println!(
+        "smoke: web inspect: web.read read the form ({} nodes) and found its field, node {field}",
+        page.nodes.len()
+    );
+
+    let typed = agent
+        .call(api::Request::WebType(api::WebType {
+            pane,
+            node: Some(field),
+            text: NAME.into(),
+            submit: true,
+            ..api::WebType::default()
+        }))
+        .await;
+    if let Err(e) = typed {
+        fail(&format!("web.type: {e}"));
+    }
+    let sent = format!("sent {NAME}");
+    wait_title(any, ws, cx, pane, &sent, "web.type and Enter").await;
+    println!("smoke: web inspect: web.type filled the field and Enter submitted the form ({sent})");
+
+    let clicked = agent
+        .call(api::Request::WebClick(api::WebClick {
+            pane,
+            selector: Some("#again".into()),
+            ..api::WebClick::default()
+        }))
+        .await;
+    if let Err(e) = clicked {
+        fail(&format!("web.click: {e}"));
+    }
+    wait_title(any, ws, cx, pane, "form", "web.click").await;
+    println!("smoke: web inspect: web.click on #again loaded the form again");
+
+    let shot = out.join("web-inspect.png");
+    let taken = agent
+        .call(api::Request::WebScreenshot(api::WebScreenshot {
+            pane,
+            path: shot.display().to_string(),
+            wait_ms: None,
+        }))
+        .await;
+    match taken {
+        Ok(api::Response::WebScreenshot(c)) if shot.is_file() => println!(
+            "smoke: web inspect: web.screenshot wrote the page, {}x{}, to {}",
+            c.width,
+            c.height,
+            shot.display()
+        ),
+        other => fail(&format!("web.screenshot: {other:?}")),
+    }
 }
 
 /// The browser in the plain web pane `pane` (see the module's

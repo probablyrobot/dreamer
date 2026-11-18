@@ -92,10 +92,32 @@ components.
 | `browser_open` | Open an address (`url`: a URL, or as typed into an address bar, such as `example.com` or `localhost:3000`) in Dreamer's [browser](desktop.md#the-browser): a new web pane beside the pane the server runs in, beside `beside`, or in a `new_window`, which this session owns; or, with `pane`, load it in that web pane. Returns the `pane` and the `url` | `web.open`, `web.navigate` |
 
 The page runs in the user's desktop, with no Dreamer API; the agent
-cannot read it through this tool. Not at the `observe` level; splitting
-or loading into a pane the session did not create waits for the user's
-approval at `elsewhere` and is refused at `own`
-([grants.md](grants.md#act-levels-and-approvals)).
+reads it with the page tools below, when its grant allows. Not at the
+`observe` level; splitting or loading into a pane the session did not
+create waits for the user's approval at `elsewhere` and is refused at
+`own` ([grants.md](grants.md#act-levels-and-approvals)).
+
+## Page tools
+
+An agent reads and drives the page of a web pane, or of a web app's
+pane, as the user's Dreamer window shows it
+([desktop.md](desktop.md#agents-and-pages)). Each needs `web.inspect` in
+the server's grant, which an agent's grant holds only when given:
+`dream mcp --level LEVEL --web-inspect`, or an agent session's grant that
+lists it ([grants.md](grants.md#reading-and-driving-pages)).
+
+| Tool | Does | API |
+| --- | --- | --- |
+| `web_read` | The page's `url`, `title`, and `text`; with `tree`, its accessibility tree as `nodes` (`node` id, `depth`, `role`, `name`, `value`) | `web.read` |
+| `web_click` | Click an element named by `node` (from the tree) or `selector` (CSS, its first match) | `web.click` |
+| `web_type` | Type `text` into the element named by `node` or `selector` (focused first), else where the page's focus is; `submit` then presses Enter | `web.type` |
+| `web_screenshot` | The page as Chromium draws it, as image content | `web.screenshot` |
+
+Clicking and typing act on the pane: refused at `observe`, at `own`
+allowed in the web panes the session opened, and at `elsewhere` asked
+for elsewhere. The clipboard is never used. With no Dreamer window
+running, or one that does not show the pane, the tool fails and says
+so.
 
 - **Directories.** `dir` is a package directory inside the apps
   directory: `DREAMER_APPS_ROOT` when set, else the working directory the
@@ -191,6 +213,7 @@ those are `tmux.topology`, `terminal.list`, `terminal.read`,
 `terminal.input`, `terminal.run`, `actions.submit`, `jobs.start`,
 `jobs.cancel`, `collect.stop`, `memory.update`, `memory.forget`,
 `apps.launch`, `apps.tree`, `apps.capture`, `daemon.status`, and
-`daemon.version`.
+`daemon.version`. `--web-inspect` adds `web.inspect`, for the
+[page tools](#page-tools), to whichever of these the grant holds.
 
 The daemon works the same with no MCP client at all.

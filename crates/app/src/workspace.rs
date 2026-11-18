@@ -1155,6 +1155,16 @@ impl Workspace {
         Some((bounds, painted))
     }
 
+    /// The page pane `pane` shows: a web pane's, or that of an app pane
+    /// whose view is a page (a web app).
+    pub(crate) fn page_of(&self, pane: u32, cx: &gpui::App) -> Option<Entity<crate::web::WebPane>> {
+        match self.panes.get(&pane)? {
+            PaneView::Web { view, .. } => Some(view.clone()),
+            PaneView::App { view, .. } => view.read(cx).root_page(),
+            PaneView::Terminal(_) => None,
+        }
+    }
+
     pub(crate) fn pane_ids(&self) -> Vec<u32> {
         let mut v: Vec<u32> = self.panes.keys().copied().collect();
         v.sort_unstable();

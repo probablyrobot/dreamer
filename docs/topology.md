@@ -84,6 +84,14 @@ All three are owner only, except that an agent at `own` or `elsewhere`
 may call `apps.capture` for an app pane it launched
 ([grants.md](grants.md#agents-and-apps)).
 
+The page methods `web.read`, `web.screenshot`, `web.click`, and
+`web.type` ([desktop.md](desktop.md#agents-and-pages)) travel the same
+way: the request also carries `method` and `params` (the method's
+parameters as the API's JSON), and the desktop that shows the pane runs
+it on the page and answers with `result` (its result as JSON). With no
+desktop, they are refused at once with `no Dreamer window is running: a
+page is read and driven in the desktop showing it`.
+
 ## Following changes
 
 `tmux.watch` returns the same topology with a `revision`. Afterwards the

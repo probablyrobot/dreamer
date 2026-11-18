@@ -507,3 +507,157 @@ async fn the_browser_goes_to_other_addresses_and_agents_open_pages_in_their_own_
     .expect_err("web.state");
     assert_eq!(e.code, api::code::FORBIDDEN);
 }
+
+/// A connection narrowed to an agent's grant at `level`, with
+/// `web.inspect`.
+async fn inspector(s: &Setup, level: api::ActLevel) -> Client {
+    let c = s.client().await;
+    let mut methods = api::agent_methods(level as i32);
+    methods.push(api::INSPECT_WEB.into());
+    c.call(Request::GrantsNarrow(api::Grant {
+        methods,
+        all_panes: true,
+        level: level as i32,
+        ..api::Grant::default()
+    }))
+    .await
+    .expect("grants.narrow");
+    c
+}
+
+/// The error a call ends with.
+async fn refused(c: &Client, r: Request) -> api::RpcError {
+    match c.call(r).await {
+        Err(client::ClientError::Rpc(e)) => e,
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+fn read(pane: u32) -> Request {
+    Request::WebRead(api::WebRead {
+        pane,
+        tree: true,
+        wait_ms: Some(5_000),
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pages_are_read_and_driven_only_under_web_inspect_and_in_a_desktop() {
+    let s = Setup::new();
+    let c = s.client().await;
+    let t = topology(&c).await;
+    let (first, session) = (t.panes[0].id, t.sessions[0].id);
+    let user = open(
+        &c,
+        api::WebOpen {
+            url: PAGE.into(),
+            pane: Some(first),
+            ..api::WebOpen::default()
+        },
+    )
+    .await
+    .expect("web.open");
+
+    // An agent's grant does not hold web.inspect unless it is given.
+    let plain = agent(&s, api::ActLevel::Elsewhere).await;
+    let e = refused(&plain, read(user)).await;
+    assert_eq!(e.code, api::code::FORBIDDEN);
+    assert!(e.message.contains("web.read"), "{}", e.message);
+
+    // With it, reading passes the grant at every level; with no desktop to
+    // show the page, the call says so at once.
+    let watcher = inspector(&s, api::ActLevel::Observe).await;
+    let e = refused(&watcher, read(user)).await;
+    assert_eq!(e.code, api::code::UNAVAILABLE);
+    assert!(e.message.contains("no Dreamer window"), "{}", e.message);
+    // Clicking and typing act on the pane: never at observe, and at own
+    // only in a pane the agent opened.
+    let click = |pane| {
+        Request::WebClick(api::WebClick {
+            pane,
+            selector: Some("button".into()),
+            ..api::WebClick::default()
+        })
+    };
+    assert_eq!(
+        refused(&watcher, click(user)).await.code,
+        api::code::FORBIDDEN
+    );
+    let own = inspector(&s, api::ActLevel::Own).await;
+    assert_eq!(refused(&own, click(user)).await.code, api::code::FORBIDDEN);
+    let mine = open(
+        &own,
+        api::WebOpen {
+            url: PAGE.into(),
+            session: Some(session),
+            ..api::WebOpen::default()
+        },
+    )
+    .await
+    .expect("web.open as an agent");
+    let typed = Request::WebType(api::WebType {
+        pane: mine,
+        text: "hi".into(),
+        submit: true,
+        wait_ms: Some(5_000),
+        ..api::WebType::default()
+    });
+    assert_eq!(
+        refused(&own, typed.clone()).await.code,
+        api::code::UNAVAILABLE
+    );
+
+    // A desktop that does not show the pane answers why, and the caller
+    // hears it.
+    let desktop = s.client().await;
+    let answered = tokio::spawn(async move {
+        let Ok(Response::AppsCaptureWait(r)) = desktop
+            .call(Request::AppsCaptureWait(api::AppCaptureWait {
+                wait_ms: Some(10_000),
+            }))
+            .await
+        else {
+            panic!("apps.capture_wait");
+        };
+        let asked = (r.pane, r.method.clone());
+        desktop
+            .call(Request::AppsCaptureDone(api::AppCaptureDone {
+                id: r.id,
+                error: Some(format!("pane %{} is not shown in a Dreamer window", r.pane)),
+                ..api::AppCaptureDone::default()
+            }))
+            .await
+            .expect("apps.capture_done");
+        asked
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let e = loop {
+        let e = refused(&own, typed.clone()).await;
+        if e.code != api::code::UNAVAILABLE || Instant::now() > deadline {
+            break e;
+        }
+        // The desktop's wait has not begun yet.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(e.code, api::code::PRECONDITION, "{}", e.message);
+    assert_eq!(
+        e.message,
+        format!("pane %{mine} is not shown in a Dreamer window")
+    );
+    assert_eq!(
+        answered.await.expect("desktop"),
+        (mine, "web.type".to_owned())
+    );
+
+    // A screenshot needs an absolute path.
+    let e = refused(
+        &watcher,
+        Request::WebScreenshot(api::WebScreenshot {
+            pane: user,
+            path: "shot.png".into(),
+            wait_ms: None,
+        }),
+    )
+    .await;
+    assert_eq!(e.code, api::code::INVALID_PARAMS);
+}

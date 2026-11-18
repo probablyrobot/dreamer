@@ -258,6 +258,11 @@ fn a_web_apps_calls_run_as_the_app_under_its_grant() {
             .await
             .expect_err("act");
         assert_eq!(e.code, api::code::FORBIDDEN, "{e:?}");
+        // Reading a page, its own included, needs web.inspect in its grant.
+        let e = call(&c, pane, "web.read", &format!(r#"{{"pane": {pane}}}"#))
+            .await
+            .expect_err("web.read");
+        assert_eq!(e.code, api::code::FORBIDDEN, "{e:?}");
         // Never through a page: streams, and what the host itself does.
         for m in [
             "terminal.subscribe",

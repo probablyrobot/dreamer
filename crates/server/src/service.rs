@@ -129,6 +129,11 @@ fn for_a_connection(method: &str) -> RpcError {
     )
 }
 
+/// A desktop answered a web method with another method's result.
+fn unexpected() -> RpcError {
+    RpcError::new(code::INTERNAL, "the desktop answered another method")
+}
+
 fn unavailable(msg: String) -> RpcError {
     RpcError::new(code::UNAVAILABLE, msg)
 }
@@ -1697,6 +1702,50 @@ impl api::Service for DaemonService {
     async fn web_state(&self, p: api::WebState) -> Result<api::Empty, RpcError> {
         self.check_endpoint(p.endpoint.as_deref())?;
         crate::web::state(&self.0, p).await
+    }
+
+    async fn web_read(&self, p: api::WebRead) -> Result<api::WebPage, RpcError> {
+        let (pane, wait) = (p.pane, p.wait_ms);
+        match self
+            .0
+            .captures
+            .web(pane, &api::Request::WebRead(p), wait)
+            .await?
+        {
+            api::Response::WebRead(r) => Ok(r),
+            _ => Err(unexpected()),
+        }
+    }
+
+    async fn web_screenshot(&self, p: api::WebScreenshot) -> Result<api::AppCaptured, RpcError> {
+        let (pane, wait) = (p.pane, p.wait_ms);
+        match self
+            .0
+            .captures
+            .web(pane, &api::Request::WebScreenshot(p), wait)
+            .await?
+        {
+            api::Response::WebScreenshot(r) => Ok(r),
+            _ => Err(unexpected()),
+        }
+    }
+
+    async fn web_click(&self, p: api::WebClick) -> Result<api::Empty, RpcError> {
+        let (pane, wait) = (p.pane, p.wait_ms);
+        self.0
+            .captures
+            .web(pane, &api::Request::WebClick(p), wait)
+            .await
+            .map(|_| api::Empty {})
+    }
+
+    async fn web_type(&self, p: api::WebType) -> Result<api::Empty, RpcError> {
+        let (pane, wait) = (p.pane, p.wait_ms);
+        self.0
+            .captures
+            .web(pane, &api::Request::WebType(p), wait)
+            .await
+            .map(|_| api::Empty {})
     }
 
     async fn agent_sessions_create(

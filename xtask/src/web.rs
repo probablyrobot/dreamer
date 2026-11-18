@@ -2,6 +2,8 @@
 //! development bundle (`<target>/web-bundle/Dreamer.app`): the app built
 //! with its `web` feature, the CEF framework, and the five helper apps CEF
 //! starts its renderer, GPU, and utility processes from. macOS only.
+//! `cargo xtask web smoke` builds it and runs the gate's web pane check
+//! ([`smoke`]) alone.
 //!
 //! The pinned CEF distribution, cmake, and Ninja come from `cargo xtask
 //! deps web`. The release package does not include web panes yet.
@@ -31,7 +33,7 @@ const HELPER_EXE: &str = "dreamer-web-helper";
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut profile = Profile::Debug;
-    match args {
+    let smoke_too = match args {
         [cmd, rest @ ..] if cmd == "bundle" => {
             for a in rest {
                 match a.as_str() {
@@ -39,14 +41,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     other => return Err(format!("unknown web bundle argument `{other}`")),
                 }
             }
+            false
         }
-        _ => return Err("usage: cargo xtask web bundle [--release]".into()),
-    }
+        [cmd] if cmd == "smoke" => true,
+        _ => return Err("usage: cargo xtask web bundle [--release] | web smoke".into()),
+    };
     let web = provisioned()?
         .ok_or("the web engine's dependencies are not provisioned: run `cargo xtask deps web`")?;
     let root = repo_root();
     let app = bundle(&root, profile, &web)?;
     println!("web: {}", app.display());
+    if smoke_too {
+        // The gate's web pane check by itself, its captures in
+        // `<target>/web-smoke`.
+        match smoke(&app, &cargo_target(&root).join("web-smoke"))? {
+            Smoke::Passed(lines) => println!("{}\nweb: smoke passed", lines.join("\n")),
+            Smoke::NotRun(lines) => println!("{lines}\nweb: smoke not run: nothing was drawn"),
+        }
+    }
     Ok(())
 }
 
@@ -218,10 +230,20 @@ const INPUT_CHECKS: usize = 5;
 
 /// The web app checks the web smoke reports passing (`smoke: web app:`):
 /// the example app's page lists the panes through its bridge, a call
-/// through it lists them, a call outside its grant is refused, another
-/// origin has no bridge, and a navigation outside its allow-list is
-/// refused.
-const APP_CHECKS: usize = 5;
+/// through it lists them, a call outside its grant is refused, so is
+/// `web.read` without `web.inspect`, `apps.capture` of its pane is its
+/// page's image, another origin has no bridge, and a navigation outside
+/// its allow-list is refused.
+const APP_CHECKS: usize = 7;
+
+/// The agent checks the web smoke reports passing (`smoke: web inspect:`):
+/// `web.read` refused without `web.inspect`; with it, `web.read` finds the
+/// form's field, `web.type` fills and submits it, `web.click` follows a
+/// link, and `web.screenshot` writes the page.
+const INSPECT_CHECKS: usize = 5;
+
+/// The name the smoke's agent sends the form.
+const SENT_NAME: &str = "Ada Lovelace";
 
 /// The browser checks the web smoke reports passing (`smoke: web
 /// browser:`): `web.navigate` loads a page in the pane; Cmd+L, a typed
@@ -237,7 +259,9 @@ const BROWSER_CHECKS: usize = 11;
 /// pane's rectangle after each move, and is absent beside it, from it on
 /// another tab, and from the palette over it. The smoke's input checks
 /// (typing, an input method, Cmd+J, select all in the page) pass or
-/// fail in the app itself; each one passed is a line of its output.
+/// fail in the app itself; each one passed is a line of its output. Last,
+/// the agent's checks: the site got the form with the name it typed, and
+/// its screenshot of the form, and the web app's image, are those pages.
 pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
     let pid = std::process::id();
@@ -397,20 +421,111 @@ pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
             lines.join("\n")
         ));
     }
+    let inspect = lines
+        .iter()
+        .filter(|l| l.starts_with("smoke: web inspect:"))
+        .count();
+    if inspect < INSPECT_CHECKS {
+        return Err(format!(
+            "the web smoke passed {inspect} of {INSPECT_CHECKS} agent checks\n{}",
+            lines.join("\n")
+        ));
+    }
+    // What the agent typed reached the site, and its screenshot is the
+    // form's page: its color nearly everywhere.
+    let sent = site::sent();
+    if sent.last().map(String::as_str) != Some(SENT_NAME) {
+        return Err(format!(
+            "the site got the form with {sent:?}, not {SENT_NAME:?}"
+        ));
+    }
+    lines.push(format!(
+        "web inspect: the site got the form with {SENT_NAME:?}"
+    ));
+    for (file, color) in [
+        ("web-inspect.png", site::FORM),
+        // The example web app's page is dark.
+        ("app-page.png", 0x1e_1e_1e),
+    ] {
+        let path = out.join(file);
+        let (w, h) = png_size(&path)?;
+        let (got, main) = crate::scenes::share_in(
+            &path,
+            color,
+            f64::from(w),
+            (0.0, 0.0, f64::from(w), f64::from(h)),
+        )?;
+        let said = format!(
+            "{}: {w}x{h}, #{color:06x} covers {:.1}% (most common #{main:06x})",
+            path.display(),
+            got * 100.0
+        );
+        if w < 200 || h < 100 || got < 0.5 {
+            return Err(format!("{said}: not the page\n{}", lines.join("\n")));
+        }
+        lines.push(said);
+    }
     Ok(Smoke::Passed(lines))
+}
+
+/// A PNG file's width and height.
+fn png_size(path: &Path) -> Result<(u32, u32), String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let reader = png::Decoder::new(std::io::BufReader::new(file))
+        .read_info()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let info = reader.info();
+    Ok((info.width, info.height))
 }
 
 /// The browser's test site, served on 127.0.0.1 for the web smoke only: a
 /// page that counts its loads and has a link, a link that wants a new
 /// window, a download, and words to find; a second page; a login that
-/// sets a session cookie; and a page that says whether the cookie came.
+/// sets a session cookie; a page that says whether the cookie came; and a
+/// form that records the names it is sent ([`site::sent`]).
 pub mod site {
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
     static LOADS: AtomicU32 = AtomicU32::new(0);
+    /// The names the form was sent with, in order.
+    static SENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// The form page's background.
+    pub const FORM: u32 = 0x3f_a3_4d;
+
+    /// The names the form was sent with so far.
+    pub fn sent() -> Vec<String> {
+        SENT.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// A form field's value as a query string carries it.
+    fn unescape(v: &str) -> String {
+        let b = v.as_bytes();
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() {
+            match b[i] {
+                b'+' => out.push(b' '),
+                b'%' => match v
+                    .get(i + 1..i + 3)
+                    .and_then(|h| u8::from_str_radix(h, 16).ok())
+                {
+                    Some(c) => {
+                        out.push(c);
+                        i += 2;
+                    }
+                    None => out.push(b'%'),
+                },
+                c => out.push(c),
+            }
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
 
     fn page(title: &str, body: &str) -> String {
         format!(
@@ -480,6 +595,42 @@ pub mod site {
                 "Set-Cookie: dreamer_smoke=in; Path=/; HttpOnly\r\n".to_owned(),
                 page("logged in", "<p>logged in</p>"),
             ),
+            // A form for an agent to fill and submit (`web.type`), on a
+            // known color for its screenshot.
+            "/form" => (
+                "200 OK",
+                String::new(),
+                page(
+                    "form",
+                    &format!(
+                        "<div style='background:#{FORM:06x};min-height:100vh;padding:24px'>\
+                         <form action='/sent'><label>Your name <input name=name></label> \
+                         <button>Send</button></form></div>"
+                    ),
+                ),
+            ),
+            p if p.starts_with("/sent?") => {
+                let name = p
+                    .split_once("name=")
+                    .map(|(_, v)| unescape(v.split('&').next().unwrap_or("")))
+                    .unwrap_or_default();
+                if let Ok(mut s) = SENT.lock() {
+                    s.push(name.clone());
+                }
+                // Shown without markup: letters, digits, and spaces.
+                let shown: String = name
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == ' ')
+                    .collect();
+                (
+                    "200 OK",
+                    String::new(),
+                    page(
+                        &format!("sent {shown}"),
+                        &format!("<p>sent {shown}</p><p><a id=again href='/form'>again</a></p>"),
+                    ),
+                )
+            }
             "/who" => {
                 let who = if cookie.contains("dreamer_smoke=in") {
                     "in"

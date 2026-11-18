@@ -88,7 +88,7 @@ const USAGE: &str = "usage:
   dream bridge --stdio [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream rpc [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream extensions [--json] | dream extensions restart NAME
-  dream mcp [--level observe|own|elsewhere] [--method M]... [--pane %N]... [--all-panes]
+  dream mcp [--level observe|own|elsewhere] [--method M]... [--pane %N]... [--all-panes] [--web-inspect]
   dream approvals [--json] | allow ID [--pane] | deny ID
   dream drawer toggle|show|hide|status|new [--yes] [--session $N|NAME] [--window @N] [--pane %N] [--json]
   dream web open URL [--session $N|NAME | --pane %N] [--json]   (a web page in a new pane; drawn by the desktop)
