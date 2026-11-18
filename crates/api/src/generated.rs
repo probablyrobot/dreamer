@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 55;
+pub const PROTOCOL_MINOR: u32 = 56;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1612,6 +1612,11 @@ pub struct Pane {
     #[prost(string, optional, tag = "16")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web: Option<String>,
+    /// A web pane's scroll position in CSS pixels as the desktop drawing it last reported it (web.state), kept in the placeholder for the page to open there again; 0 before a report.
+    #[prost(int32, tag = "17")]
+    pub web_scroll_x: i32,
+    #[prost(int32, tag = "18")]
+    pub web_scroll_y: i32,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -4762,6 +4767,25 @@ pub struct WebOpened {
     pub pane: u32,
 }
 
+/// What a web pane's page shows, from the desktop drawing it, kept in the placeholder: the page's title as the pane's title and in the placeholder's text for plain tmux clients, and its scroll position for the page to open there again.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebState {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// At most 200 characters are kept; control characters are dropped.
+    #[prost(string, tag = "2")]
+    pub title: String,
+    /// CSS pixels.
+    #[prost(int32, tag = "3")]
+    pub scroll_x: i32,
+    #[prost(int32, tag = "4")]
+    pub scroll_y: i32,
+    #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSessionCreate {
@@ -5368,6 +5392,7 @@ pub mod method {
     pub const APPS_CAPTURE_WAIT: &str = "apps.capture_wait";
     pub const APPS_CAPTURE_DONE: &str = "apps.capture_done";
     pub const WEB_OPEN: &str = "web.open";
+    pub const WEB_STATE: &str = "web.state";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6094,6 +6119,13 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner only).",
     },
+    MethodInfo {
+        name: "web.state",
+        params: "WebState",
+        result: "Empty",
+        mutation: true,
+        doc: "Keep a web pane's page title and scroll position in its placeholder (owner only; the desktop drawing the page reports them).",
+    },
 ];
 
 /// A typed request for one method.
@@ -6201,6 +6233,7 @@ pub enum Request {
     AppsCaptureWait(AppCaptureWait),
     AppsCaptureDone(AppCaptureDone),
     WebOpen(WebOpen),
+    WebState(WebState),
 }
 
 impl Request {
@@ -6308,6 +6341,7 @@ impl Request {
             Self::AppsCaptureWait(_) => "apps.capture_wait",
             Self::AppsCaptureDone(_) => "apps.capture_done",
             Self::WebOpen(_) => "web.open",
+            Self::WebState(_) => "web.state",
         }
     }
 
@@ -6416,6 +6450,7 @@ impl Request {
             Self::AppsCaptureWait(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCaptureDone(v) => ::prost::Message::encode_to_vec(v),
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebState(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -6545,6 +6580,7 @@ impl Request {
             "apps.capture_wait" => Ok(Self::AppsCaptureWait(::prost::Message::decode(bytes)?)),
             "apps.capture_done" => Ok(Self::AppsCaptureDone(::prost::Message::decode(bytes)?)),
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
+            "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6653,6 +6689,7 @@ impl Request {
             Self::AppsCaptureWait(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCaptureDone(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -6776,6 +6813,7 @@ impl Request {
             "apps.capture_wait" => Ok(Self::AppsCaptureWait(serde_json::from_value(value)?)),
             "apps.capture_done" => Ok(Self::AppsCaptureDone(serde_json::from_value(value)?)),
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
+            "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6886,6 +6924,7 @@ pub enum Response {
     AppsCaptureWait(AppCaptureRequest),
     AppsCaptureDone(Empty),
     WebOpen(WebOpened),
+    WebState(Empty),
 }
 
 impl Response {
@@ -6993,6 +7032,7 @@ impl Response {
             Self::AppsCaptureWait(_) => "apps.capture_wait",
             Self::AppsCaptureDone(_) => "apps.capture_done",
             Self::WebOpen(_) => "web.open",
+            Self::WebState(_) => "web.state",
         }
     }
 
@@ -7101,6 +7141,7 @@ impl Response {
             Self::AppsCaptureWait(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCaptureDone(v) => ::prost::Message::encode_to_vec(v),
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebState(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -7230,6 +7271,7 @@ impl Response {
             "apps.capture_wait" => Ok(Self::AppsCaptureWait(::prost::Message::decode(bytes)?)),
             "apps.capture_done" => Ok(Self::AppsCaptureDone(::prost::Message::decode(bytes)?)),
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
+            "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7338,6 +7380,7 @@ impl Response {
             Self::AppsCaptureWait(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCaptureDone(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -7461,6 +7504,7 @@ impl Response {
             "apps.capture_wait" => Ok(Self::AppsCaptureWait(serde_json::from_value(value)?)),
             "apps.capture_done" => Ok(Self::AppsCaptureDone(serde_json::from_value(value)?)),
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
+            "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7965,6 +8009,11 @@ pub trait Service: Sync {
         &self,
         params: WebOpen,
     ) -> impl ::core::future::Future<Output = Result<WebOpened, RpcError>> + Send;
+    /// Keep a web pane's page title and scroll position in its placeholder (owner only; the desktop drawing the page reports them).
+    fn web_state(
+        &self,
+        params: WebState,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -8195,6 +8244,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .await
             .map(Response::AppsCaptureDone),
         Request::WebOpen(p) => service.web_open(p).await.map(Response::WebOpen),
+        Request::WebState(p) => service.web_state(p).await.map(Response::WebState),
     }
 }
 

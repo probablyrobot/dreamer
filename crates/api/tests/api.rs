@@ -370,6 +370,9 @@ impl Service for Fixed {
     async fn web_open(&self, _: api::WebOpen) -> Result<api::WebOpened, RpcError> {
         Ok(api::WebOpened::default())
     }
+    async fn web_state(&self, _: api::WebState) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
     async fn apps_input(&self, _: api::AppInput) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }

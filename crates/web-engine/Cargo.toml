@@ -10,7 +10,7 @@ publish = false
 [features]
 # Chromium through CEF. Needs `cargo xtask deps web` (see cef-sys); without
 # it the crate builds no engine and the desktop says how to get one.
-engine = ["cef-sys/cef", "dep:raw-window-handle"]
+engine = ["cef-sys/cef", "dep:raw-window-handle", "dep:serde_json"]
 
 # The helper executable CEF starts for its renderer, GPU, and utility
 # processes. A bundle copies it into its five helper apps.
@@ -22,6 +22,7 @@ required-features = ["engine"]
 [dependencies]
 cef-sys = { path = "../cef-sys" }
 raw-window-handle = { version = "0.6.2", optional = true }
+serde_json = { version = "1.0.154", optional = true }
 
 [lints]
 workspace = true

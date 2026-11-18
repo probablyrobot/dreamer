@@ -42,6 +42,7 @@ enum Command {
     },
     Drawer(api::DrawerRequest),
     WebOpen(api::WebOpen),
+    WebState(api::WebState),
 }
 
 #[derive(Debug)]
@@ -148,6 +149,12 @@ impl TopologyFeed {
     /// shows up as a newer topology.
     pub fn web_open(&self, request: api::WebOpen) {
         let _ = self.actions.send(Command::WebOpen(request));
+    }
+
+    /// Keep a web pane's page title and scroll position in its placeholder
+    /// (`web.state`).
+    pub fn web_state(&self, request: api::WebState) {
+        let _ = self.actions.send(Command::WebState(request));
     }
 
     /// Ask for a tmux window's size in cells. Applied only while this view
@@ -323,6 +330,11 @@ impl Owner {
                     Some(Command::WebOpen(request)) => {
                         if let Err(e) = self.via.call(&c, Request::WebOpen(request)).await {
                             eprintln!("dreamer: the web page did not open: {e}");
+                        }
+                    }
+                    Some(Command::WebState(request)) => {
+                        if let Err(e) = self.via.call(&c, Request::WebState(request)).await {
+                            eprintln!("dreamer: the web pane's state was not kept: {e}");
                         }
                     }
                     None => return Ok(()),

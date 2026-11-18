@@ -531,6 +531,7 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         api::method::APPS_CAPTURE_DONE,
         // Web pages run in the user's desktop.
         api::method::WEB_OPEN,
+        api::method::WEB_STATE,
     ]
     .contains(&req.method.as_str())
     {

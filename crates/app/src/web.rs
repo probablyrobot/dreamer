@@ -2,22 +2,68 @@
 //! (`Pane.web`), which the desktop fills with the page, drawn by Chromium
 //! itself in a native view kept on the pane's rectangle.
 //!
-//! Chromium's view sits above everything GPUI draws. The workspace hides it
-//! while the pane is not shown (another tab, or zoomed away) and while the
-//! command palette is open, since the palette would be drawn under it.
+//! Chromium's view sits above everything GPUI draws. The workspace places
+//! each web pane ([`Place`]): its view follows the pane's rectangle while
+//! the pane is drawn, and is hidden (the page kept) while it is not, on
+//! another tab or zoomed away. While an overlay of the desktop's (the
+//! palette, the context menu) is open, the pane shows the page's last
+//! snapshot instead, taken as the overlay opens; the overlay shows once
+//! the live page is off the screen ([`decide`]).
+//!
+//! The page's title and scroll position are kept in the placeholder
+//! (`web.state`), so a page opened again (after the desktop restarts, or
+//! once its view was let go) scrolls back to where it was.
 //!
 //! Chromium starts with the first web pane, not with the app. A build
 //! without the `web` feature, or one not running from a bundle with the
 //! framework and its helper apps, shows the page's address and why it
 //! cannot draw it.
 
+use std::sync::Arc;
+
 use gpui::{
-    Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, Styled,
-    WeakEntity, Window, div, px,
+    Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, RenderImage,
+    Styled, StyledImage as _, WeakEntity, Window, div, px,
 };
 
 use crate::theme::c;
 use crate::workspace::Workspace;
+
+/// Where the workspace has a web pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Place {
+    /// Not in the window: on another tab, or another pane is zoomed.
+    Hidden,
+    /// Drawn, with nothing of the desktop's over it.
+    Shown,
+    /// Drawn, under an overlay of the desktop's.
+    Covered,
+}
+
+/// A covered page's snapshot.
+#[cfg_attr(not(feature = "web"), allow(dead_code))]
+enum Snapshot {
+    None,
+    /// Asked of Chromium; the page stays live until it comes.
+    Asked,
+    /// The image, or `None` when Chromium gave none in time.
+    Taken(Option<Arc<RenderImage>>),
+}
+
+/// Whether the page's view is on screen, and whether to ask for a snapshot
+/// first, for a pane at `place` whose view is `live` (on screen now) and
+/// whose snapshot is `asked` for or `taken`. A hidden pane's page is never
+/// on screen. A covered page stays live until its snapshot is taken, so
+/// the pane never goes blank under the overlay; a page that was not live
+/// is not shown for it.
+fn decide(place: Place, live: bool, asked: bool, taken: bool) -> (bool, bool) {
+    match place {
+        Place::Hidden => (false, false),
+        Place::Shown => (true, false),
+        Place::Covered if !live || taken => (false, false),
+        Place::Covered => (true, !asked),
+    }
+}
 
 pub(crate) struct WebPane {
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
@@ -26,8 +72,14 @@ pub(crate) struct WebPane {
     pub(crate) focus: FocusHandle,
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     workspace: WeakEntity<Workspace>,
-    /// Nothing covers the pane: Chromium's view may show.
-    shown: bool,
+    place: Place,
+    /// Whether the page's view may be on screen (see [`decide`]). Hiding
+    /// takes effect at once; showing, when the pane is next painted.
+    live: bool,
+    snapshot: Snapshot,
+    /// The page's title and scroll position as the placeholder keeps them.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    kept: (String, i32, i32),
     /// Why the page is not drawn.
     pub(crate) problem: Option<String>,
     #[cfg(feature = "web")]
@@ -35,9 +87,12 @@ pub(crate) struct WebPane {
 }
 
 impl WebPane {
+    /// `kept`: the page's title and scroll position as the placeholder
+    /// keeps them; the page opens scrolled there.
     pub(crate) fn new(
         pane: u32,
         url: String,
+        kept: (String, i32, i32),
         workspace: WeakEntity<Workspace>,
         cx: &mut Context<Self>,
     ) -> WebPane {
@@ -55,22 +110,64 @@ impl WebPane {
             url,
             focus: cx.focus_handle(),
             workspace,
-            shown: true,
+            place: Place::Shown,
+            live: true,
+            snapshot: Snapshot::None,
+            kept,
             problem,
             #[cfg(feature = "web")]
             view: None,
         }
     }
 
-    /// Whether the page may be on screen: the pane is drawn and nothing
-    /// the desktop draws covers it. Hiding takes effect at once; showing,
-    /// when the pane is next painted at its place.
-    pub(crate) fn set_shown(&mut self, shown: bool) {
-        self.shown = shown;
+    /// The workspace laid the pane out at `place`. Returns whether an
+    /// overlay may show over it: false while its live page waits for its
+    /// snapshot.
+    pub(crate) fn set_place(
+        &mut self,
+        place: Place,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         #[cfg(feature = "web")]
-        if !shown && let Some(v) = &self.view {
-            v.set_visible(false);
+        let on_screen = self.view.as_ref().is_some_and(web_engine::WebView::visible);
+        #[cfg(not(feature = "web"))]
+        let on_screen = false;
+        let (asked, taken) = match self.snapshot {
+            Snapshot::None => (false, false),
+            Snapshot::Asked => (true, false),
+            Snapshot::Taken(_) => (true, true),
+        };
+        let (live, ask) = decide(place, on_screen, asked, taken);
+        if place != Place::Covered {
+            if let Snapshot::Taken(Some(image)) =
+                std::mem::replace(&mut self.snapshot, Snapshot::None)
+            {
+                let _ = window.drop_image(image);
+            }
+            self.snapshot = Snapshot::None;
         }
+        #[cfg(feature = "web")]
+        {
+            if ask {
+                self.ask_snapshot(cx);
+            }
+            // Leaving the screen: keep where the page is.
+            if self.place == Place::Shown && place != Place::Shown {
+                self.keep_state(cx);
+            }
+            if !live && let Some(v) = &self.view {
+                v.set_visible(false);
+            }
+        }
+        #[cfg(not(feature = "web"))]
+        let _ = ask;
+        if (place, live) != (self.place, self.live) {
+            cx.notify();
+        }
+        self.place = place;
+        self.live = live;
+        !(live && place == Place::Covered)
     }
 
     /// Keyboard focus moved to this pane: the page takes the keys.
@@ -98,6 +195,88 @@ impl WebPane {
         if let Some(v) = &self.view {
             v.release_focus();
         }
+    }
+
+    /// Whether the pane shows the page's snapshot now (smoke evidence).
+    #[cfg(feature = "web")]
+    pub(crate) fn shows_snapshot(&self) -> bool {
+        !self.live && matches!(self.snapshot, Snapshot::Taken(Some(_)))
+    }
+
+    /// Ask Chromium for the page as drawn now. The page stays live until
+    /// the image comes (decoded off this thread), or at most
+    /// [`SNAPSHOT_WAIT`], and the workspace lays the pane out again then.
+    #[cfg(feature = "web")]
+    fn ask_snapshot(&mut self, cx: &mut Context<Self>) {
+        let Some(v) = &self.view else { return };
+        self.snapshot = Snapshot::Asked;
+        let (tx, rx) = async_channel::bounded(1);
+        v.capture(move |reply| {
+            let _ = tx.try_send(reply);
+        });
+        cx.spawn(async move |this, cx| {
+            let ex = cx.background_executor().clone();
+            let decoded = ex.spawn(async move {
+                let reply = rx.recv().await.ok()?.ok()?;
+                decode_snapshot(&reply).ok()
+            });
+            let timer = ex.timer(SNAPSHOT_WAIT);
+            let image = futures_lite::future::or(decoded, async {
+                timer.await;
+                None
+            })
+            .await;
+            let _ = this.update(cx, |w, cx| {
+                if matches!(w.snapshot, Snapshot::Asked) {
+                    w.snapshot = Snapshot::Taken(image);
+                    w.relayout(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Lay the panes out again: what this pane may show changed.
+    #[cfg(feature = "web")]
+    fn relayout(&self, cx: &mut Context<Self>) {
+        cx.notify();
+        let _ = self.workspace.update(cx, |_, cx| cx.notify());
+    }
+
+    /// Ask the page where it is scrolled to, and keep that and its title in
+    /// the placeholder if they changed.
+    #[cfg(feature = "web")]
+    fn keep_state(&self, cx: &mut Context<Self>) {
+        let Some(v) = &self.view else { return };
+        if v.load_status().is_none() {
+            return;
+        }
+        let title = v.title();
+        let (tx, rx) = async_channel::bounded(1);
+        v.scroll_position(move |at| {
+            let _ = tx.try_send(at);
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Some((x, y))) = rx.recv().await else {
+                return;
+            };
+            let _ = this.update(cx, |w, cx| {
+                let kept = (title, x, y);
+                if w.kept == kept {
+                    return;
+                }
+                let state = api::WebState {
+                    pane: w.pane,
+                    title: kept.0.clone(),
+                    scroll_x: x,
+                    scroll_y: y,
+                    ..api::WebState::default()
+                };
+                w.kept = kept;
+                let _ = w.workspace.update(cx, |ws, _| ws.keep_web_state(state));
+            });
+        })
+        .detach();
     }
 
     /// Painted at `bounds`: open the page on first paint, then keep its
@@ -142,7 +321,27 @@ impl WebPane {
                     if self.focus.is_focused(window) {
                         v.focus();
                     }
+                    let (_, x, y) = self.kept;
+                    if (x, y) != (0, 0) {
+                        v.restore_scroll(x, y);
+                    }
                     self.view = Some(v);
+                    // While the page is on screen, its state is kept every
+                    // few seconds.
+                    cx.spawn(async move |this, cx| {
+                        loop {
+                            cx.background_executor().timer(KEEP_EVERY).await;
+                            let alive = this.update(cx, |w, cx| {
+                                if w.place == Place::Shown {
+                                    w.keep_state(cx);
+                                }
+                            });
+                            if alive.is_err() {
+                                return;
+                            }
+                        }
+                    })
+                    .detach();
                 }
                 Err(e) => {
                     self.problem = Some(e);
@@ -153,9 +352,30 @@ impl WebPane {
         }
         if let Some(v) = &self.view {
             v.place(rect);
-            v.set_visible(self.shown);
+            v.set_visible(self.live);
         }
     }
+}
+
+/// How long a covered page waits for its snapshot (and the overlay with
+/// it) before it is hidden without one.
+#[cfg(feature = "web")]
+const SNAPSHOT_WAIT: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// How often a page on screen has its title and scroll position kept.
+#[cfg(feature = "web")]
+const KEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The image in Chromium's reply to a capture (`Page.captureScreenshot`:
+/// a PNG, base64, in `data`). Slow: never on the UI thread.
+#[cfg(feature = "web")]
+fn decode_snapshot(reply: &[u8]) -> Result<Arc<RenderImage>, String> {
+    let v: serde_json::Value = serde_json::from_slice(reply).map_err(|e| e.to_string())?;
+    let data = v
+        .get("data")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("no image in the reply")?;
+    terminal_render::decode_image(&api::json::decode_base64(data)?)
 }
 
 impl Render for WebPane {
@@ -177,12 +397,25 @@ impl Render for WebPane {
                     .clone()
                     .map(|p| div().text_color(c(t.warning)).child(p)),
             );
+        // Under an overlay, the page as it was when the overlay opened.
+        let snapshot = match &self.snapshot {
+            Snapshot::Taken(Some(image)) if !self.live => Some(
+                gpui::img(image.clone())
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Fill),
+            ),
+            _ => None,
+        };
         let base = div()
             .size_full()
             .relative()
             .bg(c(t.background))
             .track_focus(&self.focus)
-            .child(notice);
+            .child(notice)
+            .children(snapshot);
         #[cfg(feature = "web")]
         let base = {
             let entity = cx.entity();
@@ -208,6 +441,33 @@ fn shorten(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {
         Some((at, _)) => format!("{}…", &s[..at]),
         None => s.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Place, decide};
+
+    #[test]
+    fn a_page_shows_only_where_its_pane_is_drawn_and_uncovered() {
+        // On another tab or zoomed away: never on screen, no snapshot.
+        for live in [false, true] {
+            assert_eq!(decide(Place::Hidden, live, false, false), (false, false));
+        }
+        // Drawn and uncovered: on screen (again).
+        assert_eq!(decide(Place::Shown, false, true, true), (true, false));
+    }
+
+    #[test]
+    fn a_covered_page_stays_until_its_snapshot_is_taken() {
+        // The overlay opens: snapshot first, the page still live.
+        assert_eq!(decide(Place::Covered, true, false, false), (true, true));
+        // Asked once, waiting.
+        assert_eq!(decide(Place::Covered, true, true, false), (true, false));
+        // Taken (or given up on): off the screen, the overlay shows.
+        assert_eq!(decide(Place::Covered, true, true, true), (false, false));
+        // A page that was not on screen does not come back for an overlay.
+        assert_eq!(decide(Place::Covered, false, false, false), (false, false));
     }
 }
 

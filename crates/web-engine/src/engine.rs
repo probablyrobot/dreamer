@@ -2,6 +2,7 @@
 //! parented to a window's view.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
@@ -133,8 +134,12 @@ mod handlers {
                 frame: Option<&mut Frame>,
                 http_status_code: i32,
             ) {
-                if frame.is_some_and(|f| f.is_main() == 1) {
+                if let Some(f) = frame.filter(|f| f.is_main() == 1) {
                     self.shared.loaded.store(http_status_code, Ordering::Relaxed);
+                    let script = self.shared.on_load.lock().ok().and_then(|mut s| s.take());
+                    if let Some(script) = script {
+                        f.execute_java_script(Some(&CefString::from(script.as_str())), None, 0);
+                    }
                 }
             }
         }
@@ -150,6 +155,32 @@ mod handlers {
                     && let Some(f) = f.as_ref()
                 {
                     f();
+                }
+            }
+        }
+    }
+
+    wrap_dev_tools_message_observer! {
+        pub struct DreamerDevTools {
+            shared: Arc<Shared>,
+        }
+        impl DevToolsMessageObserver {
+            fn on_dev_tools_method_result(
+                &self,
+                _browser: Option<&mut Browser>,
+                message_id: i32,
+                success: i32,
+                result: Option<&[u8]>,
+            ) {
+                let done = self
+                    .shared
+                    .replies
+                    .lock()
+                    .ok()
+                    .and_then(|mut r| r.remove(&message_id));
+                if let Some(done) = done {
+                    let reply = result.unwrap_or_default().to_vec();
+                    done(if success == 1 { Ok(reply) } else { Err(reply) });
                 }
             }
         }
@@ -188,6 +219,9 @@ mod handlers {
     }
 }
 
+/// A DevTools reply's handler: the result's JSON, or the error's.
+type Reply = Box<dyn FnOnce(Result<Vec<u8>, Vec<u8>>) + Send>;
+
 /// What a browser's handlers report, read from the main thread.
 #[derive(Default)]
 struct Shared {
@@ -196,7 +230,14 @@ struct Shared {
     loaded: AtomicI32,
     closed: AtomicBool,
     on_focus: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// A script for the main frame when its load finishes, once.
+    on_load: Mutex<Option<String>>,
+    /// DevTools calls waiting for their replies, by message id.
+    replies: Mutex<HashMap<i32, Reply>>,
 }
+
+/// DevTools message ids, unique in the process.
+static MESSAGE: AtomicI32 = AtomicI32::new(1);
 
 /// The path of the framework binary next to the running executable's
 /// bundle, if it is there.
@@ -359,6 +400,8 @@ pub struct WebView {
     parent: *mut c_void,
     placed: Cell<Option<Rect>>,
     visible: Cell<bool>,
+    /// Keeps the DevTools observer registered.
+    _devtools: Option<Registration>,
 }
 
 impl std::fmt::Debug for WebView {
@@ -413,12 +456,18 @@ impl WebView {
         )
         .ok_or("Chromium could not create a browser")?;
         LIVE.fetch_add(1, Ordering::Relaxed);
+        let devtools = browser.host().and_then(|h| {
+            h.add_dev_tools_message_observer(Some(&mut handlers::DreamerDevTools::new(
+                shared.clone(),
+            )))
+        });
         let view = WebView {
             browser,
             shared,
             parent,
             placed: Cell::new(None),
             visible: Cell::new(true),
+            _devtools: devtools,
         };
         view.place(rect);
         // Creating the browser makes its view first responder; the pane
@@ -522,6 +571,64 @@ impl WebView {
         }
     }
 
+    /// Call DevTools `method` with `params` (a JSON object); `done` gets
+    /// the result's JSON, or the error's, on the main thread. Dropped
+    /// unanswered if the page closes first.
+    fn devtools(&self, method: &str, params: &str, done: Reply) {
+        let Some(h) = self.host() else { return };
+        let id = MESSAGE.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut r) = self.shared.replies.lock() {
+            r.insert(id, done);
+        }
+        let message = format!(r#"{{"id":{id},"method":"{method}","params":{params}}}"#);
+        if h.send_dev_tools_message(Some(message.as_bytes())) != 1
+            && let Ok(mut r) = self.shared.replies.lock()
+        {
+            r.remove(&id);
+        }
+    }
+
+    /// Ask for an image of the page as drawn now (DevTools
+    /// `Page.captureScreenshot`, a PNG at the display's scale). `done` gets
+    /// the reply's JSON, with the PNG base64 in `data`, on the main thread:
+    /// decode it elsewhere.
+    pub fn capture(&self, done: impl FnOnce(Result<Vec<u8>, String>) + Send + 'static) {
+        self.devtools(
+            "Page.captureScreenshot",
+            r#"{"format":"png"}"#,
+            Box::new(move |r| done(r.map_err(|e| String::from_utf8_lossy(&e).into_owned()))),
+        );
+    }
+
+    /// Ask for the page's scroll position in CSS pixels; `done` gets it on
+    /// the main thread, or `None` if the page did not say.
+    pub fn scroll_position(&self, done: impl FnOnce(Option<(i32, i32)>) + Send + 'static) {
+        self.devtools(
+            "Runtime.evaluate",
+            r#"{"expression":"[scrollX,scrollY]","returnByValue":true}"#,
+            Box::new(move |r| {
+                let at = r.ok().and_then(|json| {
+                    let v: serde_json::Value = serde_json::from_slice(&json).ok()?;
+                    let xy = v.pointer("/result/value")?.as_array()?;
+                    let n = |i: usize| Some(xy.get(i)?.as_f64()?.round() as i32);
+                    Some((n(0)?, n(1)?))
+                });
+                done(at);
+            }),
+        );
+    }
+
+    /// Scroll the page to (`x`, `y`) in CSS pixels: now if it has loaded,
+    /// else when it has.
+    pub fn restore_scroll(&self, x: i32, y: i32) {
+        let script = format!("window.scrollTo({x}, {y})");
+        if self.load_status().is_some() {
+            self.run_script(&script);
+        } else if let Ok(mut s) = self.shared.on_load.lock() {
+            *s = Some(script);
+        }
+    }
+
     /// The page's title as last reported.
     pub fn title(&self) -> String {
         self.shared
@@ -549,6 +656,9 @@ impl Drop for WebView {
     fn drop(&mut self) {
         if let Ok(mut f) = self.shared.on_focus.lock() {
             *f = None;
+        }
+        if let Ok(mut r) = self.shared.replies.lock() {
+            r.clear();
         }
         // Gone from the screen at once; CEF removes the view as it closes.
         // SAFETY: CEF's live view or null; main thread.

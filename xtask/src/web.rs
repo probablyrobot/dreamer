@@ -195,14 +195,25 @@ pub enum Smoke {
     NotRun(String),
 }
 
-/// The page's two colors (`PAGE` in the app's web smoke).
-const TOP: u32 = 0x2a_6f_db;
-const BOTTOM: u32 = 0xd9_82_2b;
+/// The captures the web smoke makes, each checked at least once: the page
+/// loaded, scrolled, its pane resized, zoomed, on a hidden tab, shown
+/// again, under the palette, and after the palette.
+const CAPTURES: [&str; 8] = [
+    "before.png",
+    "after.png",
+    "resized.png",
+    "zoomed.png",
+    "tab.png",
+    "back.png",
+    "palette.png",
+    "closed.png",
+];
 
 /// Run the bundle's `dreamer --smoke-web` against an isolated tmux server
 /// with private daemon, desktop, and configuration directories, then check
-/// its captures: the page's top color fills the pane's rectangle, and after
-/// the scroll its bottom color does.
+/// its captures as its `checks.txt` lists: the page's color fills the web
+/// pane's rectangle after each move, and is absent beside it, from it on
+/// another tab, and from the palette over it.
 pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
     let pid = std::process::id();
@@ -257,31 +268,58 @@ pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
             ));
         }
     }
-    let rect =
-        std::fs::read_to_string(out.join("rect.txt")).map_err(|e| format!("rect.txt: {e}"))?;
-    let v: Vec<f64> = rect
-        .split_whitespace()
-        .filter_map(|n| n.parse().ok())
-        .collect();
-    let [x, y, w, h, window_w, _] = v[..] else {
-        return Err(format!("rect.txt: `{}`", rect.trim()));
-    };
-    for (name, color) in [("before.png", TOP), ("after.png", BOTTOM)] {
+    let checks =
+        std::fs::read_to_string(out.join("checks.txt")).map_err(|e| format!("checks.txt: {e}"))?;
+    let mut rows = checks.lines();
+    let window_w = rows
+        .next()
+        .and_then(|l| l.strip_prefix("window "))
+        .and_then(|l| l.split(' ').next()?.parse::<f64>().ok())
+        .ok_or("checks.txt: no window size")?;
+    let mut checked = std::collections::BTreeSet::new();
+    for row in rows {
+        let bad = || format!("checks.txt: `{row}`");
+        let f: Vec<&str> = row.split(' ').collect();
+        let [name, color, bound, share, x, y, w, h] = f[..] else {
+            return Err(bad());
+        };
+        let color = u32::from_str_radix(color, 16).map_err(|_| bad())?;
+        let num = |s: &str| s.parse::<f64>().map_err(|_| bad());
+        let (limit, rect) = (num(share)?, (num(x)?, num(y)?, num(w)?, num(h)?));
         let path = out.join(name);
-        let (share, main) = crate::scenes::share_in(&path, color, window_w, (x, y, w, h))?;
+        let (got, main) = crate::scenes::share_in(&path, color, window_w, rect)?;
+        let ok = match bound {
+            "min" => got >= limit,
+            "max" => got <= limit,
+            _ => return Err(bad()),
+        };
         lines.push(format!(
-            "{}: #{color:06x} covers {:.1}% of the pane (most common #{main:06x})",
+            "{}: #{color:06x} covers {:.1}% of {} {} {}x{} ({bound} {:.0}%; most common #{main:06x})",
             path.display(),
-            share * 100.0
+            got * 100.0,
+            rect.0,
+            rect.1,
+            rect.2,
+            rect.3,
+            limit * 100.0
         ));
-        if share < 0.9 {
+        if !ok {
             return Err(format!(
-                "{}: the page's #{color:06x} covers only {:.1}% of the web pane's rectangle (most common #{main:06x})\n{}",
+                "{}: #{color:06x} covers {:.1}% of {} {} {}x{}, against a {bound} of {:.0}%\n{}",
                 path.display(),
-                share * 100.0,
+                got * 100.0,
+                rect.0,
+                rect.1,
+                rect.2,
+                rect.3,
+                limit * 100.0,
                 lines.join("\n")
             ));
         }
+        checked.insert(name.to_owned());
+    }
+    if let Some(missing) = CAPTURES.iter().find(|c| !checked.contains(**c)) {
+        return Err(format!("the web smoke checked nothing in {missing}"));
     }
     Ok(Smoke::Passed(lines))
 }

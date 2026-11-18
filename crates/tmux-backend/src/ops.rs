@@ -199,6 +199,38 @@ pub async fn select_pane(conn: &Connection, target: TmuxPaneId) -> Result<(), Co
         .map(drop)
 }
 
+/// Set a pane's title (`select-pane -T`), taken literally.
+pub async fn set_pane_title(
+    conn: &Connection,
+    target: TmuxPaneId,
+    title: &str,
+) -> Result<(), CommandError> {
+    conn.execute(
+        TmuxCommand::new("select-pane")
+            .opt("-t", pane(target))
+            .opt_literal_for_format("-T", title),
+    )
+    .await
+    .map(drop)
+}
+
+/// Run `argv` (exactly, at least two words) in a pane in place of its
+/// program (`respawn-pane -k`).
+pub async fn respawn_pane(
+    conn: &Connection,
+    target: TmuxPaneId,
+    argv: &[String],
+) -> Result<(), CommandError> {
+    debug_assert!(argv.len() > 1, "one word would go through sh -c");
+    let mut cmd = TmuxCommand::new("respawn-pane")
+        .flag("-k")
+        .opt("-t", pane(target));
+    for a in argv {
+        cmd = cmd.arg(a.clone());
+    }
+    conn.execute(cmd).await.map(drop)
+}
+
 pub async fn select_window(conn: &Connection, target: TmuxWindowId) -> Result<(), CommandError> {
     conn.execute(TmuxCommand::new("select-window").opt("-t", window(target)))
         .await
@@ -420,6 +452,16 @@ pub const DRAWER_HARNESS: &str = "@dreamer_drawer_harness";
 /// for a web page. It lives in tmux, so the pane keeps its page across
 /// daemon and desktop restarts.
 pub const SURFACE: &str = "@dreamer_surface";
+
+/// A web pane's page scroll position as the desktop last reported it, in
+/// CSS pixels: `X Y`.
+pub const WEB_SCROLL: &str = "@dreamer_web_scroll";
+
+/// The scroll position in a [`WEB_SCROLL`] value.
+pub fn web_scroll(value: &str) -> Option<(i32, i32)> {
+    let (x, y) = value.trim().split_once(' ')?;
+    Some((x.parse().ok()?, y.parse().ok()?))
+}
 
 /// The longest URL a web pane takes.
 pub const WEB_URL_MAX: usize = 8192;

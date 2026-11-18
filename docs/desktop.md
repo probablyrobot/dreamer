@@ -515,15 +515,20 @@ come from tmux.
   `https`, `file`, and `data` URLs and `about:blank` are accepted; others
   are refused.
 - **What tmux holds.** The pane runs a small placeholder program that
-  prints the address, which is what a plain tmux client shows, and
-  carries a pane option, `@dreamer_surface` = `web:<URL>`. The daemon
-  reports it in the topology as the pane's `web` URL.
+  prints the page's title, its address, and "Open in Dreamer to see the
+  page", which is what a plain tmux client shows, and carries a pane
+  option, `@dreamer_surface` = `web:<URL>`. The daemon reports it in the
+  topology as the pane's `web` URL. The desktop drawing the page keeps
+  its title (as the pane's title, and in the placeholder's text) and its
+  scroll position (`@dreamer_web_scroll`) there: when the page leaves the
+  screen, and every few seconds while it is shown.
 - **What the desktop draws.** Chromium's own view, placed over the pane's
-  rectangle and moved with it on every layout change. It is hidden while
-  the pane is not shown (another tab, or another pane zoomed) and while the
-  command palette is open, because a native view is drawn above anything
-  Dreamer draws. The pane then shows its background and address instead
-  of a snapshot of the page.
+  rectangle and moved with it on every layout change: splits, resizes,
+  zoom. It is hidden, not closed, while the pane is not shown (another
+  tab, or another pane zoomed). A native view is drawn above anything
+  Dreamer draws, so while the command palette or the context menu is
+  open, web panes show a snapshot of the page taken as it opened, and the
+  live page comes back when it closes.
 - **Focus.** Clicking the page focuses its pane, here and in tmux; keys
   then go to the page. Focusing another pane (a click, the palette, tmux's
   prefix keys) takes the keys back.
@@ -533,12 +538,12 @@ come from tmux.
   text, not the page.
 - **Lifetime.** The page lives while a desktop window shows its pane (or
   kept it among its recently shown panes) and loads again when the pane
-  is shown after that. Closing the pane closes the page. Chromium starts
-  with the first web pane, not with the app.
+  is shown after that, after a desktop restart for example, scrolled back
+  to where tmux keeps it. Closing the pane closes the page. Chromium
+  starts with the first web pane, not with the app.
 
-Not yet: the overlay snapshot (the palette hides the page instead), copy
-and paste and input checks, more than one Mac display scale, Chromium's
-sandbox, signed helper apps, Linux.
+Not yet: copy and paste and input checks, more than one Mac display
+scale, Chromium's sandbox, signed helper apps, Linux.
 
 ### A build with web panes
 
@@ -744,10 +749,21 @@ configuration directories:
 - it sends a wheel event to the page (or, if CEF does not deliver it,
   scrolls by script and says so), waits for the scroll to settle, and
   captures again (`after.png`);
-- the gate checks that the first color covers at least 90% of the pane's
-  rectangle in the first capture and the second color in the second.
+- it resizes the pane through tmux (`resized.png`) and zooms it
+  (`zoomed.png`), waiting each time for the page to follow and draw;
+- it opens a new tab (`tab.png`), then goes back to the page's tab,
+  checking that the page was kept rather than loaded again (`back.png`);
+- it opens the palette, waits for the pane to show the page's snapshot
+  (`palette.png`), closes it, and waits for the live page
+  (`closed.png`);
+- the gate checks each capture as the smoke's `checks.txt` lists: the
+  page's color covers at least 90% of the pane's rectangle (of the
+  zoomed pane, or of the part beside the palette) and at most 1% of the
+  window left of it, none of it shows where the pane was while another
+  tab is shown, and at most 5% of the palette's query line where it
+  crosses the pane is the page's.
 
-The captures and the pane's rectangle are kept in `target/gate/web/`.
+The captures and `checks.txt` are kept in `target/gate/web/`.
 Without CEF provisioned, without a display that refreshes, or when
 Chromium stops drawing frames, the step is recorded as not run.
 
