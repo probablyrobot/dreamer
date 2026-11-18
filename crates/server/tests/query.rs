@@ -97,6 +97,26 @@ async fn ask(c: &Client, q: api::TerminalQuery) -> Result<api::QueryResult, clie
     }
 }
 
+/// Wait until a pane shows anything (its shell's prompt).
+async fn prompted(c: &Client, pane: u32) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(Response::TerminalRead(t)) = c
+            .call(Request::TerminalRead(api::ReadParams {
+                pane,
+                history: Some(10),
+                endpoint: None,
+            }))
+            .await
+            && t.lines.iter().any(|l| !l.trim().is_empty())
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "%{pane} never showed a prompt");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Wait until every pane shows its marker. Shells in many panes start
 /// slowly under emulation (the arm64 gate stage), so the wait is generous.
 async fn shown(c: &Client, panes: &[(u32, &str)]) {
@@ -134,6 +154,11 @@ async fn queries_find_panes_within_bounds_and_never_hold_up_input() {
     };
     let panes: Vec<u32> = t.panes.iter().map(|p| p.id).collect();
     assert_eq!(panes.len(), 3);
+    // A shell that is still starting can drop what is typed ahead of it:
+    // wait for each prompt first.
+    for pane in &panes {
+        prompted(&c, *pane).await;
+    }
     let say =
         |pane: u32, cmd: &str| s.tmux(&["send-keys", "-t", &format!("%{pane}"), cmd, "Enter"]);
     say(panes[0], "printf 'build FAILED: x\\nok\\n'; echo m0");
