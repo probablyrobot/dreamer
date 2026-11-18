@@ -547,6 +547,18 @@ mod handlers {
         }
     }
 
+    // A profile's cookies are on disk.
+    wrap_completion_callback! {
+        pub struct Flushed {
+            done: Arc<AtomicBool>,
+        }
+        impl CompletionCallback {
+            fn on_complete(&self) {
+                self.done.store(true, Ordering::Release);
+            }
+        }
+    }
+
     // Load `url` in `browser`'s main frame, as a task of its own.
     wrap_task! {
         pub struct LoadLater {
@@ -831,6 +843,23 @@ pub fn shutdown(timeout: Duration) -> Result<(), String> {
         return Ok(());
     }
     let until = Instant::now() + timeout;
+    // Cookies first (logins survive a restart), whether or not every
+    // browser closes in time: Chromium writes them to disk only now and then.
+    let flushing: Vec<Arc<AtomicBool>> = PROFILES.with(|p| {
+        p.borrow()
+            .values()
+            .filter_map(|p| {
+                let done = Arc::new(AtomicBool::new(false));
+                let mut flushed = handlers::Flushed::new(done.clone());
+                let cookies = p.context.cookie_manager(None)?;
+                (cookies.flush_store(Some(&mut flushed)) != 0).then_some(done)
+            })
+            .collect()
+    });
+    while flushing.iter().any(|d| !d.load(Ordering::Acquire)) && Instant::now() < until {
+        do_message_loop_work();
+        std::thread::sleep(Duration::from_millis(5));
+    }
     while LIVE.load(Ordering::Relaxed) > 0 {
         if Instant::now() > until {
             return Err(format!(
