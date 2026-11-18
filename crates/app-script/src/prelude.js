@@ -232,6 +232,7 @@
     toggle: content("toggle", "label", { label: "", on: false }),
     terminal: content("terminal", "pane"),
     image: content("image", "src", { src: "" }),
+    web: content("web", "src", { src: "" }),
     table(o) {
       o = opts(o);
       const columns = (o.columns || []).map(String);
@@ -303,6 +304,7 @@
     toggle: { label: "", on: false },
     terminal: { pane: undefined },
     image: { src: "" },
+    web: { src: "" },
   };
   const ON = ["onPress", "onChange", "onSubmit", "onEnter", "onSelect"];
 

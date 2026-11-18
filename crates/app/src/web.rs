@@ -22,6 +22,13 @@
 //! (`web.state`), so a page opened again (after the desktop restarts, or
 //! once its view was let go) scrolls back to where it was.
 //!
+//! The same view draws a `web` node of an app pane's tree (an app's own
+//! page): it is then placed where the node is drawn, opens in the app's
+//! own browser profile, may navigate only to the app's origin and the
+//! origins the app allows, and its page on the app's origin calls the
+//! daemon through the bridge as the app ([`web_engine::site`]). Its title
+//! and scroll position are not kept anywhere.
+//!
 //! Chromium starts with the first web pane, not with the app. A build
 //! without the `web` feature, or one not running from a bundle with the
 //! framework and its helper apps, shows the page's address and why it
@@ -91,6 +98,9 @@ pub(crate) struct WebPane {
     kept: (String, i32, i32),
     /// Why the page is not drawn.
     pub(crate) problem: Option<String>,
+    /// The app whose page this is, for a `web` node of an app pane.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    app: Option<web_engine::AppPage>,
     #[cfg(feature = "web")]
     pub(crate) view: Option<web_engine::WebView>,
     /// The page has the keys exactly while the pane has Dreamer's focus.
@@ -99,11 +109,13 @@ pub(crate) struct WebPane {
 
 impl WebPane {
     /// `kept`: the page's title and scroll position as the placeholder
-    /// keeps them; the page opens scrolled there.
+    /// keeps them; the page opens scrolled there. `app`: the app whose
+    /// page it is, for a `web` node in app pane `pane`.
     pub(crate) fn new(
         pane: u32,
         url: String,
         kept: (String, i32, i32),
+        app: Option<web_engine::AppPage>,
         workspace: WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -134,6 +146,7 @@ impl WebPane {
             snapshot: Snapshot::None,
             kept,
             problem,
+            app,
             #[cfg(feature = "web")]
             view: None,
             _focus,
@@ -217,6 +230,15 @@ impl WebPane {
         }
     }
 
+    /// Navigations of an app's page refused so far (smoke evidence).
+    #[cfg(feature = "web")]
+    pub(crate) fn blocked(&self) -> Vec<String> {
+        self.view
+            .as_ref()
+            .map(web_engine::WebView::blocked)
+            .unwrap_or_default()
+    }
+
     /// One of Chromium's edit commands in the page, for the desktop's edit
     /// shortcuts.
     fn edit(&mut self, edit: Edit) {
@@ -279,7 +301,8 @@ impl WebPane {
     #[cfg(feature = "web")]
     fn keep_state(&self, cx: &mut Context<Self>) {
         let Some(v) = &self.view else { return };
-        if v.load_status().is_none() {
+        // An app's page has no placeholder to keep it in.
+        if self.app.is_some() || v.load_status().is_none() {
             return;
         }
         let title = v.title();
@@ -343,7 +366,8 @@ impl WebPane {
                 }
             })
             .detach();
-            match web_engine::WebView::open(window, rect, &self.url, move || {
+            let app = self.app.clone();
+            match web_engine::WebView::open(window, rect, &self.url, app, move || {
                 let _ = tx.try_send(());
             }) {
                 Ok(v) => {

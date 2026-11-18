@@ -93,7 +93,8 @@ fn natural(n: &Node) -> u16 {
         | Kind::Badge { .. }
         | Kind::Progress { .. }
         | Kind::Status { .. }
-        | Kind::Image { .. } => 1,
+        | Kind::Image { .. }
+        | Kind::Web { .. } => 1,
         Kind::Terminal { .. } => 5,
     };
     own.saturating_add(border)
@@ -114,7 +115,8 @@ fn fixed(n: &Node) -> bool {
         | Kind::Progress { .. }
         | Kind::Status { .. }
         | Kind::Composer { .. }
-        | Kind::Image { .. } => true,
+        | Kind::Image { .. }
+        | Kind::Web { .. } => true,
         Kind::Row | Kind::Column => !n.children.is_empty() && n.children.iter().all(fixed),
         _ => false,
     }
@@ -258,6 +260,22 @@ fn image_line(src: &str, width: u32, height: u32, refused: &str) -> Line<'static
     };
     Line::from(Span::styled(
         format!("[image: {name}{size}]"),
+        Style::default().add_modifier(Modifier::DIM),
+    ))
+}
+
+/// A `web` node in a terminal: the page's address, which only the desktop
+/// draws; or why it is refused.
+fn web_line(src: &str, url: &str, refused: &str) -> Line<'static> {
+    if !refused.is_empty() {
+        return Line::from(Span::styled(
+            format!("[web: {src}: {refused}]"),
+            tone(Tone::Danger),
+        ));
+    }
+    let shown = if url.is_empty() { src } else { url };
+    Line::from(Span::styled(
+        format!("[web: {shown}; open in Dreamer to see the page]"),
         Style::default().add_modifier(Modifier::DIM),
     ))
 }
@@ -607,6 +625,9 @@ fn draw_node(
                 Paragraph::new(image_line(src, *width, *height, refused)),
                 area,
             );
+        }
+        Kind::Web { src, page, refused } => {
+            f.render_widget(Paragraph::new(web_line(src, &page.url, refused)), area);
         }
         Kind::Status { items } => {
             let mut spans = Vec::new();

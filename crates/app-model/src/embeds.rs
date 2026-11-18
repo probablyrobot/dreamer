@@ -13,6 +13,12 @@
 //! a link), a file that is too large, or one that is not a PNG or JPEG,
 //! and fills in the file and its size from its header. It never decodes
 //! the image.
+//!
+//! A `web` node names one of the app's pages ([`web_page`]): a file in
+//! the package's `web/` directory, served on the app's own origin, or a
+//! URL on that origin or its allow-list. The host fills in the page's
+//! address, the origin that gets the bridge, the directory, and the
+//! allow-list, which the desktop holds the page to.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -46,6 +52,120 @@ pub struct Embeds {
     pub grant: Option<api::Grant>,
     /// The package directory images are read from.
     pub dir: Option<PathBuf>,
+    /// Where the app's web pages come from.
+    pub site: Option<Site>,
+}
+
+/// What `web` nodes need of the manifest: the app's id, its declared
+/// local `url`, and the origins its pages may navigate to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Site {
+    pub app: String,
+    pub url: Option<String>,
+    pub allow: Vec<String>,
+}
+
+impl Site {
+    pub fn of(m: &crate::manifest::Manifest) -> Site {
+        let web = m.web.clone().unwrap_or_default();
+        Site {
+            app: m.id.clone(),
+            url: web.url,
+            allow: web
+                .allow
+                .iter()
+                .filter_map(|a| view_tree::web::origin(a))
+                .collect(),
+        }
+    }
+}
+
+/// A `web` node's page, resolved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    pub url: String,
+    /// The app's own origin.
+    pub origin: String,
+    /// The file in the package's `web/` directory, for a page from there.
+    pub file: Option<String>,
+}
+
+/// The page `src` names for the app `site` describes: a URL on the app's
+/// origin or its allow-list as it is; else a path in the package's `web/`
+/// directory (`index.html` when empty), on the app's origin (under its
+/// declared `url`, if it has one).
+pub fn web_page(site: &Site, src: &str) -> Result<Page, String> {
+    let origin = view_tree::web::app_origin(&site.app, site.url.as_deref())
+        .ok_or("the app's `web.url` is not an address")?;
+    if src.contains("://") {
+        let o = view_tree::web::origin(src).ok_or_else(|| format!("`{src}` is not an address"))?;
+        if o != origin && !site.allow.contains(&o) {
+            return Err(format!(
+                "`{src}` is not on the app's origin ({origin}) or its `web.allow`"
+            ));
+        }
+        return Ok(Page {
+            url: src.to_owned(),
+            origin,
+            file: None,
+        });
+    }
+    let src = if src.is_empty() { "index.html" } else { src };
+    let path = src.split(['?', '#']).next().unwrap_or_default();
+    let plain = !path.is_empty()
+        && !src.starts_with('~')
+        && Path::new(path)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !plain {
+        return Err(format!(
+            "`{src}` is neither an address nor a page in the package's `web/` directory"
+        ));
+    }
+    let url = match site.url.as_deref() {
+        Some(u) => format!("{}/{src}", u.trim_end_matches('/')),
+        None => format!("{origin}/{src}"),
+    };
+    Ok(Page {
+        url,
+        origin,
+        file: site.url.is_none().then(|| path.to_owned()),
+    })
+}
+
+/// The pages a tree manifest's `web` nodes name in the package at `dir`
+/// are there: for `--check`, which cannot see a script's or process's.
+pub fn check_web(dir: &Path, m: &crate::manifest::Manifest) -> Result<(), String> {
+    let site = Site::of(m);
+    let pages = m
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.kind == crate::manifest::NodeType::Web);
+    for (key, n) in pages {
+        let at = |e: String| format!("nodes.{key}.src: {e}");
+        let page = web_page(&site, n.src.as_deref().unwrap_or_default()).map_err(at)?;
+        if let Some(f) = &page.file {
+            web_file(dir, f).map_err(at)?;
+        }
+    }
+    Ok(())
+}
+
+/// The package's `web/` directory under `dir`, once `file` is found in
+/// it (and not through a link out of it).
+pub fn web_file(dir: &Path, file: &str) -> Result<PathBuf, String> {
+    let root = dir
+        .join("web")
+        .canonicalize()
+        .map_err(|_| "the package has no `web/` directory".to_owned())?;
+    let found = root
+        .join(file)
+        .canonicalize()
+        .map_err(|_| format!("no file `web/{file}` in the app's package"))?;
+    if !found.starts_with(&root) || !found.is_file() {
+        return Err(format!("`web/{file}` is not a file in the app's package"));
+    }
+    Ok(root)
 }
 
 /// Whether `grant` lets an app read pane `pane`'s content.
@@ -102,6 +222,30 @@ impl Embeds {
                     }
                 } else if let Some(why) = src_problem(src) {
                     *refused = why.to_owned();
+                }
+            }
+            Kind::Web { src, page, refused } => {
+                let Some(site) = &self.site else { return };
+                let found = web_page(site, src).and_then(|p| {
+                    let root = match (&p.file, &self.dir) {
+                        (Some(f), Some(d)) => Some(web_file(d, f)?),
+                        _ => None,
+                    };
+                    Ok((p, root))
+                });
+                **page = view_tree::web::Resolved::default();
+                match found {
+                    Ok((p, root)) => {
+                        **page = view_tree::web::Resolved {
+                            url: p.url,
+                            origin: p.origin,
+                            app: site.app.clone(),
+                            dir: root.map(|r| r.display().to_string()).unwrap_or_default(),
+                            allow: site.allow.clone(),
+                        };
+                        refused.clear();
+                    }
+                    Err(why) => *refused = why,
                 }
             }
             _ => {}
@@ -276,6 +420,31 @@ pub(crate) async fn grant_of(client: &client::Client) -> Option<api::Grant> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_is_on_the_apps_own_origin_or_an_allowed_one() {
+        let site = Site {
+            app: "local.web".into(),
+            url: None,
+            allow: vec!["https://docs.example".into()],
+        };
+        let p = web_page(&site, "").expect("the entry");
+        assert_eq!(p.url, "dreamer-app://local.web/index.html");
+        assert_eq!(p.origin, "dreamer-app://local.web");
+        assert_eq!(p.file.as_deref(), Some("index.html"));
+        let p = web_page(&site, "https://docs.example/a?b").expect("allowed");
+        assert_eq!((p.url.as_str(), p.file), ("https://docs.example/a?b", None));
+        assert!(web_page(&site, "https://other.example/").is_err());
+        assert!(web_page(&site, "/etc/passwd").is_err());
+        // A declared dev server is the app's origin, pages under it.
+        let dev = Site {
+            url: Some("http://localhost:5173/".into()),
+            ..site
+        };
+        let p = web_page(&dev, "app.html#x").expect("dev");
+        assert_eq!(p.url, "http://localhost:5173/app.html#x");
+        assert_eq!((p.origin.as_str(), p.file), ("http://localhost:5173", None));
+    }
 
     fn grant(panes: &[u32], all: bool) -> api::Grant {
         api::Grant {

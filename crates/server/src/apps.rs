@@ -63,6 +63,16 @@ pub struct Apps {
     changed: tokio::sync::watch::Sender<u64>,
 }
 
+/// A registered app, as a call made for it runs: its instance, id, grant,
+/// and its host's connection (whose panes are the app's own).
+#[derive(Debug, Clone)]
+pub struct AppCaller {
+    pub instance: String,
+    pub app_id: String,
+    pub grant: api::Grant,
+    pub conn: u64,
+}
+
 /// A pane whose program is a registered app host.
 #[derive(Debug)]
 struct Hosted {
@@ -465,6 +475,31 @@ impl Apps {
                     format!("pane %{pane} runs no registered app"),
                 )
             })
+    }
+
+    /// The app in pane `pane`, while its host is connected: who a call
+    /// made for it runs as.
+    pub fn caller(&self, pane: u32) -> Result<AppCaller, RpcError> {
+        let h = self
+            .hosted
+            .lock()
+            .map_err(|_| RpcError::new(code::INTERNAL, "app registry poisoned"))?;
+        match h.get(&pane) {
+            Some(e) if e.live => Ok(AppCaller {
+                instance: e.instance.clone(),
+                app_id: e.app_id.clone(),
+                grant: e.grant.clone(),
+                conn: e.conn,
+            }),
+            Some(_) => Err(RpcError::new(
+                code::UNAVAILABLE,
+                format!("the app in pane %{pane} has stopped; its grant ended with it"),
+            )),
+            None => Err(RpcError::new(
+                code::NOT_FOUND,
+                format!("pane %{pane} runs no registered app"),
+            )),
+        }
     }
 
     /// Connection `conn` closed: the panes it hosted keep their last view,

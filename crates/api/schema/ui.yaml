@@ -160,6 +160,11 @@ components:
     first: src
     doc: A PNG or JPEG file in the app's package, by its path there.
     props: { src: string }
+  - name: web
+    form: content
+    first: src
+    doc: "A web page, drawn by the desktop: a file in the package's `web/` directory (`index.html` when empty), or an address on the app's origin or its `web.allow`. Pages on the app's origin get `window.dreamer.call`, under the app's grant."
+    props: { src: string }
 
 # `ui.screen(root, options)`: the view with its status line, focused
 # node's key, and title.

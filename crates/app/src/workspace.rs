@@ -68,7 +68,7 @@ impl PaneView {
     fn focus(&self, cx: &gpui::App) -> FocusHandle {
         match self {
             PaneView::Terminal(s) => s.read(cx).focus.clone(),
-            PaneView::App { view, .. } => view.read(cx).focus.clone(),
+            PaneView::App { view, .. } => view.read(cx).keys_to(cx),
             PaneView::Web { view, .. } => view.read(cx).focus.clone(),
         }
     }
@@ -101,6 +101,15 @@ impl PaneView {
         match self {
             PaneView::Web { view, .. } => Some(view),
             PaneView::Terminal(_) | PaneView::App { .. } => None,
+        }
+    }
+
+    /// Every page drawn: a web pane's, or an app pane's `web` nodes'.
+    fn pages(&self, cx: &gpui::App) -> Vec<Entity<crate::web::WebPane>> {
+        match self {
+            PaneView::Web { view, .. } => vec![view.clone()],
+            PaneView::App { view, .. } => view.read(cx).pages(),
+            PaneView::Terminal(_) => Vec::new(),
         }
     }
 }
@@ -1752,14 +1761,15 @@ impl Workspace {
         if let Some(url) = web_drawn(p, &self.via) {
             let (url, ws) = (url.to_owned(), cx.entity().downgrade());
             let kept = (p.title.clone(), p.web_scroll_x, p.web_scroll_y);
-            let view =
-                cx.new(|cx| crate::web::WebPane::new(pane, url.clone(), kept, ws, window, cx));
+            let view = cx
+                .new(|cx| crate::web::WebPane::new(pane, url.clone(), kept, None, ws, window, cx));
             return Some(PaneView::Web { view, url });
         }
         if let Some(instance) = app_drawn(p, &self.via) {
             let (instance, socket) = (instance.to_owned(), self.socket.clone());
+            let ws = cx.entity().downgrade();
             let view =
-                cx.new(|cx| crate::panel::AppPanel::follow(pane, instance.clone(), socket, cx));
+                cx.new(|cx| crate::panel::AppPanel::follow(pane, instance.clone(), socket, ws, cx));
             return Some(PaneView::App { view, instance });
         }
         let feed = Feed::start_via(self.socket.clone(), self.via.clone(), Some(pane), None)
@@ -1801,8 +1811,9 @@ impl Workspace {
             }
         };
         report(self.focused, false, cx);
-        if let Some(web) = self.focused.and_then(|f| self.panes.get(&f)?.web_pane()) {
-            web.read(cx).release_focus();
+        let left = self.focused.and_then(|f| self.panes.get(&f));
+        for page in left.map(|v| v.pages(cx)).unwrap_or_default() {
+            page.read(cx).release_focus();
         }
         self.focused = pane;
         report(pane, true, cx);
@@ -1839,10 +1850,18 @@ impl Workspace {
         let clicked = self
             .panes
             .get(&pane)
-            .and_then(PaneView::web_pane)
-            .is_some_and(|w| w.read(cx).page_has_focus());
-        if self.focused != Some(pane) && clicked {
+            .map(|v| v.pages(cx))
+            .unwrap_or_default()
+            .into_iter()
+            .find(|w| w.read(cx).page_has_focus());
+        let Some(page) = clicked else { return };
+        if self.focused != Some(pane) {
             self.click_pane(pane, window, cx);
+        }
+        // An app's page among its other nodes: the keys stay with it.
+        let focus = page.read(cx).focus.clone();
+        if !focus.is_focused(window) {
+            window.focus(&focus, cx);
         }
     }
 
@@ -2034,10 +2053,16 @@ impl Render for Workspace {
             crate::web::Place::Shown
         };
         let mut overlay_clear = true;
-        for view in self.panes.values().filter_map(PaneView::web_pane) {
+        let shown: Vec<_> = self.panes.values().flat_map(|v| v.pages(cx)).collect();
+        for view in shown {
             overlay_clear &= view.update(cx, |w, cx| w.set_place(place, window, cx));
         }
-        for view in self.hidden.values().filter_map(|(v, _)| v.web_pane()) {
+        let hidden: Vec<_> = self
+            .hidden
+            .values()
+            .flat_map(|(v, _)| v.pages(cx))
+            .collect();
+        for view in hidden {
             view.update(cx, |w, cx| {
                 w.set_place(crate::web::Place::Hidden, window, cx)
             });

@@ -12,6 +12,11 @@
 //! [`start`] takes a function CEF calls, from any thread, when it wants
 //! [`do_work`] called on the main thread.
 //!
+//! A view can show a page of an app's own ([`AppPage`], see [`site`]): it
+//! then has a browser profile of the app's, may navigate only to the app's
+//! origin and the origins it allows, and pages on the app's origin get
+//! `window.dreamer.call`, passed on to the caller.
+//!
 //! Everything here is main-thread only. Without the `engine` feature (and
 //! on platforms not supported yet) the crate has no engine and
 //! [`AVAILABLE`] is false.
@@ -39,6 +44,9 @@ pub enum Edit {
     Paste,
     SelectAll,
 }
+
+pub mod site;
+pub use site::{AppPage, BridgeCall};
 
 #[cfg(all(feature = "engine", target_os = "macos"))]
 mod engine;

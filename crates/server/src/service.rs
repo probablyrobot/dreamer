@@ -1607,6 +1607,10 @@ impl api::Service for DaemonService {
         Ok(api::Empty::default())
     }
 
+    async fn apps_call(&self, _: api::AppCall) -> Result<api::AppCallResult, RpcError> {
+        Err(for_a_connection("apps.call"))
+    }
+
     async fn grants_narrow(&self, _: api::Grant) -> Result<api::Grant, RpcError> {
         Err(for_a_connection("grants.narrow"))
     }

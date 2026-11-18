@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 56;
+pub const PROTOCOL_MINOR: u32 = 57;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2946,6 +2946,28 @@ pub struct AppCaptureDone {
     pub height: u32,
 }
 
+/// A call a web page of the app in pane makes through its bridge (window.dreamer.call), passed on by the desktop drawing the page. The daemon runs it as that app: under the app's grant, as the app's own connection would.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppCall {
+    /// The app pane whose page calls.
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(string, tag = "2")]
+    pub method: String,
+    /// The method's parameters as JSON, as the API takes them; empty for none.
+    #[prost(string, tag = "3")]
+    pub params: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppCallResult {
+    /// The method's result as JSON.
+    #[prost(string, tag = "1")]
+    pub result: String,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppInput {
@@ -5391,6 +5413,7 @@ pub mod method {
     pub const APPS_CAPTURE: &str = "apps.capture";
     pub const APPS_CAPTURE_WAIT: &str = "apps.capture_wait";
     pub const APPS_CAPTURE_DONE: &str = "apps.capture_done";
+    pub const APPS_CALL: &str = "apps.call";
     pub const WEB_OPEN: &str = "web.open";
     pub const WEB_STATE: &str = "web.state";
 }
@@ -6113,6 +6136,13 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "A desktop's answer to a capture request (owner only).",
     },
     MethodInfo {
+        name: "apps.call",
+        params: "AppCall",
+        result: "AppCallResult",
+        mutation: true,
+        doc: "Call a method for the app in a pane, under that app's grant and as that app: what its web pages ask through their bridge (owner only; the desktop drawing the page passes it on). Subscriptions and the app host's own methods are not bridged.",
+    },
+    MethodInfo {
         name: "web.open",
         params: "WebOpen",
         result: "WebOpened",
@@ -6232,6 +6262,7 @@ pub enum Request {
     AppsCapture(AppCapture),
     AppsCaptureWait(AppCaptureWait),
     AppsCaptureDone(AppCaptureDone),
+    AppsCall(AppCall),
     WebOpen(WebOpen),
     WebState(WebState),
 }
@@ -6340,6 +6371,7 @@ impl Request {
             Self::AppsCapture(_) => "apps.capture",
             Self::AppsCaptureWait(_) => "apps.capture_wait",
             Self::AppsCaptureDone(_) => "apps.capture_done",
+            Self::AppsCall(_) => "apps.call",
             Self::WebOpen(_) => "web.open",
             Self::WebState(_) => "web.state",
         }
@@ -6449,6 +6481,7 @@ impl Request {
             Self::AppsCapture(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCaptureWait(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCaptureDone(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
             Self::WebState(v) => ::prost::Message::encode_to_vec(v),
         }
@@ -6579,6 +6612,7 @@ impl Request {
             "apps.capture" => Ok(Self::AppsCapture(::prost::Message::decode(bytes)?)),
             "apps.capture_wait" => Ok(Self::AppsCaptureWait(::prost::Message::decode(bytes)?)),
             "apps.capture_done" => Ok(Self::AppsCaptureDone(::prost::Message::decode(bytes)?)),
+            "apps.call" => Ok(Self::AppsCall(::prost::Message::decode(bytes)?)),
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
             "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
@@ -6688,6 +6722,7 @@ impl Request {
             Self::AppsCapture(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCaptureWait(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCaptureDone(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
         }
@@ -6812,6 +6847,7 @@ impl Request {
             "apps.capture" => Ok(Self::AppsCapture(serde_json::from_value(value)?)),
             "apps.capture_wait" => Ok(Self::AppsCaptureWait(serde_json::from_value(value)?)),
             "apps.capture_done" => Ok(Self::AppsCaptureDone(serde_json::from_value(value)?)),
+            "apps.call" => Ok(Self::AppsCall(serde_json::from_value(value)?)),
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
             "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
@@ -6923,6 +6959,7 @@ pub enum Response {
     AppsCapture(AppCaptured),
     AppsCaptureWait(AppCaptureRequest),
     AppsCaptureDone(Empty),
+    AppsCall(AppCallResult),
     WebOpen(WebOpened),
     WebState(Empty),
 }
@@ -7031,6 +7068,7 @@ impl Response {
             Self::AppsCapture(_) => "apps.capture",
             Self::AppsCaptureWait(_) => "apps.capture_wait",
             Self::AppsCaptureDone(_) => "apps.capture_done",
+            Self::AppsCall(_) => "apps.call",
             Self::WebOpen(_) => "web.open",
             Self::WebState(_) => "web.state",
         }
@@ -7140,6 +7178,7 @@ impl Response {
             Self::AppsCapture(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCaptureWait(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCaptureDone(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
             Self::WebState(v) => ::prost::Message::encode_to_vec(v),
         }
@@ -7270,6 +7309,7 @@ impl Response {
             "apps.capture" => Ok(Self::AppsCapture(::prost::Message::decode(bytes)?)),
             "apps.capture_wait" => Ok(Self::AppsCaptureWait(::prost::Message::decode(bytes)?)),
             "apps.capture_done" => Ok(Self::AppsCaptureDone(::prost::Message::decode(bytes)?)),
+            "apps.call" => Ok(Self::AppsCall(::prost::Message::decode(bytes)?)),
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
             "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
@@ -7379,6 +7419,7 @@ impl Response {
             Self::AppsCapture(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCaptureWait(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCaptureDone(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
         }
@@ -7503,6 +7544,7 @@ impl Response {
             "apps.capture" => Ok(Self::AppsCapture(serde_json::from_value(value)?)),
             "apps.capture_wait" => Ok(Self::AppsCaptureWait(serde_json::from_value(value)?)),
             "apps.capture_done" => Ok(Self::AppsCaptureDone(serde_json::from_value(value)?)),
+            "apps.call" => Ok(Self::AppsCall(serde_json::from_value(value)?)),
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
             "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
@@ -8004,6 +8046,11 @@ pub trait Service: Sync {
         &self,
         params: AppCaptureDone,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Call a method for the app in a pane, under that app's grant and as that app: what its web pages ask through their bridge (owner only; the desktop drawing the page passes it on). Subscriptions and the app host's own methods are not bridged.
+    fn apps_call(
+        &self,
+        params: AppCall,
+    ) -> impl ::core::future::Future<Output = Result<AppCallResult, RpcError>> + Send;
     /// Open a web page in a new placeholder pane that desktops draw the page in (owner only).
     fn web_open(
         &self,
@@ -8243,6 +8290,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .apps_capture_done(p)
             .await
             .map(Response::AppsCaptureDone),
+        Request::AppsCall(p) => service.apps_call(p).await.map(Response::AppsCall),
         Request::WebOpen(p) => service.web_open(p).await.map(Response::WebOpen),
         Request::WebState(p) => service.web_state(p).await.map(Response::WebState),
     }

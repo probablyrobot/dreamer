@@ -1,0 +1,13 @@
+# A web app: its view is web/index.html, which lists the panes through
+# the bridge (window.dreamer.call), under the grant below. In a terminal
+# the pane shows the page's address.
+# Run it with: dream app launch examples/apps/panes-web
+schema_version = 2
+id = "dreamer.panes-web"
+version = "0.1.0"
+title = "Panes (web)"
+capabilities = ["tmux.topology"]
+
+[web]
+# Origins the page may also navigate to; they never get the bridge.
+allow = ["https://tmux.github.io"]

@@ -279,6 +279,17 @@ pub async fn connection_as(
                             .await;
                         return;
                     }
+                    if req.method == api::method::APPS_CALL {
+                        let response = app_call(&state, &service, &conn, &req).await;
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(
+                                Kind::Response,
+                                fit(response, conn.max_frame).encode_to_vec(),
+                            ))
+                            .await;
+                        return;
+                    }
                     if req.method == api::method::APPS_PUBLISH {
                         let response = match api::AppViewPublish::decode(req.payload.as_slice()) {
                             Err(e) => {
@@ -532,6 +543,8 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         // Web pages run in the user's desktop.
         api::method::WEB_OPEN,
         api::method::WEB_STATE,
+        // An app's page calls through the user's desktop.
+        api::method::APPS_CALL,
     ]
     .contains(&req.method.as_str())
     {
@@ -778,6 +791,122 @@ fn app_may(
         .check_owning(method, request, |_| false)
         .map_err(in_app)?;
     also(&crate::sessions::Caller { instance, grant }).map_err(in_app)
+}
+
+/// Whether a web page's bridge may call `method`: a request answered
+/// once, not a stream, nor what only an app host or the connection itself
+/// asks (registering, publishing, narrowing, messages, sessions).
+fn bridged(method: &str) -> bool {
+    use api::method as m;
+    let streams = [
+        m::TERMINAL_SUBSCRIBE,
+        m::TERMINAL_UNSUBSCRIBE,
+        m::EVENTS_SUBSCRIBE,
+        m::EVENTS_UNSUBSCRIBE,
+        m::TAPS_SUBSCRIBE,
+        m::TAPS_UNSUBSCRIBE,
+        m::HOSTS_SUBSCRIBE,
+        m::HOSTS_WATCH,
+        m::TMUX_WATCH,
+        m::TMUX_SIZE_WINDOW,
+    ];
+    let own = [
+        m::APPS_REGISTER,
+        m::APPS_PUBLISH,
+        m::APPS_PUBLISH_TREE,
+        m::APPS_CALL,
+        m::GRANTS_NARROW,
+        m::GRANTS_CURRENT,
+        m::DAEMON_SHUTDOWN,
+    ];
+    !streams.contains(&method)
+        && !own.contains(&method)
+        && !method.starts_with("messages.")
+        && !method.starts_with("agent.sessions.")
+}
+
+/// `apps.call`: a call an app's web page makes through its bridge, passed
+/// on by the user's desktop. It runs as the app: with its host's
+/// connection id (the panes the app created are its own) and identity,
+/// and through the same checks as a request on that connection (the
+/// app's grant, its act level), never with the desktop's own authority.
+async fn app_call(
+    state: &Arc<State>,
+    service: &DaemonService,
+    conn: &Conn,
+    req: &wire::Request,
+) -> wire::Response {
+    let fail = |code: i32, why: String| failure(req.id, RpcError::new(code, why));
+    let p = match api::AppCall::decode(req.payload.as_slice()) {
+        Ok(p) => p,
+        Err(e) => return fail(code::INVALID_PARAMS, e.to_string()),
+    };
+    if !bridged(&p.method) {
+        return fail(
+            code::FORBIDDEN,
+            format!("`{}` is not available to a web page", p.method),
+        );
+    }
+    let app = match state.apps.caller(p.pane) {
+        Ok(a) => a,
+        Err(e) => return failure(req.id, e),
+    };
+    let params = if p.params.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        match serde_json::from_str(&p.params) {
+            Ok(v) => v,
+            Err(e) => return fail(code::INVALID_PARAMS, format!("params: {e}")),
+        }
+    };
+    let request = match api::Request::from_json(&p.method, params) {
+        Ok(r) => r,
+        Err(e) => return failure(req.id, e.into()),
+    };
+    let inner = wire::Request {
+        id: req.id,
+        method: p.method.clone(),
+        payload: request.encode(),
+        deadline_ms: req.deadline_ms,
+    };
+    let level = app.grant.level;
+    let as_app = Conn {
+        grant: Arc::new(std::sync::Mutex::new(crate::grants::Grant(app.grant))),
+        id: app.conn,
+        identity: Arc::new(std::sync::Mutex::new(Some(crate::messages::Identity {
+            instance: app.instance,
+            app_id: Some(app.app_id),
+            pane: Some(p.pane),
+        }))),
+        ..conn.clone()
+    };
+    if let Some(refused) = refuse(state, &as_app, &inner) {
+        return refused;
+    }
+    if let Err(e) = act_level(state, &as_app, &inner).await {
+        return failure(req.id, e);
+    }
+    let caller = crate::leases::Caller {
+        conn: as_app.id,
+        owner: false,
+        level,
+    };
+    let response = crate::leases::CALLER
+        .scope(caller, answer(service, inner))
+        .await;
+    if response.error_code.is_some() {
+        return response;
+    }
+    match api::Response::decode(&p.method, &response.payload) {
+        Ok(r) => ok(
+            req.id,
+            api::AppCallResult {
+                result: r.to_json().to_string(),
+            }
+            .encode_to_vec(),
+        ),
+        Err(e) => failure(req.id, e.into()),
+    }
 }
 
 /// `apps.register`: check the ticket and that this connection's process
