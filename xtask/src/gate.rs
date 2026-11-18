@@ -1188,7 +1188,10 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
     }
     // `ulimit -c 0`: one test makes dreamerd abort on purpose, and the
     // container would otherwise write its core into the mounted tree.
+    // Only this checkout's target is kept in the shared cache volume; the
+    // others belong to gate worktrees that have since been rebuilt.
     let script = "set -e; ulimit -c 0; export DEBIAN_FRONTEND=noninteractive; \
+        find /root/.cache -maxdepth 1 -name 'dreamer-target-*' ! -path \"$CARGO_TARGET_DIR\" -exec rm -rf {} +; \
         apt-get update -qq && apt-get install -y -qq --no-install-recommends \
           build-essential pkg-config curl ca-certificates xz-utils git libclang-dev \
           libevent-dev libncurses-dev bison python3 >/dev/null; \
@@ -1223,6 +1226,8 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
             "dreamer-arm64-cache:/root/.cache",
             "-e",
             &target,
+            "-e",
+            "CARGO_INCREMENTAL=0",
             "-w",
             "/src",
             "ubuntu:24.04",
@@ -1550,6 +1555,9 @@ fn clean_git_env(mut cmd: Command) -> Command {
     for var in GIT_HOOK_ENV {
         cmd.env_remove(var);
     }
+    // The gate builds each revision once; incremental caches only pile up
+    // (tens of GB per day of commits) without making those builds faster.
+    cmd.env("CARGO_INCREMENTAL", "0");
     cmd
 }
 
