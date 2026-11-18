@@ -133,6 +133,7 @@ async fn wait_for_requests(
 /// Where to capture: the window's bounds on the screen and the pane's
 /// rectangle in it, in points.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct Target {
     window: Bounds<Pixels>,
     pane: Bounds<Pixels>,
@@ -282,6 +283,7 @@ fn window_number(bounds: Bounds<Pixels>) -> Result<u32, String> {
 }
 
 /// The pane's rectangle of a capture of its whole window, as RGBA rows.
+#[cfg(any(target_os = "macos", test))]
 fn crop(image: &[u8], target: Target) -> Result<(u32, u32, Vec<u8>), String> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(image));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -317,6 +319,7 @@ fn crop(image: &[u8], target: Target) -> Result<(u32, u32, Vec<u8>), String> {
 }
 
 /// Write RGBA pixels as a PNG, replacing `path` whole.
+#[cfg(any(target_os = "macos", test))]
 fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension(format!("tmp-{}.png", std::process::id()));
     let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
