@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 pub mod image;
 pub mod rich;
 pub mod transcript;
+pub mod web;
 
 /// The whole view: the chrome around the tree, and the tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -237,6 +238,21 @@ pub enum Kind {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         refused: String,
     },
+    /// A web page, drawn by Chromium in the desktop; a terminal shows its
+    /// address ([`web`]). `src` is the page as the app gave it: a path in
+    /// the package's `web/` directory, or a URL on the app's origin or its
+    /// allow-list. The app host fills in the rest: the page's `url`, the
+    /// app's `origin` (only pages there get the bridge), the `app` id (its
+    /// own browser profile), the package's `web/` directory `dir` (served
+    /// on the app's origin), the origins it may navigate to besides its
+    /// own (`allow`), or why it is refused.
+    Web {
+        src: String,
+        #[serde(flatten)]
+        page: Box<web::Resolved>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        refused: String,
+    },
 }
 
 fn is_false(b: &bool) -> bool {
@@ -310,6 +326,7 @@ impl Kind {
             Kind::Composer { .. } => "composer",
             Kind::Terminal { .. } => "terminal",
             Kind::Image { .. } => "image",
+            Kind::Web { .. } => "web",
         }
     }
 

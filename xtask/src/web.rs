@@ -216,6 +216,13 @@ const CAPTURES: [&str; 8] = [
 /// they would use the system clipboard, which the gate never touches.
 const INPUT_CHECKS: usize = 5;
 
+/// The web app checks the web smoke reports passing (`smoke: web app:`):
+/// the example app's page lists the panes through its bridge, a call
+/// through it lists them, a call outside its grant is refused, another
+/// origin has no bridge, and a navigation outside its allow-list is
+/// refused.
+const APP_CHECKS: usize = 5;
+
 /// Run the bundle's `dreamer --smoke-web` against an isolated tmux server
 /// with private daemon, desktop, and configuration directories, then check
 /// its captures as its `checks.txt` lists: the page's color fills the web
@@ -344,6 +351,16 @@ pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
     if inputs < INPUT_CHECKS {
         return Err(format!(
             "the web smoke passed {inputs} of {INPUT_CHECKS} input checks\n{}",
+            lines.join("\n")
+        ));
+    }
+    let apps = lines
+        .iter()
+        .filter(|l| l.starts_with("smoke: web app:"))
+        .count();
+    if apps < APP_CHECKS {
+        return Err(format!(
+            "the web smoke passed {apps} of {APP_CHECKS} web app checks\n{}",
             lines.join("\n")
         ));
     }

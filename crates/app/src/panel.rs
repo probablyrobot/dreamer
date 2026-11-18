@@ -38,6 +38,13 @@
 //! app's grant) shows the refusal and follows nothing. An `image` node's
 //! file, as the host resolved it in the app's package, is read and decoded
 //! off the UI thread and drawn once it is ready.
+//!
+//! A `web` node of an app pane is the app's page, drawn by Chromium in a
+//! web view of its own ([`crate::web`]) placed where the node is. The
+//! page's bridge calls go to the daemon as `apps.call` for this pane, so
+//! they run as the app, under its grant. The page of an app whose whole
+//! view is a page takes the keys while the pane has the focus. A panel
+//! shows a `web` node's address only.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -108,6 +115,18 @@ pub(crate) struct AppPanel {
     embedded: HashMap<u32, Embedded>,
     /// `image` nodes' pictures, by the file the host resolved.
     pictures: HashMap<String, Picture>,
+    /// `web` nodes' pages.
+    pages: Pages,
+}
+
+/// The pages of an app pane's `web` nodes.
+#[derive(Default)]
+struct Pages {
+    /// Each shown `web` node's view, by the node's key.
+    views: HashMap<String, Entity<crate::web::WebPane>>,
+    /// Where the pages' bridge calls go (an app pane's only).
+    bridge: Option<tokio::sync::mpsc::UnboundedSender<web_engine::BridgeCall>>,
+    workspace: Option<gpui::WeakEntity<crate::workspace::Workspace>>,
 }
 
 /// A pane a `terminal` node shows.
@@ -257,6 +276,7 @@ impl AppPanel {
             socket: daemon,
             embedded: HashMap::new(),
             pictures: HashMap::new(),
+            pages: Pages::default(),
         }
     }
 
@@ -267,6 +287,7 @@ impl AppPanel {
         pane: u32,
         instance: String,
         socket: PathBuf,
+        workspace: gpui::WeakEntity<crate::workspace::Workspace>,
         cx: &mut Context<Self>,
     ) -> AppPanel {
         let latest: Arc<Mutex<Option<App>>> = Arc::default();
@@ -276,6 +297,7 @@ impl AppPanel {
         let tree: Arc<Mutex<Option<Tree>>> = Arc::default();
         let streams = app_model::bound::Streams::default();
         let (calls, calls_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (bridge, bridge_rx) = tokio::sync::mpsc::unbounded_channel();
         let seq: Arc<std::sync::atomic::AtomicU64> = Arc::default();
         let (l, e, tr, st, sq) = (
             latest.clone(),
@@ -304,7 +326,8 @@ impl AppPanel {
                     streams: st,
                     seq: sq,
                 };
-                rt.block_on(follow_pane(pane, socket, rx, calls_rx, shared, wake));
+                let channels = (rx, calls_rx, bridge_rx);
+                rt.block_on(follow_pane(pane, socket, channels, shared, wake));
             });
         if let Err(why) = spawned
             && let Ok(mut e) = ended.lock()
@@ -343,7 +366,75 @@ impl AppPanel {
             socket: daemon,
             embedded: HashMap::new(),
             pictures: HashMap::new(),
+            pages: Pages {
+                views: HashMap::new(),
+                bridge: Some(bridge),
+                workspace: Some(workspace),
+            },
         }
+    }
+
+    /// Give each shown `web` node of `tree` a web view of its own (in an
+    /// app pane), and let the others' go, closing their pages.
+    fn sync_pages(&mut self, tree: &Tree, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some((pane, _)), Some(bridge), Some(ws)) = (
+            self.pane.as_ref(),
+            self.pages.bridge.as_ref(),
+            self.pages.workspace.as_ref(),
+        ) else {
+            return;
+        };
+        let mut wanted = Vec::new();
+        pages_in(&tree.root, &mut wanted);
+        self.pages.views.retain(|key, v| {
+            let url = &v.read(cx).url;
+            wanted
+                .iter()
+                .any(|n| n.key == *key && page_url(n) == Some(url))
+        });
+        for n in wanted {
+            let Kind::Web { page: p, .. } = &n.kind else {
+                continue;
+            };
+            if self.pages.views.contains_key(&n.key) {
+                continue;
+            }
+            let tx = bridge.clone();
+            let page = web_engine::AppPage {
+                app: p.app.clone(),
+                origin: p.origin.clone(),
+                dir: (!p.dir.is_empty()).then(|| PathBuf::from(&p.dir)),
+                allow: p.allow.clone(),
+                bridge: Arc::new(move |call: web_engine::BridgeCall| {
+                    if let Err(e) = tx.send(call) {
+                        let why = "the app pane has closed".to_owned();
+                        (e.0.reply)(Err((api::code::UNAVAILABLE, why)));
+                    }
+                }),
+            };
+            let (pane, ws, url) = (*pane, ws.clone(), p.url.clone());
+            let view = gpui::AppContext::new(cx, |cx| {
+                crate::web::WebPane::new(pane, url, Default::default(), Some(page), ws, window, cx)
+            });
+            self.pages.views.insert(n.key.clone(), view);
+        }
+    }
+
+    /// The views of this pane's pages.
+    pub(crate) fn pages(&self) -> Vec<Entity<crate::web::WebPane>> {
+        self.pages.views.values().cloned().collect()
+    }
+
+    /// Where the keys go when the pane has the focus: the page of an app
+    /// whose view is a page; else the app.
+    pub(crate) fn keys_to(&self, cx: &gpui::App) -> FocusHandle {
+        let root = self
+            .tree
+            .lock()
+            .ok()
+            .and_then(|t| t.as_ref().map(|t| t.root.key.clone()));
+        root.and_then(|k| self.pages.views.get(&k))
+            .map_or_else(|| self.focus.clone(), |v| v.read(cx).focus.clone())
     }
 
     /// Follow the panes `tree`'s `terminal` nodes show (not refused ones,
@@ -885,11 +976,18 @@ struct Shared {
     seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// What a pane's follower receives: input for the app, calls made for
+/// it, and its pages' bridge calls.
+type Channels = (
+    tokio::sync::mpsc::UnboundedReceiver<Input>,
+    tokio::sync::mpsc::UnboundedReceiver<api::Request>,
+    tokio::sync::mpsc::UnboundedReceiver<web_engine::BridgeCall>,
+);
+
 async fn follow_pane(
     pane: u32,
     socket: PathBuf,
-    mut inputs: tokio::sync::mpsc::UnboundedReceiver<Input>,
-    mut calls: tokio::sync::mpsc::UnboundedReceiver<api::Request>,
+    (mut inputs, mut calls, mut bridge): Channels,
     shared: Shared,
     wake: impl Fn(),
 ) {
@@ -997,6 +1095,23 @@ async fn follow_pane(
                     let c = c.clone();
                     tokio::spawn(async move {
                         let _ = c.call(r).await;
+                    });
+                }
+                Some(call) = bridge.recv() => {
+                    // A page's call, made as the app in this pane.
+                    let c = c.clone();
+                    tokio::spawn(async move {
+                        let asked = api::Request::AppsCall(api::AppCall {
+                            pane,
+                            method: call.method,
+                            params: call.params,
+                        });
+                        (call.reply)(match c.call(asked).await {
+                            Ok(api::Response::AppsCall(r)) => Ok(r.result),
+                            Ok(_) => Err((api::code::INTERNAL, "an unexpected reply".into())),
+                            Err(client::ClientError::Rpc(e)) => Err((e.code, e.message)),
+                            Err(e) => Err((api::code::UNAVAILABLE, e.to_string())),
+                        });
                     });
                 }
                 i = inputs.recv() => match i {
@@ -1252,6 +1367,7 @@ impl AppPanel {
         let tree = tree.or_else(|| self.shown.as_ref().and_then(App::frame));
         if let Some(tree) = &tree {
             self.sync_embeds(tree, cx);
+            self.sync_pages(tree, window_, cx);
         }
         let Some(app) = self.shown.as_ref() else {
             return root
@@ -1287,6 +1403,7 @@ impl AppPanel {
                             follow: &self.follow,
                             embedded: &self.embedded,
                             pictures: &self.pictures,
+                            pages: &self.pages.views,
                             term: &term,
                         },
                         &mut self.scrolls,
@@ -1368,6 +1485,7 @@ impl AppPanel {
             socket: PathBuf::new(),
             embedded: HashMap::new(),
             pictures: HashMap::new(),
+            pages: Pages::default(),
         }
     }
 }
@@ -1517,6 +1635,50 @@ struct Draw<'a> {
     embedded: &'a HashMap<u32, Embedded>,
     pictures: &'a HashMap<String, Picture>,
     term: &'a crate::TermFont,
+    pages: &'a HashMap<String, Entity<crate::web::WebPane>>,
+}
+
+/// The `web` nodes of `n`'s subtree whose pages are shown (not refused
+/// ones, and only on shown tabs).
+fn pages_in(n: &Node, out: &mut Vec<Node>) {
+    if page_url(n).is_some() {
+        out.push(n.clone());
+    }
+    for c in n.shown() {
+        pages_in(c, out);
+    }
+}
+
+/// The address a `web` node's page shows, if it shows one.
+fn page_url(n: &Node) -> Option<&String> {
+    match &n.kind {
+        Kind::Web { page, refused, .. } if refused.is_empty() && !page.url.is_empty() => {
+            Some(&page.url)
+        }
+        _ => None,
+    }
+}
+
+/// A `web` node: its page's view; its address in a panel; or why it is
+/// refused.
+fn web_node(n: &Node, src: &str, refused: &str, dr: &Draw<'_>) -> gpui::AnyElement {
+    let t = dr.t;
+    let note = |text: String, color: u32| {
+        div()
+            .text_color(c(color))
+            .child(SharedString::from(text))
+            .into_any_element()
+    };
+    if !refused.is_empty() {
+        return note(format!("web {src}: {refused}"), t.danger);
+    }
+    match dr.pages.get(&n.key) {
+        Some(view) => div().size_full().child(view.clone()).into_any_element(),
+        None => note(
+            format!("web: {}", page_url(n).map_or(src, String::as_str)),
+            t.muted,
+        ),
+    }
 }
 
 /// The files of the images `n`'s subtree shows (not refused ones).
@@ -1850,6 +2012,7 @@ fn node(
         | Kind::Progress { .. }
         | Kind::Status { .. } => component(n, focused, t, lines, scrolls),
         Kind::Terminal { pane, refused } => terminal_node(*pane, refused, dr),
+        Kind::Web { src, refused, .. } => web_node(n, src, refused, dr),
         Kind::Image {
             src,
             path,

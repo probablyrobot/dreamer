@@ -212,6 +212,10 @@ pub fn text(v: &Value) -> String {
 
 impl App {
     pub fn new(manifest: Manifest) -> App {
+        let embeds = crate::embeds::Embeds {
+            site: Some(crate::embeds::Site::of(&manifest)),
+            ..crate::embeds::Embeds::default()
+        };
         App {
             manifest,
             rows: Vec::new(),
@@ -230,7 +234,7 @@ impl App {
             values: BTreeMap::new(),
             events: Vec::new(),
             sessions: crate::session::SessionNodes::default(),
-            embeds: crate::embeds::Embeds::default(),
+            embeds,
         }
         .with_form()
         .with_focus()
@@ -777,6 +781,15 @@ impl App {
                     refused: String::new(),
                 },
             )
+        } else if spec.kind == NodeType::Web {
+            Node::new(
+                key,
+                Kind::Web {
+                    src: spec.src.clone().unwrap_or_default(),
+                    page: Box::default(),
+                    refused: String::new(),
+                },
+            )
         } else if let Some(v) = spec.view() {
             let rows = self.sources.get(&v.source).map_or(&[][..], Vec::as_slice);
             let selected = self.selection.get(key).copied().unwrap_or(0);
@@ -1240,6 +1253,10 @@ impl App {
                 m
             }
         };
+        let embeds = crate::embeds::Embeds {
+            site: Some(crate::embeds::Site::of(&manifest)),
+            ..crate::embeds::Embeds::default()
+        };
         Ok(App {
             manifest,
             rows: w.rows,
@@ -1258,7 +1275,7 @@ impl App {
             values: BTreeMap::new(),
             events: Vec::new(),
             sessions: crate::session::SessionNodes::default(),
-            embeds: crate::embeds::Embeds::default(),
+            embeds,
         })
     }
 }

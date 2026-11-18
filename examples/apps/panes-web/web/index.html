@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Panes</title>
+<style>
+  body { font: 13px -apple-system, system-ui, sans-serif; margin: 12px; color: #ddd; background: #1e1e1e; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid #333; }
+  th { color: #999; font-weight: normal; }
+  #status { color: #999; margin-top: 8px; }
+</style>
+</head>
+<body>
+<table>
+  <thead><tr><th>Pane</th><th>Window</th><th>Command</th><th>Size</th></tr></thead>
+  <tbody id="panes"></tbody>
+</table>
+<div id="status">loading…</div>
+<script>
+  // window.dreamer exists only on this app's own origin. Each call goes
+  // through the desktop to the daemon, under the app's grant.
+  async function refresh() {
+    const status = document.getElementById("status");
+    try {
+      const t = await window.dreamer.call("tmux.topology", {});
+      const rows = t.panes.map((p) => {
+        const tr = document.createElement("tr");
+        for (const v of ["%" + p.id, p.window, p.current_command, p.width + "x" + p.height]) {
+          const td = document.createElement("td");
+          td.textContent = v;
+          tr.append(td);
+        }
+        return tr;
+      });
+      document.getElementById("panes").replaceChildren(...rows);
+      status.textContent = t.panes.length + " panes";
+    } catch (e) {
+      status.textContent = "error " + (e.code ?? "") + ": " + e.message;
+    }
+  }
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>

@@ -61,7 +61,31 @@ pub struct Manifest {
     /// app host, which draws the view tree it returns.
     #[serde(default)]
     pub script: Option<ScriptSpec>,
+    /// Its web pages: a local `url` to load them from instead of the
+    /// package's `web/` directory, and the origins they may navigate to.
+    /// A version 2 manifest with `[web]` and no view of its own (no
+    /// `root`, script, or process) is a web app: its view is the page.
+    #[serde(default)]
+    pub web: Option<WebSpec>,
 }
+
+/// An app's web pages.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSpec {
+    /// A local address (a dev server: `http://localhost:5173`) the pages
+    /// load from, instead of the package's `web/` directory. Its origin is
+    /// the app's.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Origins (`https://example.com`) the pages may also navigate to;
+    /// they never get the bridge.
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+/// The node key of a web app's one page.
+pub const WEB_PAGE: &str = "page";
 
 /// The capability a package needs to run a program of its own.
 pub const PROCESS: &str = "process";
@@ -466,6 +490,7 @@ pub enum NodeType {
     Composer,
     Terminal,
     Image,
+    Web,
 }
 
 impl NodeType {
@@ -542,6 +567,7 @@ impl NodeType {
             NodeType::Composer => "composer",
             NodeType::Terminal => "terminal",
             NodeType::Image => "image",
+            NodeType::Web => "web",
         }
     }
 }
@@ -624,7 +650,9 @@ pub struct NodeSpec {
     /// Terminal: the tmux pane shown, by number (`3` for `%3`).
     #[serde(default)]
     pub pane: Option<u32>,
-    /// Image: a PNG or JPEG file in the package, by its path there.
+    /// Image: a PNG or JPEG file in the package, by its path there. Web:
+    /// a page in the package's `web/` directory, or a URL on the app's
+    /// origin or its allow-list.
     #[serde(default)]
     pub src: Option<String>,
 }
@@ -900,6 +928,16 @@ impl Manifest {
         self.is_process() || self.is_script()
     }
 
+    /// A web app: version 2, with `[web]` and no view of its own; its
+    /// view is its page (`web/index.html`, or the declared `url`).
+    pub fn is_web_app(&self) -> bool {
+        self.is_tree()
+            && self.web.is_some()
+            && !self.draws_own_view()
+            && (self.root.is_none() || self.root.as_deref() == Some(WEB_PAGE))
+            && self.nodes.keys().all(|k| k == WEB_PAGE)
+    }
+
     /// Its view is a tree of nodes (version 2).
     pub fn is_tree(&self) -> bool {
         self.schema_version == TREE_SCHEMA_VERSION
@@ -970,8 +1008,15 @@ impl Manifest {
     pub fn parse(text: &str) -> Result<Manifest, Vec<String>> {
         let raw: toml::Table = toml::from_str(text).map_err(|e| vec![e.to_string()])?;
         let has_view = raw.contains_key("view");
-        let m: Manifest = toml::from_str(text).map_err(|e| vec![e.to_string()])?;
+        let mut m: Manifest = toml::from_str(text).map_err(|e| vec![e.to_string()])?;
         let mut errors = Vec::new();
+        if m.is_web_app() {
+            // The view is the page: one `web` node.
+            let page: NodeSpec =
+                toml::from_str("type = \"web\"").map_err(|e| vec![e.to_string()])?;
+            m.root = Some(WEB_PAGE.into());
+            m.nodes.insert(WEB_PAGE.into(), page);
+        }
         if m.draws_own_view() {
             if has_view {
                 errors.push(
@@ -1092,6 +1137,9 @@ impl Manifest {
             }
             self.validate_view(&self.view, "view", &mut errors);
         }
+        if let Some(w) = &self.web {
+            self.validate_web(w, &mut errors);
+        }
         if let Some(m) = &self.module
             && (m.is_empty() || m.contains("..") || m.starts_with('/'))
         {
@@ -1185,6 +1233,28 @@ impl Manifest {
 
     /// A process app has a program, the `process` capability, and none of
     /// the parts its program replaces.
+    fn validate_web(&self, w: &WebSpec, errors: &mut Vec<String>) {
+        if !self.is_tree() {
+            errors.push("web: web pages need schema_version = 2".into());
+        }
+        if let Some(u) = &w.url
+            && !view_tree::web::is_local(u)
+        {
+            errors.push(format!(
+                "web.url: `{u}` is not a local address (http or https on localhost, 127.0.0.1, or [::1])"
+            ));
+        }
+        for a in &w.allow {
+            let origin = view_tree::web::origin(a);
+            let web = a.starts_with("https://") || a.starts_with("http://");
+            if !web || origin.as_deref() != Some(a.trim_end_matches('/')) {
+                errors.push(format!(
+                    "web.allow: `{a}` is not an origin (`https://example.com`, no path)"
+                ));
+            }
+        }
+    }
+
     fn validate_process(&self, errors: &mut Vec<String>) {
         let Some(p) = &self.process else { return };
         if !self.capabilities.iter().any(|c| c == PROCESS) {
@@ -1434,15 +1504,15 @@ impl Manifest {
         if n.kind.is_control() && !n.source.is_empty() {
             errors.push(format!("{at}.source: a {kind} holds its own value"));
         }
-        let embed = matches!(n.kind, NodeType::Terminal | NodeType::Image);
+        let embed = matches!(n.kind, NodeType::Terminal | NodeType::Image | NodeType::Web);
         if embed && !n.source.is_empty() {
             errors.push(format!("{at}.source: a {kind} shows no data source"));
         }
         if n.pane.is_some() && n.kind != NodeType::Terminal {
             errors.push(format!("{at}.pane: only a terminal shows a pane"));
         }
-        if n.src.is_some() && n.kind != NodeType::Image {
-            errors.push(format!("{at}.src: only an image has a `src`"));
+        if n.src.is_some() && !matches!(n.kind, NodeType::Image | NodeType::Web) {
+            errors.push(format!("{at}.src: only an image or a web page has a `src`"));
         }
         match n.kind {
             NodeType::Terminal => {
@@ -1462,6 +1532,14 @@ impl Manifest {
             }
             NodeType::Image => {
                 if let Some(why) = view_tree::image::src_problem(n.src.as_deref().unwrap_or("")) {
+                    errors.push(format!("{at}.src: {why}"));
+                }
+            }
+            NodeType::Web => {
+                if let Err(why) = crate::embeds::web_page(
+                    &crate::embeds::Site::of(self),
+                    n.src.as_deref().unwrap_or(""),
+                ) {
                     errors.push(format!("{at}.src: {why}"));
                 }
             }
@@ -2234,6 +2312,55 @@ src = "img/logo.png"
         );
         assert!(
             has("nodes.logo.src: an image's `src` may not leave the app's package"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_web_app_is_its_page_and_its_web_fields_are_checked() {
+        let base = "schema_version = 2\nid = \"local.web\"\nversion = \"0.1.0\"\ntitle = \"Web\"\n";
+        let m = Manifest::parse(&format!("{base}[web]\n")).expect("a web app");
+        assert!(m.is_web_app());
+        assert_eq!(m.root.as_deref(), Some(WEB_PAGE));
+        assert_eq!(m.nodes[WEB_PAGE].kind, NodeType::Web);
+
+        let bad = format!(
+            "{base}[web]\nurl = \"https://example.com\"\nallow = [\"https://a.example/x\", \"ftp://b.example\"]\n"
+        );
+        let errors = Manifest::parse(&bad).expect_err("invalid");
+        let has = |s: &str| errors.iter().any(|e| e.contains(s));
+        assert!(
+            has("web.url: `https://example.com` is not a local address"),
+            "{errors:?}"
+        );
+        assert!(
+            has("web.allow: `https://a.example/x` is not an origin"),
+            "{errors:?}"
+        );
+        assert!(
+            has("web.allow: `ftp://b.example` is not an origin"),
+            "{errors:?}"
+        );
+
+        // In a tree: a page in the package, on the app's origin or its
+        // allow-list, never another site.
+        let tree = format!(
+            "{base}root = \"main\"\n[web]\nallow = [\"https://docs.example\"]\n\
+             [nodes.main]\ntype = \"row\"\nchildren = [\"a\", \"b\", \"c\", \"d\"]\n\
+             [nodes.a]\ntype = \"web\"\nsrc = \"pages/a.html\"\n\
+             [nodes.b]\ntype = \"web\"\nsrc = \"https://docs.example/x\"\n\
+             [nodes.c]\ntype = \"web\"\nsrc = \"https://evil.example/\"\n\
+             [nodes.d]\ntype = \"web\"\nsrc = \"../secret.html\"\n"
+        );
+        let errors = Manifest::parse(&tree).expect_err("invalid");
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        let has = |s: &str| errors.iter().any(|e| e.contains(s));
+        assert!(
+            has("nodes.c.src: `https://evil.example/` is not on the app's origin"),
+            "{errors:?}"
+        );
+        assert!(
+            has("nodes.d.src: `../secret.html` is neither an address nor a page"),
             "{errors:?}"
         );
     }

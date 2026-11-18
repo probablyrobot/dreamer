@@ -183,7 +183,8 @@ columns = ["name", "width", "height"]
 - **`transcript` and `composer`** show and write to an agent session;
   see [below](#agent-sessions-transcript-and-composer).
 - **Terminal and image components** (`terminal`, `image`) are described
-  [below](#terminal-and-image-components).
+  [below](#terminal-and-image-components), and **web pages** (`web`)
+  [below that](#web-pages-and-web-apps).
 - **`title`**, on any node, is a heading; in a terminal the node gets a
   border with it.
 - **Keys** of nodes are lowercase letters, digits, `-`, and `_`. Every
@@ -345,6 +346,83 @@ src = "img/logo.png"        # a file in the package
   - The desktop reads and decodes the file off its UI thread, then draws
     the picture at its own size, shrunk to fit the node.
 
+### Web pages and web apps
+
+A `web` node is a web page, drawn by Chromium in the desktop
+([desktop.md](desktop.md#app-pages)). A whole app can be a page: a
+version 2 manifest with `[web]` and no view of its own (no `root`,
+`[script]`, or `[process]`) is a **web app**, and its view is its page.
+`examples/apps/panes-web/` in the source tree is one: a page that lists
+the panes.
+
+```toml
+schema_version = 2
+id = "local.panes-web"
+version = "0.1.0"
+title = "Panes (web)"
+capabilities = ["tmux.topology"]
+
+[web]
+# url = "http://localhost:5173"      # load the pages from a dev server instead
+allow = ["https://tmux.github.io"]   # origins the pages may also navigate to
+```
+
+```
+local.panes-web/
+  app.toml
+  web/index.html     # the web app's page; anything else it loads beside it
+```
+
+In a tree, a node `type = "web"` with `src` is a page; a script uses
+`ui.web({ key, src })`. `src` is:
+
+- a path in the package's `web/` directory (`index.html` when empty);
+- or an address on the app's origin or one of its `web.allow` origins.
+
+**The app's origin.** The package's `web/` directory is served on
+`dreamer-app://<app id>/`, from the package and nowhere else: a path
+that leaves the directory, also through a link, is not found. With
+`web.url`, a local address (`http`, or `https`, on `localhost`,
+`127.0.0.1`, or `[::1]`, such as a dev server), the pages load from
+there instead, and that address's origin is the app's.
+
+**The bridge.** A page on the app's origin has `window.dreamer.call(method,
+params)`: one API method by name, its parameters and its result as the
+API's JSON ([api.md](api.md)), as `dreamer.call` in a script. It
+resolves to the result, or rejects with an error that has the API's
+`code` and a `message`.
+
+- Each call goes from the page to the desktop showing it, and from there
+  to the daemon (`apps.call`), which runs it as the app in that pane:
+  under the app's grant, with the same checks as the app's own requests
+  ([grants.md](grants.md#web-pages-of-apps)). A method outside the grant
+  is refused with `-32005`. The page has nothing the app does not.
+- Requests answered once only: subscriptions, and what only an app host
+  does (registering, publishing its view, narrowing its grant), are
+  refused.
+- A page on any other origin, an allowed one or a frame inside the app's
+  page, has no `window.dreamer`, and its requests to the bridge are
+  refused.
+
+**Navigation** stays on the app's origin and its `web.allow` origins:
+any other address is refused and the page stays where it is. A page
+opens no windows.
+
+**Profile.** Each app's pages have a browser profile of their own,
+`web/apps/<app id>/` in the desktop's state directory: their cookies and
+storage are kept apart from every other app's and from plain web panes'.
+
+**Elsewhere.** The pane's own terminal shows `[web: ADDRESS; open in
+Dreamer to see the page]`, or `[web: SRC: why]` for a refused node. A
+desktop panel shows the address.
+
+**Checks.** `--check` (and `dream app check`) refuses a `web.url` that
+is not local, a `web.allow` entry that is not an origin (`https://host`
+or `https://host:port`, no path), and a `web` node whose `src` leaves
+`web/`, names another site, or names a page that is not in the package.
+A script names its pages at run time; the host refuses a `src` that is
+none of the above, and the node shows why.
+
 Every data source a node shows is fetched as in version 1, and the
 sources' `events` and the shortest `refresh_ms` apply. A module's
 command handlers work as before; `transform` is not called for a tree.
@@ -495,6 +573,7 @@ its content, an optional `bind` ([bound streams](#bound-streams)), and
 | `composer` | `label`, `value` (lines separated by `\n`), `placeholder`, and `attachments` (their labels) |
 | `terminal` | `pane`, the pane's number; `refused`, why it is not shown (left out when it is) |
 | `image` | `src`, the path in the package; the host adds `path` (the file it resolved to), `width` and `height` in pixels, or `refused` |
+| `web` | `src`, as the app gave it; the host adds `url` (the page's address), `origin` (the app's), `app` (its id), `dir` (the package's `web/` directory, when the page is from there), `allow`, or `refused` |
 
 A row's key is its `row_key` value, or its place when the view has
 none. A change is one of these ops, each naming its node by the keys on
@@ -704,9 +783,11 @@ load other code.
     `placeholder`), `select` (`label`, `options`, and `value` or
     `selected`), and `toggle` (`label`, `on`);
   - embeds: `terminal` (`pane`, a number or `"%3"`; also
-    `ui.terminal(pane, fields)`) and `image` (`src`; also
-    `ui.image(src, fields)`). See
-    [terminal and image components](#terminal-and-image-components).
+    `ui.terminal(pane, fields)`), `image` (`src`; also
+    `ui.image(src, fields)`), and `web` (`src`; also `ui.web(src,
+    fields)`). See
+    [terminal and image components](#terminal-and-image-components) and
+    [web pages](#web-pages-and-web-apps).
 - **Timers** run on the app's thread. An interval is at least 10 ms, and
   an app has at most 1000 timers pending.
 - **`console`** lines are kept as a process app's standard error is.

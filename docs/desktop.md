@@ -554,6 +554,29 @@ come from tmux.
   to where tmux keeps it. Closing the pane closes the page. Chromium
   starts with the first web pane, not with the app.
 
+### App pages
+
+A `web` node of an app pane, or a web app's whole view
+([termapp.md](termapp.md#web-pages-and-web-apps)), is drawn the same
+way: Chromium's view over the node's place in the pane, hidden and
+covered like a web pane's. What is different:
+
+- **The app's own.** The page opens in a browser profile of the app's
+  (`web/apps/<app id>/` in the desktop's state directory). It may
+  navigate only to the app's origin and the origins its manifest allows;
+  any other navigation is refused and the page stays.
+- **The package's files** are served on `dreamer-app://<app id>/` from
+  the package's `web/` directory, by the desktop itself: nothing listens
+  on a port.
+- **The bridge.** A page on the app's origin gets `window.dreamer.call`.
+  The desktop answers it only for frames on that origin, and passes each
+  call to the daemon as `apps.call` for the pane, so it runs as the app,
+  under the app's grant ([grants.md](grants.md#web-pages-of-apps)).
+- **Keys.** A web app's page takes the keys while its pane has the
+  focus. In an app with other nodes, a click in the page gives it the
+  keys, and a click on the rest of the app takes them back.
+- Its title and scroll position are not kept in tmux.
+
 Not yet: a page's own clipboard writes following `clipboard.write`, the
 Linux primary selection, more than one Mac display scale, Chromium's
 sandbox, signed helper apps, Linux.
@@ -783,6 +806,16 @@ configuration directories:
   gate never touches, so copy and paste in a page is not checked by the
   gate. Each passed input check is a `smoke: web input:` line, and the
   gate wants all five;
+- then an [app page](#app-pages): the example web app
+  (`examples/apps/panes-web`), granted `tmux.topology`, opens beside the
+  shell pane. Its page lists the panes through the bridge, and a call
+  through it lists the app's own pane (`app.png`); `terminal.list`,
+  outside its grant, is refused with `-32005`; a sandboxed frame inside
+  it (another origin) has no `window.dreamer` and cannot reach the
+  bridge, nor does the plain web pane have one; and a navigation to
+  `https://example.invalid/`, outside its allow-list, is refused and the
+  page stays on its origin. Each passed check is a `smoke: web app:`
+  line, and the gate wants all five;
 - the gate checks each capture as the smoke's `checks.txt` lists: the
   page's color covers at least 90% of the pane's rectangle (of the
   zoomed pane, or of the part beside the palette) and at most 1% of the

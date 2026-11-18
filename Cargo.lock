@@ -7454,6 +7454,7 @@ dependencies = [
  "cef-sys",
  "raw-window-handle",
  "serde_json",
+ "view-tree",
 ]
 
 [[package]]

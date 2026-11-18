@@ -758,6 +758,30 @@
         }
       }
     },
+    "AppCall": {
+      "fields": {
+        "method": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "params": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "AppCallResult": {
+      "fields": {
+        "result": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
     "AppCapture": {
       "fields": {
         "pane": {
@@ -4813,6 +4837,7 @@
     "agents.runs": "AgentRunQuery",
     "approvals.answer": "ApprovalAnswer",
     "approvals.list": "Empty",
+    "apps.call": "AppCall",
     "apps.capture": "AppCapture",
     "apps.capture_done": "AppCaptureDone",
     "apps.capture_wait": "AppCaptureWait",
@@ -5119,6 +5144,14 @@
         "props": {
           "src": "string"
         }
+      },
+      {
+        "first": "src",
+        "form": "content",
+        "name": "web",
+        "props": {
+          "src": "string"
+        }
       }
     ],
     "screen": {
@@ -5150,5 +5183,5 @@
       }
     }
   },
-  "version": "1.56"
+  "version": "1.57"
 }

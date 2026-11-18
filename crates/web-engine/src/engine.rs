@@ -76,6 +76,20 @@ mod handlers {
             fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
                 Some(DreamerBrowserProcess::new())
             }
+            // In every process: the scheme apps' packaged pages are served
+            // on is a standard, secure one that `fetch` may use, so a page
+            // there has an origin of its own.
+            fn on_register_custom_schemes(&self, registrar: Option<&mut SchemeRegistrar>) {
+                if let Some(r) = registrar {
+                    let options = SchemeOptions::STANDARD.get_raw()
+                        | SchemeOptions::SECURE.get_raw()
+                        | SchemeOptions::FETCH_ENABLED.get_raw();
+                    r.add_custom_scheme(
+                        Some(&CefString::from(crate::site::SCHEME)),
+                        options as i32,
+                    );
+                }
+            }
         }
     }
 
@@ -106,6 +120,208 @@ mod handlers {
             }
             fn life_span_handler(&self) -> Option<LifeSpanHandler> {
                 Some(DreamerLifeSpan::new(self.shared.clone()))
+            }
+            fn request_handler(&self) -> Option<RequestHandler> {
+                self.shared
+                    .app
+                    .is_some()
+                    .then(|| DreamerRequests::new(self.shared.clone()))
+            }
+        }
+    }
+
+    // An app's page: where it may navigate, and what its own origin
+    // serves (its package's files, its bridge).
+    wrap_request_handler! {
+        pub struct DreamerRequests {
+            shared: Arc<Shared>,
+        }
+        impl RequestHandler {
+            fn on_before_browse(
+                &self,
+                _browser: Option<&mut Browser>,
+                _frame: Option<&mut Frame>,
+                request: Option<&mut Request>,
+                _user_gesture: i32,
+                _is_redirect: i32,
+            ) -> i32 {
+                let (Some(app), Some(request)) = (self.shared.app.as_ref(), request) else {
+                    return 0;
+                };
+                let url = CefString::from(&request.url()).to_string();
+                if app.may_navigate(&url) {
+                    return 0;
+                }
+                if let Ok(mut b) = self.shared.blocked.lock() {
+                    b.push(url);
+                }
+                1
+            }
+            fn resource_request_handler(
+                &self,
+                _browser: Option<&mut Browser>,
+                frame: Option<&mut Frame>,
+                request: Option<&mut Request>,
+                _is_navigation: i32,
+                _is_download: i32,
+                request_initiator: Option<&CefString>,
+                _disable_default_handling: Option<&mut i32>,
+            ) -> Option<ResourceRequestHandler> {
+                let app = self.shared.app.as_ref()?;
+                let url = CefString::from(&request?.url()).to_string();
+                let serve = if app.is_bridge_url(&url) {
+                    let frame_url = frame
+                        .map(|f| CefString::from(&f.url()).to_string())
+                        .unwrap_or_default();
+                    let initiator = request_initiator.map(|i| i.to_string()).unwrap_or_default();
+                    if app.is_bridge(&url, &frame_url, &initiator) {
+                        Serve::Bridge
+                    } else {
+                        Serve::Refused
+                    }
+                } else {
+                    match app.file(&url) {
+                        Some(path) => Serve::File(path),
+                        None if crate::site::origin(&url)
+                            .is_some_and(|o| o.starts_with(crate::site::SCHEME)) =>
+                        {
+                            Serve::Missing
+                        }
+                        None => return None,
+                    }
+                };
+                Some(DreamerResources::new(self.shared.clone(), Arc::new(serve)))
+            }
+        }
+    }
+
+    wrap_resource_request_handler! {
+        pub struct DreamerResources {
+            shared: Arc<Shared>,
+            serve: Arc<Serve>,
+        }
+        impl ResourceRequestHandler {
+            fn resource_handler(
+                &self,
+                _browser: Option<&mut Browser>,
+                _frame: Option<&mut Frame>,
+                _request: Option<&mut Request>,
+            ) -> Option<ResourceHandler> {
+                Some(Served::new(
+                    self.shared.clone(),
+                    self.serve.clone(),
+                    Arc::new(Mutex::new(Body::default())),
+                ))
+            }
+        }
+    }
+
+    wrap_resource_handler! {
+        pub struct Served {
+            shared: Arc<Shared>,
+            serve: Arc<Serve>,
+            body: Arc<Mutex<Body>>,
+        }
+        impl ResourceHandler {
+            fn open(
+                &self,
+                request: Option<&mut Request>,
+                handle_request: Option<&mut i32>,
+                callback: Option<&mut Callback>,
+            ) -> i32 {
+                let Some(handle) = handle_request else { return 0 };
+                *handle = 1;
+                let answer = |status, mime, bytes: Vec<u8>| {
+                    if let Ok(mut b) = self.body.lock() {
+                        *b = Body { status, mime, bytes, at: 0 };
+                    }
+                    1
+                };
+                let refuse = |status, code, why: &str| {
+                    let reply = crate::site::bridge_reply(&Err((code, why.to_owned())));
+                    answer(status, "application/json", reply.into_bytes())
+                };
+                match &*self.serve {
+                    Serve::File(path) => match std::fs::read(path) {
+                        Ok(bytes) => answer(200, crate::site::mime(path), bytes),
+                        Err(_) => answer(404, "text/plain", b"not found".to_vec()),
+                    },
+                    Serve::Missing => answer(404, "text/plain", b"not found".to_vec()),
+                    // A frame of another origin: no bridge.
+                    Serve::Refused => refuse(403, -32005, "no bridge for this origin"),
+                    Serve::Bridge => {
+                        let body = request.map(|r| post_body(r)).unwrap_or_default();
+                        let (method, params) = match crate::site::bridge_request(&body) {
+                            Ok(call) => call,
+                            Err(why) => return refuse(400, -32600, &why),
+                        };
+                        let (Some(app), Some(cb)) = (self.shared.app.as_ref(), callback.cloned())
+                        else {
+                            return 0;
+                        };
+                        // Answered later, when the call comes back.
+                        *handle = 0;
+                        let out = self.body.clone();
+                        (app.bridge)(crate::site::BridgeCall {
+                            method,
+                            params,
+                            reply: Box::new(move |a| {
+                                if let Ok(mut b) = out.lock() {
+                                    *b = Body {
+                                        status: 200,
+                                        mime: "application/json",
+                                        bytes: crate::site::bridge_reply(&a).into_bytes(),
+                                        at: 0,
+                                    };
+                                }
+                                cb.cont();
+                            }),
+                        });
+                        1
+                    }
+                }
+            }
+            fn response_headers(
+                &self,
+                response: Option<&mut Response>,
+                response_length: Option<&mut i64>,
+                _redirect_url: Option<&mut CefString>,
+            ) {
+                let Ok(b) = self.body.lock() else { return };
+                if let Some(r) = response {
+                    r.set_status(b.status);
+                    r.set_mime_type(Some(&CefString::from(b.mime)));
+                    r.set_header_by_name(
+                        Some(&CefString::from("Cache-Control")),
+                        Some(&CefString::from("no-store")),
+                        1,
+                    );
+                }
+                if let Some(l) = response_length {
+                    *l = b.bytes.len() as i64;
+                }
+            }
+            #[allow(clippy::not_unsafe_ptr_arg_deref)]
+            fn read(
+                &self,
+                data_out: *mut u8,
+                bytes_to_read: i32,
+                bytes_read: Option<&mut i32>,
+                _callback: Option<&mut ResourceReadCallback>,
+            ) -> i32 {
+                let (Some(read), Ok(mut b)) = (bytes_read, self.body.lock()) else {
+                    return 0;
+                };
+                let n = b.bytes.len().saturating_sub(b.at).min(bytes_to_read.max(0) as usize);
+                *read = n as i32;
+                if n == 0 || data_out.is_null() {
+                    return 0;
+                }
+                // SAFETY: CEF hands a buffer of `bytes_to_read` bytes, and
+                // `n` is at most that.
+                unsafe { std::ptr::copy_nonoverlapping(b.bytes[b.at..].as_ptr(), data_out, n) };
+                b.at += n;
+                1
             }
         }
     }
@@ -234,7 +450,53 @@ struct Shared {
     on_load: Mutex<Option<String>>,
     /// DevTools calls waiting for their replies, by message id.
     replies: Mutex<HashMap<i32, Reply>>,
+    /// The app whose page this is, if it is one.
+    app: Option<crate::AppPage>,
+    /// Navigations refused (an app's page, outside its origins), in order.
+    blocked: Mutex<Vec<String>>,
 }
+
+/// What an app's origin answers a request with.
+enum Serve {
+    /// A file of the package's `web/` directory.
+    File(PathBuf),
+    /// No such file on the package's origin.
+    Missing,
+    /// The bridge, for a frame of the app's own origin.
+    Bridge,
+    /// The bridge's address, from another origin.
+    Refused,
+}
+
+/// A response as decided, read out as Chromium asks.
+#[derive(Default)]
+struct Body {
+    status: i32,
+    mime: &'static str,
+    bytes: Vec<u8>,
+    at: usize,
+}
+
+/// The bytes a request posts.
+fn post_body(request: &Request) -> Vec<u8> {
+    let Some(post) = request.post_data() else {
+        return Vec::new();
+    };
+    let mut elements: Vec<Option<PostDataElement>> = vec![None; post.element_count()];
+    post.elements(Some(&mut elements));
+    let mut out = Vec::new();
+    for e in elements.into_iter().flatten() {
+        let mut bytes = vec![0u8; e.bytes_count()];
+        let n = e.bytes(bytes.len(), bytes.as_mut_ptr());
+        bytes.truncate(n);
+        out.extend(bytes);
+    }
+    out
+}
+
+/// Chromium's profile directory, once started: each app's own profile is
+/// a directory of it.
+static ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 /// DevTools message ids, unique in the process.
 static MESSAGE: AtomicI32 = AtomicI32::new(1);
@@ -289,6 +551,12 @@ pub fn start(cache_dir: &Path, wake: impl Fn(i64) + Send + Sync + 'static) -> Re
         unsafe { appkit::adopt_application_protocol()? };
         let _ = WAKE.set(Box::new(wake));
         std::fs::create_dir_all(cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
+        // Chromium compares profile paths with links resolved (`/tmp` is
+        // `/private/tmp`): an app's profile must be inside this one.
+        let cache_dir = &cache_dir
+            .canonicalize()
+            .unwrap_or_else(|_| cache_dir.to_path_buf());
+        let _ = ROOT.set(cache_dir.clone());
         let settings = Settings {
             // Chromium's sandbox is not set up for these helpers yet.
             no_sandbox: 1,
@@ -365,11 +633,36 @@ pub fn run_subprocess() -> i32 {
         return 1;
     }
     let args = args::Args::new();
+    // The renderer must know apps' scheme too.
+    let mut app = handlers::DreamerApp::new();
     execute_process(
         Some(args.as_main_args()),
-        None::<&mut App>,
+        Some(&mut app),
         std::ptr::null_mut(),
     )
+}
+
+/// A browser profile of app `app`'s own: `apps/<app>` in Chromium's
+/// profile directory.
+fn app_context(app: &str) -> Result<RequestContext, String> {
+    let plain = !app.is_empty()
+        && app
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+        && !app.starts_with('.');
+    let root = ROOT.get().ok_or("Chromium is not running")?;
+    if !plain {
+        return Err(format!("`{app}` is not an app id"));
+    }
+    let dir = root.join("apps").join(app);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let settings = RequestContextSettings {
+        cache_path: CefString::from(dir.to_string_lossy().as_ref()),
+        persist_session_cookies: 1,
+        ..Default::default()
+    };
+    request_context_create_context(Some(&settings), None)
+        .ok_or_else(|| format!("Chromium made no profile for {app}"))
 }
 
 /// The `NSView` of a window, from its handle.
@@ -417,10 +710,13 @@ impl WebView {
     /// Open `url` in a new view over `rect` of `window`, which keeps
     /// keyboard focus. `on_focus` runs (on CEF's UI thread, the main
     /// thread) whenever the page takes focus, for example on a click.
+    /// With `app`, the page is the app's: in its own profile, held to its
+    /// origins, and with the bridge on its own origin.
     pub fn open(
         window: &impl HasWindowHandle,
         rect: Rect,
         url: &str,
+        app: Option<crate::AppPage>,
         on_focus: impl Fn() + Send + Sync + 'static,
     ) -> Result<WebView, String> {
         if !started() {
@@ -429,9 +725,15 @@ impl WebView {
         let parent = parent_view(window)?;
         // SAFETY: `parent` is the window's live content view; main thread.
         let frame = unsafe { appkit::from_top_left(parent, frame_of(rect)) };
+        let mut context = match &app {
+            Some(a) => Some(app_context(&a.app)?),
+            None => None,
+        };
+        let script = app.as_ref().map(crate::AppPage::bridge_script);
         let shared = Arc::new(Shared {
             loaded: AtomicI32::new(-1),
             on_focus: Mutex::new(Some(Box::new(on_focus))),
+            app,
             ..Shared::default()
         });
         let info = WindowInfo {
@@ -446,13 +748,15 @@ impl WebView {
             ..Default::default()
         };
         let mut client = handlers::DreamerClient::new(shared.clone());
+        // An app's page loads once its bridge script is in place.
+        let first = if script.is_some() { "about:blank" } else { url };
         let browser = browser_host_create_browser_sync(
             Some(&info),
             Some(&mut client),
-            Some(&CefString::from(url)),
+            Some(&CefString::from(first)),
             Some(&BrowserSettings::default()),
             None,
-            None,
+            context.as_mut(),
         )
         .ok_or("Chromium could not create a browser")?;
         LIVE.fetch_add(1, Ordering::Relaxed);
@@ -470,6 +774,19 @@ impl WebView {
             _devtools: devtools,
         };
         view.place(rect);
+        if let Some(script) = script {
+            let params = serde_json::json!({ "source": script }).to_string();
+            let (browser, url) = (view.browser.clone(), url.to_owned());
+            view.devtools(
+                "Page.addScriptToEvaluateOnNewDocument",
+                &params,
+                Box::new(move |_| {
+                    if let Some(f) = browser.main_frame() {
+                        f.load_url(Some(&CefString::from(url.as_str())));
+                    }
+                }),
+            );
+        }
         // Creating the browser makes its view first responder; the pane
         // takes focus only when Dreamer gives it.
         // SAFETY: live content view, main thread.
@@ -479,6 +796,16 @@ impl WebView {
 
     fn host(&self) -> Option<BrowserHost> {
         self.browser.host()
+    }
+
+    /// The navigations refused so far (an app's page, to an origin it may
+    /// not go to), oldest first.
+    pub fn blocked(&self) -> Vec<String> {
+        self.shared
+            .blocked
+            .lock()
+            .map(|b| b.clone())
+            .unwrap_or_default()
     }
 
     fn view(&self) -> *mut c_void {
@@ -618,7 +945,11 @@ impl WebView {
         expression: &str,
         done: impl FnOnce(Option<serde_json::Value>) + Send + 'static,
     ) {
-        let params = serde_json::json!({ "expression": expression, "returnByValue": true });
+        let params = serde_json::json!({
+            "expression": expression,
+            "returnByValue": true,
+            "awaitPromise": true,
+        });
         self.devtools(
             "Runtime.evaluate",
             &params.to_string(),

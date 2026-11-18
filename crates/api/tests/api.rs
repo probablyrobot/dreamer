@@ -373,6 +373,9 @@ impl Service for Fixed {
     async fn web_state(&self, _: api::WebState) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn apps_call(&self, _: api::AppCall) -> Result<api::AppCallResult, RpcError> {
+        Ok(api::AppCallResult::default())
+    }
     async fn apps_input(&self, _: api::AppInput) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }

@@ -51,6 +51,7 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `apps.tree`, `apps.capture` | The owner grant, or an agent's grant at `own` or `elsewhere` for an app pane it launched ([below](#agents-and-apps)) |
 | `apps.capture_wait`, `apps.capture_done` | The owner grant: images of panes are made by the user's desktop, for the user |
 | `web.open`, `web.state` | The owner grant: web pages run in the user's desktop |
+| `apps.call` | The owner grant (the desktop showing an app's page). The call it carries is checked against that app's grant, as the app's own ([below](#web-pages-of-apps)) |
 | `apps.publish`, `apps.publish_tree` | A registered app host's own connection, whatever its grant lists; it publishes for its own pane only |
 | `filters.install`, `filters.list`, `filters.pause`, `filters.resume`, `filters.remove` | The owner grant, or `filters.manage` plus content read; see [Filters an app installs](filters.md#filters-an-app-installs) |
 | `messages.*` | Only the method; messages never reach a pane (see [messages.md](messages.md)) |
@@ -210,6 +211,32 @@ An app gets its narrow grant through a launch the user starts:
 A brand-new pane can take a moment to be mirrored. `terminal.read` on a
 pane tmux already has waits up to 3 s for its mirror instead of failing,
 so an app can read its own pane right after launch.
+
+### Web pages of apps
+
+An app's web page ([termapp.md](termapp.md#web-pages-and-web-apps)) runs
+in the user's desktop, but calls the daemon as the app, never as the
+desktop:
+
+1. A page on the app's own origin calls `window.dreamer.call(method,
+   params)`. The desktop answers only a frame on that origin, and passes
+   the call on as `apps.call` with the app's pane.
+2. `apps.call` is the owner's (any other connection is refused). The
+   daemon finds the app registered in that pane, refused if there is none
+   or its host has stopped (its grant ended with it), and runs the call
+   as that app: its grant, its connection's identity and the panes it
+   created, through the same checks (method, panes, act level) as a
+   request on its own connection.
+3. Only requests answered once are passed on: subscriptions, registering,
+   publishing, narrowing a grant, messages, and agent sessions are
+   refused, whatever the grant lists.
+
+`crates/tui-runtime/tests/web_app.rs` checks this against a real tmux:
+the example web app, granted `tmux.topology`, lists the panes through
+`apps.call`; `terminal.list` and `actions.submit` are refused, as are a
+subscription, publishing, narrowing, and `daemon.shutdown`; a pane
+without an app is not found; a narrowed connection may not call
+`apps.call`; and after the app quits, its calls are refused.
 
 ### What this does and does not protect
 

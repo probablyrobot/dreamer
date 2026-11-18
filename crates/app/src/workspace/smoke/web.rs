@@ -18,6 +18,15 @@
 //! which a check never touches. A window that is not the key window
 //! cannot be typed into: exit 5.
 //!
+//! Then an app's own page: the example web app (`examples/apps/panes-web`,
+//! granted `tmux.topology`) opens beside the shell pane. Its page lists
+//! the panes through the bridge, and a call through it lists them again;
+//! a call outside its grant is refused; a frame of another origin (a
+//! sandboxed frame in it) has no `window.dreamer` and cannot reach the
+//! bridge; a navigation to an origin outside its allow-list is refused;
+//! and the plain web page has no `window.dreamer` either. Each passed check
+//! is a `smoke: web app:` line.
+//!
 //! Writes to DIR the captures of the window (from `screencapture`) and
 //! `checks.txt`, what the gate checks in them: a line `window WIDTH
 //! HEIGHT`, then one line per check, `FILE COLOR min|max SHARE X Y WIDTH
@@ -502,6 +511,7 @@ pub(crate) async fn run(
     println!("smoke: the palette closed: the live page is back");
 
     input(any, &ws, cx, pane).await;
+    app_page(any, &ws, cx, pane, &out, window).await;
 
     if let Err(e) = std::fs::write(out.join("checks.txt"), &checks.0) {
         fail(&format!("checks.txt: {e}"));
@@ -531,8 +541,8 @@ fn with_view<T>(
     f: impl FnOnce(&web_engine::WebView) -> T,
 ) -> T {
     read(any, ws, cx, |w, cx| {
-        let p = w.panes.get(&pane)?.web_pane()?.read(cx);
-        p.view.as_ref().map(f)
+        let page = w.panes.get(&pane)?.pages(cx).into_iter().next()?;
+        page.read(cx).view.as_ref().map(f)
     })
     .flatten()
     .unwrap_or_else(|| fail("the web page is gone"))
@@ -735,4 +745,225 @@ async fn input(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncA
         fail(&format!("select all in the page: {e}"));
     }
     println!("smoke: web input: Cmd+A selected the whole field through Chromium's SelectAll");
+}
+
+/// The example web app, packaged: its manifest and its page.
+const APP_TOML: &str = include_str!("../../../../../examples/apps/panes-web/app.toml");
+const APP_HTML: &str = include_str!("../../../../../examples/apps/panes-web/web/index.html");
+
+/// A frame of another origin in the app's page (sandboxed, so opaque):
+/// whether it has `window.dreamer`, and what a request to the bridge gets.
+const OTHER_ORIGIN: &str = r#"new Promise((done) => {
+  addEventListener("message", (e) => done(String(e.data)), { once: true });
+  const f = document.createElement("iframe");
+  f.sandbox = "allow-scripts";
+  f.srcdoc = "<script>fetch('/.dreamer/call', { method: 'POST', body: JSON.stringify({ method: 'tmux.topology' }) })" +
+    ".then((r) => r.status, () => 'failed')" +
+    ".then((s) => parent.postMessage(typeof window.dreamer + ' ' + s, '*'))<\/script>";
+  document.body.append(f);
+})"#;
+
+/// The example web app beside the shell pane, under a grant of
+/// `tmux.topology` (see the module's description). `web` is the plain
+/// web pane.
+async fn app_page(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    web: u32,
+    out: &Path,
+    window: isize,
+) {
+    let (socket, session, shell) = read(any, ws, cx, |w, _| {
+        let shell = w.pane_ids().into_iter().find(|p| *p != web)?;
+        Some((w.socket.clone(), w.session?, shell))
+    })
+    .flatten()
+    .unwrap_or_else(|| fail("no session and shell pane for the web app"));
+    let dir = std::env::temp_dir().join(format!("dreamer-smoke-web-app-{}", std::process::id()));
+    let written = std::fs::create_dir_all(dir.join("web"))
+        .and_then(|()| std::fs::write(dir.join("app.toml"), APP_TOML))
+        .and_then(|()| std::fs::write(dir.join("web/index.html"), APP_HTML));
+    if let Err(e) = written {
+        fail(&format!("could not write the web app's package: {e}"));
+    }
+    let termapp = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.join("dreamer-termapp")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| fail("no dreamer-termapp beside dreamer"));
+    let argv = vec![
+        termapp.display().to_string(),
+        dir.join("app.toml").display().to_string(),
+    ];
+    let launched = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        rt.block_on(async {
+            let c = client::Client::connect(&socket, "smoke")
+                .await
+                .map_err(|e| e.to_string())?;
+            match c
+                .call(api::Request::AppsLaunch(api::LaunchApp {
+                    app_id: "dreamer.panes-web".into(),
+                    grant: Some(api::Grant {
+                        methods: vec![api::method::TMUX_TOPOLOGY.into()],
+                        ..api::Grant::default()
+                    }),
+                    argv,
+                    session,
+                    split: Some(shell),
+                    ..api::LaunchApp::default()
+                }))
+                .await
+            {
+                Ok(api::Response::AppsLaunch(l)) => Ok(l.pane),
+                Ok(_) => Err("unexpected answer".to_owned()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| Err("the launch thread panicked".into()));
+    let pane = launched.unwrap_or_else(|e| fail(&format!("could not launch the web app: {e}")));
+    let origin = "dreamer-app://dreamer.panes-web";
+    wait_long(
+        any,
+        ws,
+        cx,
+        "the web app's page loaded in its pane",
+        Duration::from_secs(30),
+        move |w, cx| {
+            let Some(PaneView::App { view, .. }) = w.panes.get(&pane) else {
+                return false;
+            };
+            view.read(cx).pages().first().is_some_and(|p| {
+                let p = p.read(cx);
+                p.url == format!("{origin}/index.html")
+                    && p.view.as_ref().is_some_and(|v| v.load_status().is_some())
+            })
+        },
+    )
+    .await;
+    println!("smoke: the web app's page loaded in app pane %{pane}");
+
+    // The page lists the panes itself, through its bridge.
+    let status = "document.getElementById('status').textContent";
+    let deadline = Instant::now() + TEN;
+    loop {
+        let shown = eval(any, ws, cx, pane, status).await;
+        let text = shown
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if text.ends_with(" panes") {
+            println!("smoke: web app: its page lists the panes through the bridge ({text})");
+            break;
+        }
+        if Instant::now() > deadline {
+            fail(&format!(
+                "the web app's page never listed the panes: {shown:?}"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    }
+    let listed = eval(
+        any,
+        ws,
+        cx,
+        pane,
+        "window.dreamer.call('tmux.topology', {}).then((t) => t.panes.some((p) => p.id === ID))"
+            .replace("ID", &pane.to_string())
+            .as_str(),
+    )
+    .await;
+    if listed != Some(serde_json::Value::Bool(true)) {
+        fail(&format!(
+            "tmux.topology through the bridge did not list the app's own pane: {listed:?}"
+        ));
+    }
+    println!("smoke: web app: tmux.topology through the bridge lists pane %{pane}");
+    capture(cx, window, &out.join("app.png")).await;
+
+    // Outside the grant: refused, with the daemon's code.
+    let refused = eval(
+        any,
+        ws,
+        cx,
+        pane,
+        "window.dreamer.call('terminal.list', {}).then(() => 'allowed', (e) => 'refused ' + e.code + ' ' + e.message)",
+    )
+    .await;
+    let refused = refused
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if !refused.starts_with(&format!("refused {}", api::code::FORBIDDEN)) {
+        fail(&format!(
+            "terminal.list, outside the app's grant, was not refused: {refused:?}"
+        ));
+    }
+    println!("smoke: web app: terminal.list, outside its grant, is refused ({refused})");
+
+    // Another origin, inside the page: no bridge.
+    let other = eval(any, ws, cx, pane, OTHER_ORIGIN).await;
+    let other = other
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if !other.starts_with("undefined ") || other.ends_with(" 200") {
+        fail(&format!(
+            "a frame of another origin reached the bridge: {other:?}"
+        ));
+    }
+    let plain = eval(any, ws, cx, web, "typeof window.dreamer").await;
+    if plain.as_ref().and_then(serde_json::Value::as_str) != Some("undefined") {
+        fail(&format!("the plain web page has window.dreamer: {plain:?}"));
+    }
+    println!(
+        "smoke: web app: another origin has no bridge (a sandboxed frame: {other}; the plain web page: undefined)"
+    );
+
+    // A navigation outside the allow-list is refused; the page stays.
+    let blocked = "https://example.invalid/";
+    let _ = eval(
+        any,
+        ws,
+        cx,
+        pane,
+        &format!("location.href = '{blocked}'; 'asked'"),
+    )
+    .await;
+    let deadline = Instant::now() + TEN;
+    loop {
+        let refused = read(any, ws, cx, move |w, cx| {
+            let Some(PaneView::App { view, .. }) = w.panes.get(&pane) else {
+                return None;
+            };
+            let page = view.read(cx).pages().into_iter().next()?;
+            Some(page.read(cx).blocked())
+        })
+        .flatten()
+        .unwrap_or_default();
+        if refused.iter().any(|u| u == blocked) {
+            break;
+        }
+        if Instant::now() > deadline {
+            fail(&format!(
+                "the navigation to {blocked} was not refused: {refused:?}"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    }
+    if let Err(e) = wait_value(any, ws, cx, pane, "location.origin", origin).await {
+        fail(&format!("the page left its origin: {e}"));
+    }
+    println!("smoke: web app: a navigation to {blocked}, outside its allow-list, is refused");
+    let _ = std::fs::remove_dir_all(&dir);
 }

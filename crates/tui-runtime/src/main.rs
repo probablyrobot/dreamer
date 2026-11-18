@@ -158,6 +158,10 @@ fn main() -> ExitCode {
 fn checked(path: &str) -> Result<Manifest, String> {
     let m = load(path)?;
     check_module(path, &m)?;
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+    app_model::embeds::check_web(dir, &m)?;
     if m.is_script() {
         let dir = std::path::Path::new(path)
             .parent()
