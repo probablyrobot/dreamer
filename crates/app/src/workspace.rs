@@ -38,6 +38,8 @@ const RESIZE_EDGE: f32 = 5.0;
 const PANE_INSET: f32 = 6.0;
 /// Command palette rows shown at once; the list scrolls with the selection.
 const PALETTE_ROWS: usize = 12;
+/// The command palette's width, centred under the tab strip.
+const PALETTE_WIDTH: f32 = 460.0;
 
 /// A visible pane: a terminal view with the feed that keeps it current;
 /// for a pane whose program is a registered app host, the app drawn
@@ -1749,7 +1751,8 @@ impl Workspace {
         let pane = p.id;
         if let Some(url) = web_drawn(p, &self.via) {
             let (url, ws) = (url.to_owned(), cx.entity().downgrade());
-            let view = cx.new(|cx| crate::web::WebPane::new(pane, url.clone(), ws, cx));
+            let kept = (p.title.clone(), p.web_scroll_x, p.web_scroll_y);
+            let view = cx.new(|cx| crate::web::WebPane::new(pane, url.clone(), kept, ws, cx));
             return Some(PaneView::Web { view, url });
         }
         if let Some(instance) = app_drawn(p, &self.via) {
@@ -1948,6 +1951,13 @@ impl Workspace {
         }
     }
 
+    /// Keep a web pane's page title and scroll position in its
+    /// placeholder.
+    #[cfg(feature = "web")]
+    pub(crate) fn keep_web_state(&self, state: api::WebState) {
+        self.topology.web_state(state);
+    }
+
     pub(crate) fn click_tab_for_smoke(
         &mut self,
         window_id: u32,
@@ -2014,13 +2024,22 @@ impl Render for Workspace {
         }
         self.sync_title(window, cx);
         // Chromium's views sit above everything drawn here: a page shows
-        // only while its pane is on screen and no overlay covers it.
-        let covered = self.palette.is_some();
+        // only while its pane is on screen, and its snapshot while an
+        // overlay is open. The overlay waits (drawn, but not seen) until
+        // no live page is left to cover it.
+        let place = if self.palette.is_some() || self.menu.is_some() {
+            crate::web::Place::Covered
+        } else {
+            crate::web::Place::Shown
+        };
+        let mut overlay_clear = true;
         for view in self.panes.values().filter_map(PaneView::web_pane) {
-            view.update(cx, |w, _| w.set_shown(!covered));
+            overlay_clear &= view.update(cx, |w, cx| w.set_place(place, window, cx));
         }
         for view in self.hidden.values().filter_map(|(v, _)| v.web_pane()) {
-            view.update(cx, |w, _| w.set_shown(false));
+            view.update(cx, |w, cx| {
+                w.set_place(crate::web::Place::Hidden, window, cx)
+            });
         }
         let t = crate::theme::for_window(window);
         let tf = term_font();
@@ -2431,7 +2450,7 @@ impl Render for Workspace {
                     div()
                         .track_focus(&self.palette_focus)
                         .on_key_down(cx.listener(Self::palette_key))
-                        .w(px(460.0))
+                        .w(px(PALETTE_WIDTH))
                         .p_2()
                         .rounded_md()
                         .shadow_lg()
@@ -2611,8 +2630,8 @@ impl Render for Workspace {
                     .children(self.panel.clone()),
             )
             // Last, so it floats over the panes rather than under them.
-            .children(palette)
-            .children(menu)
+            .children(palette.map(|p| p.when(!overlay_clear, |d| d.opacity(0.0))))
+            .children(menu.map(|m| m.when(!overlay_clear, |d| d.opacity(0.0))))
             .when(bare && !cfg!(target_os = "macos"), |d| {
                 d.children(resize_edges())
             })

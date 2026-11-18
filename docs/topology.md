@@ -15,7 +15,10 @@ daemon last read them from tmux:
   and `app_id`, and `live`, false once the host's connection closed.
 - a [web pane](desktop.md#web-panes) (made by `web.open`) has `web`: the
   page's URL, from the pane's `@dreamer_surface` option. A value that is
-  not a page a web pane may show is not reported.
+  not a page a web pane may show is not reported. `web_scroll_x` and
+  `web_scroll_y` are where the page was scrolled to, as the desktop
+  drawing it last reported (`web.state`, kept in the pane's
+  `@dreamer_web_scroll` option), and the pane's title is the page's.
 
 tmux is authoritative for all of it except `app`, which comes from the
 daemon's own registrations; it goes when the pane closes.

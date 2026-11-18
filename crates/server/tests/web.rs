@@ -1,8 +1,9 @@
 //! Web panes through a real daemon and an isolated tmux: `web.open` makes a
 //! placeholder pane (a new window, or a split) that the topology reports
 //! with its page, shows the address to plain tmux clients, refuses URLs a
-//! web pane may not show, and the mark lives in tmux, so a restarted daemon
-//! reports it again.
+//! web pane may not show; `web.state` keeps the page's title (shown to
+//! plain clients too) and scroll position there; and all of it lives in
+//! tmux, so a restarted daemon reports it again.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -103,6 +104,15 @@ async fn open(c: &Client, req: api::WebOpen) -> Result<u32, api::RpcError> {
     }
 }
 
+async fn web_state(c: &Client, req: api::WebState) -> Result<(), api::RpcError> {
+    match c.call(Request::WebState(req)).await {
+        Ok(Response::WebState(_)) => Ok(()),
+        Ok(other) => panic!("web.state: {other:?}"),
+        Err(client::ClientError::Rpc(e)) => Err(e),
+        Err(e) => panic!("web.state: {e}"),
+    }
+}
+
 async fn screen(c: &Client, pane: u32) -> String {
     match c
         .call(Request::TerminalRead(api::ReadParams {
@@ -185,6 +195,51 @@ async fn a_web_pane_is_a_marked_placeholder_that_survives_a_daemon_restart() {
             .window
     );
 
+    // The desktop drawing the page keeps its title and scroll position in
+    // the placeholder; plain clients see the title, the address, and where
+    // to see the page.
+    web_state(
+        &c,
+        api::WebState {
+            pane,
+            title: "Release notes".into(),
+            scroll_x: 0,
+            scroll_y: 640,
+            ..api::WebState::default()
+        },
+    )
+    .await
+    .expect("web.state");
+    let t = topology(&c).await;
+    let p = t.panes.iter().find(|p| p.id == pane).expect("web pane");
+    assert_eq!(
+        (p.title.as_str(), p.web_scroll_x, p.web_scroll_y),
+        ("Release notes", 0, 640)
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let text = screen(&c, pane).await;
+        if text.contains("Release notes")
+            && text.contains("web: data:text/html")
+            && text.contains("Open in Dreamer")
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{text}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Only web panes keep a page's state.
+    let e = web_state(
+        &c,
+        api::WebState {
+            pane: first,
+            ..api::WebState::default()
+        },
+    )
+    .await
+    .expect_err("not a web pane");
+    assert_eq!(e.code, api::code::INVALID_PARAMS);
+
     // Pages only: no script URLs, no browser-internal pages.
     for url in ["javascript:alert(1)", "chrome://settings", ""] {
         let e = open(
@@ -228,4 +283,6 @@ async fn a_web_pane_is_a_marked_placeholder_that_survives_a_daemon_restart() {
         web,
         vec![(pane, Some(PAGE)), (split, Some("https://example.com/"))]
     );
+    let p = t.panes.iter().find(|p| p.id == pane).expect("web pane");
+    assert_eq!((p.web_scroll_x, p.web_scroll_y), (0, 640));
 }

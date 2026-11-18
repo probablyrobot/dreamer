@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 55 }
+version: { major: 1, minor: 56 }
 package: dreamer.v1
 
 types:
@@ -117,6 +117,8 @@ types:
       - { n: 14, name: drawer_of, type: u32, optional: true, doc: "This pane is the harness drawer of that tmux session (drawer.toggle)." }
       - { n: 15, name: app, type: PaneApp, doc: "The registered app whose host is this pane's program, if any: desktops draw its view (apps.view) in the pane's rectangle instead of the terminal." }
       - { n: 16, name: web, type: string, optional: true, doc: "This pane is a placeholder for a web page at this URL (web.open): desktops that can draw web pages show the page in the pane's rectangle instead of the terminal; other clients see the placeholder's text." }
+      - { n: 17, name: web_scroll_x, type: i32, doc: "A web pane's scroll position in CSS pixels as the desktop drawing it last reported it (web.state), kept in the placeholder for the page to open there again; 0 before a report." }
+      - { n: 18, name: web_scroll_y, type: i32 }
 
   - message: PaneApp
     fields:
@@ -1750,6 +1752,19 @@ types:
     fields:
       - { n: 1, name: pane, type: u32, doc: "The new web pane." }
 
+  - message: WebState
+    doc: >-
+      What a web pane's page shows, from the desktop drawing it, kept in
+      the placeholder: the page's title as the pane's title and in the
+      placeholder's text for plain tmux clients, and its scroll position
+      for the page to open there again.
+    fields:
+      - { n: 1, name: pane, type: u32 }
+      - { n: 2, name: title, type: string, doc: "At most 200 characters are kept; control characters are dropped." }
+      - { n: 3, name: scroll_x, type: i32, doc: "CSS pixels." }
+      - { n: 4, name: scroll_y, type: i32 }
+      - { n: 5, name: endpoint, type: string, optional: true }
+
   # ---- agent sessions -----------------------------------------------------
 
   - enum: AgentSessionState
@@ -2117,6 +2132,7 @@ methods:
   - { method: apps.capture_wait, params: AppCaptureWait, result: AppCaptureRequest, doc: "A desktop waits for the next capture to make; while it waits, it counts as a desktop that answers captures (owner only)." }
   - { method: apps.capture_done, params: AppCaptureDone, result: Empty, mutation: true, doc: "A desktop's answer to a capture request (owner only)." }
   - { method: web.open, params: WebOpen, result: WebOpened, mutation: true, doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner only)." }
+  - { method: web.state, params: WebState, result: Empty, mutation: true, doc: "Keep a web pane's page title and scroll position in its placeholder (owner only; the desktop drawing the page reports them)." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the

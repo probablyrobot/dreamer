@@ -4,7 +4,7 @@
 //! Chromium draws to the screen itself: on macOS each view is CEF's own
 //! `NSView`, a child of the window's view, kept on the pane's rectangle. It
 //! sits above everything the toolkit draws, so the caller hides it while an
-//! overlay covers the pane.
+//! overlay covers the pane, and can draw the page's capture instead.
 //!
 //! CEF's browser process is this process; its renderer, GPU, and utility
 //! processes run the helper executable (`dreamer-web-helper`) from the app

@@ -95,6 +95,8 @@ pub fn topology(endpoint: &str, tracker: &InventoryTracker) -> api::Topology {
                     .as_deref()
                     .and_then(tmux_backend::ops::web_surface)
                     .map(str::to_owned),
+                web_scroll_x: p.web_scroll.map_or(0, |s| s.0),
+                web_scroll_y: p.web_scroll.map_or(0, |s| s.1),
             }
         })
         .collect();
