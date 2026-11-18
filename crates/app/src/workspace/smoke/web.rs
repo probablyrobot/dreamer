@@ -27,6 +27,19 @@
 //! and the plain web page has no `window.dreamer` either. Each passed check
 //! is a `smoke: web app:` line.
 //!
+//! Then the browser, in the plain web pane, against a test site this
+//! the gate serves on 127.0.0.1: `web.navigate` loads its login (a session
+//! cookie) in the pane; Cmd+L pulls the address bar down, an address
+//! typed without a scheme and Enter load the site; a link is followed;
+//! Cmd+[ and Cmd+] go back and forward, and so do the mouse's side
+//! buttons; Cmd+R loads the page again; Cmd+F finds words in it
+//! (Chromium reports the matches) and Esc ends that; Cmd+= and Cmd+0
+//! zoom; a download is refused with a status line; and a link that wants
+//! a new window opens in the same pane. Each passed check is a `smoke: web
+//! browser:` line. `--smoke-web-restart` then runs in a new process with
+//! the same profile, and checks that the login's session cookie is still
+//! sent ([`restart`]).
+//!
 //! Writes to DIR the captures of the window (from `screencapture`) and
 //! `checks.txt`, what the gate checks in them: a line `window WIDTH
 //! HEIGHT`, then one line per check, `FILE COLOR min|max SHARE X Y WIDTH
@@ -512,6 +525,7 @@ pub(crate) async fn run(
 
     input(any, &ws, cx, pane).await;
     app_page(any, &ws, cx, pane, &out, window).await;
+    browser(any, &ws, cx, pane).await;
 
     if let Err(e) = std::fs::write(out.join("checks.txt"), &checks.0) {
         fail(&format!("checks.txt: {e}"));
@@ -980,4 +994,451 @@ async fn app_page(
     }
     println!("smoke: web app: a navigation to {blocked}, outside its allow-list, is refused");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The browser's test site (`cargo xtask` serves it on 127.0.0.1 for the
+/// smoke and names it in `DREAMER_SMOKE_WEB_SITE`): its host and port.
+fn site() -> String {
+    std::env::var("DREAMER_SMOKE_WEB_SITE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| fail("no test site for the browser checks (DREAMER_SMOKE_WEB_SITE)"))
+}
+
+/// macOS virtual key codes the browser checks press.
+const KEY_L: u16 = 0x25;
+const KEY_R: u16 = 0x0F;
+const KEY_F: u16 = 0x03;
+const KEY_LEFT_BRACKET: u16 = 0x21;
+const KEY_RIGHT_BRACKET: u16 = 0x1E;
+const KEY_EQUAL: u16 = 0x18;
+const KEY_ZERO: u16 = 0x1D;
+const KEY_RETURN: u16 = 0x24;
+const KEY_ESCAPE: u16 = 0x35;
+
+/// Pane `pane`'s page: its title and its address.
+fn where_is(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+) -> (String, String) {
+    with_view(any, ws, cx, pane, |v| (v.title(), v.url()))
+}
+
+/// Wait until pane `pane`'s page has a title `title` starts, at most ten
+/// seconds; the title when it does.
+async fn wait_title(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    title: &str,
+    what: &str,
+) -> String {
+    let deadline = Instant::now() + TEN;
+    loop {
+        let (now, url) = where_is(any, ws, cx, pane);
+        if now.starts_with(title) {
+            return now;
+        }
+        if Instant::now() > deadline {
+            fail(&format!(
+                "{what}: the page is {now:?} at {url}, not {title:?}"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+}
+
+/// The browser's bar in pane `pane`.
+fn bar<T>(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    f: impl FnOnce(&crate::web::Bar) -> T,
+) -> Option<T> {
+    read(any, ws, cx, |w, cx| {
+        Some(f(&w.panes.get(&pane)?.web_pane()?.read(cx).bar))
+    })
+    .flatten()
+}
+
+/// Whether the browser's bar in pane `pane` is as `check` wants.
+fn bar_now(
+    w: &Workspace,
+    cx: &gpui::App,
+    pane: u32,
+    check: impl Fn(&crate::web::Bar) -> bool,
+) -> bool {
+    w.panes
+        .get(&pane)
+        .and_then(PaneView::web_pane)
+        .is_some_and(|p| check(&p.read(cx).bar))
+}
+
+/// Click the middle of element `id` in pane `pane`'s page.
+async fn click_element(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    id: &str,
+) {
+    let at = eval(
+        any,
+        ws,
+        cx,
+        pane,
+        &format!("(r => [r.x + r.width / 2, r.y + r.height / 2])(document.getElementById('{id}').getBoundingClientRect())"),
+    )
+    .await;
+    let xy = at
+        .as_ref()
+        .and_then(serde_json::Value::as_array)
+        .and_then(|a| Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?)));
+    let Some((x, y)) = xy else {
+        fail(&format!("no element {id} in the page: {at:?}"));
+    };
+    if let Err(e) = with_view(any, ws, cx, pane, |v| v.click(x as f32, y as f32)) {
+        fail(&format!("a click on {id}: {e}"));
+    }
+}
+
+/// One call to the daemon, from a thread of its own.
+fn daemon_call(socket: std::path::PathBuf, request: api::Request) -> Result<api::Response, String> {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        rt.block_on(async {
+            let c = client::Client::connect(&socket, "smoke")
+                .await
+                .map_err(|e| e.to_string())?;
+            c.call(request).await.map_err(|e| e.to_string())
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| Err("the call's thread panicked".into()))
+}
+
+/// The browser in the plain web pane `pane` (see the module's
+/// description): each passed check is a `smoke: web browser:` line.
+async fn browser(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncApp, pane: u32) {
+    let host = site();
+    let socket =
+        read(any, ws, cx, |w, _| w.socket.clone()).unwrap_or_else(|| fail("no daemon socket"));
+    // `dream browser --pane`: the daemon changes the pane's address, and
+    // the page follows. The login sets a session cookie, checked after a
+    // restart (`restart`).
+    let login = format!("http://{host}/login");
+    daemon_call(
+        socket,
+        api::Request::WebNavigate(api::WebNavigate {
+            pane,
+            url: login.clone(),
+            ..api::WebNavigate::default()
+        }),
+    )
+    .unwrap_or_else(|e| fail(&format!("web.navigate: {e}")));
+    wait_title(any, ws, cx, pane, "logged in", "web.navigate").await;
+    println!(
+        "smoke: web browser: web.navigate loaded {login} in the pane, which set a session cookie"
+    );
+
+    // Focus the page, as a person would, so its keys are the browser's.
+    if let Err(e) = with_view(any, ws, cx, pane, |v| v.click(40.0, 40.0)) {
+        fail(&format!("a click in the page: {e}"));
+    }
+    wait_long(
+        any,
+        ws,
+        cx,
+        "the browser page focused",
+        TEN,
+        move |w, cx| page_focus(w, cx, pane, true),
+    )
+    .await;
+
+    // Cmd+L pulls the address bar down with the keys; an address typed
+    // without a scheme, and Enter, loads it.
+    press(any, ws, cx, pane, &[(KEY_L, "l", true)]).unwrap_or_else(|e| fail(&e));
+    wait_long(
+        any,
+        ws,
+        cx,
+        "the address bar after Cmd+L, with the keys",
+        TEN,
+        move |w, cx| {
+            bar_now(w, cx, pane, |b| b.address.is_some() && b.keys)
+                && w.focused == Some(pane)
+                && !w.panes[&pane]
+                    .web_pane()
+                    .is_some_and(|p| p.read(cx).page_has_focus())
+        },
+    )
+    .await;
+    let typed = format!("{host}/");
+    let _ = cx.update_window(any, |_, _, cx| {
+        let _ = ws.update(cx, |w, cx| {
+            if let Some(p) = w.panes.get(&pane).and_then(PaneView::web_pane) {
+                p.update(cx, |p, cx| p.typed(&typed, cx));
+            }
+        });
+    });
+    press(any, ws, cx, pane, &[(KEY_RETURN, "\r", false)]).unwrap_or_else(|e| fail(&e));
+    let first = wait_title(
+        any,
+        ws,
+        cx,
+        pane,
+        "browser a ",
+        "an address typed into the bar",
+    )
+    .await;
+    if bar(any, ws, cx, pane, |b| b.address.is_none()) != Some(true) {
+        fail("the address bar stayed after Enter");
+    }
+    println!(
+        "smoke: web browser: Cmd+L, {typed:?} typed, and Enter loaded http://{typed} ({first})"
+    );
+
+    // A link.
+    click_element(any, ws, cx, pane, "next").await;
+    wait_title(any, ws, cx, pane, "browser b", "a link").await;
+    println!("smoke: web browser: a click on a link loaded its page");
+
+    // Back and forward by key, then by the mouse's side buttons.
+    press(any, ws, cx, pane, &[(KEY_LEFT_BRACKET, "[", true)]).unwrap_or_else(|e| fail(&e));
+    wait_title(any, ws, cx, pane, "browser a ", "Cmd+[").await;
+    press(any, ws, cx, pane, &[(KEY_RIGHT_BRACKET, "]", true)]).unwrap_or_else(|e| fail(&e));
+    wait_title(any, ws, cx, pane, "browser b", "Cmd+]").await;
+    println!("smoke: web browser: Cmd+[ went back and Cmd+] forward");
+    for (back, title) in [(true, "browser a "), (false, "browser b")] {
+        if let Err(e) = with_view(any, ws, cx, pane, |v| v.click_side_button(40.0, 40.0, back)) {
+            fail(&format!("a mouse side button: {e}"));
+        }
+        wait_title(any, ws, cx, pane, title, "a mouse side button").await;
+    }
+    println!("smoke: web browser: mouse buttons 4 and 5 went back and forward");
+    press(any, ws, cx, pane, &[(KEY_LEFT_BRACKET, "[", true)]).unwrap_or_else(|e| fail(&e));
+    let before = wait_title(any, ws, cx, pane, "browser a ", "back to the first page").await;
+
+    // Reload: the page loads again (the site counts its loads).
+    press(any, ws, cx, pane, &[(KEY_R, "r", true)]).unwrap_or_else(|e| fail(&e));
+    let deadline = Instant::now() + TEN;
+    let reloaded = loop {
+        let (now, _) = where_is(any, ws, cx, pane);
+        if now.starts_with("browser a ") && now != before {
+            break now;
+        }
+        if Instant::now() > deadline {
+            fail(&format!("Cmd+R did not load the page again ({now:?})"));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    };
+    println!("smoke: web browser: Cmd+R loaded the page again ({before} -> {reloaded})");
+
+    // Find: Chromium highlights the matches; Esc ends it and the page has
+    // the keys again.
+    press(any, ws, cx, pane, &[(KEY_F, "f", true)]).unwrap_or_else(|e| fail(&e));
+    wait_long(
+        any,
+        ws,
+        cx,
+        "find in the page after Cmd+F, with the keys",
+        TEN,
+        move |w, cx| bar_now(w, cx, pane, |b| b.find.is_some() && b.keys),
+    )
+    .await;
+    let _ = cx.update_window(any, |_, _, cx| {
+        let _ = ws.update(cx, |w, cx| {
+            if let Some(p) = w.panes.get(&pane).and_then(PaneView::web_pane) {
+                p.update(cx, |p, cx| p.typed("needle", cx));
+            }
+        });
+    });
+    let deadline = Instant::now() + TEN;
+    let found = loop {
+        if let Some(Some((n, at))) = bar(any, ws, cx, pane, |b| b.find.as_ref().and_then(|f| f.1))
+            && n > 0
+            && at > 0
+        {
+            break (n, at);
+        }
+        if Instant::now() > deadline {
+            fail("find in the page found nothing");
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    };
+    press(any, ws, cx, pane, &[(KEY_ESCAPE, "\u{1b}", false)]).unwrap_or_else(|e| fail(&e));
+    wait_long(
+        any,
+        ws,
+        cx,
+        "find closed by Esc, the page focused",
+        TEN,
+        move |w, cx| {
+            page_focus(w, cx, pane, true)
+                && w.panes
+                    .get(&pane)
+                    .and_then(PaneView::web_pane)
+                    .is_some_and(|p| p.read(cx).bar.find.is_none())
+        },
+    )
+    .await;
+    println!(
+        "smoke: web browser: find highlighted {} matches of \"needle\" (match {} current); Esc closed it",
+        found.0, found.1
+    );
+
+    // Zoom in and back.
+    let ratio = "String(devicePixelRatio)";
+    let base = eval(any, ws, cx, pane, ratio).await;
+    press(any, ws, cx, pane, &[(KEY_EQUAL, "=", true)]).unwrap_or_else(|e| fail(&e));
+    let deadline = Instant::now() + TEN;
+    loop {
+        let now = eval(any, ws, cx, pane, ratio).await;
+        let more = match (&now, &base) {
+            (Some(a), Some(b)) => {
+                let f = |v: &serde_json::Value| v.as_str().and_then(|s| s.parse::<f64>().ok());
+                f(a).zip(f(b)).is_some_and(|(a, b)| a > b)
+            }
+            _ => false,
+        };
+        if more {
+            break;
+        }
+        if Instant::now() > deadline {
+            fail(&format!(
+                "Cmd+= did not zoom the page ({base:?} -> {now:?})"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    press(any, ws, cx, pane, &[(KEY_ZERO, "0", true)]).unwrap_or_else(|e| fail(&e));
+    if let Some(b) = base.as_ref().and_then(serde_json::Value::as_str)
+        && let Err(e) = wait_value(any, ws, cx, pane, ratio, b).await
+    {
+        fail(&format!("Cmd+0 did not zoom the page back: {e}"));
+    }
+    println!("smoke: web browser: Cmd+= zoomed the page in and Cmd+0 back");
+
+    // A download is refused, with a status line.
+    click_element(any, ws, cx, pane, "dl").await;
+    let deadline = Instant::now() + TEN;
+    let status = loop {
+        if let Some(Some(s)) = bar(any, ws, cx, pane, |b| {
+            b.status.as_ref().map(|s| s.0.clone())
+        }) && s.contains("report.bin")
+        {
+            break s;
+        }
+        if Instant::now() > deadline {
+            fail("the download was not refused with a status line");
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    };
+    println!("smoke: web browser: a download was refused: {status}");
+
+    // A link that wants a new window opens in the same pane.
+    let panes = read(any, ws, cx, |w, _| {
+        w.current.as_ref().map(|t| t.panes.len())
+    })
+    .flatten()
+    .unwrap_or(0);
+    click_element(any, ws, cx, pane, "pop").await;
+    wait_title(
+        any,
+        ws,
+        cx,
+        pane,
+        "browser c",
+        "a link that wants a new window",
+    )
+    .await;
+    let now = read(any, ws, cx, |w, _| {
+        w.current.as_ref().map(|t| t.panes.len())
+    })
+    .flatten()
+    .unwrap_or(0);
+    if now != panes {
+        fail(&format!("a new window's link made panes: {panes} -> {now}"));
+    }
+    println!("smoke: web browser: a link that wants a new window opened in the same pane");
+
+    // The plain page has no bridge (checked before), nor does any site.
+    let plain = eval(any, ws, cx, pane, "typeof window.dreamer").await;
+    if plain.as_ref().and_then(serde_json::Value::as_str) != Some("undefined") {
+        fail(&format!(
+            "a site in the browser has window.dreamer: {plain:?}"
+        ));
+    }
+}
+
+/// `dreamer --smoke-web-restart DIR`, after `--smoke-web` with the same
+/// desktop state: a page of a site that asks for the cookie the first run's
+/// login set, a session cookie, which came back from the browser's profile.
+pub(crate) async fn restart(any: AnyWindowHandle, ws: WeakEntity<Workspace>, cx: &mut AsyncApp) {
+    wait_long(
+        any,
+        &ws,
+        cx,
+        "session main with its pane",
+        Duration::from_secs(20),
+        |w, _| !w.pane_ids().is_empty(),
+    )
+    .await;
+    let host = site();
+    let before: Vec<u32> = read(any, &ws, cx, |w, _| w.pane_ids()).unwrap_or_default();
+    let _ = cx.update_window(any, |_, _, cx| {
+        let _ = ws.update(cx, |w, _| {
+            w.topology.web_open(api::WebOpen {
+                url: format!("http://{host}/who"),
+                pane: before.first().copied(),
+                ..api::WebOpen::default()
+            });
+        });
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let pane = loop {
+        let found = read(any, &ws, cx, |w, cx| {
+            w.panes.iter().find_map(|(id, v)| {
+                let p = v.web_pane()?.read(cx);
+                (p.url.ends_with("/who") && p.view.as_ref()?.load_status().is_some()).then_some(*id)
+            })
+        })
+        .flatten();
+        if let Some(p) = found {
+            break p;
+        }
+        if Instant::now() > deadline {
+            crate::stalled(any, cx, "never saw: the browser page after a restart").await;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    };
+    let title = wait_title(any, &ws, cx, pane, "who ", "the page after a restart").await;
+    if title != "who in" {
+        fail(&format!(
+            "the login's session cookie did not survive the restart ({title:?})"
+        ));
+    }
+    println!(
+        "smoke: web browser: after a restart the site still had the login's session cookie ({title})"
+    );
+    cx.update(|cx| cx.quit());
 }

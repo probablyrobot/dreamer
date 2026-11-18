@@ -2321,6 +2321,7 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             "app_new",
             "app_preview",
             "app_test",
+            "browser_open",
             "cancel_job",
             "check_action",
             "check_job",

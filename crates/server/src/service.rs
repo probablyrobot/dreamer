@@ -1681,7 +1681,17 @@ impl api::Service for DaemonService {
 
     async fn web_open(&self, p: api::WebOpen) -> Result<api::WebOpened, RpcError> {
         self.check_endpoint(p.endpoint.as_deref())?;
-        crate::web::open(&self.0, p).await
+        let opened = crate::web::open(&self.0, p).await?;
+        // An agent owns the pane it opened.
+        if let Some(c) = crate::leases::caller() {
+            self.0.approvals.created(c.conn, opened.pane);
+        }
+        Ok(opened)
+    }
+
+    async fn web_navigate(&self, p: api::WebNavigate) -> Result<api::Empty, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        crate::web::navigate(&self.0, p).await
     }
 
     async fn web_state(&self, p: api::WebState) -> Result<api::Empty, RpcError> {

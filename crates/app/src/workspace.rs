@@ -1921,9 +1921,28 @@ impl Workspace {
                 .as_ref()
                 .and_then(|t| t.panes.iter().find(|p| p.id == *id))
                 .is_some_and(|p| {
-                    app_drawn(p, &self.via) == view.app() && web_drawn(p, &self.via) == view.web()
+                    app_drawn(p, &self.via) == view.app()
+                        && web_drawn(p, &self.via).is_some() == view.web().is_some()
                 })
         };
+        // A web pane's address in tmux changed: its page follows (it
+        // loads the new one, unless that is its own report coming back).
+        for (id, view) in self
+            .panes
+            .iter_mut()
+            .chain(self.hidden.iter_mut().map(|(id, (v, _))| (id, v)))
+        {
+            let now = current
+                .as_ref()
+                .and_then(|t| t.panes.iter().find(|p| p.id == *id))
+                .and_then(|p| web_drawn(p, &self.via));
+            if let (PaneView::Web { view, url }, Some(now)) = (view, now)
+                && url != now
+            {
+                now.clone_into(url);
+                view.update(cx, |w, _| w.follow(now));
+            }
+        }
         self.hidden
             .retain(|id, (view, _)| exists(id, &current) && fits(id, view));
         let stale: Vec<u32> = self
@@ -1971,7 +1990,12 @@ impl Workspace {
         }
     }
 
-    /// Keep a web pane's page title and scroll position in its
+    /// The pane that has the keys.
+    pub(crate) fn focused_pane(&self) -> Option<u32> {
+        self.focused
+    }
+
+    /// Keep a web pane's page title, scroll position, and address in its
     /// placeholder.
     #[cfg(feature = "web")]
     pub(crate) fn keep_web_state(&self, state: api::WebState) {
@@ -2951,6 +2975,8 @@ pub(crate) enum SmokeRun {
     /// a scroll into DIR.
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     Web(PathBuf),
+    /// `--smoke-web-restart`: the browser's profile after a restart.
+    WebRestart,
 }
 
 /// What a window shows first.
@@ -3316,8 +3342,12 @@ pub(crate) fn open_via(
             SmokeRun::Web(out) => cx
                 .spawn(async move |cx| smoke::web::run(any, weak, out, cx).await)
                 .detach(),
+            #[cfg(feature = "web")]
+            SmokeRun::WebRestart => cx
+                .spawn(async move |cx| smoke::web::restart(any, weak, cx).await)
+                .detach(),
             #[cfg(not(feature = "web"))]
-            SmokeRun::Web(_) => {
+            SmokeRun::Web(_) | SmokeRun::WebRestart => {
                 let _ = daemon;
                 eprintln!("smoke: this build has no web engine (the `web` feature)");
                 std::process::exit(6);

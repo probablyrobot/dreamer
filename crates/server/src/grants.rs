@@ -47,6 +47,12 @@ fn targets(r: &Request) -> Targets {
             Some(pane) => Targets::Panes(vec![pane]),
             None => Targets::Everything,
         },
+        // A page beside a pane splits it; else it gets a window of its own.
+        Request::WebOpen(p) => match p.pane {
+            Some(pane) => Targets::Panes(vec![pane]),
+            None => Targets::Everything,
+        },
+        Request::WebNavigate(p) => Targets::Panes(vec![p.pane]),
         Request::AppsTree(p) => Targets::Panes(vec![p.pane]),
         Request::AppsCapture(p) => Targets::Panes(vec![p.pane]),
         // A collector reads its panes for as long as it runs; one that

@@ -85,6 +85,18 @@ components.
 | `app_install` | Check, preview, and install the package; the version it replaces is kept. Returns the installed `name` | `dream app install` |
 | `app_launch` | Open an installed app (`name`) with the grant it declares: beside the pane the server runs in (`TMUX_PANE`, the chat's pane), beside `beside`, or in a `new_window`. Returns the new `pane`, which this session owns | `apps.launch` |
 
+## Browser tool
+
+| Tool | Does | Through |
+| --- | --- | --- |
+| `browser_open` | Open an address (`url`: a URL, or as typed into an address bar, such as `example.com` or `localhost:3000`) in Dreamer's [browser](desktop.md#the-browser): a new web pane beside the pane the server runs in, beside `beside`, or in a `new_window`, which this session owns; or, with `pane`, load it in that web pane. Returns the `pane` and the `url` | `web.open`, `web.navigate` |
+
+The page runs in the user's desktop, with no Dreamer API; the agent
+cannot read it through this tool. Not at the `observe` level; splitting
+or loading into a pane the session did not create waits for the user's
+approval at `elsewhere` and is refused at `own`
+([grants.md](grants.md#act-levels-and-approvals)).
+
 - **Directories.** `dir` is a package directory inside the apps
   directory: `DREAMER_APPS_ROOT` when set, else the working directory the
   server was started in (the harness's). A relative `dir` is taken from

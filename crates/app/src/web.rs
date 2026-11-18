@@ -18,16 +18,27 @@
 //! edit shortcuts (copy, cut, paste, select all) become Chromium's own
 //! edit commands there.
 //!
-//! The page's title and scroll position are kept in the placeholder
-//! (`web.state`), so a page opened again (after the desktop restarts, or
-//! once its view was let go) scrolls back to where it was.
+//! A plain web pane is the browser: chrome on demand, in a strip over the
+//! top of the pane that moves the page down while it shows ([`Bar`]): the
+//! address bar (Cmd+L, Enter goes, Esc hides it), find in page (Find), and
+//! a passing status line (a refused download). Back, forward, reload, and
+//! zoom are keys ([`crate::keymap::BROWSER_SHORTCUTS`]); the mouse's side
+//! buttons and a swipe go back and forward in the page itself
+//! ([`web_engine::browser`]). There are no tabs, bookmarks, or history to
+//! show: the back stack is the page's own.
+//!
+//! The page's title, scroll position, and (in the browser) its address are
+//! kept in the placeholder (`web.state`), so a page opened again (after the
+//! desktop restarts, or once its view was let go) is where it was. The
+//! address in tmux changing by anything else (`dream browser --pane`)
+//! loads it in the pane ([`WebPane::follow`]).
 //!
 //! The same view draws a `web` node of an app pane's tree (an app's own
 //! page): it is then placed where the node is drawn, opens in the app's
 //! own browser profile, may navigate only to the app's origin and the
 //! origins the app allows, and its page on the app's origin calls the
-//! daemon through the bridge as the app ([`web_engine::site`]). Its title
-//! and scroll position are not kept anywhere.
+//! daemon through the bridge as the app ([`web_engine::site`]). It has no
+//! browser chrome, and its title and scroll position are not kept anywhere.
 //!
 //! Chromium starts with the first web pane, not with the app. A build
 //! without the `web` feature, or one not running from a bundle with the
@@ -35,10 +46,12 @@
 //! cannot draw it.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, RenderImage,
-    Styled, StyledImage as _, Subscription, WeakEntity, Window, div, px,
+    Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
+    RenderImage, Styled, StyledImage as _, Subscription, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use web_engine::Edit;
 
@@ -81,9 +94,148 @@ fn decide(place: Place, live: bool, asked: bool, taken: bool) -> (bool, bool) {
     }
 }
 
+/// How long a status line shows.
+const STATUS_FOR: Duration = Duration::from_secs(6);
+
+/// The browser's strip over the top of its pane, shown on demand.
+#[derive(Debug, Default)]
+pub(crate) struct Bar {
+    /// The address bar: what is typed, and whether all of it is selected
+    /// (the address as it was, which the first key replaces).
+    pub(crate) address: Option<(String, bool)>,
+    /// Why the address did not load.
+    pub(crate) error: Option<String>,
+    /// Find in page: what is looked for, and how many matches and which
+    /// is current, once Chromium says.
+    pub(crate) find: Option<(String, Option<(u32, u32)>)>,
+    /// The address bar or the find field has the keys (not the page).
+    pub(crate) keys: bool,
+    /// A passing line, and when it came.
+    pub(crate) status: Option<(String, Instant)>,
+}
+
+/// What a key typed into the bar asks for.
+#[derive(Debug, PartialEq, Eq)]
+enum Typed {
+    Nothing,
+    /// Hide the field; the page takes the keys.
+    Close,
+    /// Load the address typed.
+    Go(String),
+    /// Find this, from the start.
+    Search(String),
+    /// The next match (`true`) or the one before.
+    Step(bool),
+}
+
+impl Bar {
+    fn shown(&self) -> bool {
+        self.address.is_some() || self.find.is_some() || self.status.is_some()
+    }
+
+    /// The address bar, showing `url`, all of it selected, with the keys.
+    fn open_address(&mut self, url: &str) {
+        self.address = Some((url.to_owned(), true));
+        self.error = None;
+        self.keys = true;
+    }
+
+    /// Find in page, with the keys, its last query kept.
+    fn open_find(&mut self) {
+        self.find.get_or_insert_with(|| (String::new(), None));
+        self.keys = true;
+    }
+
+    /// `text` typed into the field that has the keys.
+    fn type_text(&mut self, text: &str) -> Typed {
+        if !self.keys {
+            return Typed::Nothing;
+        }
+        if let Some((typed, all)) = &mut self.address {
+            if std::mem::take(all) {
+                typed.clear();
+            }
+            typed.push_str(text);
+            self.error = None;
+            return Typed::Nothing;
+        }
+        match &mut self.find {
+            Some((query, found)) => {
+                query.push_str(text);
+                *found = None;
+                Typed::Search(query.clone())
+            }
+            None => Typed::Nothing,
+        }
+    }
+
+    /// A key (not text) in the field that has the keys: Escape, Enter
+    /// (with Shift, back through the matches), Backspace.
+    fn key(&mut self, key: &str, shift: bool) -> Typed {
+        if !self.keys {
+            return Typed::Nothing;
+        }
+        if let Some((typed, all)) = &mut self.address {
+            return match key {
+                "escape" => {
+                    self.address = None;
+                    self.error = None;
+                    self.keys = false;
+                    Typed::Close
+                }
+                "enter" => Typed::Go(typed.clone()),
+                "backspace" => {
+                    if std::mem::take(all) {
+                        typed.clear();
+                    } else {
+                        typed.pop();
+                    }
+                    self.error = None;
+                    Typed::Nothing
+                }
+                _ => Typed::Nothing,
+            };
+        }
+        let Some((query, found)) = &mut self.find else {
+            return Typed::Nothing;
+        };
+        match key {
+            "escape" => {
+                self.find = None;
+                self.keys = false;
+                Typed::Close
+            }
+            "enter" if !query.is_empty() => Typed::Step(!shift),
+            "backspace" => {
+                query.pop();
+                *found = None;
+                Typed::Search(query.clone())
+            }
+            _ => Typed::Nothing,
+        }
+    }
+
+    /// The passing status line, if one shows.
+    fn status_line(&self) -> Option<&str> {
+        self.status.as_ref().map(|(s, _)| s.as_str())
+    }
+}
+
+/// What the find field says after the query.
+fn found_text(found: Option<(u32, u32)>, query: &str) -> String {
+    match found {
+        _ if query.is_empty() => String::new(),
+        None => String::new(),
+        Some((0, _)) => "No matches".into(),
+        Some((n, current)) => format!("{current} of {n}"),
+    }
+}
+
 pub(crate) struct WebPane {
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     pub(crate) pane: u32,
+    /// The page's address: for a web pane, the one tmux keeps (what the
+    /// page last reported, or what it was told to load).
     pub(crate) url: String,
     pub(crate) focus: FocusHandle,
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
@@ -101,6 +253,8 @@ pub(crate) struct WebPane {
     /// The app whose page this is, for a `web` node of an app pane.
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     app: Option<web_engine::AppPage>,
+    /// The browser's chrome (a plain web pane only).
+    pub(crate) bar: Bar,
     #[cfg(feature = "web")]
     pub(crate) view: Option<web_engine::WebView>,
     /// Waiting for Chromium to make or load the page's profile before the
@@ -151,12 +305,18 @@ impl WebPane {
             kept,
             problem,
             app,
+            bar: Bar::default(),
             #[cfg(feature = "web")]
             view: None,
             #[cfg(feature = "web")]
             profile_wait: false,
             _focus,
         }
+    }
+
+    /// Whether this is the browser: a plain web pane, not an app's page.
+    fn browser(&self) -> bool {
+        self.app.is_none()
     }
 
     /// The workspace laid the pane out at `place`. Returns whether an
@@ -209,10 +369,13 @@ impl WebPane {
         !(live && place == Place::Covered)
     }
 
-    /// Keyboard focus moved to this pane: the page takes the keys.
+    /// Keyboard focus moved to this pane: the page takes the keys, unless
+    /// the browser's address bar or find field has them.
     pub(crate) fn take_focus(&self) {
         #[cfg(feature = "web")]
-        if let Some(v) = &self.view {
+        if !self.bar.keys
+            && let Some(v) = &self.view
+        {
             v.focus();
         }
     }
@@ -246,14 +409,231 @@ impl WebPane {
     }
 
     /// One of Chromium's edit commands in the page, for the desktop's edit
-    /// shortcuts.
-    fn edit(&mut self, edit: Edit) {
+    /// shortcuts; while the browser's bar has the keys, paste and copy
+    /// are its field's.
+    fn edit(&mut self, edit: Edit, cx: &mut Context<Self>) {
+        if self.bar.keys {
+            match edit {
+                Edit::Paste => {
+                    let text = crate::clip::read(cx).unwrap_or_default();
+                    let line: String = text.lines().next().unwrap_or("").trim().to_owned();
+                    self.typed(&line, cx);
+                }
+                Edit::Copy => {
+                    if let Some((typed, _)) = &self.bar.address {
+                        crate::clip::write(cx, typed.clone());
+                    }
+                }
+                Edit::SelectAll => {
+                    if let Some((_, all)) = &mut self.bar.address {
+                        *all = true;
+                        cx.notify();
+                    }
+                }
+                Edit::Cut => {}
+            }
+        } else {
+            #[cfg(feature = "web")]
+            if let Some(v) = &self.view {
+                v.edit(edit);
+            }
+        }
+    }
+
+    /// Cmd+L: the address bar, pulled down with the page's address
+    /// selected; the page lets go of the keys.
+    pub(crate) fn open_address(&mut self, cx: &mut Context<Self>) {
+        if !self.browser() {
+            return;
+        }
+        #[cfg(feature = "web")]
+        let now = self.view.as_ref().map(web_engine::WebView::url);
+        #[cfg(not(feature = "web"))]
+        let now: Option<String> = None;
+        let url = now
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| self.url.clone());
+        self.bar.open_address(&url);
+        self.release_focus();
+        cx.notify();
+    }
+
+    /// Find: the find field, with the keys; again, it takes the keys
+    /// back from the page.
+    fn open_find(&mut self, cx: &mut Context<Self>) {
+        if !self.browser() {
+            return;
+        }
+        self.bar.address = None;
+        self.bar.error = None;
+        self.bar.open_find();
+        self.release_focus();
+        cx.notify();
+    }
+
+    /// Text typed while the bar has the keys (the smoke types an address
+    /// this way, as the keys would).
+    pub(crate) fn typed(&mut self, text: &str, cx: &mut Context<Self>) {
+        let t = self.bar.type_text(text);
+        self.apply(t, cx);
+    }
+
+    /// Keys while the bar has them; nothing reaches the page.
+    fn bar_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        if !self.bar.keys {
+            return;
+        }
+        let k = &ev.keystroke;
+        let m = &k.modifiers;
+        let typed = match k.key.as_str() {
+            key @ ("escape" | "enter" | "backspace") => self.bar.key(key, m.shift),
+            _ if m.control || m.platform || m.alt => return,
+            _ => match &k.key_char {
+                Some(text) => self.bar.type_text(text),
+                None => Typed::Nothing,
+            },
+        };
+        self.apply(typed, cx);
+        cx.stop_propagation();
+    }
+
+    /// Do what the bar asked for.
+    fn apply(&mut self, typed: Typed, cx: &mut Context<Self>) {
+        match typed {
+            Typed::Nothing => {}
+            Typed::Close => {
+                #[cfg(feature = "web")]
+                if let Some(v) = &self.view {
+                    v.stop_finding();
+                }
+                self.take_focus();
+            }
+            Typed::Go(text) => match workspace_config::browser::web_address(&text) {
+                Ok(url) => {
+                    self.bar.address = None;
+                    self.bar.error = None;
+                    self.bar.keys = false;
+                    #[cfg(feature = "web")]
+                    if let Some(v) = &self.view {
+                        v.load(&url);
+                    }
+                    #[cfg(not(feature = "web"))]
+                    let _ = url;
+                    self.take_focus();
+                }
+                Err(why) => self.bar.error = Some(why),
+            },
+            Typed::Search(query) => {
+                #[cfg(feature = "web")]
+                if let Some(v) = &self.view {
+                    if query.is_empty() {
+                        v.stop_finding();
+                    } else {
+                        v.find(&query, true, false);
+                    }
+                }
+                #[cfg(not(feature = "web"))]
+                let _ = query;
+            }
+            Typed::Step(forward) => {
+                #[cfg(feature = "web")]
+                if let (Some(v), Some((query, _))) = (&self.view, &self.bar.find) {
+                    v.find(query, forward, true);
+                }
+                #[cfg(not(feature = "web"))]
+                let _ = forward;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Back, forward, reload, or zoom, in the browser.
+    fn go(&self, how: Go) {
+        if !self.browser() {
+            return;
+        }
         #[cfg(feature = "web")]
         if let Some(v) = &self.view {
-            v.edit(edit);
+            match how {
+                Go::Back => v.back(),
+                Go::Forward => v.forward(),
+                Go::Reload => v.reload(),
+                Go::Zoom(step) => v.zoom(step),
+            }
         }
         #[cfg(not(feature = "web"))]
-        let _ = edit;
+        let _ = how;
+    }
+
+    /// What the page reported.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    fn page_event(&mut self, e: web_engine::Event, cx: &mut Context<Self>) {
+        match e {
+            // A click in the page: it has the keys; the address bar goes.
+            web_engine::Event::Focus => {
+                self.bar.keys = false;
+                if self.bar.address.take().is_some() {
+                    self.bar.error = None;
+                }
+            }
+            web_engine::Event::LoadFailed { url, error } if self.browser() => {
+                // The address bar shows, with the error, to fix it.
+                let error = if error.is_empty() {
+                    "The page did not load".to_owned()
+                } else {
+                    error
+                };
+                self.bar.address = Some((url, false));
+                self.bar.error = Some(error);
+                self.bar.keys = self.focus_is_ours(cx);
+                if self.bar.keys {
+                    self.release_focus();
+                }
+            }
+            web_engine::Event::LoadFailed { .. } => {}
+            web_engine::Event::Status(line) => {
+                let at = Instant::now();
+                self.bar.status = Some((line, at));
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(STATUS_FOR).await;
+                    let _ = this.update(cx, |w, cx| {
+                        if w.bar.status.as_ref().is_some_and(|(_, t)| *t == at) {
+                            w.bar.status = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+            web_engine::Event::Found { count, current, .. } => {
+                if let Some((_, found)) = &mut self.bar.find {
+                    *found = Some((count, current));
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Whether this pane is the workspace's focused pane.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    fn focus_is_ours(&self, cx: &Context<Self>) -> bool {
+        self.workspace
+            .read_with(cx, |ws, _| ws.focused_pane() == Some(self.pane))
+            .unwrap_or(false)
+    }
+
+    /// The address tmux keeps for the pane changed to `url`: unless that
+    /// is where the page already is (its own report coming back), load it.
+    pub(crate) fn follow(&mut self, url: &str) {
+        if url == self.url {
+            return;
+        }
+        self.url = url.to_owned();
+        self.kept = (String::new(), 0, 0);
+        #[cfg(feature = "web")]
+        if let Some(v) = &self.view {
+            v.load(url);
+        }
     }
 
     /// Whether the pane shows the page's snapshot now (smoke evidence).
@@ -302,16 +682,18 @@ impl WebPane {
         let _ = self.workspace.update(cx, |_, cx| cx.notify());
     }
 
-    /// Ask the page where it is scrolled to, and keep that and its title in
-    /// the placeholder if they changed.
+    /// Ask the page where it is scrolled to, and keep that, its title, and
+    /// its address in the placeholder if they changed.
     #[cfg(feature = "web")]
-    fn keep_state(&self, cx: &mut Context<Self>) {
+    pub(crate) fn keep_state(&self, cx: &mut Context<Self>) {
         let Some(v) = &self.view else { return };
         // An app's page has no placeholder to keep it in.
         if self.app.is_some() || v.load_status().is_none() {
             return;
         }
         let title = v.title();
+        let url = Some(v.url())
+            .filter(|u| *u != self.url && workspace_config::browser::web_url_allowed(u));
         let (tx, rx) = async_channel::bounded(1);
         v.scroll_position(move |at| {
             let _ = tx.try_send(at);
@@ -322,7 +704,7 @@ impl WebPane {
             };
             let _ = this.update(cx, |w, cx| {
                 let kept = (title, x, y);
-                if w.kept == kept {
+                if w.kept == kept && url.is_none() {
                     return;
                 }
                 let state = api::WebState {
@@ -330,9 +712,14 @@ impl WebPane {
                     title: kept.0.clone(),
                     scroll_x: x,
                     scroll_y: y,
+                    url: url.clone(),
                     ..api::WebState::default()
                 };
                 w.kept = kept;
+                // Its own report coming back is not a navigation.
+                if let Some(u) = url {
+                    w.url = u;
+                }
                 let _ = w.workspace.update(cx, |ws, _| ws.keep_web_state(state));
             });
         })
@@ -395,28 +782,34 @@ impl WebPane {
             return;
         }
         if self.view.is_none() {
-            // A click in the page focuses this pane, as a click on a
-            // terminal pane does.
-            let (tx, rx) = async_channel::bounded::<()>(1);
+            // What the page reports comes here, on the main thread; a click
+            // in the page focuses this pane, as a click on a terminal pane
+            // does.
+            let (tx, rx) = async_channel::unbounded::<web_engine::Event>();
             let any = window.window_handle();
             let (ws, pane) = (self.workspace.clone(), self.pane);
-            cx.spawn(async move |_, cx| {
+            cx.spawn(async move |this, cx| {
                 use gpui::AppContext as _;
-                while rx.recv().await.is_ok() {
-                    let _ = cx.update_window(any, |_, window, cx| {
-                        let _ = ws.update(cx, |ws, cx| ws.page_focused(pane, window, cx));
-                    });
+                while let Ok(e) = rx.recv().await {
+                    if e == web_engine::Event::Focus {
+                        let _ = cx.update_window(any, |_, window, cx| {
+                            let _ = ws.update(cx, |ws, cx| ws.page_focused(pane, window, cx));
+                        });
+                    }
+                    if this.update(cx, |w, cx| w.page_event(e, cx)).is_err() {
+                        return;
+                    }
                 }
             })
             .detach();
             let app = self.app.clone();
-            match web_engine::WebView::open(window, rect, &self.url, app, move || {
-                let _ = tx.try_send(());
+            match web_engine::WebView::open(window, rect, &self.url, app, move |e| {
+                let _ = tx.try_send(e);
             }) {
                 Ok(v) => {
                     engine::opened(cx.entity().downgrade());
                     // The pane was focused before its page existed.
-                    if self.focus.is_focused(window) {
+                    if self.focus.is_focused(window) && !self.bar.keys {
                         v.focus();
                     }
                     let (_, x, y) = self.kept;
@@ -453,6 +846,90 @@ impl WebPane {
             v.set_visible(self.live);
         }
     }
+
+    /// The browser's strip: the address bar or the find field, and the
+    /// status line.
+    fn strip(&self, window: &Window) -> Option<gpui::Div> {
+        if !self.browser() || !self.bar.shown() {
+            return None;
+        }
+        let t = crate::theme::for_window(window);
+        let field = |label: &'static str, text: &str, all: bool| {
+            let caret = div().text_color(c(t.accent)).child("▏");
+            let shown = if text.is_empty() {
+                div().text_color(c(t.faint)).child(label)
+            } else if all {
+                div().bg(c(t.selected)).child(text.to_owned())
+            } else {
+                div().child(text.to_owned())
+            };
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .overflow_hidden()
+                .px_2()
+                .py(px(2.0))
+                .rounded_md()
+                .bg(c(t.background))
+                .border_1()
+                .border_color(c(if self.bar.keys { t.focus } else { t.divider }))
+                .text_color(c(t.text))
+                .child(shown)
+                .when(self.bar.keys, |d| d.child(caret))
+        };
+        let (left, note): (Option<gpui::Div>, Option<(String, u32)>) =
+            match (&self.bar.address, &self.bar.find) {
+                (Some((typed, all)), _) => (
+                    Some(field("Address", typed, *all)),
+                    self.bar.error.clone().map(|e| (e, t.danger)),
+                ),
+                (None, Some((query, found))) => (
+                    Some(field("Find in page", query, false)),
+                    Some((found_text(*found, query), t.muted)),
+                ),
+                (None, None) => (None, None),
+            };
+        let note = note
+            .filter(|(s, _)| !s.is_empty())
+            .or_else(|| self.bar.status_line().map(|s| (s.to_owned(), t.muted)));
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_2()
+                .h(px(STRIP))
+                .px_2()
+                .bg(c(t.raised))
+                .border_b_1()
+                .border_color(c(t.divider))
+                .text_size(px(12.0))
+                .children(left)
+                .children(note.map(|(s, color)| {
+                    div()
+                        .flex_none()
+                        .max_w(px(360.0))
+                        .overflow_hidden()
+                        .text_color(c(color))
+                        .child(s)
+                })),
+        )
+    }
+}
+
+/// The strip's height.
+const STRIP: f32 = 30.0;
+
+/// Back, forward, reload, or zoom (in, out, or back to 100%).
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(feature = "web"), allow(dead_code))]
+enum Go {
+    Back,
+    Forward,
+    Reload,
+    Zoom(Option<bool>),
 }
 
 /// How long a covered page waits for its snapshot (and the overlay with
@@ -478,6 +955,7 @@ fn decode_snapshot(reply: &[u8]) -> Result<Arc<RenderImage>, String> {
 
 impl Render for WebPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::keymap as k;
         let t = crate::theme::for_window(window);
         // What shows where the page is not drawn: under the page for a
         // moment as it starts, or instead of it.
@@ -506,22 +984,16 @@ impl Render for WebPane {
             ),
             _ => None,
         };
-        let base = div()
-            .size_full()
+        let page = div()
+            .flex_1()
+            .min_h_0()
             .relative()
-            .bg(c(t.background))
-            .track_focus(&self.focus)
-            .key_context(crate::keymap::WEB_PANE)
-            .on_action(cx.listener(|w, _: &crate::keymap::Copy, _, _| w.edit(Edit::Copy)))
-            .on_action(cx.listener(|w, _: &crate::keymap::Cut, _, _| w.edit(Edit::Cut)))
-            .on_action(cx.listener(|w, _: &crate::keymap::Paste, _, _| w.edit(Edit::Paste)))
-            .on_action(cx.listener(|w, _: &crate::keymap::SelectAll, _, _| w.edit(Edit::SelectAll)))
             .child(notice)
             .children(snapshot);
         #[cfg(feature = "web")]
-        let base = {
+        let page = {
             let entity = cx.entity();
-            base.child(
+            page.child(
                 gpui::canvas(
                     |bounds, _, _| bounds,
                     move |_, bounds, window, cx| {
@@ -534,7 +1006,35 @@ impl Render for WebPane {
                 .size_full(),
             )
         };
-        base
+        let base = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(c(t.background))
+            .track_focus(&self.focus)
+            .key_context(if self.browser() {
+                "WebPane Browser"
+            } else {
+                k::WEB_PANE
+            })
+            .on_action(cx.listener(|w, _: &k::Copy, _, cx| w.edit(Edit::Copy, cx)))
+            .on_action(cx.listener(|w, _: &k::Cut, _, cx| w.edit(Edit::Cut, cx)))
+            .on_action(cx.listener(|w, _: &k::Paste, _, cx| w.edit(Edit::Paste, cx)))
+            .on_action(cx.listener(|w, _: &k::SelectAll, _, cx| w.edit(Edit::SelectAll, cx)))
+            .on_key_down(cx.listener(|w, ev: &KeyDownEvent, _, cx| w.bar_key(ev, cx)));
+        let base = if self.browser() {
+            base.on_action(cx.listener(|w, _: &k::OpenLocation, _, cx| w.open_address(cx)))
+                .on_action(cx.listener(|w, _: &k::Find, _, cx| w.open_find(cx)))
+                .on_action(cx.listener(|w, _: &k::Back, _, _| w.go(Go::Back)))
+                .on_action(cx.listener(|w, _: &k::Forward, _, _| w.go(Go::Forward)))
+                .on_action(cx.listener(|w, _: &k::Reload, _, _| w.go(Go::Reload)))
+                .on_action(cx.listener(|w, _: &k::FontBigger, _, _| w.go(Go::Zoom(Some(true)))))
+                .on_action(cx.listener(|w, _: &k::FontSmaller, _, _| w.go(Go::Zoom(Some(false)))))
+                .on_action(cx.listener(|w, _: &k::FontReset, _, _| w.go(Go::Zoom(None))))
+        } else {
+            base
+        };
+        base.children(self.strip(window)).child(page)
     }
 }
 
@@ -548,7 +1048,7 @@ fn shorten(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Place, decide};
+    use super::{Bar, Place, Typed, decide, found_text};
 
     #[test]
     fn a_page_shows_only_where_its_pane_is_drawn_and_uncovered() {
@@ -570,6 +1070,54 @@ mod tests {
         assert_eq!(decide(Place::Covered, true, true, true), (false, false));
         // A page that was not on screen does not come back for an overlay.
         assert_eq!(decide(Place::Covered, false, false, false), (false, false));
+    }
+
+    #[test]
+    fn the_address_bar_replaces_the_address_typing_over_it_and_goes_on_enter() {
+        let mut bar = Bar::default();
+        assert!(!bar.shown());
+        // Nothing typed reaches a bar that does not have the keys.
+        assert_eq!(bar.type_text("x"), Typed::Nothing);
+        bar.open_address("https://example.com/a");
+        assert!(bar.shown() && bar.keys);
+        // The first key replaces the whole address; then it adds.
+        bar.type_text("l");
+        bar.type_text("ocalhost:300");
+        assert_eq!(bar.key("backspace", false), Typed::Nothing);
+        bar.type_text("01");
+        assert_eq!(bar.key("enter", false), Typed::Go("localhost:3001".into()));
+        // Backspace on the selected address clears it.
+        bar.open_address("https://example.com/a");
+        bar.key("backspace", false);
+        assert_eq!(bar.address, Some((String::new(), false)));
+        // Esc hides it and gives the keys back.
+        assert_eq!(bar.key("escape", false), Typed::Close);
+        assert!(!bar.shown() && !bar.keys);
+    }
+
+    #[test]
+    fn find_searches_as_typed_and_steps_through_matches() {
+        let mut bar = Bar::default();
+        bar.open_find();
+        assert_eq!(bar.type_text("fo"), Typed::Search("fo".into()));
+        assert_eq!(bar.type_text("x"), Typed::Search("fox".into()));
+        assert_eq!(bar.key("backspace", false), Typed::Search("fo".into()));
+        assert_eq!(bar.key("enter", false), Typed::Step(true));
+        assert_eq!(bar.key("enter", true), Typed::Step(false));
+        assert_eq!(found_text(Some((12, 3)), "fo"), "3 of 12");
+        assert_eq!(found_text(Some((0, 0)), "fo"), "No matches");
+        assert_eq!(found_text(None, "fo"), "");
+        // Closed, then opened again: the last query is gone with it.
+        assert_eq!(bar.key("escape", false), Typed::Close);
+        assert!(bar.find.is_none() && !bar.keys);
+    }
+
+    #[test]
+    fn the_browser_and_the_cli_name_the_same_profile() {
+        assert_eq!(
+            web_engine::browser::PROFILE,
+            workspace_config::browser::PROFILE
+        );
     }
 }
 
@@ -603,9 +1151,12 @@ mod engine {
         if web_engine::started() {
             return Ok(());
         }
-        let profile = workspace_config::desktop_state::state_dir()
-            .ok_or("no state directory for the web profile")?
-            .join("web");
+        let profile =
+            workspace_config::browser::web_dir().ok_or("no state directory for the web profile")?;
+        // `dream browser clear` asked while Chromium had the profile open.
+        if let Err(e) = workspace_config::browser::clear_if_asked(&profile) {
+            eprintln!("dreamer: the browser's profile was not emptied: {e}");
+        }
         let (tx, rx) = async_channel::unbounded::<i64>();
         web_engine::start(&profile, move |delay| {
             let _ = tx.try_send(delay);

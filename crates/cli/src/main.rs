@@ -92,6 +92,7 @@ const USAGE: &str = "usage:
   dream approvals [--json] | allow ID [--pane] | deny ID
   dream drawer toggle|show|hide|status|new [--yes] [--session $N|NAME] [--window @N] [--pane %N] [--json]
   dream web open URL [--session $N|NAME | --pane %N] [--json]   (a web page in a new pane; drawn by the desktop)
+  dream browser ADDRESS [--pane %N | --session $N|NAME] [--json] | dream browser clear   (the browser: a new pane, or another address in web pane %N)
   dream agents status [--json] | update [--version X.Y.Z] | rollback   (the pi Dreamer installs)
   dream agents pi [ARGS...] | dream agents profile init|status|log|diff|revert|commit|check   (its profile)
   dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
@@ -189,6 +190,9 @@ fn main() -> ExitCode {
         }
         ["web", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::web(&d, &extra))
+        }
+        ["browser", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::browser(&d, &extra))
         }
         ["drawer", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::drawer(&d, &extra))

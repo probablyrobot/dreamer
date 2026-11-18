@@ -67,6 +67,13 @@ gpui::actions!(
         FontBigger,
         FontSmaller,
         FontReset,
+        /// The browser's address bar, pulled down over the page.
+        OpenLocation,
+        /// Back and forward in the browser's history.
+        Back,
+        Forward,
+        /// Load the browser's page again.
+        Reload,
     ]
 );
 
@@ -147,11 +154,28 @@ pub(crate) const WEB_SHORTCUTS: &[Shortcut] = &[
     shortcut!(SelectAll, Some("cmd-a"), Some("ctrl-shift-a")),
 ];
 
+/// The key context of a plain web pane: the browser.
+pub(crate) const BROWSER: &str = "Browser";
+
+/// Shortcuts only the browser takes. With them, Find becomes find in the
+/// page, and Bigger, Smaller, and Actual Size zoom the page. Linux has no
+/// program in a page's pane, so plain Alt and Ctrl keys may go here.
+pub(crate) const BROWSER_SHORTCUTS: &[Shortcut] = &[
+    shortcut!(OpenLocation, Some("cmd-l"), Some("ctrl-shift-l")),
+    shortcut!(Back, Some("cmd-["), Some("alt-left")),
+    shortcut!(Forward, Some("cmd-]"), Some("alt-right")),
+    shortcut!(Reload, Some("cmd-r"), Some("ctrl-shift-r")),
+    shortcut!(FontBigger, None, Some("ctrl-=")),
+    shortcut!(FontSmaller, None, Some("ctrl--")),
+    shortcut!(FontReset, None, Some("ctrl-0")),
+];
+
 fn bindings() -> Vec<KeyBinding> {
     SHORTCUTS
         .iter()
         .map(|s| (s, None))
         .chain(WEB_SHORTCUTS.iter().map(|s| (s, Some(WEB_PANE))))
+        .chain(BROWSER_SHORTCUTS.iter().map(|s| (s, Some(BROWSER))))
         .filter_map(|(s, context)| Some((s.bind)(s.keys()?, context)))
         .collect()
 }
@@ -376,11 +400,16 @@ mod tests {
     /// The command a keystroke runs: in a web page, or (`web` false) in
     /// another pane.
     fn command(keys: &'static str, web: bool) -> Option<String> {
+        in_context(keys, if web { WEB_PANE } else { "" })
+    }
+
+    /// The command a keystroke runs in a pane of key context `context`.
+    fn in_context(keys: &'static str, context: &str) -> Option<String> {
         let keymap = gpui::Keymap::new(bindings());
-        let context: Vec<gpui::KeyContext> = if web {
-            vec![gpui::KeyContext::parse(WEB_PANE).expect("context")]
-        } else {
+        let context: Vec<gpui::KeyContext> = if context.is_empty() {
             Vec::new()
+        } else {
+            vec![gpui::KeyContext::parse(context).expect("context")]
         };
         let ks = gpui::Keystroke::parse(keys).expect("keystroke");
         let (found, _) = keymap.bindings_for_input(&[ks], &context);
@@ -433,11 +462,55 @@ mod tests {
     }
 
     #[test]
+    fn the_browser_takes_its_keys_only_in_a_plain_page() {
+        let browser = format!("{WEB_PANE} {BROWSER}");
+        let mac = cfg!(target_os = "macos");
+        let (location, back, forward, reload, find, bigger) = if mac {
+            ("cmd-l", "cmd-[", "cmd-]", "cmd-r", "cmd-f", "cmd-=")
+        } else {
+            (
+                "ctrl-shift-l",
+                "alt-left",
+                "alt-right",
+                "ctrl-shift-r",
+                "ctrl-shift-f",
+                "ctrl-=",
+            )
+        };
+        for (keys, action) in [
+            (location, "dreamer::OpenLocation"),
+            (back, "dreamer::Back"),
+            (forward, "dreamer::Forward"),
+            (reload, "dreamer::Reload"),
+            // Find and the size keys, in a page: find in it and zoom it.
+            (find, "dreamer::Find"),
+            (bigger, "dreamer::FontBigger"),
+        ] {
+            assert_eq!(
+                in_context(keys, &browser).as_deref(),
+                Some(action),
+                "{keys}"
+            );
+        }
+        // Not in an app's page, nor in a terminal: there the keys go to
+        // the program.
+        for keys in [location, back, forward, reload] {
+            assert_eq!(in_context(keys, WEB_PANE), None, "{keys}");
+            assert_eq!(in_context(keys, ""), None, "{keys}");
+        }
+        // Escape, Enter, and typing are the page's.
+        for keys in ["escape", "enter", "a", "backspace"] {
+            assert_eq!(in_context(keys, &browser), None, "{keys}");
+        }
+    }
+
+    #[test]
     fn every_shortcut_parses_and_none_is_taken_twice() {
         for platform in [true, false] {
             let keys: Vec<&str> = SHORTCUTS
                 .iter()
                 .chain(WEB_SHORTCUTS)
+                .chain(BROWSER_SHORTCUTS)
                 .filter_map(|s| if platform { s.mac } else { s.linux })
                 .collect();
             for k in &keys {

@@ -4715,6 +4715,22 @@
         }
       }
     },
+    "WebNavigate": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "url": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
     "WebOpen": {
       "fields": {
         "endpoint": {
@@ -4762,6 +4778,10 @@
           "type": "i32"
         },
         "title": {
+          "repeated": false,
+          "type": "string"
+        },
+        "url": {
           "repeated": false,
           "type": "string"
         }
@@ -4923,6 +4943,7 @@
     "tmux.size_window": "SizeWindow",
     "tmux.topology": "TopologyParams",
     "tmux.watch": "TopologyParams",
+    "web.navigate": "WebNavigate",
     "web.open": "WebOpen",
     "web.state": "WebState"
   },
@@ -5183,5 +5204,5 @@
       }
     }
   },
-  "version": "1.57"
+  "version": "1.58"
 }

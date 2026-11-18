@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 57;
+pub const PROTOCOL_MINOR: u32 = 58;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -4765,7 +4765,7 @@ pub struct DrawerStatus {
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WebOpen {
-    /// http, https, file, data, or about:blank.
+    /// A URL (http, https, file, data, or about:blank), or an address as typed into a browser's address bar (example.com, localhost:3000, an absolute path), which becomes one.
     #[prost(string, tag = "1")]
     pub url: String,
     /// The session to open a new window in.
@@ -4804,6 +4804,25 @@ pub struct WebState {
     #[prost(int32, tag = "4")]
     pub scroll_y: i32,
     #[prost(string, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// The page's address now, when the page navigated (the browser): kept as the pane's web URL, so it opens there again. Ignored unless it is a URL a web pane may show.
+    #[prost(string, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// Load another address in an existing web pane (the browser), as if it were typed into its address bar: the pane's web URL changes, and a desktop drawing the page loads it there, its back stack kept.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebNavigate {
+    /// A web pane.
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// A URL or a typed address, as in WebOpen.
+    #[prost(string, tag = "2")]
+    pub url: String,
+    #[prost(string, optional, tag = "3")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 }
@@ -5416,6 +5435,7 @@ pub mod method {
     pub const APPS_CALL: &str = "apps.call";
     pub const WEB_OPEN: &str = "web.open";
     pub const WEB_STATE: &str = "web.state";
+    pub const WEB_NAVIGATE: &str = "web.navigate";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6147,7 +6167,7 @@ pub const METHODS: &[MethodInfo] = &[
         params: "WebOpen",
         result: "WebOpened",
         mutation: true,
-        doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner only).",
+        doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner, or an agent at own or elsewhere, which asks before splitting a pane it did not create).",
     },
     MethodInfo {
         name: "web.state",
@@ -6155,6 +6175,13 @@ pub const METHODS: &[MethodInfo] = &[
         result: "Empty",
         mutation: true,
         doc: "Keep a web pane's page title and scroll position in its placeholder (owner only; the desktop drawing the page reports them).",
+    },
+    MethodInfo {
+        name: "web.navigate",
+        params: "WebNavigate",
+        result: "Empty",
+        mutation: true,
+        doc: "Load another address in a web pane: its URL in tmux changes, and the desktop drawing it navigates there (owner, or an agent at own or elsewhere, which asks for a pane it did not create).",
     },
 ];
 
@@ -6265,6 +6292,7 @@ pub enum Request {
     AppsCall(AppCall),
     WebOpen(WebOpen),
     WebState(WebState),
+    WebNavigate(WebNavigate),
 }
 
 impl Request {
@@ -6374,6 +6402,7 @@ impl Request {
             Self::AppsCall(_) => "apps.call",
             Self::WebOpen(_) => "web.open",
             Self::WebState(_) => "web.state",
+            Self::WebNavigate(_) => "web.navigate",
         }
     }
 
@@ -6484,6 +6513,7 @@ impl Request {
             Self::AppsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
             Self::WebState(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebNavigate(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -6615,6 +6645,7 @@ impl Request {
             "apps.call" => Ok(Self::AppsCall(::prost::Message::decode(bytes)?)),
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
             "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
+            "web.navigate" => Ok(Self::WebNavigate(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6725,6 +6756,7 @@ impl Request {
             Self::AppsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebNavigate(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -6850,6 +6882,7 @@ impl Request {
             "apps.call" => Ok(Self::AppsCall(serde_json::from_value(value)?)),
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
             "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
+            "web.navigate" => Ok(Self::WebNavigate(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6962,6 +6995,7 @@ pub enum Response {
     AppsCall(AppCallResult),
     WebOpen(WebOpened),
     WebState(Empty),
+    WebNavigate(Empty),
 }
 
 impl Response {
@@ -7071,6 +7105,7 @@ impl Response {
             Self::AppsCall(_) => "apps.call",
             Self::WebOpen(_) => "web.open",
             Self::WebState(_) => "web.state",
+            Self::WebNavigate(_) => "web.navigate",
         }
     }
 
@@ -7181,6 +7216,7 @@ impl Response {
             Self::AppsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
             Self::WebState(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebNavigate(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -7312,6 +7348,7 @@ impl Response {
             "apps.call" => Ok(Self::AppsCall(::prost::Message::decode(bytes)?)),
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
             "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
+            "web.navigate" => Ok(Self::WebNavigate(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7422,6 +7459,7 @@ impl Response {
             Self::AppsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebNavigate(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -7547,6 +7585,7 @@ impl Response {
             "apps.call" => Ok(Self::AppsCall(serde_json::from_value(value)?)),
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
             "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
+            "web.navigate" => Ok(Self::WebNavigate(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -8051,7 +8090,7 @@ pub trait Service: Sync {
         &self,
         params: AppCall,
     ) -> impl ::core::future::Future<Output = Result<AppCallResult, RpcError>> + Send;
-    /// Open a web page in a new placeholder pane that desktops draw the page in (owner only).
+    /// Open a web page in a new placeholder pane that desktops draw the page in (owner, or an agent at own or elsewhere, which asks before splitting a pane it did not create).
     fn web_open(
         &self,
         params: WebOpen,
@@ -8060,6 +8099,11 @@ pub trait Service: Sync {
     fn web_state(
         &self,
         params: WebState,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Load another address in a web pane: its URL in tmux changes, and the desktop drawing it navigates there (owner, or an agent at own or elsewhere, which asks for a pane it did not create).
+    fn web_navigate(
+        &self,
+        params: WebNavigate,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
 }
 
@@ -8293,6 +8337,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::AppsCall(p) => service.apps_call(p).await.map(Response::AppsCall),
         Request::WebOpen(p) => service.web_open(p).await.map(Response::WebOpen),
         Request::WebState(p) => service.web_state(p).await.map(Response::WebState),
+        Request::WebNavigate(p) => service.web_navigate(p).await.map(Response::WebNavigate),
     }
 }
 

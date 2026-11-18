@@ -585,6 +585,22 @@ struct AppLaunch {
     new_window: bool,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct BrowserOpen {
+    /// The address, as typed into a browser's address bar: a URL,
+    /// example.com, localhost:3000, or an absolute file path.
+    url: String,
+    /// Load it in this web pane (one you opened) instead of a new one.
+    pane: Option<u32>,
+    /// Open the new pane beside this pane; default the pane this agent
+    /// runs in.
+    beside: Option<u32>,
+    /// Open it in a new window instead.
+    #[serde(default)]
+    new_window: bool,
+}
+
 fn direction(d: Option<&str>) -> Result<api::SplitDirection, String> {
     match d {
         None | Some("vertical") => Ok(api::SplitDirection::Vertical),
@@ -1630,6 +1646,55 @@ impl Dreamer {
             "name": name,
             "output": ran.stdout.trim(),
         })))
+    }
+
+    #[tool(
+        description = "Open a web page for the user in Dreamer's browser: a new pane beside the pane you run in (or `beside` another pane, or in a new window), drawn by the user's desktop; or, with `pane`, load the address in that web pane. You own a pane you opened. Splitting or loading into a pane you did not create may wait for the user's approval. The page gets no Dreamer API, and you cannot read it from here."
+    )]
+    async fn browser_open(
+        &self,
+        Parameters(p): Parameters<BrowserOpen>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // The daemon makes the address a URL, as the address bar does.
+        let url = p.url;
+        if let Some(pane) = p.pane {
+            let request = api::Request::WebNavigate(api::WebNavigate {
+                pane,
+                url: url.clone(),
+                ..api::WebNavigate::default()
+            });
+            return Ok(match self.client.call(request).await {
+                Ok(_) => text(serde_json::json!({ "pane": pane, "url": url })),
+                Err(e) => failed(e.to_string()),
+            });
+        }
+        let beside = if p.new_window {
+            None
+        } else {
+            p.beside.or(self.own_pane)
+        };
+        let session = match beside {
+            Some(_) => None,
+            None => match crate::build::session_of(&self.client, None).await {
+                Ok(s) => Some(s),
+                Err(e) => return Ok(failed(e)),
+            },
+        };
+        let request = api::Request::WebOpen(api::WebOpen {
+            url: url.clone(),
+            pane: beside,
+            session,
+            ..api::WebOpen::default()
+        });
+        Ok(match self.client.call(request).await {
+            Ok(api::Response::WebOpen(o)) => text(serde_json::json!({
+                "pane": o.pane,
+                "url": url,
+                "beside": beside,
+            })),
+            Ok(_) => failed("web.open: unexpected answer".into()),
+            Err(e) => failed(e.to_string()),
+        })
     }
 
     #[tool(

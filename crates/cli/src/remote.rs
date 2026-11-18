@@ -885,18 +885,44 @@ pub fn web(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     if verb != "open" {
         return Err(USAGE.into());
     }
+    let here = std::env::var("TMUX_PANE").ok();
+    match page_args(url.clone(), rest, here.as_deref(), false)
+        .map_err(|e| format!("{e}\n{USAGE}"))?
+    {
+        Page::Open(req, name, json) => open_page(d, req, name, json),
+        Page::Navigate(..) => Err(USAGE.into()),
+    }
+}
+
+/// What `dream web open` or `dream browser` asks for.
+#[derive(Debug, PartialEq)]
+enum Page {
+    /// A page in a new pane: the request, a session named rather than
+    /// numbered, and `--json`.
+    Open(api::WebOpen, Option<String>, bool),
+    /// Another address in an existing web pane, and `--json`.
+    Navigate(api::WebNavigate, bool),
+}
+
+/// The options after the URL: `--session` (a new window there), `--pane`
+/// (split it, or with `navigate`, load the page in that web pane), and
+/// `--json`. Neither session nor pane: the pane this runs in (`here`, from
+/// `TMUX_PANE`) is split.
+fn page_args(
+    url: String,
+    rest: &[String],
+    here: Option<&str>,
+    navigate: bool,
+) -> Result<Page, String> {
     let mut req = api::WebOpen {
-        url: url.clone(),
+        url,
         ..api::WebOpen::default()
     };
     let mut session_name = None;
     let mut json = false;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
-        let mut value = || {
-            it.next()
-                .ok_or_else(|| format!("{a} needs a value\n{USAGE}"))
-        };
+        let mut value = || it.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
             "--session" => {
                 let v = value()?;
@@ -907,15 +933,37 @@ pub fn web(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
             }
             "--pane" => req.pane = Some(id(value()?, '%', "pane")?),
             "--json" => json = true,
-            other => return Err(format!("unknown option `{other}`\n{USAGE}")),
+            other => return Err(format!("unknown option `{other}`")),
         }
     }
-    if req.session.is_none() && session_name.is_none() && req.pane.is_none() {
-        let here = std::env::var("TMUX_PANE").map_err(|_| {
-            format!("not inside tmux: name a session with --session or a pane with --pane\n{USAGE}")
-        })?;
-        req.pane = Some(id(&here, '%', "pane")?);
+    if navigate && let Some(pane) = req.pane {
+        if req.session.is_some() || session_name.is_some() {
+            return Err("give --pane (a web pane to load it in) or --session, not both".into());
+        }
+        return Ok(Page::Navigate(
+            api::WebNavigate {
+                pane,
+                url: req.url,
+                ..api::WebNavigate::default()
+            },
+            json,
+        ));
     }
+    if req.session.is_none() && session_name.is_none() && req.pane.is_none() {
+        let here =
+            here.ok_or("not inside tmux: name a session with --session or a pane with --pane")?;
+        req.pane = Some(id(here, '%', "pane")?);
+    }
+    Ok(Page::Open(req, session_name, json))
+}
+
+/// Open a page in a new pane and print it (`%N`).
+fn open_page(
+    d: &DaemonArgs,
+    mut req: api::WebOpen,
+    session_name: Option<String>,
+    json: bool,
+) -> Result<(), String> {
     rt()?.block_on(async {
         let mut c = session(d).await?;
         if let Some(name) = session_name {
@@ -948,6 +996,118 @@ pub fn web(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         }
         Ok(())
     })
+}
+
+/// `dream browser ADDRESS [--pane %N | --session $N|NAME] [--json]`: the
+/// address, typed as in the address bar (`example.com`, `localhost:3000`),
+/// in a new browser pane beside this one, or with `--pane` in that web
+/// pane. `dream browser clear`: empty the browser's profile.
+pub fn browser(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: dream browser ADDRESS [--pane %N | --session $N|NAME] [--json] | dream browser clear";
+    match args {
+        [verb] if verb == "clear" => clear_browser(),
+        [address, rest @ ..] if !address.starts_with("--") => {
+            // The daemon makes the address a URL, as the address bar does.
+            let here = std::env::var("TMUX_PANE").ok();
+            match page_args(address.clone(), rest, here.as_deref(), true)
+                .map_err(|e| format!("{e}\n{USAGE}"))?
+            {
+                Page::Open(req, name, json) => open_page(d, req, name, json),
+                Page::Navigate(req, json) => {
+                    let pane = req.pane;
+                    rt()?.block_on(async {
+                        let mut c = session(d).await?;
+                        call(&mut c, Request::WebNavigate(req)).await?;
+                        if json {
+                            println!("{}", serde_json::json!({ "pane": pane }));
+                        } else {
+                            println!("%{pane}");
+                        }
+                        Ok(())
+                    })
+                }
+            }
+        }
+        _ => Err(USAGE.into()),
+    }
+}
+
+/// `dream browser clear`, on this machine, where the desktop keeps the
+/// profile.
+fn clear_browser() -> Result<(), String> {
+    use workspace_config::browser::{Cleared, clear, web_dir};
+    let web = web_dir().ok_or("no state directory (HOME is not set)")?;
+    match clear(&web, platform::process_alive)? {
+        Cleared::Now => {
+            println!("dream: the browser's profile is empty: cookies, logins, storage, and cache")
+        }
+        Cleared::Later(pid) => println!(
+            "dream: Dreamer's desktop (process {pid}) has the browser's profile open; it is emptied when the desktop next starts its web panes"
+        ),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::{Page, page_args};
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn browser_arguments_open_beside_this_pane_or_load_into_a_web_pane() {
+        let url = || "https://example.com".to_owned();
+        // Inside tmux, nothing named: split the pane it runs in.
+        let Ok(Page::Open(req, None, false)) = page_args(url(), &[], Some("%7"), true) else {
+            panic!("open beside this pane");
+        };
+        assert_eq!((req.pane, req.session), (Some(7), None));
+        // `--pane` loads the page in that web pane, for the browser; for
+        // `dream web open` it is the pane to split.
+        assert_eq!(
+            page_args(url(), &args(&["--pane", "%3", "--json"]), None, true),
+            Ok(Page::Navigate(
+                api::WebNavigate {
+                    pane: 3,
+                    url: url(),
+                    ..api::WebNavigate::default()
+                },
+                true
+            ))
+        );
+        let Ok(Page::Open(req, None, false)) =
+            page_args(url(), &args(&["--pane", "%3"]), None, false)
+        else {
+            panic!("web open splits");
+        };
+        assert_eq!(req.pane, Some(3));
+        // A session by name or number: a new window there.
+        let Ok(Page::Open(req, Some(name), _)) =
+            page_args(url(), &args(&["--session", "work"]), None, true)
+        else {
+            panic!("a named session");
+        };
+        assert_eq!((req.pane, name.as_str()), (None, "work"));
+        let Ok(Page::Open(req, None, _)) =
+            page_args(url(), &args(&["--session", "$2"]), None, true)
+        else {
+            panic!("a session id");
+        };
+        assert_eq!(req.session, Some(2));
+        // Refused: outside tmux with nowhere named, both a pane and a
+        // session, a bad pane, a missing value, an unknown option.
+        for (a, here) in [
+            (args(&[]), None),
+            (args(&["--pane", "%3", "--session", "$1"]), None),
+            (args(&["--pane", "three"]), Some("%1")),
+            (args(&["--pane"]), Some("%1")),
+            (args(&["--new-tab"]), Some("%1")),
+        ] {
+            assert!(page_args(url(), &a, here, true).is_err(), "{a:?}");
+        }
+    }
 }
 
 // ---- drawer -----------------------------------------------------------------

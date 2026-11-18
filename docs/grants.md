@@ -50,7 +50,8 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `apps.view`, `apps.input` | The owner grant: app panes are the user's to read and type into |
 | `apps.tree`, `apps.capture` | The owner grant, or an agent's grant at `own` or `elsewhere` for an app pane it launched ([below](#agents-and-apps)) |
 | `apps.capture_wait`, `apps.capture_done` | The owner grant: images of panes are made by the user's desktop, for the user |
-| `web.open`, `web.state` | The owner grant: web pages run in the user's desktop |
+| `web.open`, `web.navigate` | The owner grant, or an agent's grant at `own` or `elsewhere` (never an app's); `web.open` with `pane`, that pane in scope, else `all_panes`; `web.navigate`, its pane in scope |
+| `web.state` | The owner grant: the desktop drawing a page reports it |
 | `apps.call` | The owner grant (the desktop showing an app's page). The call it carries is checked against that app's grant, as the app's own ([below](#web-pages-of-apps)) |
 | `apps.publish`, `apps.publish_tree` | A registered app host's own connection, whatever its grant lists; it publishes for its own pane only |
 | `filters.install`, `filters.list`, `filters.pause`, `filters.resume`, `filters.remove` | The owner grant, or `filters.manage` plus content read; see [Filters an app installs](filters.md#filters-an-app-installs) |
@@ -91,7 +92,8 @@ What counts as acting, and on which panes:
 | `actions.submit` close a pane or a window, `jobs.cancel` | Those panes; closing |
 | `terminal.run` with `split` | The pane it splits |
 | `apps.launch` with `split` | The pane it splits |
-| `jobs.start`, `terminal.run` without `split`, `actions.submit` new window, `apps.launch` without `split` | Nothing: they create, and the connection owns what they create |
+| `web.open` with `pane`, `web.navigate` | The pane it splits, or the web pane it loads another address in |
+| `jobs.start`, `terminal.run` without `split`, `actions.submit` new window, `apps.launch` without `split`, `web.open` without `pane` | Nothing: they create, and the connection owns what they create |
 
 Reading, searching, watching, and listing are never acting. Neither is
 starting or querying a collector: collectors only read panes, so any

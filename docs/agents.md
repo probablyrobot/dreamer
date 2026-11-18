@@ -254,6 +254,7 @@ API as `dream mcp` ([mcp.md](mcp.md#terminal-tools)):
 | `memory_forget` | `memory.forget`; not at the `observe` level |
 | `claude_code`, `codex` | `terminal.run` of `dream agents delegate` ([below](#delegation-to-claude-code-and-codex)); each only when `agents.pi.delegates` lists it, and not at the `observe` level |
 | `app_new`, `app_check`, `app_preview`, `app_test`, `app_install`, `app_launch` | As `dream mcp`'s app tools ([mcp.md](mcp.md#app-tools)), below |
+| `browser_open` | `web.open`, `web.navigate`, as `dream mcp`'s ([mcp.md](mcp.md#browser-tool)); not at the `observe` level |
 | `dreamer_profile_commit` | `dream agents profile commit` (below) |
 
 It also adds the commands `/dreamer` (whether the daemon is reachable,

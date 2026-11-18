@@ -505,24 +505,27 @@ windows only.
 ## Web panes
 
 macOS only so far, and only in a build with web panes (below). A web pane
-shows one web page in a pane's rectangle, drawn by Chromium itself: no
-address bar, tabs, or history. In tmux it is an ordinary pane, so splits,
-resizes, zoom, moving it, and keeping it across desktop restarts all
-come from tmux.
+shows one web page in a pane's rectangle, drawn by Chromium itself, and is
+the [browser](#the-browser): its chrome shows only when asked for. In tmux
+it is an ordinary pane, so splits, resizes, zoom, moving it, and keeping
+it across desktop restarts all come from tmux.
 
 - **Opening one.** "Open a web page…" in the palette asks for a URL and
-  opens it in a pane beside the focused one; `dream web open URL`
-  ([cli.md](cli.md#web-panes)) does the same from a shell. `http`,
-  `https`, `file`, and `data` URLs and `about:blank` are accepted; others
-  are refused.
+  opens it in a pane beside the focused one; `dream web open URL` and
+  `dream browser ADDRESS` ([cli.md](cli.md#web-panes)) do the same from a
+  shell. `http`, `https`, `file`, and `data` URLs and `about:blank` are
+  accepted, and addresses as typed into the [browser](#the-browser)'s
+  address bar; others are refused.
 - **What tmux holds.** The pane runs a small placeholder program that
   prints the page's title, its address, and "Open in Dreamer to see the
   page", which is what a plain tmux client shows, and carries a pane
   option, `@dreamer_surface` = `web:<URL>`. The daemon reports it in the
   topology as the pane's `web` URL. The desktop drawing the page keeps
-  its title (as the pane's title, and in the placeholder's text) and its
-  scroll position (`@dreamer_web_scroll`) there: when the page leaves the
-  screen, and every few seconds while it is shown.
+  its title (as the pane's title, and in the placeholder's text), its
+  address when the page went elsewhere (a link, back), and its scroll
+  position (`@dreamer_web_scroll`) there: when the page leaves the
+  screen, and every few seconds while it is shown. When the address
+  there changes otherwise (`dream browser --pane`), the page loads it.
 - **What the desktop draws.** Chromium's own view, placed over the pane's
   rectangle and moved with it on every layout change: splits, resizes,
   zoom. It is hidden, not closed, while the pane is not shown (another
@@ -546,14 +549,53 @@ come from tmux.
   included, works as in Chrome. Cmd+X and Cmd+A are taken only in a page;
   elsewhere they still reach the program in the pane.
 - **Where pages run.** On this Mac, in the desktop's process and
-  Chromium's helper processes; the profile is `web/` in the desktop's
-  state directory. A pane of a remote host's tmux shows the placeholder's
+  Chromium's helper processes; Chromium's profiles are in `web/` in the
+  desktop's state directory. A pane of a remote host's tmux shows the placeholder's
   text, not the page.
 - **Lifetime.** The page lives while a desktop window shows its pane (or
   kept it among its recently shown panes) and loads again when the pane
   is shown after that, after a desktop restart for example, scrolled back
   to where tmux keeps it. Closing the pane closes the page. Chromium
   starts with the first web pane, not with the app.
+
+### The browser
+
+A web pane is a browser for sites that are not packaged as apps, with as
+little chrome as a terminal: the page fills the pane, and a thin strip
+pulls down over its top (moving the page down) only while it has
+something to show.
+
+| | macOS | Linux |
+| --- | --- | --- |
+| Address bar: show it, the address selected | Cmd+L | Ctrl+Shift+L |
+| Load what is typed, or hide the bar | Enter, Esc | Enter, Esc |
+| Back, forward | Cmd+[, Cmd+]; mouse buttons 4 and 5; a two-finger swipe | Alt+Left, Alt+Right; mouse buttons 4 and 5 |
+| Reload; stop a load | Cmd+R; Esc in the page | Ctrl+Shift+R; Esc in the page |
+| Find in the page (Enter next, Shift+Enter previous, Esc ends it) | Cmd+F | Ctrl+Shift+F |
+| Zoom the page in, out, back | Cmd+=, Cmd+-, Cmd+0 | Ctrl+=, Ctrl+-, Ctrl+0 |
+
+- **Addresses.** The bar takes a URL or an address as typed: `example.com`
+  goes to `https://example.com`, `localhost:3000` (or anything with a
+  port, or a loopback address) to `http:`, an absolute path to a `file:`
+  URL. A search is refused: there is no search engine. A page that fails
+  to load shows the bar again, with the error.
+- **One page per pane.** No tabs, bookmarks, or history list; the back
+  stack is the pane's own. A link that wants a new window opens in the
+  same pane.
+- **Logins.** The browser has a profile of its own (`web/browser/`),
+  apart from your own browser's, and keeps session cookies in it, so you
+  stay logged in across restarts. `dream browser clear`
+  ([cli.md](cli.md#web-panes)) empties it.
+- **Downloads** are refused for now, with a line in the strip naming the
+  file. Saving them is planned, behind a `web.download` capability a
+  package cannot ask for yet.
+- **No Dreamer API.** A site in the browser never gets `window.dreamer`.
+  The script that turns the mouse's side buttons and the swipe into back
+  and forward runs in a world of its own, which the page cannot see.
+- **From the command line and agents.** `dream browser ADDRESS` opens an
+  address in a new pane, and `dream browser ADDRESS --pane %N` in an
+  existing one ([cli.md](cli.md#web-panes)); agents have the same as
+  `browser_open` ([mcp.md](mcp.md#browser-tool)).
 
 ### App pages
 
@@ -817,6 +859,20 @@ configuration directories:
   `https://example.invalid/`, outside its allow-list, is refused and the
   page stays on its origin. Each passed check is a `smoke: web app:`
   line, and the gate wants all five;
+- then the [browser](#the-browser), in the plain web pane, against a
+  test site the gate serves on `127.0.0.1` (nothing from the internet):
+  `web.navigate` loads its login, which sets a session cookie; Cmd+L,
+  an address typed without a scheme, and Enter load its first page; a
+  link is followed; Cmd+[ and Cmd+] go back and forward, and so do mouse
+  buttons 4 and 5; Cmd+R loads the page again (the site counts its
+  loads); Cmd+F and a word typed get matches from Chromium's find, and
+  Esc ends it; Cmd+= zooms the page and Cmd+0 back; a download is
+  refused with its status line; and a link that wants a new window
+  opens in the same pane. Then the gate starts the desktop again on the
+  same profile (`dreamer --smoke-web-restart`), and a page of the site
+  must still get the login's session cookie. Each passed check is a
+  `smoke: web browser:` line, and the gate wants all eleven. The swipe is
+  not checked;
 - the gate checks each capture as the smoke's `checks.txt` lists: the
   page's color covers at least 90% of the pane's rectangle (of the
   zoomed pane, or of the part beside the palette) and at most 1% of the

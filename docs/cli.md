@@ -159,8 +159,24 @@ with the page ([desktop.md](desktop.md#web-panes)). With `--pane` the
 pane is split side by side; with `--session` the page gets a new window
 there; with neither, the pane the command runs in (`TMUX_PANE`) is
 split. It prints the new pane (`%N`). `http`, `https`, `file`, and `data`
-URLs and `about:blank` are accepted; anything else is refused. Plain tmux
+URLs and `about:blank` are accepted, and so is an address as typed into a
+browser's address bar (below); anything else is refused. Plain tmux
 clients see the placeholder's text: the address.
+
+`dream browser ADDRESS [--pane %N | --session $N|NAME] [--json]` opens
+the address in Dreamer's [browser](desktop.md#the-browser): a new web pane
+beside the pane the command runs in (`TMUX_PANE`), or a new window in
+`--session`. With `--pane %N` it loads the address in that web pane
+instead, keeping its back and forward history. The address is a URL, or
+as typed into the address bar: `example.com` is `https://example.com`,
+`localhost:3000` (or anything with a port, or a loopback address) is
+`http:`, and an absolute path is a `file:` URL. A search is not an
+address: there is no search engine. It prints the pane (`%N`).
+
+`dream browser clear` empties the browser's profile on this machine:
+its cookies, logins, storage, and cache. While Dreamer's desktop has it
+open (after its first web pane), the profile is emptied when the desktop
+next starts its web panes, and the command says so.
 
 ## Approvals
 

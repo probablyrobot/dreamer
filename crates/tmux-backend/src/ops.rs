@@ -457,14 +457,13 @@ pub const SURFACE: &str = "@dreamer_surface";
 /// CSS pixels: `X Y`.
 pub const WEB_SCROLL: &str = "@dreamer_web_scroll";
 
+pub use workspace_config::browser::{WEB_URL_MAX, web_address, web_url_allowed};
+
 /// The scroll position in a [`WEB_SCROLL`] value.
 pub fn web_scroll(value: &str) -> Option<(i32, i32)> {
     let (x, y) = value.trim().split_once(' ')?;
     Some((x.parse().ok()?, y.parse().ok()?))
 }
-
-/// The longest URL a web pane takes.
-pub const WEB_URL_MAX: usize = 8192;
 
 /// The URL of a web pane's surface option, if it is one and its URL is one
 /// a web pane may show (see [`web_url_allowed`]).
@@ -472,19 +471,6 @@ pub fn web_surface(surface: &str) -> Option<&str> {
     surface
         .strip_prefix("web:")
         .filter(|url| web_url_allowed(url))
-}
-
-/// Whether a web pane may show `url`: `http`, `https`, `file`, and `data`
-/// URLs, and `about:blank`; no scripts as URLs, no control characters.
-pub fn web_url_allowed(url: &str) -> bool {
-    if url.len() > WEB_URL_MAX || url.chars().any(char::is_control) {
-        return false;
-    }
-    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
-    url == "about:blank"
-        || ["http://", "https://", "file://", "data:"]
-            .iter()
-            .any(|p| lower.starts_with(p))
 }
 
 /// The session hidden drawers wait in, created when first needed. Clients
