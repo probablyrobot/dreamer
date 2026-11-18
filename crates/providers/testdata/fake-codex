@@ -1,0 +1,102 @@
+#!/bin/sh
+# A scripted stand-in for `codex app-server` (its JSON-RPC protocol, version
+# 2, without the `jsonrpc` member), for tests that must run without a model
+# or a login. It answers initialize, account/read (a ChatGPT login),
+# thread/start, thread/resume, turn/start, and turn/interrupt, and a prompt
+# by what it says:
+#
+#   "use a tool"   text, a command item, then a command approval request;
+#                  accept completes the command, decline declines it
+#   "work slowly"  text, then nothing until turn/interrupt
+#   anything else  reasoning, text, token usage, and the turn's end
+#
+# `--version` and `login status` answer as a ChatGPT-logged-in Codex does.
+# It appends its arguments, and whether an API key variable reached it, to
+# fake-codex.log in its working directory.
+
+case "$1" in
+--version)
+	echo "codex-cli 0.169.0"
+	exit 0
+	;;
+login)
+	echo "Logged in using ChatGPT"
+	exit 0
+	;;
+esac
+
+log="$PWD/fake-codex.log"
+printf 'args:%s\n' "$*" >>"$log"
+if [ -n "$OPENAI_API_KEY$ANTHROPIC_API_KEY$ANTHROPIC_AUTH_TOKEN$CODEX_API_KEY" ]; then
+	echo "key:seen" >>"$log"
+else
+	echo "key:none" >>"$log"
+fi
+printf 'session-env:%s\n' "${DREAMER_SESSION_ID:-none}" >>"$log"
+
+thread="thr-$$"
+turn=""
+k=0
+emit() { printf '%s\n' "$1"; }
+num_id() { printf '%s' "$1" | sed -n 's/^{"id":\([0-9][0-9]*\).*/\1/p'; }
+note() { emit "{\"method\":\"$1\",\"params\":$2}"; }
+delta() { note "$1" "{\"threadId\":\"$thread\",\"turnId\":\"$turn\",\"itemId\":\"m-$k\",\"delta\":\"$2\"}"; }
+command_item() { note "$1" "{\"threadId\":\"$thread\",\"turnId\":\"$turn\",\"item\":{\"type\":\"commandExecution\",\"id\":\"c-$k\",\"command\":\"ls\",\"cwd\":\"$PWD\",\"status\":\"$2\",\"commandActions\":[],\"aggregatedOutput\":$3}}"; }
+completed() { note turn/completed "{\"threadId\":\"$thread\",\"turn\":{\"id\":\"$turn\",\"items\":[],\"status\":\"$1\",\"error\":null}}"; turn=""; }
+
+while IFS= read -r line; do
+	id=$(num_id "$line")
+	case "$line" in
+	*'"method":"initialize"'*)
+		emit "{\"id\":$id,\"result\":{\"userAgent\":\"fake-codex/0.169.0\"}}"
+		;;
+	*'"method":"account/read"'*)
+		emit "{\"id\":$id,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":null,\"planType\":\"plus\"},\"requiresOpenaiAuth\":true}}"
+		;;
+	*'"method":"thread/start"'*)
+		printf 'thread/start:%s\n' "$line" >>"$log"
+		emit "{\"id\":$id,\"result\":{\"thread\":{\"id\":\"$thread\"},\"model\":\"fake\",\"modelProvider\":\"openai\"}}"
+		;;
+	*'"method":"thread/resume"'*)
+		thread=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
+		printf 'thread/resume:%s\n' "$thread" >>"$log"
+		emit "{\"id\":$id,\"result\":{\"thread\":{\"id\":\"$thread\"},\"model\":\"fake\",\"modelProvider\":\"openai\"}}"
+		;;
+	*'"method":"turn/interrupt"'*)
+		emit "{\"id\":$id,\"result\":{}}"
+		[ -n "$turn" ] && completed interrupted
+		;;
+	*'"method":"turn/start"'*)
+		k=$((k + 1))
+		turn="turn-$k"
+		emit "{\"id\":$id,\"result\":{\"turn\":{\"id\":\"$turn\",\"items\":[],\"status\":\"inProgress\",\"error\":null}}}"
+		note turn/started "{\"threadId\":\"$thread\",\"turn\":{\"id\":\"$turn\",\"items\":[],\"status\":\"inProgress\",\"error\":null}}"
+		case "$line" in
+		*'use a tool'*)
+			delta item/agentMessage/delta "Let me look."
+			command_item item/started inProgress null
+			emit "{\"id\":0,\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"$thread\",\"turnId\":\"$turn\",\"itemId\":\"c-$k\",\"startedAtMs\":1,\"command\":\"ls\"}}"
+			;;
+		*'work slowly'*)
+			delta item/agentMessage/delta "Working"
+			;;
+		*)
+			delta item/reasoning/summaryTextDelta "Thinking."
+			delta item/agentMessage/delta "Hello from fake codex."
+			note thread/tokenUsage/updated "{\"threadId\":\"$thread\",\"turnId\":\"$turn\",\"tokenUsage\":{\"total\":{\"totalTokens\":15,\"inputTokens\":10,\"cachedInputTokens\":0,\"outputTokens\":5,\"reasoningOutputTokens\":0},\"last\":{\"totalTokens\":15,\"inputTokens\":10,\"cachedInputTokens\":0,\"outputTokens\":5,\"reasoningOutputTokens\":0}}}"
+			completed completed
+			;;
+		esac
+		;;
+	*'"decision":"accept"'*)
+		command_item item/completed completed '"file-a"'
+		delta item/agentMessage/delta "Done."
+		completed completed
+		;;
+	*'"decision":"decline"'*)
+		command_item item/completed declined null
+		delta item/agentMessage/delta "Done."
+		completed completed
+		;;
+	esac
+done

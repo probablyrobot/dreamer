@@ -245,9 +245,9 @@ pub const SCHEMA: &[Key] = &[
     },
     Key {
         path: "agents.NAME",
-        kind: "{protocol: acp, command, model}",
+        kind: "{protocol: pi | claude | codex | acp, command, model}",
         default: "(none)",
-        doc: "Another agent that speaks the Agent Client Protocol on its standard streams. NAME is letters, digits, - and _; set agents.default to NAME to use it.",
+        doc: "Another harness: an agent that speaks the Agent Client Protocol on its standard streams (protocol: acp, with its command), or another configuration of pi, Claude Code, or Codex. NAME is letters, digits, - and _; set agents.default to NAME to use it.",
         example: "{protocol: acp, command: [gemini, --experimental-acp]}",
         live: false,
     },

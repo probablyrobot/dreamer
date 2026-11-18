@@ -1,0 +1,95 @@
+#!/bin/sh
+# A scripted stand-in for Claude Code in stream-json mode (`claude -p
+# --input-format stream-json --output-format stream-json ...`), for tests
+# that must run without a model or a login. It answers the `initialize` and
+# `interrupt` control requests and a user message by what it says:
+#
+#   "use a tool"   text, a Bash tool call, then a `can_use_tool` request;
+#                  allow finishes the call, deny fails it
+#   "work slowly"  text, then nothing until an interrupt
+#   anything else  thinking, text, and a result with usage
+#
+# `--version` and `auth status --json` answer as a logged-in Claude Code
+# 2.1.326 does. It appends its arguments, and whether an API key variable
+# reached it, to fake-claude.log in its working directory.
+
+case "$1" in
+--version)
+	echo "2.1.326 (Claude Code)"
+	exit 0
+	;;
+auth)
+	echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}'
+	exit 0
+	;;
+esac
+
+log="$PWD/fake-claude.log"
+printf 'args:%s\n' "$*" >>"$log"
+if [ -n "$OPENAI_API_KEY$ANTHROPIC_API_KEY$ANTHROPIC_AUTH_TOKEN$CODEX_API_KEY" ]; then
+	echo "key:seen" >>"$log"
+else
+	echo "key:none" >>"$log"
+fi
+printf 'session-env:%s\n' "${DREAMER_SESSION_ID:-none}" >>"$log"
+
+sid="claude-$$"
+prev=""
+for a in "$@"; do
+	[ "$prev" = "--resume" ] && sid=$a
+	prev=$a
+done
+n=0
+emit() { printf '%s\n' "$1"; }
+rid() { printf '%s' "$1" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p'; }
+init() { emit "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$sid\",\"apiKeySource\":\"none\",\"model\":\"fake\"}"; }
+text() {
+	emit '{"type":"stream_event","event":{"type":"message_start"}}'
+	emit "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"$1\"}}}"
+	emit "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"$1\"}]}}"
+}
+result() { emit "{\"type\":\"result\",\"subtype\":\"$1\",\"is_error\":$2,\"result\":\"\",\"session_id\":\"$sid\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5},\"total_cost_usd\":0.000125}"; }
+
+while IFS= read -r line; do
+	case "$line" in
+	*'"subtype":"initialize"'*)
+		emit "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$(rid "$line")\",\"response\":{}}}"
+		;;
+	*'"subtype":"interrupt"'*)
+		emit "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$(rid "$line")\",\"response\":{}}}"
+		result error_during_execution true
+		;;
+	*'"type":"user"'*)
+		init
+		case "$line" in
+		*'use a tool'*)
+			text "Let me look."
+			n=$((n + 1))
+			emit "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu$n\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}}]}}"
+			emit "{\"type\":\"control_request\",\"request_id\":\"perm-$n\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"input\":{\"command\":\"ls\"},\"tool_use_id\":\"tu$n\"}}"
+			;;
+		*'work slowly'*)
+			text "Working"
+			;;
+		*)
+			emit '{"type":"stream_event","event":{"type":"message_start"}}'
+			emit '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Thinking."}}}'
+			emit '{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hello from fake claude."}}}'
+			result success false
+			;;
+		esac
+		;;
+	*'"type":"control_response"'*)
+		case "$line" in
+		*'"behavior":"allow"'*)
+			emit "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu$n\",\"content\":\"file-a\"}]}}"
+			;;
+		*)
+			emit "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu$n\",\"content\":\"denied by the user\",\"is_error\":true}]}}"
+			;;
+		esac
+		text "Done."
+		result success false
+		;;
+	esac
+done

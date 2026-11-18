@@ -9,9 +9,9 @@ use crate::{Event, Failure, Kind, Parser, Request, State, classify, clip};
 
 /// The CLI's own login, from `claude auth status --json`. Only whether
 /// it is logged in and how are kept.
-pub(crate) async fn login(program: &Path, login: &mut Option<String>) -> State {
+pub(crate) async fn login(program: &Path, pre: &[String], login: &mut Option<String>) -> State {
     let Some((_, text)) =
-        crate::output(program, &["auth", "status", "--json"], Kind::ClaudeCli).await
+        crate::output(program, pre, &["auth", "status", "--json"], Kind::ClaudeCli).await
     else {
         return State::Unknown("`auth status` did not answer".into());
     };

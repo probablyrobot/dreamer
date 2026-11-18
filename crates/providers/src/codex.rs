@@ -9,8 +9,8 @@ use serde_json::Value;
 use crate::{Event, Kind, Parser, Request, State, classify, clip};
 
 /// The CLI's own login, from `codex login status`.
-pub(crate) async fn login(program: &Path, login: &mut Option<String>) -> State {
-    let Some((ok, text)) = crate::output(program, &["login", "status"], Kind::CodexCli).await
+pub(crate) async fn login(program: &Path, pre: &[String], login: &mut Option<String>) -> State {
+    let Some((ok, text)) = crate::output(program, pre, &["login", "status"], Kind::CodexCli).await
     else {
         return State::Unknown("`login status` did not answer".into());
     };

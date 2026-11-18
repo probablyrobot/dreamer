@@ -1,0 +1,96 @@
+#!/bin/sh
+# A scripted stand-in for an agent speaking the Agent Client Protocol
+# (version 1) on its standard streams, for tests that must run without a
+# model or a login. It answers initialize, session/new, session/load, and
+# session/prompt, honours session/cancel, and answers a prompt by what it
+# says:
+#
+#   "use a tool"   text, a tool call, then session/request_permission; the
+#                  chosen option finishes (allow) or fails (reject) the call
+#   "work slowly"  text, then nothing until session/cancel
+#   anything else  a thought, text, a plan, a usage update, end of turn
+#
+# It appends what it was started with, and whether an API key variable
+# reached it, to fake-acp.log in its working directory.
+
+if [ "$1" = "--version" ]; then
+	echo "fake-acp 0.0.0"
+	exit 0
+fi
+
+log="$PWD/fake-acp.log"
+printf 'args:%s\n' "$*" >>"$log"
+if [ -n "$OPENAI_API_KEY$ANTHROPIC_API_KEY$ANTHROPIC_AUTH_TOKEN$CODEX_API_KEY$GEMINI_API_KEY" ]; then
+	echo "key:seen" >>"$log"
+else
+	echo "key:none" >>"$log"
+fi
+printf 'session-env:%s\n' "${DREAMER_SESSION_ID:-none}" >>"$log"
+
+sid="acp-$$"
+prompt=""
+emit() { printf '%s\n' "$1"; }
+num_id() { printf '%s' "$1" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p'; }
+update() { emit "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"$sid\",\"update\":$1}}"; }
+chunk() { update "{\"sessionUpdate\":\"$1\",\"content\":{\"type\":\"text\",\"text\":\"$2\"}}"; }
+end_turn() { emit "{\"jsonrpc\":\"2.0\",\"id\":$prompt,\"result\":{\"stopReason\":\"$1\"}}"; prompt=""; }
+
+while IFS= read -r line; do
+	case "$line" in
+	*'"method":"initialize"'*)
+		emit "{\"jsonrpc\":\"2.0\",\"id\":$(num_id "$line"),\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true},\"authMethods\":[]}}"
+		;;
+	*'"method":"session/new"'*)
+		printf 'new:%s\n' "$line" >>"$log"
+		emit "{\"jsonrpc\":\"2.0\",\"id\":$(num_id "$line"),\"result\":{\"sessionId\":\"$sid\"}}"
+		;;
+	*'"method":"session/load"'*)
+		sid=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
+		printf 'load:%s\n' "$sid" >>"$log"
+		# The history again, as the protocol says; Dreamer drops it.
+		chunk agent_message_chunk "replayed history"
+		emit "{\"jsonrpc\":\"2.0\",\"id\":$(num_id "$line"),\"result\":{}}"
+		;;
+	*'"method":"session/cancel"'*)
+		if [ -n "$prompt" ]; then
+			end_turn cancelled
+		fi
+		;;
+	*'"method":"session/prompt"'*)
+		prompt=$(num_id "$line")
+		case "$line" in
+		*'use a tool'*)
+			chunk agent_message_chunk "Let me look."
+			update '{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"bash","kind":"execute","status":"pending","rawInput":{"command":"ls"}}'
+			emit "{\"jsonrpc\":\"2.0\",\"id\":100,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"$sid\",\"toolCall\":{\"toolCallId\":\"call-1\",\"title\":\"Allow bash?\",\"rawInput\":{\"command\":\"ls\"}},\"options\":[{\"optionId\":\"allow\",\"name\":\"Allow\",\"kind\":\"allow_once\"},{\"optionId\":\"reject\",\"name\":\"Reject\",\"kind\":\"reject_once\"}]}}"
+			;;
+		*'work slowly'*)
+			chunk agent_message_chunk "Working"
+			;;
+		*)
+			chunk agent_thought_chunk "Thinking."
+			chunk agent_message_chunk "Hello from fake acp."
+			update '{"sessionUpdate":"plan","entries":[{"content":"Say hello","priority":"medium","status":"completed"}]}'
+			update '{"sessionUpdate":"usage_update","used":15,"size":1000,"cost":{"amount":0.000125,"currency":"USD"}}'
+			end_turn end_turn
+			;;
+		esac
+		;;
+	*'"result"'*)
+		# Dreamer's answer to the permission request.
+		case "$line" in
+		*'"optionId":"allow"'*)
+			update '{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"file-a"}}]}'
+			;;
+		*'"optionId":"reject"'*)
+			update '{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"failed","content":[{"type":"content","content":{"type":"text","text":"rejected by the user"}}]}'
+			;;
+		*)
+			continue
+			;;
+		esac
+		chunk agent_message_chunk "Done."
+		end_turn end_turn
+		;;
+	esac
+done

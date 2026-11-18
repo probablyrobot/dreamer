@@ -238,7 +238,10 @@ fn config_check_reports_each_harness_and_refuses_a_bad_block() {
     e.settings("agents:\n  default: mine\n  mine:\n    protocol: acp\n    command: [/bin/sh, -c, 'true']\n  codex:\n    command: [no-such-codex-here]\n");
     let out = e.ok(&["config", "check"]);
     assert!(out.contains("agent harnesses (default: mine)"), "{out}");
-    assert!(out.contains("✓ mine (default): /bin/sh"), "{out}");
+    assert!(
+        out.contains("✓ mine (default): /bin/sh (speaks acp)"),
+        "{out}"
+    );
     assert!(out.contains("· codex: not found"), "{out}");
     assert!(
         out.contains("dream agents update"),

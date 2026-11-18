@@ -121,6 +121,53 @@ pub struct Spec {
     pub offline: bool,
     /// The harness's own session to continue: a file path or an id.
     pub resume: Option<String>,
+    /// Dreamer's tools as an MCP server (`dream mcp`), for the harnesses
+    /// that take one (Claude Code, Codex, ACP agents). It runs with `env`.
+    pub tools: Option<crate::Tools>,
+}
+
+/// How Dreamer talks to a harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    /// `pi --mode rpc`.
+    Pi,
+    /// `claude -p` with stream-json input and output.
+    Claude,
+    /// `codex app-server`.
+    Codex,
+    /// The Agent Client Protocol on standard streams.
+    Acp,
+}
+
+impl Protocol {
+    pub fn parse(s: &str) -> Option<Protocol> {
+        Some(match s {
+            "pi" => Protocol::Pi,
+            "claude" => Protocol::Claude,
+            "codex" => Protocol::Codex,
+            "acp" => Protocol::Acp,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Protocol::Pi => "pi",
+            Protocol::Claude => "claude",
+            Protocol::Codex => "codex",
+            Protocol::Acp => "acp",
+        }
+    }
+}
+
+/// Start a harness over `protocol`. Must be called inside a Tokio runtime.
+pub async fn start(protocol: Protocol, spec: &Spec) -> Result<Harness, String> {
+    match protocol {
+        Protocol::Pi => crate::pi_rpc::start(spec).await,
+        Protocol::Claude => crate::claude_session::start(spec).await,
+        Protocol::Codex => crate::codex_session::start(spec).await,
+        Protocol::Acp => crate::acp::start(spec).await,
+    }
 }
 
 /// A running harness: what it says arrives on `updates`, and `control`
