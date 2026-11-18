@@ -14,8 +14,8 @@ The file is the one place to configure Dreamer, and changes apply live.
 - **Applying.** A valid change applies at once, with no restart:
   - the terminal theme and cursor reach every running pane, in every
     window, including on other machines;
-  - the font, chrome, appearance, links, clipboard, and fallback apply in
-    every window;
+  - the font, chrome, appearance, window decorations, links, clipboard,
+    and fallback apply in every window;
   - the tier budgets apply to the daemon's panes;
   - the memory provider applies to the next memory call.
 - **Refusing.** A file that does not read changes nothing. Dreamer keeps
@@ -68,6 +68,8 @@ drawer:
   size: 35                               # default; percent of the window, 10 to 90
 memory:
   provider: files                        # default; the only provider so far
+window:
+  decorations: full                      # full (default) or none
 ```
 
 ## Font
@@ -282,6 +284,22 @@ the window it is shown in. A change applies the next time it is shown.
 drawer:
   side: bottom     # bottom (default), right, or left; always the whole window's width or height
   size: 35         # percent of the window's height (bottom) or width (sides), 10 to 90; `35%` also reads
+```
+
+## Window decorations
+
+`window.decorations` chooses whether desktop windows have the system's
+title bar and its close, zoom, and minimize buttons:
+- `full` (the default) keeps them. On macOS the buttons sit at the tab
+  strip's left; on Linux the desktop environment draws its title bar.
+- `none` removes them. The tab strip still moves the window, a
+  double-click on it zooms the window, and the window still resizes from
+  its edges. On Linux the window asks for client-side decorations and
+  draws none.
+
+```yaml
+window:
+  decorations: none
 ```
 
 ## Memory

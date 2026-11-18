@@ -284,6 +284,14 @@ pub const SCHEMA: &[Key] = &[
         live: true,
     },
     Key {
+        path: "window.decorations",
+        kind: "full | none",
+        default: "full",
+        doc: "Whether desktop windows have the system's title bar and its close, zoom, and minimize buttons. With none the tab strip still moves the window (double-click zooms it), and the window still resizes from its edges.",
+        example: "none",
+        live: true,
+    },
+    Key {
         path: "memory.provider",
         kind: "files",
         default: "files",

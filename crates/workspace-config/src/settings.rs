@@ -29,6 +29,24 @@ pub struct Settings {
     pub agents: crate::agents::AgentSettings,
     pub drawer: DrawerSettings,
     pub memory: MemorySettings,
+    pub window: WindowSettings,
+}
+
+/// The desktop's windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WindowSettings {
+    pub decorations: Decorations,
+}
+
+/// Whether a window has the system's title bar and buttons (close, zoom,
+/// minimize). With `none` the tab strip still moves the window, and the
+/// window still resizes from its edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Decorations {
+    #[default]
+    Full,
+    None,
 }
 
 /// Durable memory (see `docs/memory.md`): which provider keeps it.
@@ -361,6 +379,7 @@ impl Default for Settings {
             agents: crate::agents::AgentSettings::default(),
             drawer: DrawerSettings::default(),
             memory: MemorySettings::default(),
+            window: WindowSettings::default(),
         }
     }
 }
@@ -388,6 +407,14 @@ struct File {
     drawer: DrawerFile,
     #[serde(default)]
     memory: MemoryFile,
+    #[serde(default)]
+    window: WindowFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowFile {
+    decorations: Option<Decorations>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -797,6 +824,9 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(p) = file.memory.provider {
         s.memory.provider = p;
     }
+    if let Some(d) = file.window.decorations {
+        s.window.decorations = d;
+    }
     Ok(s)
 }
 
@@ -1016,6 +1046,16 @@ mod tests {
         let s = parse_settings("appearance: light", None).expect("light");
         assert_eq!(s.appearance, Appearance::Light);
         assert!(parse_settings("appearance: sepia", None).is_err());
+    }
+
+    #[test]
+    fn windows_keep_their_title_bar_unless_decorations_are_none() {
+        assert_eq!(Settings::default().window.decorations, Decorations::Full);
+        let s = parse_settings("window:\n  decorations: none\n", None).expect("none");
+        assert_eq!(s.window.decorations, Decorations::None);
+        let e = parse_settings("window:\n  decorations: minimal\n", None).expect_err("bad");
+        assert_eq!(e.line, Some(2), "{e}");
+        assert!(e.message.contains("full"), "{e}");
     }
 
     #[test]

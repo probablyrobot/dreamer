@@ -195,6 +195,9 @@ terminal's do:
 - On Linux the app quits when its last window closes. On macOS it stays in
   the Dock, and clicking the icon opens a new window.
 - The window title follows the focused pane's title.
+- `window.decorations: none` in [settings](settings.md#window-decorations)
+  hides the title bar and the close, zoom, and minimize buttons; the tab
+  strip still moves the window.
 
 ## Menus and shortcuts
 

@@ -25,9 +25,10 @@ pub use dirs::{config_dir, workspace_dir, workspace_path};
 pub use plan::{Arrange, PanePlan, PaneRef, Plan, SizeArg, SplitStep, Start, WindowPlan};
 pub use schema::{Direction, NodeSpec, Size, WindowSpec, WorkspaceFile};
 pub use settings::{
-    Appearance, ClipboardSettings, ClipboardTmux, ClipboardWrite, DrawerSettings, DrawerSide,
-    FallbackSettings, FontSettings, LinkSettings, MemoryProvider, MemorySettings, MiddleClick,
-    STARTER_SETTINGS, Settings, TierSettings, ensure_settings_file, load_settings, settings_path,
+    Appearance, ClipboardSettings, ClipboardTmux, ClipboardWrite, Decorations, DrawerSettings,
+    DrawerSide, FallbackSettings, FontSettings, LinkSettings, MemoryProvider, MemorySettings,
+    MiddleClick, STARTER_SETTINGS, Settings, TierSettings, WindowSettings, ensure_settings_file,
+    load_settings, settings_path,
 };
 
 use std::path::{Path, PathBuf};
