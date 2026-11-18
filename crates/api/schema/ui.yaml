@@ -150,6 +150,16 @@ components:
     first: lines
     doc: Lines, following the newest.
     props: { lines: "unknown[]" }
+  - name: terminal
+    form: content
+    first: pane
+    doc: "A tmux pane's screen, live and read only: by number or tmux name (`3` or `\"%3\"`). The pane must be in the app's grant."
+    props: { pane: number | string }
+  - name: image
+    form: content
+    first: src
+    doc: A PNG or JPEG file in the app's package, by its path there.
+    props: { src: string }
 
 # `ui.screen(root, options)`: the view with its status line, focused
 # node's key, and title.

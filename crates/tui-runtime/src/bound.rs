@@ -487,7 +487,8 @@ mod tests {
         };
         let mut t =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).expect("terminal");
-        t.draw(|f| draw_tree(&tree, &mut state, f)).expect("draw");
+        t.draw(|f| draw_tree(&tree, &app_model::embeds::Embeds::default(), &mut state, f))
+            .expect("draw");
         let s = screen(&t);
         // The newest of the long answer, then the cards, then the state.
         for want in [
@@ -515,7 +516,8 @@ mod tests {
             thinking: false,
             back: 1000,
         };
-        t.draw(|f| draw_tree(&back, &mut state, f)).expect("draw");
+        t.draw(|f| draw_tree(&back, &app_model::embeds::Embeds::default(), &mut state, f))
+            .expect("draw");
         let s = screen(&t);
         assert!(s.contains("> use a tool"), "{s}");
         assert!(s.contains("┊ thinking (2 lines; t shows it)"), "{s}");

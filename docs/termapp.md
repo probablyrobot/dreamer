@@ -182,6 +182,8 @@ columns = ["name", "width", "height"]
   are described [below](#text-input-and-status-components).
 - **`transcript` and `composer`** show and write to an agent session;
   see [below](#agent-sessions-transcript-and-composer).
+- **Terminal and image components** (`terminal`, `image`) are described
+  [below](#terminal-and-image-components).
 - **`title`**, on any node, is a heading; in a terminal the node gets a
   border with it.
 - **Keys** of nodes are lowercase letters, digits, `-`, and `_`. Every
@@ -283,6 +285,65 @@ no command, a text or status component with neither its content
 without options or with a `value` not among them, a button or toggle
 without a `label`, an input component with a `source`, and a command
 with no key that nothing runs.
+
+### Terminal and image components
+
+A `terminal` shows a tmux pane's screen, live, inside the app. An `image`
+shows a picture from the app's package.
+
+```toml
+capabilities = ["terminal.read"]
+
+[nodes.left]
+type = "terminal"
+title = "build"
+pane = 3                    # %3
+
+[nodes.logo]
+type = "image"
+src = "img/logo.png"        # a file in the package
+```
+
+**`terminal`**
+
+- **The grant.** The app needs `terminal.read` in `capabilities`, and its
+  grant must include the pane. A manifest's `terminal` panes are part of
+  the grant it needs (`--check --json`, `dream app check`), so `dream
+  app launch` grants them. A script or process app names its panes at run
+  time, so launch it with them (`dream app run ... --pane %3`) or with
+  `all_panes = true`.
+- **Bound, not copied.** The pane's screen never passes through the
+  app's code or its tree. The node only names the pane, and each
+  renderer follows it:
+  - the pane's own terminal reads it with `terminal.read` on the app's
+    connection, about four times a second, and shows as many of its rows
+    as fit, keeping the cursor's row in view;
+  - the desktop draws it with its terminal renderer
+    ([desktop.md](desktop.md#app-panes)).
+- **Read only.** Keys never go to the pane shown, and it never takes the
+  focus.
+- **A pane outside the grant is refused.** The host marks the node
+  refused, and every renderer shows `refused:` and why instead of the
+  pane. The daemon refuses the host's read of it, and the app's status
+  line says `terminal %N:` and the daemon's reason, until something else
+  replaces it. The daemon also
+  refuses a published tree that shows such a pane without marking it, so
+  a process app cannot show a pane by leaving the mark out.
+- A pane that is gone shows `pane %N:` and why.
+
+**`image`**
+
+- **From the package only.** `src` is a path relative to the package
+  directory, ending in `.png`, `.jpg`, or `.jpeg`. The host refuses an
+  absolute path, one with `..`, and a file that a link leads out of the
+  package. `--check` refuses the others in a manifest.
+- **What is shown.** A PNG or JPEG of at most 8 MiB and 8192 pixels on
+  a side. The host reads only the file's header, for its size.
+- **Where.**
+  - A terminal shows `[image: NAME WxH]`, or `[image: NAME: why]` when
+    the image is refused.
+  - The desktop reads and decodes the file off its UI thread, then draws
+    the picture at its own size, shrunk to fit the node.
 
 Every data source a node shows is fetched as in version 1, and the
 sources' `events` and the shortest `refresh_ms` apply. A module's
@@ -432,6 +493,8 @@ its content, an optional `bind` ([bound streams](#bound-streams)), and
 | `status` | `items`, each with `text` and `tone` |
 | `transcript` | `thinking` (shown, not folded) and `back` (lines scrolled back from the newest, in a terminal); the conversation comes from its `bind` |
 | `composer` | `label`, `value` (lines separated by `\n`), `placeholder`, and `attachments` (their labels) |
+| `terminal` | `pane`, the pane's number; `refused`, why it is not shown (left out when it is) |
+| `image` | `src`, the path in the package; the host adds `path` (the file it resolved to), `width` and `height` in pixels, or `refused` |
 
 A row's key is its `row_key` value, or its place when the view has
 none. A change is one of these ops, each naming its node by the keys on
@@ -639,7 +702,11 @@ load other code.
     its place; a table's cells are the row's `columns` fields as text;
   - controls: `button` (`label`), `input` (`label`, `value`,
     `placeholder`), `select` (`label`, `options`, and `value` or
-    `selected`), and `toggle` (`label`, `on`).
+    `selected`), and `toggle` (`label`, `on`);
+  - embeds: `terminal` (`pane`, a number or `"%3"`; also
+    `ui.terminal(pane, fields)`) and `image` (`src`; also
+    `ui.image(src, fields)`). See
+    [terminal and image components](#terminal-and-image-components).
 - **Timers** run on the app's thread. An interval is at least 10 ms, and
   an app has at most 1000 timers pending.
 - **`console`** lines are kept as a process app's standard error is.

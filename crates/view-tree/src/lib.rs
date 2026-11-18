@@ -19,6 +19,7 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
+pub mod image;
 pub mod rich;
 pub mod transcript;
 
@@ -212,6 +213,30 @@ pub enum Kind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<String>,
     },
+    /// A live view of tmux pane `pane`, read only. The node is bound to
+    /// the pane: its screen never passes through the tree, each renderer
+    /// follows the pane itself. `refused` says why the app may not show
+    /// it (the pane is outside the app's grant); it is drawn instead.
+    Terminal {
+        pane: u32,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        refused: String,
+    },
+    /// A PNG or JPEG image from the app's package. `src` is its path in
+    /// the package as the app gave it; the app host fills in the rest:
+    /// the file it resolved to (`path`) and its size in pixels, or why it
+    /// is refused (outside the package, too large, not a PNG or JPEG).
+    Image {
+        src: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        path: String,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        width: u32,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        height: u32,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        refused: String,
+    },
 }
 
 fn is_false(b: &bool) -> bool {
@@ -283,6 +308,8 @@ impl Kind {
             Kind::Status { .. } => "status",
             Kind::Transcript { .. } => "transcript",
             Kind::Composer { .. } => "composer",
+            Kind::Terminal { .. } => "terminal",
+            Kind::Image { .. } => "image",
         }
     }
 
@@ -674,6 +701,54 @@ pub enum Refused {
     /// The patch does not follow the version kept: send the whole tree.
     Resync(String),
     Invalid(String),
+    /// A `terminal` node shows a pane the app may not read, and does not
+    /// say it is refused.
+    Forbidden(String),
+}
+
+/// Every `terminal` node in `n`'s subtree that shows its pane (is not
+/// marked refused) must name a pane `may_show` allows.
+fn panes_allowed(n: &Node, may_show: &dyn Fn(u32) -> bool) -> Result<(), Refused> {
+    shown_pane_allowed(&n.key, &n.kind, may_show)?;
+    n.children
+        .iter()
+        .try_for_each(|c| panes_allowed(c, may_show))
+}
+
+fn shown_pane_allowed(
+    key: &str,
+    kind: &Kind,
+    may_show: &dyn Fn(u32) -> bool,
+) -> Result<(), Refused> {
+    match kind {
+        Kind::Terminal { pane, refused } if refused.is_empty() && !may_show(*pane) => {
+            Err(Refused::Forbidden(format!(
+                "terminal `{key}`: pane %{pane} is outside the app's grant"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+impl Frame {
+    /// The panes this tree's `terminal` nodes show (not refused ones), in
+    /// tree order, each once. A tabs node's hidden pages show none.
+    pub fn panes(&self) -> Vec<u32> {
+        fn go(n: &Node, out: &mut Vec<u32>) {
+            if let Kind::Terminal { pane, refused } = &n.kind
+                && refused.is_empty()
+                && !out.contains(pane)
+            {
+                out.push(*pane);
+            }
+            for c in n.shown() {
+                go(c, out);
+            }
+        }
+        let mut out = Vec::new();
+        go(&self.root, &mut out);
+        out
+    }
 }
 
 impl Kept {
@@ -688,11 +763,24 @@ impl Kept {
     /// Take version `seq`: the whole tree (`tree`, JSON) or the ops from
     /// the version before (`patch`, JSON).
     pub fn publish(&mut self, seq: u64, tree: &str, patch: &str) -> Result<(), Refused> {
+        self.publish_checked(seq, tree, patch, &|_| true)
+    }
+
+    /// As [`Kept::publish`], refusing a version with a `terminal` node
+    /// that shows a pane `may_show` does not allow. Nothing changes then.
+    pub fn publish_checked(
+        &mut self,
+        seq: u64,
+        tree: &str,
+        patch: &str,
+        may_show: &dyn Fn(u32) -> bool,
+    ) -> Result<(), Refused> {
         match (tree.is_empty(), patch.is_empty()) {
             (false, true) => {
                 let frame: Frame = serde_json::from_str(tree)
                     .map_err(|e| Refused::Invalid(format!("tree: {e}")))?;
                 frame.check().map_err(Refused::Invalid)?;
+                panes_allowed(&frame.root, may_show)?;
                 self.frame = Some(frame);
                 self.seq = seq;
                 self.log.clear();
@@ -710,6 +798,20 @@ impl Kept {
                 }
                 let ops: Vec<Op> = serde_json::from_str(patch)
                     .map_err(|e| Refused::Invalid(format!("patch: {e}")))?;
+                for op in &ops {
+                    match op {
+                        Op::Frame { .. } => {}
+                        Op::Root { node } => panes_allowed(node, may_show)?,
+                        Op::Props { path, kind, .. } => shown_pane_allowed(
+                            path.last().map_or("", String::as_str),
+                            kind,
+                            may_show,
+                        )?,
+                        Op::Children { added, .. } => {
+                            added.iter().try_for_each(|n| panes_allowed(n, may_show))?
+                        }
+                    }
+                }
                 if let Err(e) = apply(frame, &ops) {
                     self.frame = None;
                     self.log.clear();
@@ -842,6 +944,60 @@ mod tests {
             focus: Some("panes".into()),
             root,
         }
+    }
+
+    fn json<T: Serialize>(v: &T) -> String {
+        serde_json::to_string(v).expect("json")
+    }
+
+    #[test]
+    fn a_terminal_node_outside_the_grant_is_refused_unless_marked() {
+        let term = |key: &str, pane: u32, refused: &str| {
+            Node::new(
+                key,
+                Kind::Terminal {
+                    pane,
+                    refused: refused.into(),
+                },
+            )
+        };
+        let mut f = frame(&[("1", "sh")]);
+        f.root.children.push(term("a", 3, ""));
+        let may = |p: u32| p == 3;
+        let mut kept = Kept::default();
+        kept.publish_checked(1, &json(&f), "", &may)
+            .expect("pane 3 is allowed");
+        assert_eq!(f.panes(), vec![3]);
+        // A patch that adds a pane outside the grant changes nothing.
+        let mut g = f.clone();
+        g.root.children.push(term("b", 4, ""));
+        let e = kept.publish_checked(2, "", &json(&diff(&f, &g)), &may);
+        assert!(
+            matches!(&e, Err(Refused::Forbidden(m)) if m.contains("pane %4")),
+            "{e:?}"
+        );
+        assert_eq!(kept.seq(), 1);
+        // Marked refused, it is drawn as a refusal and may be published.
+        let mut h = f.clone();
+        h.root
+            .children
+            .push(term("b", 4, "pane %4 is outside the app's grant"));
+        assert_eq!(h.panes(), vec![3]);
+        kept.publish_checked(2, "", &json(&diff(&f, &h)), &may)
+            .expect("a refused node");
+        // A node changed to a pane outside the grant is refused too.
+        let mut i = h.clone();
+        if let Some(n) = i.root.children.iter_mut().find(|c| c.key == "a") {
+            n.kind = Kind::Terminal {
+                pane: 5,
+                refused: String::new(),
+            };
+        }
+        let e = kept.publish_checked(3, "", &json(&diff(&h, &i)), &may);
+        assert!(matches!(e, Err(Refused::Forbidden(_))), "{e:?}");
+        let whole = kept.publish_checked(3, &json(&i), "", &may);
+        assert!(matches!(whole, Err(Refused::Forbidden(_))), "{whole:?}");
+        assert_eq!(kept.seq(), 2);
     }
 
     #[test]

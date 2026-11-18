@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use app_model::App;
+use app_model::embeds::{Embeds, Screen};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction as Axis, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -34,7 +35,7 @@ pub fn draw(app: &App, f: &mut Frame) {
 /// Draw `app`, keeping scroll positions in `state` across draws.
 pub fn draw_with(app: &App, state: &mut ViewState, f: &mut Frame) {
     match app.frame() {
-        Some(tree) => draw_tree(&tree, state, f),
+        Some(tree) => draw_tree(&tree, &app.embeds, state, f),
         None => {
             let [main, status] =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
@@ -50,14 +51,15 @@ pub fn draw_with(app: &App, state: &mut ViewState, f: &mut Frame) {
 }
 
 /// Draw a view tree in the whole frame: its title around the tree, and
-/// its status line below.
-pub fn draw_tree(tree: &Tree, state: &mut ViewState, f: &mut Frame) {
+/// its status line below. `embeds` holds the screens of the panes its
+/// `terminal` nodes show.
+pub fn draw_tree(tree: &Tree, embeds: &Embeds, state: &mut ViewState, f: &mut Frame) {
     let [main, status] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
     let block = Block::bordered().title(format!(" {} ", tree.title));
     let inner = block.inner(main);
     f.render_widget(block, main);
-    draw_node(&tree.root, tree, state, f, inner);
+    draw_node(&tree.root, tree, embeds, state, f, inner);
     f.render_widget(Paragraph::new(Line::from(tree.status.clone())), status);
 }
 
@@ -90,7 +92,9 @@ fn natural(n: &Node) -> u16 {
         | Kind::Toggle { .. }
         | Kind::Badge { .. }
         | Kind::Progress { .. }
-        | Kind::Status { .. } => 1,
+        | Kind::Status { .. }
+        | Kind::Image { .. } => 1,
+        Kind::Terminal { .. } => 5,
     };
     own.saturating_add(border)
 }
@@ -109,7 +113,8 @@ fn fixed(n: &Node) -> bool {
         | Kind::Badge { .. }
         | Kind::Progress { .. }
         | Kind::Status { .. }
-        | Kind::Composer { .. } => true,
+        | Kind::Composer { .. }
+        | Kind::Image { .. } => true,
         Kind::Row | Kind::Column => !n.children.is_empty() && n.children.iter().all(fixed),
         _ => false,
     }
@@ -210,6 +215,53 @@ pub(crate) fn rich_lines(lines: Vec<rich::Line>, width: u16) -> Vec<Line<'static
         .collect()
 }
 
+/// A `terminal` node's lines in `area`: the pane's screen, as many of its
+/// rows as fit with the cursor's in view; or why it is not shown.
+fn terminal_lines(pane: u32, refused: &str, embeds: &Embeds, area: Rect) -> Vec<Line<'static>> {
+    let note = |s: String, style: Style| vec![Line::from(Span::styled(s, style))];
+    if !refused.is_empty() {
+        return note(format!("refused: {refused}"), tone(Tone::Danger));
+    }
+    match embeds.panes.get(&pane) {
+        Some(Screen::Lines { lines, cursor_y }) => {
+            let rows = usize::from(area.height);
+            let cursor = (*cursor_y as usize + 1).min(lines.len());
+            let start = cursor.saturating_sub(rows);
+            lines
+                .iter()
+                .skip(start)
+                .take(rows)
+                .map(|l| Line::from(l.clone()))
+                .collect()
+        }
+        Some(Screen::Refused(why)) => note(format!("refused: {why}"), tone(Tone::Danger)),
+        Some(Screen::Unavailable(why)) => note(format!("pane %{pane}: {why}"), tone(Tone::Warning)),
+        None => note(format!("pane %{pane}…"), tone(Tone::Neutral)),
+    }
+}
+
+/// An `image` node in a terminal: a placeholder with its name and size.
+fn image_line(src: &str, width: u32, height: u32, refused: &str) -> Line<'static> {
+    let name = std::path::Path::new(src)
+        .file_name()
+        .map_or_else(|| src.to_owned(), |n| n.to_string_lossy().into_owned());
+    if !refused.is_empty() {
+        return Line::from(Span::styled(
+            format!("[image: {name}: {refused}]"),
+            tone(Tone::Danger),
+        ));
+    }
+    let size = if width > 0 {
+        format!(" {width}x{height}")
+    } else {
+        String::new()
+    };
+    Line::from(Span::styled(
+        format!("[image: {name}{size}]"),
+        Style::default().add_modifier(Modifier::DIM),
+    ))
+}
+
 /// The style of a control: reversed while it has the focus.
 fn control(focused: bool, base: Style) -> Style {
     if focused {
@@ -228,7 +280,14 @@ fn label_span(label: &str) -> Option<Span<'static>> {
     })
 }
 
-fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: Rect) {
+fn draw_node(
+    n: &Node,
+    tree: &Tree,
+    embeds: &Embeds,
+    state: &mut ViewState,
+    f: &mut Frame,
+    area: Rect,
+) {
     let focused = tree.focus.as_deref() == Some(n.key.as_str());
     let area = match &n.title {
         Some(t) => {
@@ -254,7 +313,7 @@ fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: 
                 .constraints(constraints)
                 .split(area);
             for (c, a) in n.children.iter().zip(areas.iter()) {
-                draw_node(c, tree, state, f, *a);
+                draw_node(c, tree, embeds, state, f, *a);
             }
         }
         Kind::Split { direction, sizes } => {
@@ -280,7 +339,7 @@ fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: 
                 .constraints(constraints)
                 .split(area);
             for (c, a) in n.children.iter().zip(areas.iter()) {
-                draw_node(c, tree, state, f, *a);
+                draw_node(c, tree, embeds, state, f, *a);
             }
         }
         Kind::Tabs { active } => {
@@ -301,7 +360,7 @@ fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: 
                 // The page's own title is its tab's name.
                 let mut page = page.clone();
                 page.title = None;
-                draw_node(&page, tree, state, f, body);
+                draw_node(&page, tree, embeds, state, f, body);
             }
         }
         Kind::Scroll => {
@@ -335,7 +394,14 @@ fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: 
                     break;
                 }
                 let h = (*h).min(bottom - y);
-                draw_node(c, tree, state, f, Rect::new(area.x, y, area.width, h));
+                draw_node(
+                    c,
+                    tree,
+                    embeds,
+                    state,
+                    f,
+                    Rect::new(area.x, y, area.width, h),
+                );
                 y += h;
             }
         }
@@ -521,6 +587,24 @@ fn draw_node(n: &Node, tree: &Tree, state: &mut ViewState, f: &mut Frame, area: 
                     ),
                     Span::raw(label),
                 ])),
+                area,
+            );
+        }
+        Kind::Terminal { pane, refused } => {
+            f.render_widget(
+                Paragraph::new(terminal_lines(*pane, refused, embeds, area)),
+                area,
+            );
+        }
+        Kind::Image {
+            src,
+            width,
+            height,
+            refused,
+            ..
+        } => {
+            f.render_widget(
+                Paragraph::new(image_line(src, *width, *height, refused)),
                 area,
             );
         }
@@ -904,7 +988,7 @@ field = "name"
             "{ops:?}"
         );
         assert_eq!(desktop.frame.as_ref(), Some(&changed));
-        term.draw(|f| draw_tree(&changed, &mut state, f))
+        term.draw(|f| draw_tree(&changed, &Embeds::default(), &mut state, f))
             .expect("draw");
         let lines = screen(&term);
         assert_eq!(at(&lines, "htop").1, vim_y, "{}", lines.join("\n"));
@@ -1049,5 +1133,69 @@ field = "name"
         assert!(!shown.contains("hi▏"), "the cursor leaves with the focus");
         assert!(cell_at(&t, "● light").modifier.contains(Modifier::REVERSED));
         assert!(!cell_at(&t, "○ dark").modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn a_terminal_shows_its_panes_screen_and_an_image_its_placeholder() {
+        let term = |key: &str, pane: u32, refused: &str| {
+            Node::new(
+                key,
+                Kind::Terminal {
+                    pane,
+                    refused: refused.into(),
+                },
+            )
+        };
+        let mut root = Node::new("main", Kind::Column);
+        let mut row = Node::new("panes", Kind::Row);
+        row.children = vec![
+            term("a", 1, ""),
+            term("b", 2, "pane %2 is outside the app's grant"),
+        ];
+        root.children = vec![
+            Node::new(
+                "logo",
+                Kind::Image {
+                    src: "img/logo.png".into(),
+                    path: "/pkg/img/logo.png".into(),
+                    width: 64,
+                    height: 32,
+                    refused: String::new(),
+                },
+            ),
+            row,
+        ];
+        let tree = Tree {
+            title: "E".into(),
+            status: String::new(),
+            focus: None,
+            root,
+        };
+        let mut embeds = Embeds::default();
+        // More rows than fit: those up to the cursor's are shown.
+        embeds.panes.insert(
+            1,
+            Screen::Lines {
+                lines: (0..20).map(|i| format!("line {i}")).collect(),
+                cursor_y: 12,
+            },
+        );
+        let mut t =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 8)).expect("terminal");
+        t.draw(|f| draw_tree(&tree, &embeds, &mut ViewState::default(), f))
+            .expect("draw");
+        let buf = t.backend().buffer().clone();
+        let shown = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(shown.contains("[image: logo.png 64x32]"), "{shown}");
+        assert!(shown.contains("line 12"), "{shown}");
+        assert!(!shown.contains("line 13"), "{shown}");
+        assert!(shown.contains("refused: pane %2 is outside"), "{shown}");
     }
 }

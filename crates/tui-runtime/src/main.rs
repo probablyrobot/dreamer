@@ -188,7 +188,14 @@ fn preview(path: &str, args: &[&str]) -> Result<String, String> {
             Some(app_script::engine()),
         ))?;
         terminal
-            .draw(|f| view::draw_tree(&tree, &mut view::ViewState::default(), f))
+            .draw(|f| {
+                view::draw_tree(
+                    &tree,
+                    &app_model::embeds::Embeds::default(),
+                    &mut view::ViewState::default(),
+                    f,
+                )
+            })
             .map_err(|e| e.to_string())?;
     } else {
         let app = rt.block_on(app_model::preview(std::path::Path::new(path)))?;
@@ -328,7 +335,9 @@ fn replay(path: &str, args: &[&str]) -> Result<Vec<String>, String> {
     if manifest.draws_own_view() {
         let mut each = |tree: &view_tree::Frame| {
             terminal
-                .draw(|f| view::draw_tree(tree, &mut state, f))
+                .draw(|f| {
+                    view::draw_tree(tree, &app_model::embeds::Embeds::default(), &mut state, f)
+                })
                 .map_err(|e| e.to_string())?;
             screens.push(screen_text(&terminal) + &tree_notes(Some(tree)));
             Ok(())
@@ -419,9 +428,9 @@ fn run(path: PathBuf, own_view: bool, preview: Option<app_model::Preview>) -> Re
     let streams = state.streams.clone();
     if own_view {
         // A process or script app: its code draws the tree.
-        let mut publish = |tree: &view_tree::Frame| {
+        let mut publish = |tree: &view_tree::Frame, embeds: &app_model::embeds::Embeds| {
             terminal
-                .draw(|f| view::draw_tree(tree, &mut state, f))
+                .draw(|f| view::draw_tree(tree, embeds, &mut state, f))
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         };

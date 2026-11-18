@@ -2545,6 +2545,14 @@ declare namespace Dreamer {
     lines?: unknown[];
   }
 
+  interface TerminalProps extends Common {
+    pane?: number | string;
+  }
+
+  interface ImageProps extends Common {
+    src?: string;
+  }
+
   interface Ui {
     /** Children one above the other. */
     column(children: Child[], props?: ColumnProps): Node;
@@ -2624,6 +2632,14 @@ declare namespace Dreamer {
     log(lines: unknown[], props?: LogProps): Node;
     /** Lines, following the newest. */
     log(props?: LogProps): Node;
+    /** A tmux pane's screen, live and read only: by number or tmux name (`3` or `"%3"`). The pane must be in the app's grant. */
+    terminal(pane: number | string, props?: TerminalProps): Node;
+    /** A tmux pane's screen, live and read only: by number or tmux name (`3` or `"%3"`). The pane must be in the app's grant. */
+    terminal(props?: TerminalProps): Node;
+    /** A PNG or JPEG file in the app's package, by its path there. */
+    image(src: string, props?: ImageProps): Node;
+    /** A PNG or JPEG file in the app's package, by its path there. */
+    image(props?: ImageProps): Node;
     /** The view with its status line, focused node's key, and title. */
     screen(root: Child, options?: ScreenOptions): Screen;
   }

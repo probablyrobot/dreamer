@@ -5,6 +5,7 @@
 
 mod agent;
 pub mod bound;
+pub mod embeds;
 pub mod installed;
 pub mod manifest;
 mod model;

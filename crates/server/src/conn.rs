@@ -300,7 +300,9 @@ pub async fn connection_as(
                             Err(e) => {
                                 failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string()))
                             }
-                            Ok(p) => match state.apps.publish_tree(conn.id, &p) {
+                            Ok(p) => match state.apps.publish_tree(conn.id, &p, &|pane| {
+                                may_read_pane(&state, &conn, pane)
+                            }) {
                                 Ok(()) => ok(req.id, api::Empty {}.encode_to_vec()),
                                 Err(e) => failure(req.id, e),
                             },
@@ -649,6 +651,24 @@ async fn act_level(state: &State, conn: &Conn, req: &wire::Request) -> Result<()
     };
     let requester = conn.who().instance;
     crate::approvals::gate(state, conn.id, &requester, &grant, &req.method, &request).await
+}
+
+/// Whether the connection's grant lets it read pane `pane`'s content, as
+/// `terminal.read` would: what an app's `terminal` node may show.
+fn may_read_pane(state: &State, conn: &Conn, pane: u32) -> bool {
+    let Some(grant) = conn.grant.lock().ok().map(|g| g.clone()) else {
+        return false;
+    };
+    let read = api::Request::TerminalRead(api::ReadParams {
+        pane,
+        history: None,
+        endpoint: None,
+    });
+    grant
+        .check_owning(api::method::TERMINAL_READ, &read, |p| {
+            state.approvals.owns(conn.id, p)
+        })
+        .is_ok()
 }
 
 /// What an app may do with filters (spec 13.4: a filter pane). Only with
