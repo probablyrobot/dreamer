@@ -40,6 +40,7 @@ mod sessions;
 mod taps;
 mod tiers;
 mod tools;
+mod web;
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek as _, Write as _};

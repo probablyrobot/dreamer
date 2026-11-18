@@ -151,6 +151,17 @@ the session and the window to show it in. Without them, the pane the
 command runs in (`TMUX_PANE`) does; run in the drawer itself, it means
 the drawer's session. `--json` prints the daemon's answer as data.
 
+## Web panes
+
+`dream web open URL [--session $N|NAME | --pane %N] [--json]` opens a web
+page in a new tmux pane: a placeholder pane that Dreamer's desktop fills
+with the page ([desktop.md](desktop.md#web-panes)). With `--pane` the
+pane is split side by side; with `--session` the page gets a new window
+there; with neither, the pane the command runs in (`TMUX_PANE`) is
+split. It prints the new pane (`%N`). `http`, `https`, `file`, and `data`
+URLs and `about:blank` are accepted; anything else is refused. Plain tmux
+clients see the placeholder's text: the address.
+
 ## Approvals
 
 `dream approvals [--json]` lists the actions agents are waiting to have

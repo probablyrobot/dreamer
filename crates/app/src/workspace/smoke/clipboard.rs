@@ -649,7 +649,7 @@ async fn app_pane(
                 let shown = view.read(cx).shown.clone()?;
                 (shown.link == app_model::Link::Live).then_some((shown.form, shown.focus))
             }
-            PaneView::Terminal(_) => None,
+            PaneView::Terminal(_) | PaneView::Web { .. } => None,
         }
     };
     wait_long(

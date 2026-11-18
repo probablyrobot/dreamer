@@ -501,6 +501,64 @@ sidebar. Status items show at the right of the tab strip, followed by
 the last contributed command's outcome. Contributions apply to local
 windows only.
 
+## Web panes
+
+macOS only so far, and only in a build with web panes (below). A web pane
+shows one web page in a pane's rectangle, drawn by Chromium itself: no
+address bar, tabs, or history. In tmux it is an ordinary pane, so splits,
+resizes, zoom, moving it, and keeping it across desktop restarts all
+come from tmux.
+
+- **Opening one.** "Open a web page…" in the palette asks for a URL and
+  opens it in a pane beside the focused one; `dream web open URL`
+  ([cli.md](cli.md#web-panes)) does the same from a shell. `http`,
+  `https`, `file`, and `data` URLs and `about:blank` are accepted; others
+  are refused.
+- **What tmux holds.** The pane runs a small placeholder program that
+  prints the address, which is what a plain tmux client shows, and
+  carries a pane option, `@dreamer_surface` = `web:<URL>`. The daemon
+  reports it in the topology as the pane's `web` URL.
+- **What the desktop draws.** Chromium's own view, placed over the pane's
+  rectangle and moved with it on every layout change. It is hidden while
+  the pane is not shown (another tab, or another pane zoomed) and while the
+  command palette is open, because a native view is drawn above anything
+  Dreamer draws. The pane then shows its background and address instead
+  of a snapshot of the page.
+- **Focus.** Clicking the page focuses its pane, here and in tmux; keys
+  then go to the page. Focusing another pane (a click, the palette, tmux's
+  prefix keys) takes the keys back.
+- **Where pages run.** On this Mac, in the desktop's process and
+  Chromium's helper processes; the profile is `web/` in the desktop's
+  state directory. A pane of a remote host's tmux shows the placeholder's
+  text, not the page.
+- **Lifetime.** The page lives while a desktop window shows its pane (or
+  kept it among its recently shown panes) and loads again when the pane
+  is shown after that. Closing the pane closes the page. Chromium starts
+  with the first web pane, not with the app.
+
+Not yet: the overlay snapshot (the palette hides the page instead), copy
+and paste and input checks, more than one Mac display scale, Chromium's
+sandbox, signed helper apps, Linux.
+
+### A build with web panes
+
+Web panes need the Chromium Embedded Framework, which the default build
+and the release package leave out:
+
+```sh
+cargo xtask deps web           # the pinned CEF, cmake, and Ninja, checksum-verified
+cargo xtask web bundle         # target/web-bundle/Dreamer.app (add --release for a release build)
+```
+
+The bundle is the app built with its `web` feature, the framework in
+`Contents/Frameworks`, and the five helper apps (`dreamer Helper.app`,
+`dreamer Helper (GPU).app`, `(Renderer)`, `(Plugin)`, `(Alerts)`) that
+Chromium runs its renderer, GPU, and utility processes from, all signed
+ad hoc. Run `Dreamer.app/Contents/MacOS/dreamer` from it; a `dreamer`
+built with the feature but run from outside a bundle shows why it cannot
+draw the page in each web pane. See
+[dependency-baseline.md](dependency-baseline.md#web-engine) for the pins.
+
 ## Command palette
 
 Cmd-Shift-P on macOS, or Ctrl-Shift-P on Linux, opens the command palette;
@@ -522,6 +580,7 @@ Escape closes.
 | Kill pane (ends its program)…, Kill window (ends its programs)… | Destructive. Shown in red; the first Enter only asks, a second Enter runs it, and Backspace backs out |
 | Show or hide decorations in this pane (filter marks) | Switches drawing [decorations](#decorations) for the focused pane, in this window |
 | Open an app package as a panel…, Close the app panel | Shows an [app panel](#app-panels), or removes it |
+| Open a web page… | Asks for a URL and opens it in a [web pane](#web-panes) beside the focused pane |
 | Theme… (colors of the terminals and the window) | Lists every theme with a swatch and previews the highlighted one; Enter keeps it in `dreamer.yaml`, Escape puts the file back ([settings](settings.md#terminal)) |
 | New Dreamer window (on a new session), Settings…, About Dreamer, Copy, Paste, Find in pane…, Bigger text, Smaller text, Actual text size, Full screen, Minimize window, Zoom window, Bring all windows to front, Quit Dreamer | The [menu commands](#menus-and-shortcuts) |
 
@@ -609,6 +668,7 @@ The macOS gate runs these after building the app:
 | `clipboard` | The [clipboard check](#clipboard-check) | A window that is being drawn |
 | `screens` | [Pixel evidence](#pixel-evidence) | A display that keeps refreshing, and Screen Recording permission |
 | `preview` | The [preview check](#preview-check) | A display that keeps refreshing, and Screen Recording permission |
+| `web` | The [web pane check](#web-pane-check) | `cargo xtask deps web`, and a display that keeps refreshing |
 
 A locked screen still paints a window's first frame, but macOS then stops
 refreshing it. `cache` and `live` are recorded as not run while the screen
@@ -658,12 +718,38 @@ decides what it does.
   field; Paste and a middle click type into it; Copy takes the field to
   the clipboard and tmux's newest buffer; tmux's prefix and Left move
   focus to the terminal pane, and the prefix and Right back.
-- **Web pane:** reported as not applicable; there are no web panes yet.
+- **Web pane:** not checked yet; copy and paste in a page is Chromium's
+  own.
 
 The macOS gate runs this as the `clipboard` step, and the Linux desktop
 gate on each backend ([linux-desktop-gate.md](linux-desktop-gate.md)).
 A window that is not being drawn (a locked screen, a display asleep)
 exits with status 5 and the step is recorded as not run, never failed.
+
+### Web pane check
+
+When `cargo xtask deps web` has provisioned CEF, the macOS gate's `web`
+step runs clippy on the desktop with its `web` feature, builds the
+[bundle with web panes](#a-build-with-web-panes), checks that the
+framework and the five helper apps are in it and that a helper loads the
+framework, and then runs `dreamer --smoke-web DIR` from the bundle
+against an isolated tmux server with private daemon, desktop, and
+configuration directories:
+
+- the smoke opens a `data:` page beside the session's shell pane: one
+  screen of `#2a6fdb`, then three screens of `#d9822b`, and a title that
+  counts animation frames and reports the scroll position;
+- it waits until Chromium has loaded the page and drawn 30 frames, and
+  captures the window (`before.png`);
+- it sends a wheel event to the page (or, if CEF does not deliver it,
+  scrolls by script and says so), waits for the scroll to settle, and
+  captures again (`after.png`);
+- the gate checks that the first color covers at least 90% of the pane's
+  rectangle in the first capture and the second color in the second.
+
+The captures and the pane's rectangle are kept in `target/gate/web/`.
+Without CEF provisioned, without a display that refreshes, or when
+Chromium stops drawing frames, the step is recorded as not run.
 
 ### Pixel evidence
 

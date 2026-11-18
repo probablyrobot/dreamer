@@ -367,6 +367,9 @@ impl Service for Fixed {
     async fn apps_tree(&self, _: api::AppTreeQuery) -> Result<api::AppTree, RpcError> {
         Ok(api::AppTree::default())
     }
+    async fn web_open(&self, _: api::WebOpen) -> Result<api::WebOpened, RpcError> {
+        Ok(api::WebOpened::default())
+    }
     async fn apps_input(&self, _: api::AppInput) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }

@@ -33,6 +33,7 @@ mod prefix;
 mod theme;
 mod theme_pick;
 mod tmux_keys;
+mod web;
 
 use theme::{c, ca};
 mod bench_gui;
@@ -1697,6 +1698,8 @@ struct Args {
     restore: bool,
     /// The clipboard smoke: copy and paste in every kind of pane.
     clipboard: bool,
+    /// The web pane smoke, and where its captures go.
+    web: Option<std::path::PathBuf>,
     /// Parts of the workspace to open at start (`sidebar`, `palette`).
     open: Vec<String>,
     /// `dreamerd` options for a daemon started on demand.
@@ -1735,6 +1738,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 a.smoke = true;
                 a.workspace = true;
                 a.clipboard = true;
+            }
+            "--smoke-web" => {
+                a.smoke = true;
+                a.workspace = true;
+                a.web = Some(value("--smoke-web")?.into());
             }
             "--smoke-workspace-restore" => {
                 a.smoke = true;
@@ -1936,10 +1944,11 @@ fn main() -> ExitCode {
                 eprintln!("error: --smoke-remote needs --host NAME");
                 std::process::exit(2);
             }
-            let run = match (args.restore, args.clipboard) {
-                (true, _) => workspace::SmokeRun::Restore,
-                (false, true) => workspace::SmokeRun::Clipboard,
-                (false, false) => workspace::SmokeRun::Workspace,
+            let run = match (args.restore, args.clipboard, &args.web) {
+                (_, _, Some(out)) => workspace::SmokeRun::Web(out.clone()),
+                (true, _, _) => workspace::SmokeRun::Restore,
+                (false, true, _) => workspace::SmokeRun::Clipboard,
+                (false, false, _) => workspace::SmokeRun::Workspace,
             };
             let smoke = args.smoke.then(|| (args.daemon.clone(), run));
             if let Err(e) = workspace::open_saved(cx, launch, smoke, args.open.clone()) {

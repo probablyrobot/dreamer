@@ -66,6 +66,10 @@ pub struct PaneInfo {
     /// The session whose harness drawer this pane is: the pane's
     /// `@dreamer-drawer-for` user option ([`crate::ops::DRAWER_FOR`]).
     pub drawer_for: Option<TmuxSessionId>,
+    /// What the desktop draws over the pane instead of its terminal: the
+    /// pane's `@dreamer_surface` user option ([`crate::ops::SURFACE`]),
+    /// such as `web:<URL>`.
+    pub surface: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +222,11 @@ impl Inventory {
                 "list-panes",
                 true,
                 format!("#{{{}}}", crate::ops::DRAWER_FOR),
+            ))
+            .push(list(
+                "list-panes",
+                true,
+                format!("#{{{}}}", crate::ops::SURFACE),
             ));
         let r = conn.execute(batch).await?;
 
@@ -287,13 +296,16 @@ impl Inventory {
         let pane_drawers = text_rows(&r[10]);
         aligned(pane_rows.len(), &pane_modes, "pane modes")?;
         aligned(pane_rows.len(), &pane_drawers, "pane drawers")?;
+        let pane_surfaces = text_rows(&r[11]);
+        aligned(pane_rows.len(), &pane_surfaces, "pane surfaces")?;
         let mut panes = BTreeMap::new();
-        for ((((f, command), title), mode), drawer) in pane_rows
+        for (((((f, command), title), mode), drawer), surface) in pane_rows
             .iter()
             .zip(pane_commands)
             .zip(pane_titles)
             .zip(pane_modes)
             .zip(pane_drawers)
+            .zip(pane_surfaces)
         {
             let pane = id(&f[0], '%', TmuxPaneId)?;
             let window = id(&f[1], '@', TmuxWindowId)?;
@@ -317,6 +329,7 @@ impl Inventory {
                     // the program's output, so mirrors do not show it.
                     mode: (f[8] == "1").then_some(mode).filter(|m| !m.is_empty()),
                     drawer_for: id(drawer.trim(), '$', TmuxSessionId).ok(),
+                    surface: Some(surface).filter(|s| !s.is_empty()),
                 },
             );
         }

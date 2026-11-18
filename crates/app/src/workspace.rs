@@ -39,14 +39,19 @@ const PANE_INSET: f32 = 6.0;
 /// Command palette rows shown at once; the list scrolls with the selection.
 const PALETTE_ROWS: usize = 12;
 
-/// A visible pane: a terminal view with the feed that keeps it current, or,
+/// A visible pane: a terminal view with the feed that keeps it current;
 /// for a pane whose program is a registered app host, the app drawn
-/// natively from the model its host publishes.
+/// natively from the model its host publishes; or, for a web pane, the
+/// page Chromium draws over it.
 enum PaneView {
     Terminal(Entity<Shell>),
     App {
         view: Entity<crate::panel::AppPanel>,
         instance: String,
+    },
+    Web {
+        view: Entity<crate::web::WebPane>,
+        url: String,
     },
 }
 
@@ -54,7 +59,7 @@ impl PaneView {
     fn shell(&self) -> Option<&Entity<Shell>> {
         match self {
             PaneView::Terminal(s) => Some(s),
-            PaneView::App { .. } => None,
+            PaneView::App { .. } | PaneView::Web { .. } => None,
         }
     }
 
@@ -62,6 +67,7 @@ impl PaneView {
         match self {
             PaneView::Terminal(s) => s.read(cx).focus.clone(),
             PaneView::App { view, .. } => view.read(cx).focus.clone(),
+            PaneView::Web { view, .. } => view.read(cx).focus.clone(),
         }
     }
 
@@ -69,14 +75,30 @@ impl PaneView {
         match self {
             PaneView::Terminal(s) => s.clone().into(),
             PaneView::App { view, .. } => view.clone().into(),
+            PaneView::Web { view, .. } => view.clone().into(),
         }
     }
 
     /// The app instance drawn; `None` for a terminal.
     fn app(&self) -> Option<&str> {
         match self {
-            PaneView::Terminal(_) => None,
+            PaneView::Terminal(_) | PaneView::Web { .. } => None,
             PaneView::App { instance, .. } => Some(instance),
+        }
+    }
+
+    /// The web page drawn; `None` for a terminal or an app.
+    fn web(&self) -> Option<&str> {
+        match self {
+            PaneView::Web { url, .. } => Some(url),
+            PaneView::Terminal(_) | PaneView::App { .. } => None,
+        }
+    }
+
+    fn web_pane(&self) -> Option<&Entity<crate::web::WebPane>> {
+        match self {
+            PaneView::Web { view, .. } => Some(view),
+            PaneView::Terminal(_) | PaneView::App { .. } => None,
         }
     }
 }
@@ -89,6 +111,17 @@ fn app_drawn<'a>(p: &'a api::Pane, via: &replica::Via) -> Option<&'a str> {
         return None;
     }
     p.app.as_ref().map(|a| a.instance.as_str())
+}
+
+/// The web page a pane's view draws instead of its terminal: its
+/// placeholder's page, for a pane of the local tmux (pages run on this
+/// machine, so a host's `localhost` would be the wrong one). `None` draws
+/// the terminal, which shows the placeholder's text.
+fn web_drawn<'a>(p: &'a api::Pane, via: &replica::Via) -> Option<&'a str> {
+    if *via != replica::Via::Local {
+        return None;
+    }
+    p.web.as_deref()
 }
 
 pub(crate) struct Workspace {
@@ -956,6 +989,17 @@ impl Workspace {
                 self.close_panel(window, cx);
                 None
             }
+            C::OpenWebPage => {
+                if let Some(url) = name.map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()) {
+                    self.topology.web_open(api::WebOpen {
+                        url,
+                        pane,
+                        session: if pane.is_none() { self.session } else { None },
+                        ..api::WebOpen::default()
+                    });
+                }
+                None
+            }
             // Chosen in the palette's own list.
             C::Theme => None,
             // The app's own commands, dispatched above.
@@ -1095,7 +1139,7 @@ impl Workspace {
         );
         let painted = match self.panes.get(&pane)? {
             PaneView::App { view, .. } => Some(view.read(cx).painted),
-            PaneView::Terminal(_) => None,
+            PaneView::Terminal(_) | PaneView::Web { .. } => None,
         };
         Some((bounds, painted))
     }
@@ -1703,6 +1747,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<PaneView> {
         let pane = p.id;
+        if let Some(url) = web_drawn(p, &self.via) {
+            let (url, ws) = (url.to_owned(), cx.entity().downgrade());
+            let view = cx.new(|cx| crate::web::WebPane::new(pane, url.clone(), ws, cx));
+            return Some(PaneView::Web { view, url });
+        }
         if let Some(instance) = app_drawn(p, &self.via) {
             let (instance, socket) = (instance.to_owned(), self.socket.clone());
             let view =
@@ -1748,8 +1797,14 @@ impl Workspace {
             }
         };
         report(self.focused, false, cx);
+        if let Some(web) = self.focused.and_then(|f| self.panes.get(&f)?.web_pane()) {
+            web.read(cx).release_focus();
+        }
         self.focused = pane;
         report(pane, true, cx);
+        if let Some(web) = pane.and_then(|p| self.panes.get(&p)?.web_pane()) {
+            web.read(cx).take_focus();
+        }
         if let Some(view) = pane.and_then(|p| self.panes.get(&p)) {
             let handle = view.focus(cx);
             window.focus(&handle, cx);
@@ -1770,6 +1825,20 @@ impl Workspace {
         }
         if let Some(a) = active.filter(|a| self.panes.contains_key(a)) {
             self.set_focus(Some(a), window, cx);
+        }
+    }
+
+    /// A web pane's page took focus (a click in it): it becomes the
+    /// focused pane, here and in tmux.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    pub(crate) fn page_focused(&mut self, pane: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let clicked = self
+            .panes
+            .get(&pane)
+            .and_then(PaneView::web_pane)
+            .is_some_and(|w| w.read(cx).page_has_focus());
+        if self.focused != Some(pane) && clicked {
+            self.click_pane(pane, window, cx);
         }
     }
 
@@ -1828,7 +1897,9 @@ impl Workspace {
             current
                 .as_ref()
                 .and_then(|t| t.panes.iter().find(|p| p.id == *id))
-                .is_some_and(|p| app_drawn(p, &self.via) == view.app())
+                .is_some_and(|p| {
+                    app_drawn(p, &self.via) == view.app() && web_drawn(p, &self.via) == view.web()
+                })
         };
         self.hidden
             .retain(|id, (view, _)| exists(id, &current) && fits(id, view));
@@ -1908,6 +1979,7 @@ impl Workspace {
                     .shown
                     .as_ref()
                     .map_or_else(|| instance.clone(), |a| a.manifest.title.clone()),
+                PaneView::Web { url, .. } => url.chars().take(80).collect(),
             })
             .unwrap_or_else(|| "Dreamer".into());
         let title = match self.via.host() {
@@ -1941,6 +2013,15 @@ impl Render for Workspace {
             log.push((std::time::Instant::now(), terminal_render::paint_nanos()));
         }
         self.sync_title(window, cx);
+        // Chromium's views sit above everything drawn here: a page shows
+        // only while its pane is on screen and no overlay covers it.
+        let covered = self.palette.is_some();
+        for view in self.panes.values().filter_map(PaneView::web_pane) {
+            view.update(cx, |w, _| w.set_shown(!covered));
+        }
+        for view in self.hidden.values().filter_map(|(v, _)| v.web_pane()) {
+            view.update(cx, |w, _| w.set_shown(false));
+        }
         let t = crate::theme::for_window(window);
         let tf = term_font();
         let m = cell_metrics(window, &font(tf.family.clone()), px(tf.size), tf.spacing());
@@ -2813,7 +2894,7 @@ pub(crate) fn follow_topology(
 }
 
 /// Which smoke a workspace window runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SmokeRun {
     /// `--smoke-workspace`.
     Workspace,
@@ -2821,6 +2902,10 @@ pub(crate) enum SmokeRun {
     Restore,
     /// `--smoke-clipboard`: copy and paste in every kind of pane.
     Clipboard,
+    /// `--smoke-web DIR`: a page in a web pane, captured before and after
+    /// a scroll into DIR.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    Web(PathBuf),
 }
 
 /// What a window shows first.
@@ -3182,6 +3267,16 @@ pub(crate) fn open_via(
             SmokeRun::Clipboard => cx
                 .spawn(async move |cx| smoke::clipboard::run(any, weak, daemon, cx).await)
                 .detach(),
+            #[cfg(feature = "web")]
+            SmokeRun::Web(out) => cx
+                .spawn(async move |cx| smoke::web::run(any, weak, out, cx).await)
+                .detach(),
+            #[cfg(not(feature = "web"))]
+            SmokeRun::Web(_) => {
+                let _ = daemon;
+                eprintln!("smoke: this build has no web engine (the `web` feature)");
+                std::process::exit(6);
+            }
         }
     }
     Ok((any, ws.downgrade()))
@@ -3193,6 +3288,8 @@ mod smoke {
     //! having printed `READY-%<pane id>`.
 
     pub(super) mod clipboard;
+    #[cfg(feature = "web")]
+    pub(super) mod web;
 
     use std::time::{Duration, Instant};
 

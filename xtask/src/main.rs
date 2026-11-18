@@ -22,6 +22,7 @@ mod release;
 mod render;
 mod scenes;
 mod util;
+mod web;
 
 use std::process::ExitCode;
 
@@ -39,6 +40,8 @@ commands:
   bindings [--check]           regenerate (or check) the libghostty-vt Rust bindings
   deps prepare|path [--target <triple>]
                                fetch, verify, and build pinned native dependencies
+  deps web                     fetch and verify the web engine's (CEF, cmake, Ninja; macOS)
+  web bundle [--release]       the desktop with web panes as a development bundle (macOS)
   headless [--cargo-args]      list the packages of the headless build
   hooks install|status         use the versioned git hooks in .githooks/
   package --platform macos|arch|linux|server|current [--debug] [--source-only] [--nodeps] [--target T]
@@ -68,6 +71,7 @@ fn main() -> ExitCode {
         Some("bench") => bench::run(&args[1..]),
         Some("bindings") => bindings::run(&args[1..]),
         Some("deps") => deps::run(&args[1..]),
+        Some("web") => web::run(&args[1..]),
         Some("headless") => headless::run(&args[1..]),
         Some("hooks") => hooks::run(&args[1..]),
         Some("gate") if args.get(1).map(String::as_str) == Some("linux-desktop") => {

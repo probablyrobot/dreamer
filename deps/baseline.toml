@@ -88,3 +88,34 @@ family = "SauceCodePro Nerd Font Mono"
 files = "SauceCodeProNerdFontMono-Regular.ttf SauceCodeProNerdFontMono-Bold.ttf SauceCodeProNerdFontMono-Italic.ttf SauceCodeProNerdFontMono-BoldItalic.ttf"
 license = "LICENSE.txt"
 license_as = "OFL-SourceCodePro.txt"
+
+# Chromium Embedded Framework for web panes (desktop only, behind the
+# `web` feature of dreamer-app; headless executables never link it). The
+# `cef` crate (tauri-apps/cef-rs, pinned exactly in Cargo.toml) binds this
+# release; `cargo xtask deps web` unpacks it where that crate's build
+# script expects it (CEF_PATH/<version>/<os_arch>), so the crate's own
+# download of a changing index is never used. The CDN publishes SHA-1
+# only; the SHA-256 is of the file whose SHA-1 matched the CDN's index.
+[cef]
+version = "156.0.30"
+chromium = "156.0.8078.96"
+crate = "156.6.0"
+aarch64-apple-darwin = "https://cef-builds.spotifycdn.com/cef_binary_156.0.30%2Bg6028375%2Bchromium-156.0.8078.96_macosarm64_minimal.tar.bz2"
+aarch64-apple-darwin-name = "cef_binary_156.0.30+g6028375+chromium-156.0.8078.96_macosarm64_minimal.tar.bz2"
+aarch64-apple-darwin-sha256 = "731b599e78c71bf33530d65bfa18963f7d1d59902c1f381f5452188e5116b855"
+aarch64-apple-darwin-sha1 = "6393d8a838d3b29f6b6939b970b5931dde2082aa"
+aarch64-apple-darwin-dir = "cef_macos_aarch64"
+
+# Build tools for CEF's C++ wrapper library (cmake with the Ninja
+# generator, run by the cef-dll-sys build script). Only `cargo xtask deps
+# web` fetches them; they are put on PATH for the web build only.
+[cmake]
+version = "4.4.5"
+aarch64-apple-darwin = "https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-macos-universal.tar.gz"
+aarch64-apple-darwin-sha256 = "679e77a96b9ef9484cc6c1445255fc4f84206b48a65420efbedf16bdab55fbff"
+aarch64-apple-darwin-bin = "CMake.app/Contents/bin"
+
+[ninja]
+version = "1.13.2"
+aarch64-apple-darwin = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-mac.zip"
+aarch64-apple-darwin-sha256 = "c99048673aa765960a99cf10c6ddb9f1fad506099ff0a0e137ad8960a88f321b"

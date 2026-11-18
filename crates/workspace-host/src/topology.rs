@@ -90,6 +90,11 @@ pub fn topology(endpoint: &str, tracker: &InventoryTracker) -> api::Topology {
                 generation: tracker.generation(*id).map_or(0, |g| g.0),
                 // The daemon marks app panes (it knows their hosts).
                 app: None,
+                web: p
+                    .surface
+                    .as_deref()
+                    .and_then(tmux_backend::ops::web_surface)
+                    .map(str::to_owned),
             }
         })
         .collect();

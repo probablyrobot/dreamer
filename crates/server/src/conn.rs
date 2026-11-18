@@ -529,6 +529,8 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         // Images of app panes are the user's desktop's to make.
         api::method::APPS_CAPTURE_WAIT,
         api::method::APPS_CAPTURE_DONE,
+        // Web pages run in the user's desktop.
+        api::method::WEB_OPEN,
     ]
     .contains(&req.method.as_str())
     {

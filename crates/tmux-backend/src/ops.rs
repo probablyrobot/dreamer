@@ -415,6 +415,36 @@ pub const DRAWER_FOR: &str = "@dreamer_drawer_for";
 pub const DRAWER_RETURN: &str = "@dreamer_drawer_return";
 /// The harness the drawer was started with.
 pub const DRAWER_HARNESS: &str = "@dreamer_drawer_harness";
+/// The pane user option that makes a pane a placeholder for a surface the
+/// desktop draws over its rectangle instead of the terminal: `web:<URL>`
+/// for a web page. It lives in tmux, so the pane keeps its page across
+/// daemon and desktop restarts.
+pub const SURFACE: &str = "@dreamer_surface";
+
+/// The longest URL a web pane takes.
+pub const WEB_URL_MAX: usize = 8192;
+
+/// The URL of a web pane's surface option, if it is one and its URL is one
+/// a web pane may show (see [`web_url_allowed`]).
+pub fn web_surface(surface: &str) -> Option<&str> {
+    surface
+        .strip_prefix("web:")
+        .filter(|url| web_url_allowed(url))
+}
+
+/// Whether a web pane may show `url`: `http`, `https`, `file`, and `data`
+/// URLs, and `about:blank`; no scripts as URLs, no control characters.
+pub fn web_url_allowed(url: &str) -> bool {
+    if url.len() > WEB_URL_MAX || url.chars().any(char::is_control) {
+        return false;
+    }
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    url == "about:blank"
+        || ["http://", "https://", "file://", "data:"]
+            .iter()
+            .any(|p| lower.starts_with(p))
+}
+
 /// The session hidden drawers wait in, created when first needed. Clients
 /// leave it out of their tabs and session lists.
 pub const DRAWER_HOLDING: &str = "_dreamer_drawers";
@@ -760,4 +790,35 @@ async fn type_prefix_key(conn: &Connection, key: &str) -> Result<PrefixOutcome, 
                 .to_owned(),
         ),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{web_surface, web_url_allowed};
+
+    #[test]
+    fn a_web_pane_shows_only_page_urls() {
+        for url in [
+            "https://example.com/",
+            "HTTP://localhost:3000",
+            "file:///tmp/index.html",
+            "data:text/html,<p>hi</p>",
+            "about:blank",
+        ] {
+            assert!(web_url_allowed(url), "{url}");
+        }
+        for url in [
+            "javascript:alert(1)",
+            "about:config",
+            "chrome://settings",
+            "ftp://example.com",
+            "https://example.com/\n",
+            "",
+        ] {
+            assert!(!web_url_allowed(url), "{url}");
+        }
+        assert_eq!(web_surface("web:https://a.test"), Some("https://a.test"));
+        assert_eq!(web_surface("web:javascript:x"), None);
+        assert_eq!(web_surface("app:x"), None);
+    }
 }
