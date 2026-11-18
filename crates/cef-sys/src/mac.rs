@@ -334,6 +334,8 @@ const KEY_DOWN: usize = 10;
 const KEY_UP: usize = 11;
 const LEFT_MOUSE_DOWN: usize = 1;
 const LEFT_MOUSE_UP: usize = 2;
+const OTHER_MOUSE_DOWN: usize = 25;
+const OTHER_MOUSE_UP: usize = 26;
 const COMMAND: usize = 1 << 20;
 
 fn class(name: &CStr) -> Result<&'static AnyClass, String> {
@@ -462,10 +464,63 @@ pub unsafe fn press_key(
 ///
 /// Main thread; `view` is null or a live `NSView`.
 pub unsafe fn click(view: *mut c_void, x: f64, y: f64) -> Result<(), String> {
+    // SAFETY: as the caller guarantees.
+    unsafe { press_button(view, x, y, None) }
+}
+
+/// Press and release mouse button `button` (counted from 0: 3 is a
+/// mouse's back button, 4 its forward button) at (`x`, `y`) in `view`,
+/// as [`click`] does.
+///
+/// # Safety
+///
+/// Main thread; `view` is null or a live `NSView`.
+pub unsafe fn click_button(view: *mut c_void, x: f64, y: f64, button: i64) -> Result<(), String> {
+    // SAFETY: as the caller guarantees.
+    unsafe { press_button(view, x, y, Some(button)) }
+}
+
+/// Core Graphics' event under an `NSEvent` (`CGEventRef`), encoded as
+/// AppKit declares it, so messages that take or return one type-check.
+#[repr(C)]
+struct CGEvent {
+    _private: [u8; 0],
+}
+
+// SAFETY: `CGEventRef` is `struct __CGEvent *`.
+unsafe impl objc2::encode::RefEncode for CGEvent {
+    const ENCODING_REF: objc2::encode::Encoding =
+        objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("__CGEvent", &[]));
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSetIntegerValueField(event: *mut CGEvent, field: u32, value: i64);
+}
+
+/// `kCGMouseEventButtonNumber`.
+const BUTTON_NUMBER: u32 = 3;
+
+/// The left button (`None`) or another one, pressed and released.
+///
+/// # Safety
+///
+/// Main thread; `view` is null or a live `NSView`.
+unsafe fn press_button(
+    view: *mut c_void,
+    x: f64,
+    y: f64,
+    button: Option<i64>,
+) -> Result<(), String> {
     let view = view.cast::<AnyObject>();
+    let kinds = match button {
+        None => [LEFT_MOUSE_DOWN, LEFT_MOUSE_UP],
+        Some(_) => [OTHER_MOUSE_DOWN, OTHER_MOUSE_UP],
+    };
     // SAFETY: live view (caller), main thread; the arguments match
     // mouseEventWithType:location:modifierFlags:timestamp:windowNumber:
-    // context:eventNumber:clickCount:pressure:.
+    // context:eventNumber:clickCount:pressure:, and an event's CGEvent
+    // lives as long as the event.
     unsafe {
         let number = key_window(view)?;
         let (flipped, bounds): (Bool, NSRect) =
@@ -478,9 +533,9 @@ pub unsafe fn click(view: *mut c_void, x: f64, y: f64) -> Result<(), String> {
         let at: NSPoint =
             msg_send![view, convertPoint: local, toView: std::ptr::null_mut::<AnyObject>()];
         let events = class(c"NSEvent")?;
-        for kind in [LEFT_MOUSE_DOWN, LEFT_MOUSE_UP] {
+        for kind in kinds {
             objc2::rc::autoreleasepool(|_| {
-                let event: *mut AnyObject = msg_send![
+                let mut event: *mut AnyObject = msg_send![
                     events,
                     mouseEventWithType: kind,
                     location: at,
@@ -492,6 +547,18 @@ pub unsafe fn click(view: *mut c_void, x: f64, y: f64) -> Result<(), String> {
                     clickCount: 1isize,
                     pressure: 1.0f32,
                 ];
+                // AppKit makes other-button events for the middle button;
+                // the button's number is set on the event underneath.
+                if let Some(b) = button
+                    && !event.is_null()
+                {
+                    let cg: *mut CGEvent = msg_send![event, CGEvent];
+                    if cg.is_null() {
+                        return Err("AppKit gave no CGEvent".to_owned());
+                    }
+                    CGEventSetIntegerValueField(cg, BUTTON_NUMBER, b);
+                    event = msg_send![events, eventWithCGEvent: cg];
+                }
                 send(event)
             })?;
         }

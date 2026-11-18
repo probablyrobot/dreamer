@@ -223,6 +223,14 @@ const INPUT_CHECKS: usize = 5;
 /// refused.
 const APP_CHECKS: usize = 5;
 
+/// The browser checks the web smoke reports passing (`smoke: web
+/// browser:`): `web.navigate` loads a page in the pane; Cmd+L, a typed
+/// address, and Enter load it; a link is followed; back and forward by
+/// key, and by the mouse's side buttons; reload; find in the page; zoom; a
+/// refused download's status line; a new window's link in the same pane;
+/// and, in the second run, the login's session cookie after a restart.
+const BROWSER_CHECKS: usize = 11;
+
 /// Run the bundle's `dreamer --smoke-web` against an isolated tmux server
 /// with private daemon, desktop, and configuration directories, then check
 /// its captures as its `checks.txt` lists: the page's color fills the web
@@ -254,16 +262,31 @@ pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
     if !started.success() {
         return Err("could not start an isolated tmux server".into());
     }
-    let result = Command::new(app.join("Contents/MacOS/dreamer"))
-        .arg("--smoke-web")
-        .arg(out)
-        .args(["-L", &socket, "--tmux", &tmux])
-        .env("DREAMER_RUNTIME_DIR", root.join("rt"))
-        .env("DREAMER_STATE_DIR", root.join("st"))
-        .env("DREAMER_DESKTOP_STATE_DIR", root.join("desktop"))
-        .env("DREAMER_CONFIG_DIR", root.join("config"))
-        .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
-        .output();
+    let host = site::start()?;
+    let dreamer = |first: &[&std::ffi::OsStr]| {
+        let mut c = Command::new(app.join("Contents/MacOS/dreamer"));
+        c.args(first)
+            .env("DREAMER_SMOKE_WEB_SITE", &host)
+            .args(["-L", &socket, "--tmux", &tmux])
+            .env("DREAMER_RUNTIME_DIR", root.join("rt"))
+            .env("DREAMER_STATE_DIR", root.join("st"))
+            .env("DREAMER_DESKTOP_STATE_DIR", root.join("desktop"))
+            .env("DREAMER_CONFIG_DIR", root.join("config"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1");
+        c
+    };
+    // The browser after a restart: a new desktop process on the same
+    // profile, once the first passed.
+    let result = match dreamer(&["--smoke-web".as_ref(), out.as_os_str()]).output() {
+        Ok(first) if first.status.success() => dreamer(&["--smoke-web-restart".as_ref()])
+            .output()
+            .map(|again| {
+                let mut stdout = first.stdout;
+                stdout.extend(&again.stdout);
+                std::process::Output { stdout, ..again }
+            }),
+        other => other,
+    };
     if let Some(pid) = std::fs::read_to_string(root.join("rt/dreamerd.lock"))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
@@ -364,5 +387,127 @@ pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
             lines.join("\n")
         ));
     }
+    let browser = lines
+        .iter()
+        .filter(|l| l.starts_with("smoke: web browser:"))
+        .count();
+    if browser < BROWSER_CHECKS {
+        return Err(format!(
+            "the web smoke passed {browser} of {BROWSER_CHECKS} browser checks\n{}",
+            lines.join("\n")
+        ));
+    }
     Ok(Smoke::Passed(lines))
+}
+
+/// The browser's test site, served on 127.0.0.1 for the web smoke only: a
+/// page that counts its loads and has a link, a link that wants a new
+/// window, a download, and words to find; a second page; a login that
+/// sets a session cookie; and a page that says whether the cookie came.
+pub mod site {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    static LOADS: AtomicU32 = AtomicU32::new(0);
+
+    fn page(title: &str, body: &str) -> String {
+        format!(
+            "<html><head><title>{title}</title></head>\
+             <body style='margin:0;font:16px sans-serif;background:#fff'>{body}</body></html>"
+        )
+    }
+
+    fn answer(stream: TcpStream) {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut reader = BufReader::new(&stream);
+        let mut first = String::new();
+        if reader.read_line(&mut first).is_err() {
+            return;
+        }
+        let mut cookie = String::new();
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) if line.trim().is_empty() => break,
+                Ok(_) => {
+                    if let Some(v) = line
+                        .split_once(':')
+                        .filter(|(k, _)| k.eq_ignore_ascii_case("cookie"))
+                    {
+                        cookie = v.1.trim().to_owned();
+                    }
+                }
+            }
+        }
+        let path = first.split(' ').nth(1).unwrap_or("/");
+        let link = |id: &str, href: &str, extra: &str, text: &str| {
+            format!(
+                "<p><a id={id} href='{href}' {extra} style='display:inline-block;padding:8px 16px'>{text}</a></p>"
+            )
+        };
+        let (status, headers, body) = match path {
+            "/" => {
+                let n = LOADS.fetch_add(1, Ordering::Relaxed) + 1;
+                let body = [
+                    link("next", "/b", "", "next"),
+                    link("pop", "/c", "target=_blank", "new window"),
+                    link("dl", "/report.bin", "", "download"),
+                    "<p>a needle, and another needle</p>".to_owned(),
+                ]
+                .concat();
+                (
+                    "200 OK",
+                    String::new(),
+                    page(&format!("browser a {n}"), &body),
+                )
+            }
+            "/b" => ("200 OK", String::new(), page("browser b", "<p>b</p>")),
+            "/c" => ("200 OK", String::new(), page("browser c", "<p>c</p>")),
+            "/report.bin" => (
+                "200 OK",
+                "Content-Type: application/octet-stream\r\n\
+                 Content-Disposition: attachment; filename=\"report.bin\"\r\n"
+                    .to_owned(),
+                "not saved".to_owned(),
+            ),
+            // A session cookie: no expiry, so it survives a restart only
+            // because the browser's profile keeps session cookies.
+            "/login" => (
+                "200 OK",
+                "Set-Cookie: dreamer_smoke=in; Path=/; HttpOnly\r\n".to_owned(),
+                page("logged in", "<p>logged in</p>"),
+            ),
+            "/who" => {
+                let who = if cookie.contains("dreamer_smoke=in") {
+                    "in"
+                } else {
+                    "out"
+                };
+                ("200 OK", String::new(), page(&format!("who {who}"), who))
+            }
+            _ => ("404 Not Found", String::new(), "not found".to_owned()),
+        };
+        let mut out = &stream;
+        let _ = write!(
+            out,
+            "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    }
+
+    /// Serve the site on a free port of 127.0.0.1, for as long as the
+    /// process runs; its origin.
+    pub fn start() -> Result<String, String> {
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || answer(stream));
+            }
+        });
+        Ok(format!("127.0.0.1:{port}"))
+    }
 }

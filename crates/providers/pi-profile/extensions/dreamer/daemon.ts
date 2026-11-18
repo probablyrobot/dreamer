@@ -82,6 +82,8 @@ export function agentMethods(l: Level): string[] {
 		m.push("terminal.input", "terminal.run", "actions.submit", "jobs.start", "jobs.cancel", "collect.stop", "memory.update", "memory.forget");
 		// Opening the apps it builds and looking at the app panes it opened.
 		m.push("apps.launch", "apps.tree", "apps.capture", "daemon.status", "daemon.version");
+		// Opening pages in the browser, and loading another address in one.
+		m.push("web.open", "web.navigate");
 	}
 	return m;
 }
@@ -794,6 +796,30 @@ export class Session {
 			throw new Error(`${op}: ${r?.state ?? "no answer"}${r?.reason ? `: ${r.reason}` : ""}`);
 		}
 		return r;
+	}
+
+	/** A page in the browser: a new pane beside `beside` (default the pane
+	 * pi runs in) or in a new window, or with `pane` another address in
+	 * that web pane. The daemon makes a typed address a URL. */
+	async browser(
+		p: { url: string; pane?: number; beside?: number; new_window?: boolean },
+		env: Record<string, string | undefined> = process.env,
+	): Promise<Record<string, unknown>> {
+		if (p.pane !== undefined) {
+			await this.acting_on(p.pane, () => this.call("web.navigate", { pane: p.pane, url: p.url }));
+			return { pane: p.pane, url: p.url };
+		}
+		const own = /^%(\d+)$/.exec(env.TMUX_PANE ?? "");
+		const beside = p.new_window ? undefined : (p.beside ?? (own ? Number(own[1]) : undefined));
+		let params: Record<string, unknown> = { url: p.url, pane: beside };
+		if (beside === undefined) {
+			const t = await this.call("tmux.topology", {});
+			const session = t?.sessions?.[0]?.id;
+			if (session === undefined) throw new Error("tmux has no sessions");
+			params = { url: p.url, session };
+		}
+		const o = await this.acting_on(beside, () => this.call("web.open", params));
+		return { pane: o.pane, url: p.url, beside: beside ?? null };
 	}
 
 	/** Hand `task` to `to` as a job in a new window this session owns (so

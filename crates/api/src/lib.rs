@@ -72,6 +72,10 @@ pub fn agent_methods(level: i32) -> Vec<String> {
             method::APPS_LAUNCH,
             method::APPS_TREE,
             method::APPS_CAPTURE,
+            // Opening a page in a pane (the browser), and loading another
+            // address in one: acting on panes, under the same approvals.
+            method::WEB_OPEN,
+            method::WEB_NAVIGATE,
             // Whether a desktop is there to draw an image preview, and the
             // version an app may ask for.
             method::DAEMON_STATUS,

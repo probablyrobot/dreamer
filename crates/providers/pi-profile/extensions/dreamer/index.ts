@@ -280,6 +280,23 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	tool({
+		name: "browser_open",
+		label: "Open a page",
+		description:
+			"Open a web page for the user in Dreamer's browser: a new pane beside the pane you run in (or `beside` another pane, or in a new window), drawn by the user's desktop; or, with `pane`, load the address in that web pane. You own a pane you opened. Splitting or loading into a pane you did not create waits for the user's approval. The page gets no Dreamer API, and you cannot read it from here. Not at the observe level.",
+		parameters: Type.Object({
+			url: Type.String({ description: "The address, as typed into a browser's address bar: a URL, example.com, localhost:3000, or an absolute file path." }),
+			pane: Type.Optional(Type.Integer({ minimum: 0, description: "Load it in this web pane instead of a new one." })),
+			beside: Type.Optional(Type.Integer({ minimum: 0, description: "Open the new pane beside this pane." })),
+			new_window: Type.Optional(Type.Boolean({ description: "Open it in a new window instead." })),
+		}),
+		run: async (p) => {
+			await session.connection();
+			return session.browser(p);
+		},
+	});
+
 	// Building apps: `dream app` in the apps directory (DREAMER_APPS_ROOT,
 	// else pi's working directory; nothing outside it), and opening an
 	// installed app on this session's connection, under its grant.

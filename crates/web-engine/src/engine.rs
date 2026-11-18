@@ -134,6 +134,115 @@ mod handlers {
                     .is_some()
                     .then(|| DreamerRequests::new(self.shared.clone()))
             }
+            fn download_handler(&self) -> Option<DownloadHandler> {
+                Some(DreamerDownloads::new(self.shared.clone()))
+            }
+            fn find_handler(&self) -> Option<FindHandler> {
+                Some(DreamerFind::new(self.shared.clone()))
+            }
+            fn keyboard_handler(&self) -> Option<KeyboardHandler> {
+                self.shared
+                    .app
+                    .is_none()
+                    .then(|| DreamerKeys::new(self.shared.clone()))
+            }
+        }
+    }
+
+    // Downloads are refused, for now, with a line in the pane's status
+    // (see `crate::browser`).
+    wrap_download_handler! {
+        pub struct DreamerDownloads {
+            shared: Arc<Shared>,
+        }
+        impl DownloadHandler {
+            fn can_download(
+                &self,
+                _browser: Option<&mut Browser>,
+                url: Option<&CefString>,
+                _request_method: Option<&CefString>,
+            ) -> i32 {
+                let url = url.map(|u| u.to_string()).unwrap_or_default();
+                match crate::browser::DOWNLOADS {
+                    crate::browser::Downloads::Refused => {
+                        self.shared
+                            .event(crate::Event::Status(crate::browser::download_refused(&url)));
+                        0
+                    }
+                }
+            }
+            // A download that did not ask first: left to CEF, which cancels
+            // it for this kind of browser.
+            fn on_before_download(
+                &self,
+                _browser: Option<&mut Browser>,
+                download_item: Option<&mut DownloadItem>,
+                suggested_name: Option<&CefString>,
+                _callback: Option<&mut BeforeDownloadCallback>,
+            ) -> i32 {
+                let name = suggested_name
+                    .map(|n| n.to_string())
+                    .filter(|n| !n.is_empty())
+                    .or_else(|| download_item.map(|d| CefString::from(&d.url()).to_string()))
+                    .unwrap_or_default();
+                self.shared
+                    .event(crate::Event::Status(crate::browser::download_refused(&name)));
+                0
+            }
+        }
+    }
+
+    wrap_find_handler! {
+        pub struct DreamerFind {
+            shared: Arc<Shared>,
+        }
+        impl FindHandler {
+            fn on_find_result(
+                &self,
+                _browser: Option<&mut Browser>,
+                _identifier: i32,
+                count: i32,
+                _selection_rect: Option<&cef::Rect>,
+                active_match_ordinal: i32,
+                final_update: i32,
+            ) {
+                self.shared.event(crate::Event::Found {
+                    count: count.max(0) as u32,
+                    current: active_match_ordinal.max(0) as u32,
+                    last: final_update == 1,
+                });
+            }
+        }
+    }
+
+    // The browser's Esc stops a load; any other key is the page's.
+    wrap_keyboard_handler! {
+        pub struct DreamerKeys {
+            shared: Arc<Shared>,
+        }
+        impl KeyboardHandler {
+            fn on_pre_key_event(
+                &self,
+                browser: Option<&mut Browser>,
+                event: Option<&KeyEvent>,
+                _os_event: *mut u8,
+                _is_keyboard_shortcut: Option<&mut i32>,
+            ) -> i32 {
+                let (Some(b), Some(e)) = (browser, event) else {
+                    return 0;
+                };
+                // Shift, Control, Alt, Command.
+                let modified = e.modifiers & 0b1000_1110 != 0;
+                if e.type_ == KeyEventType::RAWKEYDOWN
+                    && e.windows_key_code == 0x1b
+                    && !modified
+                    && b.is_loading() == 1
+                {
+                    b.stop_load();
+                    return 1;
+                }
+                0
+            }
         }
     }
 
@@ -353,6 +462,18 @@ mod handlers {
                     *t = title.map(|t| t.to_string()).unwrap_or_default();
                 }
             }
+            fn on_address_change(
+                &self,
+                _browser: Option<&mut Browser>,
+                frame: Option<&mut Frame>,
+                url: Option<&CefString>,
+            ) {
+                if frame.is_some_and(|f| f.is_main() == 1)
+                    && let Ok(mut u) = self.shared.url.lock()
+                {
+                    *u = url.map(|u| u.to_string()).unwrap_or_default();
+                }
+            }
         }
     }
 
@@ -375,6 +496,22 @@ mod handlers {
                     }
                 }
             }
+            fn on_load_error(
+                &self,
+                _browser: Option<&mut Browser>,
+                frame: Option<&mut Frame>,
+                error_code: Errorcode,
+                error_text: Option<&CefString>,
+                failed_url: Option<&CefString>,
+            ) {
+                // A load stopped or turned into a download is not a failure.
+                if frame.is_some_and(|f| f.is_main() == 1) && error_code != Errorcode::ABORTED {
+                    self.shared.event(crate::Event::LoadFailed {
+                        url: failed_url.map(|u| u.to_string()).unwrap_or_default(),
+                        error: error_text.map(|t| t.to_string()).unwrap_or_default(),
+                    });
+                }
+            }
         }
     }
 
@@ -384,11 +521,7 @@ mod handlers {
         }
         impl FocusHandler {
             fn on_got_focus(&self, _browser: Option<&mut Browser>) {
-                if let Ok(f) = self.shared.on_focus.lock()
-                    && let Some(f) = f.as_ref()
-                {
-                    f();
-                }
+                self.shared.event(crate::Event::Focus);
             }
         }
     }
@@ -410,6 +543,18 @@ mod handlers {
                 for f in waiting {
                     f();
                 }
+            }
+        }
+    }
+
+    // A profile's cookies are on disk.
+    wrap_completion_callback! {
+        pub struct Flushed {
+            done: Arc<AtomicBool>,
+        }
+        impl CompletionCallback {
+            fn on_complete(&self) {
+                self.done.store(true, Ordering::Release);
             }
         }
     }
@@ -460,13 +605,14 @@ mod handlers {
             shared: Arc<Shared>,
         }
         impl LifeSpanHandler {
-            // One page per pane: no new windows.
+            // One page per pane: no new windows. In the browser, a link
+            // that wants one opens in the same pane.
             fn on_before_popup(
                 &self,
-                _browser: Option<&mut Browser>,
+                browser: Option<&mut Browser>,
                 _frame: Option<&mut Frame>,
                 _popup_id: i32,
-                _target_url: Option<&CefString>,
+                target_url: Option<&CefString>,
                 _target_frame_name: Option<&CefString>,
                 _target_disposition: WindowOpenDisposition,
                 _user_gesture: i32,
@@ -477,6 +623,12 @@ mod handlers {
                 _extra_info: Option<&mut Option<DictionaryValue>>,
                 _no_javascript_access: Option<&mut i32>,
             ) -> i32 {
+                if self.shared.app.is_none()
+                    && let (Some(b), Some(url)) = (browser, target_url)
+                    && let Some(f) = b.main_frame()
+                {
+                    f.load_url(Some(url));
+                }
                 1
             }
             // The page's view goes, not the window: by default CEF asks
@@ -500,6 +652,9 @@ mod handlers {
     }
 }
 
+/// Where a page's events go.
+type OnEvent = Box<dyn Fn(crate::Event) + Send + Sync>;
+
 /// A DevTools reply's handler: the result's JSON, or the error's.
 type Reply = Box<dyn FnOnce(Result<Vec<u8>, Vec<u8>>) + Send>;
 
@@ -507,10 +662,12 @@ type Reply = Box<dyn FnOnce(Result<Vec<u8>, Vec<u8>>) + Send>;
 #[derive(Default)]
 struct Shared {
     title: Mutex<String>,
+    /// The main frame's address now.
+    url: Mutex<String>,
     /// HTTP status of the main frame's last finished load; -1 before one.
     loaded: AtomicI32,
     closed: AtomicBool,
-    on_focus: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    on_event: Mutex<Option<OnEvent>>,
     /// A script for the main frame when its load finishes, once.
     on_load: Mutex<Option<String>>,
     /// DevTools calls waiting for their replies, by message id.
@@ -519,6 +676,17 @@ struct Shared {
     app: Option<crate::AppPage>,
     /// Navigations refused (an app's page, outside its origins), in order.
     blocked: Mutex<Vec<String>>,
+}
+
+impl Shared {
+    /// Tell the pane, if it still listens.
+    fn event(&self, e: crate::Event) {
+        if let Ok(f) = self.on_event.lock()
+            && let Some(f) = f.as_ref()
+        {
+            f(e);
+        }
+    }
 }
 
 /// What an app's origin answers a request with.
@@ -675,6 +843,23 @@ pub fn shutdown(timeout: Duration) -> Result<(), String> {
         return Ok(());
     }
     let until = Instant::now() + timeout;
+    // Cookies first (logins survive a restart), whether or not every
+    // browser closes in time: Chromium writes them to disk only now and then.
+    let flushing: Vec<Arc<AtomicBool>> = PROFILES.with(|p| {
+        p.borrow()
+            .values()
+            .filter_map(|p| {
+                let done = Arc::new(AtomicBool::new(false));
+                let mut flushed = handlers::Flushed::new(done.clone());
+                let cookies = p.context.cookie_manager(None)?;
+                (cookies.flush_store(Some(&mut flushed)) != 0).then_some(done)
+            })
+            .collect()
+    });
+    while flushing.iter().any(|d| !d.load(Ordering::Acquire)) && Instant::now() < until {
+        do_message_loop_work();
+        std::thread::sleep(Duration::from_millis(5));
+    }
     while LIVE.load(Ordering::Relaxed) > 0 {
         if Instant::now() > until {
             return Err(format!(
@@ -709,11 +894,14 @@ pub fn run_subprocess() -> i32 {
     )
 }
 
-/// The directory, in Chromium's profile directory, of app `app`'s own
-/// profile: `app-<app>`. Chromium makes a profile only directly inside its
-/// root (any deeper directory is refused), so the profiles sit side by
-/// side there.
-fn profile_name(app: &str) -> Result<String, String> {
+/// The directory, in Chromium's profile directory, of the profile a page
+/// opens in: app `app`'s own (`app-<app>`), or the browser's. Chromium
+/// makes a profile only directly inside its root (any deeper directory
+/// is refused), so the profiles sit side by side there.
+fn profile_name(app: Option<&str>) -> Result<String, String> {
+    let Some(app) = app else {
+        return Ok(crate::browser::PROFILE.to_owned());
+    };
     let plain = !app.is_empty()
         && app
             .chars()
@@ -760,6 +948,7 @@ fn profile(name: &str) -> Result<(RequestContext, Arc<ProfileReady>), String> {
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let settings = RequestContextSettings {
         cache_path: CefString::from(dir.to_string_lossy().as_ref()),
+        // Session cookies kept, so logins survive restarts.
         persist_session_cookies: 1,
         ..Default::default()
     };
@@ -779,11 +968,10 @@ fn profile(name: &str) -> Result<(RequestContext, Arc<ProfileReady>), String> {
     Ok((context, ready))
 }
 
-/// Whether the profile a page of app `app` opens in is ready for it (a
-/// plain page's, Chromium's own, always is). If not, Chromium is making it
-/// now, and `ready` runs (on the main thread, from [`do_work`]) once it is:
-/// open the page then. [`WebView::open`] refuses a page whose profile is
-/// not ready.
+/// Whether the profile a page of app `app` (or, without one, a browser
+/// page) opens in is ready for it. If not, Chromium is making it now, and
+/// `ready` runs (on the main thread, from [`do_work`]) once it is: open the
+/// page then. [`WebView::open`] refuses a page whose profile is not ready.
 pub fn profile_ready(
     app: Option<&str>,
     ready: impl FnOnce() + Send + 'static,
@@ -791,7 +979,6 @@ pub fn profile_ready(
     if !started() {
         return Err("Chromium is not running".into());
     }
-    let Some(app) = app else { return Ok(true) };
     let (_, r) = profile(&profile_name(app)?)?;
     let mut waiting = r.waiting.lock().map_err(|_| "a profile's lock")?;
     // Checked under the lock the initializer takes, so `ready` is never
@@ -846,16 +1033,17 @@ impl std::fmt::Debug for WebView {
 
 impl WebView {
     /// Open `url` in a new view over `rect` of `window`, which keeps
-    /// keyboard focus. `on_focus` runs (on CEF's UI thread, the main
-    /// thread) whenever the page takes focus, for example on a click.
-    /// With `app`, the page is the app's: in its own profile, held to its
-    /// origins, and with the bridge on its own origin.
+    /// keyboard focus. `on_event` gets what the page reports (on CEF's UI
+    /// thread, the main thread): that it took focus, for example on a
+    /// click, a status line, find results. With `app`, the page is the
+    /// app's: in its own profile, held to its origins, and with the bridge
+    /// on its own origin. Without, it is the browser ([`crate::browser`]).
     pub fn open(
         window: &impl HasWindowHandle,
         rect: Rect,
         url: &str,
         app: Option<crate::AppPage>,
-        on_focus: impl Fn() + Send + Sync + 'static,
+        on_event: impl Fn(crate::Event) + Send + Sync + 'static,
     ) -> Result<WebView, String> {
         if !started() {
             return Err("Chromium is not running".into());
@@ -863,20 +1051,15 @@ impl WebView {
         let parent = parent_view(window)?;
         // SAFETY: `parent` is the window's live content view; main thread.
         let frame = unsafe { appkit::from_top_left(parent, frame_of(rect)) };
-        let mut context = match &app {
-            Some(a) => {
-                let (context, ready) = profile(&profile_name(&a.app)?)?;
-                if !ready.done.load(Ordering::Acquire) {
-                    return Err("the page's browser profile is not ready yet".into());
-                }
-                Some(context)
-            }
-            None => None,
-        };
+        let (context, ready) = profile(&profile_name(app.as_ref().map(|a| a.app.as_str()))?)?;
+        if !ready.done.load(Ordering::Acquire) {
+            return Err("the page's browser profile is not ready yet".into());
+        }
+        let mut context = Some(context);
         let script = app.as_ref().map(crate::AppPage::bridge_script);
         let shared = Arc::new(Shared {
             loaded: AtomicI32::new(-1),
-            on_focus: Mutex::new(Some(Box::new(on_focus))),
+            on_event: Mutex::new(Some(Box::new(on_event))),
             app,
             ..Shared::default()
         });
@@ -921,6 +1104,20 @@ impl WebView {
         // Scripts added for new documents run only while the page domain
         // is enabled.
         view.devtools("Page.enable", "{}", Box::new(|_| {}));
+        if script.is_none() {
+            // The browser's back and forward by mouse and swipe, in an
+            // isolated world, in this document and every later one.
+            let params = serde_json::json!({
+                "source": crate::browser::NAVIGATION_SCRIPT,
+                "worldName": crate::browser::WORLD,
+                "runImmediately": true,
+            });
+            view.devtools(
+                "Page.addScriptToEvaluateOnNewDocument",
+                &params.to_string(),
+                Box::new(|_| {}),
+            );
+        }
         if let Some(script) = script {
             let params = serde_json::json!({ "source": script }).to_string();
             let (browser, url) = (view.browser.clone(), url.to_owned());
@@ -1037,6 +1234,94 @@ impl WebView {
         unsafe { appkit::make_first_responder(self.parent) };
     }
 
+    /// The main frame's address now.
+    pub fn url(&self) -> String {
+        self.shared
+            .url
+            .lock()
+            .map(|u| u.clone())
+            .unwrap_or_default()
+    }
+
+    /// Back in the page's history, if it can.
+    pub fn back(&self) {
+        if self.browser.can_go_back() == 1 {
+            self.browser.go_back();
+        }
+    }
+
+    /// Forward in the page's history, if it can.
+    pub fn forward(&self) {
+        if self.browser.can_go_forward() == 1 {
+            self.browser.go_forward();
+        }
+    }
+
+    pub fn reload(&self) {
+        self.browser.reload();
+    }
+
+    pub fn stop(&self) {
+        self.browser.stop_load();
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.browser.is_loading() == 1
+    }
+
+    /// Find `text` in the page, highlighting every match: a new search,
+    /// or (`next`) the next match after the current one, or before it
+    /// (`!forward`). Results come as [`crate::Event::Found`].
+    pub fn find(&self, text: &str, forward: bool, next: bool) {
+        if let Some(h) = self.host() {
+            h.find(
+                Some(&CefString::from(text)),
+                i32::from(forward),
+                0,
+                i32::from(next),
+            );
+            // A new search from a page without the keys (the find field
+            // has them) counts the matches but makes none current; going
+            // on to the next one makes the first current.
+            if !next {
+                h.find(Some(&CefString::from(text)), i32::from(forward), 0, 1);
+            }
+        }
+    }
+
+    /// End find in page, its highlights gone.
+    pub fn stop_finding(&self) {
+        if let Some(h) = self.host() {
+            h.stop_finding(1);
+        }
+    }
+
+    /// Zoom the page in (`Some(true)`), out, or back to 100% (`None`), in
+    /// Chromium's steps.
+    pub fn zoom(&self, step: Option<bool>) {
+        if let Some(h) = self.host() {
+            h.zoom(match step {
+                Some(true) => ZoomCommand::IN,
+                Some(false) => ZoomCommand::OUT,
+                None => ZoomCommand::RESET,
+            });
+        }
+    }
+
+    /// Press and release mouse button 4 (`back`) or 5 at (`x`, `y`) in the
+    /// page, from its top left, through the window. For smoke checks.
+    pub fn click_side_button(&self, x: f32, y: f32, back: bool) -> Result<(), String> {
+        // SAFETY: CEF's live view or null; main thread.
+        unsafe {
+            appkit::click_button(
+                self.view(),
+                f64::from(x),
+                f64::from(y),
+                if back { 3 } else { 4 },
+            )
+        }
+    }
+
     /// Navigate to `url`.
     pub fn load(&self, url: &str) {
         if let Some(f) = self.browser.main_frame() {
@@ -1142,8 +1427,9 @@ impl WebView {
         }
     }
 
-    /// Press and release a key as a person types it, through the window
-    /// (the desktop's shortcuts see it first): `key_code` is the macOS
+    /// Press and release a key as a person types it, queued on the
+    /// application's events and delivered through the window by its event
+    /// loop (the desktop's shortcuts see it first): `key_code` is the macOS
     /// virtual key code, `chars` what it types. The window must be the key
     /// window. For smoke checks.
     pub fn press_key(&self, key_code: u16, chars: &str, command: bool) -> Result<(), String> {
@@ -1201,7 +1487,7 @@ impl WebView {
 
 impl Drop for WebView {
     fn drop(&mut self) {
-        if let Ok(mut f) = self.shared.on_focus.lock() {
+        if let Ok(mut f) = self.shared.on_event.lock() {
             *f = None;
         }
         if let Ok(mut r) = self.shared.replies.lock() {

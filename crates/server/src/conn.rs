@@ -518,6 +518,23 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
     {
         return Some(failure(req.id, e));
     }
+    // Pages run in the user's desktop: an agent acting at `own` or
+    // `elsewhere` may open one or load another address in one (under the
+    // approvals below), an app never.
+    if [api::method::WEB_OPEN, api::method::WEB_NAVIGATE].contains(&req.method.as_str())
+        && grant.0.level < api::ActLevel::Own as i32
+    {
+        return Some(failure(
+            req.id,
+            RpcError::new(
+                code::FORBIDDEN,
+                format!(
+                    "only the user's own clients and agents acting at own or elsewhere may call {}",
+                    req.method
+                ),
+            ),
+        ));
+    }
     // A registered app host publishes its own view whatever its grant
     // lists; the registry refuses any other connection.
     if req.method == api::method::APPS_PUBLISH || req.method == api::method::APPS_PUBLISH_TREE {
@@ -540,8 +557,7 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         // Images of app panes are the user's desktop's to make.
         api::method::APPS_CAPTURE_WAIT,
         api::method::APPS_CAPTURE_DONE,
-        // Web pages run in the user's desktop.
-        api::method::WEB_OPEN,
+        // The desktop drawing a page reports its state.
         api::method::WEB_STATE,
         // An app's page calls through the user's desktop.
         api::method::APPS_CALL,

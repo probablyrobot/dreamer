@@ -1700,6 +1700,8 @@ struct Args {
     clipboard: bool,
     /// The web pane smoke, and where its captures go.
     web: Option<std::path::PathBuf>,
+    /// The web pane smoke's second run: the browser after a restart.
+    web_restart: bool,
     /// Parts of the workspace to open at start (`sidebar`, `palette`).
     open: Vec<String>,
     /// `dreamerd` options for a daemon started on demand.
@@ -1743,6 +1745,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 a.smoke = true;
                 a.workspace = true;
                 a.web = Some(value("--smoke-web")?.into());
+            }
+            "--smoke-web-restart" => {
+                a.smoke = true;
+                a.workspace = true;
+                a.web_restart = true;
             }
             "--smoke-workspace-restore" => {
                 a.smoke = true;
@@ -1945,6 +1952,7 @@ fn main() -> ExitCode {
                 std::process::exit(2);
             }
             let run = match (args.restore, args.clipboard, &args.web) {
+                _ if args.web_restart => workspace::SmokeRun::WebRestart,
                 (_, _, Some(out)) => workspace::SmokeRun::Web(out.clone()),
                 (true, _, _) => workspace::SmokeRun::Restore,
                 (false, true, _) => workspace::SmokeRun::Clipboard,

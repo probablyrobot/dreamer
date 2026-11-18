@@ -90,6 +90,11 @@ pub const WEB_PAGE: &str = "page";
 /// The capability a package needs to run a program of its own.
 pub const PROCESS: &str = "process";
 
+/// The capability that will let a package's pages save downloads (see
+/// `web_engine::browser`). Planned: every download is refused for now, so
+/// a package that asks for it is told so rather than granted nothing.
+pub const WEB_DOWNLOAD: &str = "web.download";
+
 /// A process app's program.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1056,6 +1061,12 @@ impl Manifest {
             errors.push(format!("id: `{}` is not dotted lowercase", self.id));
         }
         for c in &self.capabilities {
+            if c == WEB_DOWNLOAD {
+                errors.push(format!(
+                    "capabilities: `{c}` is not available yet: downloads in web pages are refused"
+                ));
+                continue;
+            }
             let service = c.strip_suffix(".*");
             let known = match service {
                 Some(s) => api::METHODS
@@ -1925,6 +1936,18 @@ source = "app.ts"
             errors
                 .iter()
                 .any(|e| e.contains("data: a script app's code does this")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn downloads_are_not_a_capability_yet() {
+        let m = PROCESS_APP.replace("\"process\", ", "\"process\", \"web.download\", ");
+        let errors = Manifest::parse(&m).expect_err("refused");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("`web.download` is not available yet")),
             "{errors:?}"
         );
     }

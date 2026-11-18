@@ -247,6 +247,14 @@ async fn panes_of(
         .collect())
 }
 
+/// A page's address as an approval names it: at most 120 characters.
+fn address(url: &str) -> String {
+    match url.char_indices().nth(120) {
+        Some((at, _)) => format!("{}…", &url[..at]),
+        None => url.to_owned(),
+    }
+}
+
 /// Whether `r` acts on panes, and how. `None` for requests that only
 /// observe, or that the level does not govern.
 async fn act_of(state: &State, r: &Request) -> Result<Option<Act>, RpcError> {
@@ -270,6 +278,20 @@ async fn act_of(state: &State, r: &Request) -> Result<Option<Act>, RpcError> {
                 format!("open the app {} in a new window", p.app_id),
             ),
         },
+        Request::WebOpen(p) => match p.pane {
+            Some(pane) => act(
+                vec![pane],
+                format!("split pane %{pane} to open {}", address(&p.url)),
+            ),
+            None => act(
+                Vec::new(),
+                format!("open {} in a new window", address(&p.url)),
+            ),
+        },
+        Request::WebNavigate(p) => act(
+            vec![p.pane],
+            format!("load {} in web pane %{}", address(&p.url), p.pane),
+        ),
         Request::JobsCancel(j) => {
             let pane = crate::jobs::get(&j.id)?.pane;
             Some(Act {

@@ -12,10 +12,12 @@
 //! [`start`] takes a function CEF calls, from any thread, when it wants
 //! [`do_work`] called on the main thread.
 //!
-//! A view can show a page of an app's own ([`AppPage`], see [`site`]): it
-//! then has a browser profile of the app's, may navigate only to the app's
-//! origin and the origins it allows, and pages on the app's origin get
-//! `window.dreamer.call`, passed on to the caller.
+//! A plain page's view is the browser ([`browser`]): its own profile, no
+//! Dreamer API, back and forward by mouse and swipe, and downloads
+//! refused. A view can instead show a page of an app's own ([`AppPage`],
+//! see [`site`]): it then has a browser profile of the app's, may navigate
+//! only to the app's origin and the origins it allows, and pages on the
+//! app's origin get `window.dreamer.call`, passed on to the caller.
 //!
 //! Everything here is main-thread only. Without the `engine` feature (and
 //! on platforms not supported yet) the crate has no engine and
@@ -45,6 +47,25 @@ pub enum Edit {
     SelectAll,
 }
 
+/// What a page tells the pane drawing it, on the main thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    /// The page took the keyboard focus (a click in it).
+    Focus,
+    /// The main frame's load of `url` failed, and why.
+    LoadFailed { url: String, error: String },
+    /// A line for the pane's status (a refused download).
+    Status(String),
+    /// Find in page: how many matches, which is current (from 1, or 0),
+    /// and whether this is the last report for the search.
+    Found {
+        count: u32,
+        current: u32,
+        last: bool,
+    },
+}
+
+pub mod browser;
 pub mod site;
 pub use site::{AppPage, BridgeCall};
 
