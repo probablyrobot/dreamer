@@ -97,9 +97,10 @@ async fn ask(c: &Client, q: api::TerminalQuery) -> Result<api::QueryResult, clie
     }
 }
 
-/// Wait until every pane shows its marker.
+/// Wait until every pane shows its marker. Shells in many panes start
+/// slowly under emulation (the arm64 gate stage), so the wait is generous.
 async fn shown(c: &Client, panes: &[(u32, &str)]) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     for (pane, marker) in panes {
         loop {
             if let Ok(Response::TerminalRead(t)) = c
