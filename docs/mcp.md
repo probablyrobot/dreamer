@@ -106,6 +106,23 @@ components.
   creates ([grants.md](grants.md#agents-and-apps)). An image preview
   launches and closes its own pane, so it needs `own` too.
 
+## Memory tools
+
+Durable memory ([memory.md](memory.md)) lets an agent keep facts across
+sessions and harnesses. The context of each call is the server's working
+directory (or `cwd`, if given), which picks the project, and the agent
+session in `DREAMER_SESSION_ID`, if set.
+
+| Tool | Does | API |
+| --- | --- | --- |
+| `memory_recall` | Memories matching `query` (none: the newest), best first; optional `scope` and `limit` | `memory.recall` |
+| `memory_remember` | Keep `text` with its `kind` (`user`, `feedback`, `project`, `reference`) and `scope` (`user`, `host`, `project`, `session`); optional `title`, `description`, `links` | `memory.remember` |
+| `memory_forget` | Delete the memory `id` | `memory.forget` |
+
+Recall and remember are in an agent's grant at every level; forget from
+`own` up ([memory.md](memory.md#grants)).
+
+## Other tools
 
 | Tool | Does | API |
 | --- | --- | --- |

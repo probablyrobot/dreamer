@@ -900,7 +900,7 @@ async fn agent_sessions(state: &Arc<State>, conn: &Conn, req: wire::Request) {
     };
     let response = match request {
         R::AgentSessionsCreate(p) => one(sessions.create(&caller, p).await),
-        R::AgentSessionsSend(p) => one(sessions.send(&caller, p).await),
+        R::AgentSessionsSend(p) => one(sessions.send(&caller, p, &state.memory).await),
         R::AgentSessionsCancel(p) => one(sessions.cancel(&caller, p).await),
         R::AgentSessionsApprove(p) => one(sessions.answer(&caller, p, true).await),
         R::AgentSessionsDeny(p) => one(sessions.answer(&caller, p, false).await),

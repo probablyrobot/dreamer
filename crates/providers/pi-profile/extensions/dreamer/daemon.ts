@@ -6,7 +6,9 @@
 // One connection per pi process. It narrows its own grant to an agent's
 // grant (`grants.narrow`) before any tool runs, so the daemon treats it as
 // an agent: it can never answer approvals, and acting outside the panes it
-// created waits for the user (docs/grants.md).
+// created waits for the user (docs/grants.md). In an agent session the
+// daemon runs (`DREAMER_SESSION_ID` and `DREAMER_SESSION_TICKET`), it
+// takes that session's grant with `apps.register` instead.
 
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
@@ -444,6 +446,56 @@ export function delegateArgv(dream: string, to: Delegate, task: string, opts: { 
 	return argv;
 }
 
+/** Memory's scopes and kinds (docs/memory.md). */
+export const MEMORY_SCOPES = ["user", "host", "project", "session"];
+export const MEMORY_KINDS = ["user", "feedback", "project", "reference"];
+
+/** The memory index's bounds: the same as the daemon's. */
+export const INDEX_LINES = 40;
+export const INDEX_BYTES = 4096;
+const INDEX_LINE_CHARS = 160;
+
+/** What the memory index says before its lines: the same text the daemon
+ * puts before a session's first prompt. */
+export const INDEX_HEAD =
+	"Dreamer memory: notes kept from earlier sessions for this user, this host, this project, and this session (newest first: id, title, and what it is about). Read one in full with memory_recall, and keep a fact worth having in a later session with memory_remember (from a shell: `dream memory recall WORDS`, `dream memory remember`).";
+
+/** One memory's index line: id, title, and its one-line hook. */
+export function memoryLine(m: any): string {
+	const title = String(m?.title ?? "").trim();
+	const hook = String(m?.description ?? "").trim();
+	let l = (hook === "" || hook === title ? `- ${m?.id}: ${title}` : `- ${m?.id}: ${title} — ${hook}`).replace(/[\r\n]/g, " ");
+	const chars = [...l];
+	if (chars.length > INDEX_LINE_CHARS) l = chars.slice(0, INDEX_LINE_CHARS - 1).join("") + "…";
+	return l;
+}
+
+/** The memory index of `items` (newest first), bounded like the daemon's;
+ * undefined when there are none. */
+export function memoryIndex(items: any[]): string | undefined {
+	if (!Array.isArray(items) || items.length === 0) return undefined;
+	let out = INDEX_HEAD;
+	let listed = 0;
+	for (const m of items.slice(0, INDEX_LINES)) {
+		const l = memoryLine(m);
+		if (Buffer.byteLength(out) + 1 + Buffer.byteLength(l) > INDEX_BYTES - 80) break;
+		out += `\n${l}`;
+		listed++;
+	}
+	const rest = items.length - listed;
+	if (rest > 0) out += `\n(${rest} more not listed; memory_recall finds them.)`;
+	return out;
+}
+
+/** A memory in full, as a tool result or the chat shows it. */
+export function memoryText(m: any): string {
+	const head = `${m.id} (${m.kind}): ${m.title}`;
+	const desc = m.description && m.description !== m.title ? `\n${m.description}` : "";
+	const links = Array.isArray(m.links) && m.links.length > 0 ? `\nlinks: ${m.links.join(", ")}` : "";
+	const file = m.path ? `\nfile: ${m.path}` : "";
+	return `${head}${desc}${links}${file}\n\n${m.text}`;
+}
+
 /** How long one wait for a delegated run lasts before its state is read
  * again. */
 const DELEGATE_WAIT_MS = 15_000;
@@ -476,10 +528,25 @@ export class Session {
 	private gathering = new Map<string, Rows>();
 	private gatherTimer: ReturnType<typeof setTimeout> | undefined;
 
+	/** Inside an agent session the daemon runs: its id and ticket file. */
+	private readonly agentSession: { id: string; ticket: string } | undefined;
+	/** Memory's context: the project's directory and the session id. */
+	memory: { cwd: string; session: string };
+
 	constructor(env: Record<string, string | undefined> = process.env) {
 		this.socket = socketPath(env);
 		this.level = level(env);
 		this.drawer = drawerSession(env);
+		const id = env.DREAMER_SESSION_ID ?? "";
+		const ticket = env.DREAMER_SESSION_TICKET ?? "";
+		this.agentSession = id && ticket ? { id, ticket } : undefined;
+		this.memory = { cwd: process.cwd(), session: id };
+	}
+
+	/** In an agent session the daemon runs, which gets the memory index
+	 * with its first prompt from the daemon. */
+	get daemonSession(): boolean {
+		return this.agentSession !== undefined;
 	}
 
 	/** The pane that had focus before the drawer was shown or focused. */
@@ -589,7 +656,14 @@ export class Session {
 			this.connecting = (async () => {
 				const c = await Client.connect(this.socket);
 				try {
-					await c.call("grants.narrow", agentGrant(this.level));
+					if (this.agentSession) {
+						// pi in an agent session the daemon runs: the
+						// session's own grant, traded for its ticket.
+						const ticket = fs.readFileSync(this.agentSession.ticket, "utf8").trim();
+						await c.call("apps.register", { launch_id: `session:${this.agentSession.id}`, ticket });
+					} else {
+						await c.call("grants.narrow", agentGrant(this.level));
+					}
 				} catch (e) {
 					c.close();
 					throw e;
@@ -774,6 +848,91 @@ export class Session {
 			);
 		}
 		return { ...result, pane: job.pane };
+	}
+
+	/** Memory's context for a call: this session's project and id. */
+	private memoryContext(): Record<string, string> {
+		const cx: Record<string, string> = {};
+		if (this.memory.cwd) cx.cwd = path.resolve(this.memory.cwd);
+		if (this.memory.session) cx.session = this.memory.session;
+		return cx;
+	}
+
+	/** `memory.recall` in this session's scopes. */
+	async recall(p: { query?: string; scope?: string; limit?: number }): Promise<any> {
+		const q: Record<string, unknown> = { query: p.query ?? "", context: this.memoryContext() };
+		if (p.scope) q.scope = p.scope;
+		if (p.limit !== undefined) q.limit = p.limit;
+		return this.call("memory.recall", q);
+	}
+
+	/** `memory.remember` with this session's context. */
+	async remember(p: {
+		text: string;
+		kind: string;
+		scope: string;
+		title?: string;
+		description?: string;
+		links?: string[];
+	}): Promise<any> {
+		const q: Record<string, unknown> = { text: p.text, kind: p.kind, scope: p.scope, context: this.memoryContext() };
+		for (const k of ["title", "description"] as const) if (p[k]) q[k] = p[k];
+		if (Array.isArray(p.links) && p.links.length > 0) q.links = p.links;
+		return this.call("memory.remember", q);
+	}
+
+	async forget(id: string): Promise<any> {
+		return this.call("memory.forget", { id, context: this.memoryContext() });
+	}
+
+	/** The index of this session's memory scopes, or undefined when there
+	 * is nothing to recall. */
+	async memoryIndex(): Promise<string | undefined> {
+		const r = await this.call("memory.list", { context: this.memoryContext() });
+		return memoryIndex(r?.items ?? []);
+	}
+
+	/** The chat's `/memory` command: `list` (the default) or `recall
+	 * WORDS`, `show ID`, `edit ID` (the text, through `edit`), and
+	 * `forget ID`. Returns what to show. */
+	async memoryCommand(args: string, edit?: (text: string) => Promise<string | undefined>): Promise<string> {
+		const words = args.trim().split(/\s+/).filter((w) => w !== "");
+		const [verb = "list", ...rest] = words;
+		const id = () => {
+			if (rest.length !== 1) throw new Error(`/memory ${verb} takes one id, such as project/small-commits`);
+			return rest[0];
+		};
+		const cx = this.memoryContext();
+		switch (verb) {
+			case "list": {
+				const r = await this.call("memory.list", { context: cx });
+				const items: any[] = r?.items ?? [];
+				if (items.length === 0) return "No memories in this session's scopes.";
+				return items.map((m) => `${memoryLine(m).slice(2)} (${m.kind})`).join("\n");
+			}
+			case "recall": {
+				const r = await this.recall({ query: rest.join(" ") });
+				const items: any[] = r?.items ?? [];
+				if (items.length === 0) return "Nothing recalled.";
+				return items.map(memoryText).join("\n\n");
+			}
+			case "show":
+				return memoryText(await this.call("memory.get", { id: id(), context: cx }));
+			case "edit": {
+				const m = await this.call("memory.get", { id: id(), context: cx });
+				if (!edit) throw new Error("/memory edit needs the chat's editor");
+				const text = await edit(String(m.text ?? ""));
+				if (text === undefined || text.trim() === String(m.text ?? "").trim()) return `${m.id}: unchanged`;
+				const u = await this.call("memory.update", { id: m.id, text, context: cx });
+				return `Updated ${u.id}${u.path ? ` (${u.path})` : ""}`;
+			}
+			case "forget": {
+				const f = await this.forget(id());
+				return `Forgot ${f.id}${f.path ? `; removed ${f.path}` : ""}`;
+			}
+			default:
+				throw new Error(`/memory: unknown \`${verb}\`; use /memory [list | recall WORDS | show ID | edit ID | forget ID]`);
+		}
 	}
 
 	close() {

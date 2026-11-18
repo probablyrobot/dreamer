@@ -149,6 +149,23 @@ impl Memory {
             .map(item)
     }
 
+    /// The index an agent session in `cwd` starts with: every memory of
+    /// the scopes it reaches (user, host, its project, and `session`),
+    /// bounded. `None` when there are none or they cannot be read.
+    pub async fn index(&self, cwd: &str, session: &str) -> Option<String> {
+        let cx = memory::Context {
+            cwd: (!cwd.is_empty()).then(|| PathBuf::from(cwd)),
+            session: (!session.is_empty()).then(|| session.to_owned()),
+        };
+        match self.run(move |m| m.list(&cx, None, None)).await {
+            Ok(found) => memory::index(&found.items),
+            Err(e) => {
+                log::warn(format!("memory index for session {session}: {}", e.message));
+                None
+            }
+        }
+    }
+
     pub async fn forget(&self, p: api::MemoryRef) -> Result<api::MemoryItem, RpcError> {
         let cx = context(p.context);
         self.run(move |m| m.forget(&cx, &p.id)).await.map(item)

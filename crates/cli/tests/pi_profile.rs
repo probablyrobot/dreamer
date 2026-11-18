@@ -341,6 +341,14 @@ impl Live {
             .env("DREAMER_CONFIG_DIR", root.join("config"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", &self.daemon)
+            // The stand-in pi's tool use, if a test writes one.
+            .env(
+                "FAKE_PI_ON_PROMPT",
+                format!(
+                    "[ ! -f {0} ] || sh {0}",
+                    root.join("on-prompt.sh").display()
+                ),
+            )
             .output()
             .expect("dream")
     }
@@ -377,6 +385,8 @@ impl Live {
             .env_remove("DREAMER_RPC_SOCKET")
             .env_remove("DREAMER_SOCKET")
             .env_remove("DREAMER_DRAWER")
+            .env_remove("DREAMER_SESSION_ID")
+            .env_remove("DREAMER_SESSION_TICKET")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -514,4 +524,184 @@ fn the_extension_attaches_pane_context_and_sends_to_a_pane() {
             "not sent",
         ],
     );
+}
+
+/// Durable memory across sessions and harnesses. An agent session the
+/// daemon runs (the stand-in pi) remembers a project fact with `dream
+/// memory`, holding its session's grant (so it may not forget); a second
+/// harness, an MCP client through `dream mcp`, recalls it; a new session's
+/// first prompt, and only its first, starts with the index naming it; and
+/// pi in the drawer sees it in its index, recalls it with its tools, and
+/// edits and forgets it from the chat's `/memory`, which removes the file.
+#[test]
+fn a_memory_kept_by_one_harness_is_recalled_by_another_and_forgotten_in_the_chat() {
+    let Some(node) = node_for_types() else {
+        return;
+    };
+    let fake_pi = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/testdata/fake-pi");
+    let live = Live::start(
+        "mem",
+        Some(&format!(
+            "agents:\n  default: pi\n  pi:\n    command: [/bin/sh, {}]\n",
+            fake_pi.display()
+        )),
+    );
+    let root = live.env.root.clone();
+    let project = root.join("proj");
+    std::fs::create_dir_all(project.join(".git")).expect("project");
+    std::fs::write(
+        root.join("on-prompt.sh"),
+        format!(
+            r#"case "$FAKE_PI_PROMPT" in
+*"Remember the staging port"*)
+  {dream} memory remember --kind project --scope project --title "Staging port" --description "Where staging listens" -- "The staging server listens on port 8461."
+  {dream} memory forget project/staging-port || echo FORGET-REFUSED ;;
+esac
+"#,
+            dream = DREAM
+        ),
+    )
+    .expect("hook");
+    let log =
+        || std::fs::read_to_string(root.join("data/pi-profile/fake-pi.log")).unwrap_or_default();
+    let session = || {
+        let out = live.dream(&[
+            "agents",
+            "sessions",
+            "create",
+            "--cwd",
+            &project.display().to_string(),
+            "--json",
+        ]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let s: serde_json::Value = serde_json::from_slice(&out.stdout).expect("session");
+        s["id"].as_str().expect("id").to_owned()
+    };
+    let send = |id: &str, text: &str| {
+        let out = live.dream(&["agents", "sessions", "send", id, text, "--wait"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let prompts = || -> Vec<String> {
+        log()
+            .lines()
+            .filter_map(|l| l.strip_prefix("prompt:").map(str::to_owned))
+            .collect()
+    };
+
+    // One harness remembers, under its session's grant.
+    let a = session();
+    send(&a, "Remember the staging port");
+    let file = project.join(".dreamer/memory/staging-port.md");
+    assert!(file.is_file(), "nothing remembered:\n{}", log());
+    assert!(
+        log().contains("remembered project/staging-port"),
+        "{}",
+        log()
+    );
+    assert!(
+        log().contains("FORGET-REFUSED"),
+        "the session forgot:\n{}",
+        log()
+    );
+    assert!(
+        !prompts()[0].contains("Dreamer memory"),
+        "an empty index was sent:\n{}",
+        log()
+    );
+
+    // Another harness recalls it through MCP.
+    let recalled = mcp_recall(&live, &project, "staging port");
+    let item = &recalled["result"]["structuredContent"]["items"][0];
+    assert_eq!(item["id"], "project/staging-port", "{recalled}");
+    assert!(
+        item["text"].as_str().unwrap_or_default().contains("8461"),
+        "{recalled}"
+    );
+
+    // A new session starts with the index; its later prompts do not.
+    let b = session();
+    send(&b, "What do you know?");
+    send(&b, "And now?");
+    let p = prompts();
+    let first = &p[p.len() - 2];
+    assert!(
+        first.contains("Dreamer memory") && first.contains("project/staging-port: Staging port"),
+        "{first}"
+    );
+    assert!(first.contains("What do you know?"), "{first}");
+    assert!(
+        !p[p.len() - 1].contains("Dreamer memory"),
+        "{}",
+        p[p.len() - 1]
+    );
+
+    // pi in the drawer: index, tools, and the chat's /memory.
+    let child = live.node(
+        &node,
+        "pi_extension_memory.mjs",
+        &[&project, Path::new("project/staging-port")],
+    );
+    live.steps(
+        child,
+        &[
+            "bounds",
+            "index",
+            "tools",
+            "observe",
+            "/memory",
+            "/memory forget",
+            "/memory unknown",
+        ],
+    );
+    assert!(!file.exists(), "the chat's forget left the file");
+}
+
+/// `memory_recall` through `dream mcp` run in `cwd`, as Claude Code or
+/// Codex would start it: the tools/call reply.
+fn mcp_recall(live: &Live, cwd: &Path, query: &str) -> serde_json::Value {
+    use std::io::{BufRead as _, Write as _};
+    let root = &live.env.root;
+    let mut mcp = Command::new(DREAM)
+        .arg("mcp")
+        .current_dir(cwd)
+        .env("DREAMER_RUNTIME_DIR", root.join("rt"))
+        .env("DREAMER_STATE_DIR", root.join("st"))
+        .env("DREAMER_DATA_DIR", root.join("data"))
+        .env("DREAMER_CONFIG_DIR", root.join("config"))
+        .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+        .env("DREAMER_DAEMON", &live.daemon)
+        .env_remove("DREAMER_SESSION_ID")
+        .env_remove("DREAMER_AGENT_LEVEL")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("dream mcp");
+    let mut stdin = mcp.stdin.take().expect("stdin");
+    let mut lines = std::io::BufReader::new(mcp.stdout.take().expect("stdout")).lines();
+    for m in [
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}}),
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "memory_recall", "arguments": {"query": query}}}),
+    ] {
+        writeln!(stdin, "{m}").expect("write");
+    }
+    stdin.flush().expect("flush");
+    let reply = loop {
+        let v: serde_json::Value =
+            serde_json::from_str(&lines.next().expect("a reply").expect("read")).expect("json");
+        if v["id"] == 2 {
+            break v;
+        }
+    };
+    let _ = mcp.kill();
+    let _ = mcp.wait();
+    reply
 }

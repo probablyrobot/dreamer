@@ -250,13 +250,16 @@ API as `dream mcp` ([mcp.md](mcp.md#terminal-tools)):
 | `send_to_pane` | `leases.acquire`, `terminal.input`: a code block as one paste, Enter only when asked ([below](#pane-context-and-send-to-pane)) |
 | `layout` (`split`, `select`, `rename`, `move`, `zoom`, `close`) | `actions.submit` |
 | `collector_create`, `collector_query`, `collector_list`, `collector_stop` | `collect.*`, with the parameters of `dream mcp`'s collector tools ([mcp.md](mcp.md#collector-tools)); registered only when the daemon offers `collect.list` |
+| `memory_recall`, `memory_remember` | `memory.recall`, `memory.remember`, in the session's project and pi's session ([below](#memory)) |
+| `memory_forget` | `memory.forget`; not at the `observe` level |
 | `claude_code`, `codex` | `terminal.run` of `dream agents delegate` ([below](#delegation-to-claude-code-and-codex)); each only when `agents.pi.delegates` lists it, and not at the `observe` level |
 | `app_new`, `app_check`, `app_preview`, `app_test`, `app_install`, `app_launch` | As `dream mcp`'s app tools ([mcp.md](mcp.md#app-tools)), below |
 | `dreamer_profile_commit` | `dream agents profile commit` (below) |
 
 It also adds the commands `/dreamer` (whether the daemon is reachable,
-the level, the profile), `/dreamer-reload` (commit, then reload), and
-`/pane` ([below](#pane-context-and-send-to-pane)).
+the level, the profile), `/dreamer-reload` (commit, then reload),
+`/pane` ([below](#pane-context-and-send-to-pane)), and `/memory`
+([below](#memory)).
 
 - **Socket.** `DREAMER_RPC_SOCKET`; else `dreamerd.rpc.sock` beside
   `DREAMER_SOCKET`; else in the runtime directory, found as the daemon
@@ -268,8 +271,13 @@ the level, the profile), `/dreamer-reload` (commit, then reload), and
   `elsewhere`, the default), and the tools' methods plus
   `events.subscribe` and `drawer.status`. The collector methods are in the grant at every
   level, `observe` included: collectors only read
-  ([collectors.md](collectors.md#grants)). It connects when a session
-  starts or a tool first runs, never when pi only loads it.
+  ([collectors.md](collectors.md#grants)). In an agent session the
+  daemon runs ([below](#grants)), it takes that session's grant with
+  `apps.register` instead. It connects when a session starts or a tool
+  first runs, never when pi only loads it. `dream agents pi` sets
+  `DREAMER_AGENT_LEVEL` (to `elsewhere` unless it is already set), so a
+  `dream` command pi runs, such as `dream memory`, narrows to the same
+  agent's grant.
 - **Collector rows.** A collector the agent creates with
   `collector_create` (unless `wake` is false) is followed: its
   `collect.row` events are gathered for 1.5 seconds and then sent to the
@@ -301,6 +309,31 @@ the level, the profile), `/dreamer-reload` (commit, then reload), and
   at the session's level and returns the PNG as image content.
   `app_install` and `app_launch` are refused at `observe`
   ([grants.md](grants.md#agents-and-apps)).
+
+### Memory
+
+Durable memory ([memory.md](memory.md)) is the same for every harness:
+
+- **Tools.** pi has `memory_recall`, `memory_remember`, and (from `own`
+  up) `memory_forget`; Claude Code, Codex, and other MCP clients have the
+  same tools through `dream mcp` ([mcp.md](mcp.md#memory-tools)). A shell
+  command can use `dream memory`. Each call shows in the chat as a tool
+  call with what was recalled, remembered, or forgotten.
+- **Context.** The project is the session's working directory. The
+  session scope is the daemon's agent session (`DREAMER_SESSION_ID`) when
+  the daemon runs the harness, and pi's own session id in the drawer.
+- **Index.** A session's first prompt starts with the index of its scopes
+  ([memory.md](memory.md#the-index-in-the-first-prompt)). In the drawer
+  the extension adds it to pi's first prompt as a `dreamer-memory`
+  message, shown in the chat; a resumed pi session that already has a
+  prompt does not get it again. In a session the daemon runs, the daemon
+  adds it instead.
+- **`/memory`.** In pi's chat: `/memory` (or `/memory list`) lists the
+  memories of the session's scopes; `/memory recall WORDS` finds them;
+  `/memory show ID` shows one in full; `/memory edit ID` opens its text in
+  pi's editor and saves the change; `/memory forget ID` deletes it. These
+  run under the extension's grant, so editing and forgetting need the
+  `own` level or higher.
 
 ### Pane context and send to pane
 
@@ -543,6 +576,10 @@ An app shows a session with a `transcript` and writes to it with a
 the session's events go from the daemon to the pane's terminal interface
 and to the desktop without passing through the app.
 
+A session's first prompt reaches the harness with the memory index of
+its scopes before it ([memory.md](memory.md#the-index-in-the-first-prompt));
+the transcript keeps the prompt as it was sent.
+
 ### Events
 
 Every harness's output becomes the same events, shaped after the Agent
@@ -703,8 +740,9 @@ Each session holds a grant (see [grants.md](grants.md)):
 - A program the harness starts reaches Dreamer with that grant: it calls
   `apps.register` with launch id `session:<id>` and the contents of the
   file `DREAMER_SESSION_TICKET` names. The daemon checks that the calling
-  process descends from the harness. `dream mcp` does this by itself when
-  those variables are set.
+  process descends from the harness. `dream mcp`, `dream memory`, and
+  Dreamer's pi extension do this by themselves when those variables are
+  set.
 - A caller that is not the owner sees and acts on only the sessions it
   created. A session's own connection never answers its approval
   requests.

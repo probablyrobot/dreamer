@@ -330,6 +330,79 @@ struct CollectorStop {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MemoryRecall {
+    /// Words to look for; empty returns the newest memories.
+    #[serde(default)]
+    query: String,
+    /// Only this scope: user, host, project, or session. Default: every
+    /// scope this session reaches.
+    scope: Option<String>,
+    /// How many at most (default 10, at most 100).
+    limit: Option<u32>,
+    /// The project's directory; default the directory this server runs in.
+    cwd: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MemoryRemember {
+    /// The fact, in a sentence or a short paragraph.
+    text: String,
+    /// What it is about: user (the user's role, preferences, knowledge),
+    /// feedback (guidance on how to work), project (decisions, people,
+    /// dates in the work), or reference (where to find something).
+    kind: String,
+    /// Who it applies to: user (everywhere), host (this machine), project
+    /// (this project), or session (this session only).
+    scope: String,
+    /// A short title; default the text's first line.
+    title: Option<String>,
+    /// One line saying what it is about, for the index.
+    description: Option<String>,
+    /// Paths, URLs, or other memories' ids.
+    #[serde(default)]
+    links: Vec<String>,
+    /// The project's directory; default the directory this server runs in.
+    cwd: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MemoryForget {
+    /// The memory's id, such as project/small-commits.
+    id: String,
+    /// The project's directory; default the directory this server runs in.
+    cwd: Option<String>,
+}
+
+/// The memory context of this server: `cwd` (else its own directory) and
+/// the agent session it runs for (`DREAMER_SESSION_ID`).
+fn memory_context(cwd: Option<String>) -> api::MemoryContext {
+    let cwd = cwd
+        .filter(|c| !c.is_empty())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|d| d.display().to_string())
+        })
+        .map(|d| std::path::absolute(&d).map_or(d, |a| a.display().to_string()));
+    api::MemoryContext {
+        cwd,
+        session: std::env::var("DREAMER_SESSION_ID")
+            .ok()
+            .filter(|s| !s.is_empty()),
+    }
+}
+
+fn memory_scope(name: &str) -> Result<i32, String> {
+    api::MemoryScope::from_name(name)
+        .filter(|s| *s != api::MemoryScope::Unspecified)
+        .map(|s| s as i32)
+        .ok_or_else(|| format!("scope `{name}`: use user, host, project, or session"))
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 struct TerminalRead {
     /// The pane id (the number in %N).
     pane: u32,
@@ -1321,6 +1394,74 @@ impl Dreamer {
     }
 
     #[tool(
+        description = "Recall durable memory: notes kept across sessions and agents about the user, this host, this project, and this session. Finds memories by words (no query: the newest), best first, each with its id, kind, title, and text. Recall before asking the user something they may have told an agent before."
+    )]
+    async fn memory_recall(
+        &self,
+        Parameters(p): Parameters<MemoryRecall>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let scope = match p.scope.as_deref().map(memory_scope).transpose() {
+            Ok(s) => s.unwrap_or_default(),
+            Err(why) => return Ok(failed(why)),
+        };
+        self.call(api::Request::MemoryRecall(api::MemoryRecall {
+            query: p.query,
+            scope,
+            limit: p.limit,
+            context: Some(memory_context(p.cwd)),
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "Remember a fact worth having in a later session, with any agent: something the user told you about themselves or how to work, a decision in this project, or where to find something. One fact per memory; do not store secrets or what the code or git history already records. Returns the new memory's id and file."
+    )]
+    async fn memory_remember(
+        &self,
+        Parameters(p): Parameters<MemoryRemember>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let kind = match api::MemoryKind::from_name(&p.kind)
+            .filter(|k| *k != api::MemoryKind::Unspecified)
+        {
+            Some(k) => k as i32,
+            None => {
+                return Ok(failed(format!(
+                    "kind `{}`: use user, feedback, project, or reference",
+                    p.kind
+                )));
+            }
+        };
+        let scope = match memory_scope(&p.scope) {
+            Ok(s) => s,
+            Err(why) => return Ok(failed(why)),
+        };
+        self.call(api::Request::MemoryRemember(api::MemoryRemember {
+            text: p.text,
+            kind,
+            scope,
+            title: p.title,
+            description: p.description,
+            links: p.links,
+            context: Some(memory_context(p.cwd)),
+        }))
+        .await
+    }
+
+    #[tool(
+        description = "Forget a memory that is wrong or no longer true: deletes its file. Only when the user asks, or a memory you kept turned out wrong. Needs a grant from `own` up."
+    )]
+    async fn memory_forget(
+        &self,
+        Parameters(p): Parameters<MemoryForget>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call(api::Request::MemoryForget(api::MemoryRef {
+            id: p.id,
+            context: Some(memory_context(p.cwd)),
+        }))
+        .await
+    }
+
+    #[tool(
         description = "Create a working app package to start from: app.toml, app.ts (TypeScript), fixtures to preview and test it, and types/dreamer.d.ts. Templates: table (a list of rows), form (fields and a button), chat (a log and an input). Directories are inside the apps directory (the working directory unless DREAMER_APPS_ROOT says otherwise). Then edit app.ts and run app_check."
     )]
     async fn app_new(
@@ -1577,6 +1718,40 @@ fn session_registration() -> Option<api::Request> {
         launch_id: format!("session:{id}"),
         ticket: ticket.trim().to_owned(),
     }))
+}
+
+/// For a command an agent runs (such as `dream memory`): inside an agent
+/// session's harness, take the session's grant; else, under a harness
+/// Dreamer started with an agent level (`DREAMER_AGENT_LEVEL`, set by
+/// `dream agents pi`), narrow to the agent's grant at that level, as the
+/// pi extension does. Run by the user, nothing changes.
+pub(crate) async fn as_agent(c: &client::Client) -> Result<(), String> {
+    if let Some(register) = session_registration() {
+        c.call(register)
+            .await
+            .map_err(|e| format!("the agent session's grant: {e}"))?;
+        return Ok(());
+    }
+    let level = match std::env::var("DREAMER_AGENT_LEVEL").as_deref() {
+        Ok("observe") => api::ActLevel::Observe,
+        Ok("own") => api::ActLevel::Own,
+        Ok("elsewhere") => api::ActLevel::Elsewhere,
+        Ok("") | Err(_) => return Ok(()),
+        Ok(other) => {
+            return Err(format!(
+                "DREAMER_AGENT_LEVEL `{other}`: use observe, own, or elsewhere"
+            ));
+        }
+    } as i32;
+    c.call(api::Request::GrantsNarrow(api::Grant {
+        methods: agent_methods(level),
+        all_panes: true,
+        level,
+        ..api::Grant::default()
+    }))
+    .await
+    .map_err(|e| format!("grants.narrow: {e}"))?;
+    Ok(())
 }
 
 /// `dream mcp [--level L] [--method M]... [--pane %N]... [--all-panes]

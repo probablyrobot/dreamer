@@ -11,8 +11,10 @@
 #   anything else  thinking, text, usage, and the end of the turn
 #
 # FAKE_PI_OLD=1 makes it a pi without get_state. It appends its arguments,
-# and whether an API key variable reached it, to fake-pi.log in its agent
-# directory.
+# whether an API key variable reached it, and each prompt request to
+# fake-pi.log in its agent directory. FAKE_PI_ON_PROMPT, if set, is a shell
+# command run for each prompt (as the agent would run one), with the
+# request in FAKE_PI_PROMPT and its output appended to the log.
 #
 # Logins: `auth check --provider P` reports `ready` for the providers
 # listed one per line in fake-pi-logins in the agent directory, and
@@ -137,6 +139,12 @@ while IFS= read -r line; do
 		# Like pi, the session is kept on disk once it has a message.
 		mkdir -p "$(dirname "$file")" && touch "$file"
 		printf 'turn:%s\n' "$provider" >>"$log"
+		printf 'prompt:%s\n' "$line" >>"$log"
+		# A test's stand-in for the agent's own tool use: run as pi would
+		# run a command, with the prompt in FAKE_PI_PROMPT.
+		if [ -n "$FAKE_PI_ON_PROMPT" ]; then
+			FAKE_PI_PROMPT=$line sh -c "$FAKE_PI_ON_PROMPT" >>"$log" 2>&1 </dev/null
+		fi
 		respond "$id" prompt ',"data":{"disposition":"started"}'
 		emit '{"type":"agent_start"}'
 		emit '{"type":"turn_start"}'
