@@ -45,9 +45,11 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | Metadata and the caller's own state (`tmux.topology`, `tmux.watch`, `terminal.list`, `daemon.version`, `actions.get`, `terminal.unsubscribe`, …) | Only the method |
 | `approvals.list`, `approvals.answer` | The owner grant: an agent never answers its own approvals |
 | `drawer.toggle` | The owner grant: it starts the user's harness with the user's authority. `drawer.status` needs only the method |
-| `extensions.restart`, `apps.launch`, `scripts.load`, `scripts.reload`, `scripts.stop` | The owner grant: no app, extension, script, or filter, whatever its grant lists |
-| `apps.view`, `apps.tree`, `apps.input` | The owner grant: app panes are the user's to read and type into |
-| `apps.capture`, `apps.capture_wait`, `apps.capture_done` | The owner grant: images of panes are made by the user's desktop, for the user |
+| `extensions.restart`, `scripts.load`, `scripts.reload`, `scripts.stop` | The owner grant: no app, extension, script, or filter, whatever its grant lists |
+| `apps.launch` | The owner grant, or an agent's grant at `own` or `elsewhere` for an app grant within its own ([below](#agents-and-apps)); with `split`, that pane in scope, else `all_panes` |
+| `apps.view`, `apps.input` | The owner grant: app panes are the user's to read and type into |
+| `apps.tree`, `apps.capture` | The owner grant, or an agent's grant at `own` or `elsewhere` for an app pane it launched ([below](#agents-and-apps)) |
+| `apps.capture_wait`, `apps.capture_done` | The owner grant: images of panes are made by the user's desktop, for the user |
 | `apps.publish`, `apps.publish_tree` | A registered app host's own connection, whatever its grant lists; it publishes for its own pane only |
 | `filters.install`, `filters.list`, `filters.pause`, `filters.resume`, `filters.remove` | The owner grant, or `filters.manage` plus content read; see [Filters an app installs](filters.md#filters-an-app-installs) |
 | `messages.*` | Only the method; messages never reach a pane (see [messages.md](messages.md)) |
@@ -86,7 +88,8 @@ What counts as acting, and on which panes:
 | `actions.submit` select or rename a window, rename a session | Every pane of that window or session |
 | `actions.submit` close a pane or a window, `jobs.cancel` | Those panes; closing |
 | `terminal.run` with `split` | The pane it splits |
-| `jobs.start`, `terminal.run` without `split`, `actions.submit` new window | Nothing: they create, and the connection owns what they create |
+| `apps.launch` with `split` | The pane it splits |
+| `jobs.start`, `terminal.run` without `split`, `actions.submit` new window, `apps.launch` without `split` | Nothing: they create, and the connection owns what they create |
 
 Reading, searching, watching, and listing are never acting. Neither is
 starting or querying a collector: collectors only read panes, so any
@@ -140,16 +143,48 @@ refused; at `elsewhere`, typing waits for an approval, is refused when
 denied, works once allowed for the pane, and closing still asks and times
 out as denied; a person's keystroke ends the agent's lease.
 
+### Agents and apps
+
+An agent at `own` or `elsewhere` may open apps for the user, such as one
+it built ([mcp.md](mcp.md#app-tools)):
+
+- `apps.launch` is allowed when the agent's grant lists it (the agent's
+  methods do from `own` up). The app's grant must be within the agent's:
+  its methods in the agent's, its panes in the agent's scope, and its act
+  level the agent's at most; an app grant without a level gets the
+  agent's. So an agent never hands an app more than it holds.
+- It acts like a split or a new window: beside a pane (`split`) it acts
+  on that pane, so at `own` only beside a pane the agent created, and at
+  `elsewhere` beside another pane once the user approves; in a new
+  window it only creates. The connection owns the new pane.
+- `apps.tree` and `apps.capture` are allowed for the app panes the
+  connection launched, so an agent can wait for its preview to draw and
+  take an image of it. Every other app pane stays the user's.
+- A registered app's grant has no act level, so an app still never
+  launches apps, and an agent session's grant never holds `apps.*`.
+
+Installing an app copies files and touches no pane, so the daemon does
+not see it. The app tools allow it exactly when the grant may launch
+apps; `dream app install` run by the agent's own shell is not checked.
+
+`crates/cli/tests/cli.rs` (over MCP) and `crates/cli/tests/pi_profile.rs`
+(Dreamer's pi extension) check this against a real tmux: an agent at `own` (over MCP) or
+`elsewhere` (in pi) opens an app beside a pane it created and owns the
+new pane; over MCP at `own` it is refused beside a pane it did not
+create, and refused an app that needs a method it lacks; at `observe`,
+installing and launching are refused in both.
+
 ## Launching and registering apps
 
 An app gets its narrow grant through a launch the user starts:
 
-1. **Launch.** `apps.launch` (owner only; on the command line,
+1. **Launch.** `apps.launch` (the owner, or an agent as above; on the command line,
    `dream app run APP_ID --method … -- PROGRAM ARGS`) names the app, its
    grant, and the program. The daemon:
    - writes a random single-use ticket (32 bytes) to an owner-only file in
      its private runtime directory (`launch/<launch id>`, mode 0600);
-   - creates a tmux window running the program, with only
+   - creates a tmux window running the program (with `split`, a pane
+     beside that one), with only
      `DREAMER_LAUNCH_ID`, `DREAMER_LAUNCH_TICKET` (the file's path), and
      `DREAMER_RUNTIME_DIR` added to its environment;
    - records the new pane.
@@ -168,7 +203,8 @@ An app gets its narrow grant through a launch the user starts:
    scope is the app's own pane.
 3. **Afterwards.** The grant belongs to that connection and ends with it.
    A registered connection cannot register again or launch apps, and no
-   grant can include launching apps.
+   app's grant can include launching apps; only an agent's can
+   ([Agents and apps](#agents-and-apps)).
 
 A brand-new pane can take a moment to be mirrored. `terminal.read` on a
 pane tmux already has waits up to 3 s for its mirror instead of failing,

@@ -260,6 +260,16 @@ async fn act_of(state: &State, r: &Request) -> Result<Option<Act>, RpcError> {
             summary: format!("hold the input lease on pane %{}", p.pane),
         }),
         Request::JobsStart(_) => act(Vec::new(), "start a job in a new window".into()),
+        Request::AppsLaunch(p) => match p.split {
+            Some(pane) => act(
+                vec![pane],
+                format!("split pane %{pane} to open the app {}", p.app_id),
+            ),
+            None => act(
+                Vec::new(),
+                format!("open the app {} in a new window", p.app_id),
+            ),
+        },
         Request::JobsCancel(j) => {
             let pane = crate::jobs::get(&j.id)?.pane;
             Some(Act {

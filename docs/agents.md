@@ -243,6 +243,7 @@ API as `dream mcp` ([mcp.md](mcp.md#terminal-tools)):
 | `layout` (`split`, `select`, `rename`, `move`, `zoom`, `close`) | `actions.submit` |
 | `collector_create`, `collector_query`, `collector_list`, `collector_stop` | `collect.*`, with the parameters of `dream mcp`'s collector tools ([mcp.md](mcp.md#collector-tools)); registered only when the daemon offers `collect.list` |
 | `claude_code`, `codex` | `terminal.run` of `dream agents delegate` ([below](#delegation-to-claude-code-and-codex)); each only when `agents.pi.delegates` lists it, and not at the `observe` level |
+| `app_new`, `app_check`, `app_preview`, `app_test`, `app_install`, `app_launch` | As `dream mcp`'s app tools ([mcp.md](mcp.md#app-tools)), below |
 | `dreamer_profile_commit` | `dream agents profile commit` (below) |
 
 It also adds the commands `/dreamer` (whether the daemon is reachable,
@@ -278,6 +279,20 @@ the level, the profile), `/dreamer-reload` (commit, then reload), and
   `dream approvals allow|deny ID`. This keeps an agent from approving its
   own actions through Dreamer. It is not an OS sandbox: pi's own `bash`
   tool runs with your privileges.
+
+- **Apps.** The app tools build a package in the apps directory
+  (`DREAMER_APPS_ROOT`, else pi's working directory; nothing outside it)
+  by running `dream app new|check|preview --text|test|install`, with the
+  parameters and results of `dream mcp`'s app tools. `app_launch` gets the
+  installed app's `apps.launch` request from `dream app launch NAME
+  --request` and sends it on the extension's own connection, beside the
+  pane pi runs in (`TMUX_PANE`, the drawer) unless told otherwise, so the
+  daemon checks it against the session's grant, the session owns the new
+  pane, and a split of a pane it did not create waits for your approval.
+  An image preview runs `dream app preview DIR --png FILE --level LEVEL`
+  at the session's level and returns the PNG as image content.
+  `app_install` and `app_launch` are refused at `observe`
+  ([grants.md](grants.md#agents-and-apps)).
 
 ### Pane context and send to pane
 

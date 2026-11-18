@@ -69,7 +69,43 @@ when a row arrives; an agent asks with `collector_query` and `after` (the
 last row id it saw). Dreamer's pi extension does wake its agent
 ([agents.md](agents.md#dreamers-tools-inside-pi)).
 
-## Other tools
+## App tools
+
+An agent builds a pane app ([termapp.md](termapp.md#building-an-app))
+with the same steps as `dream app`, then opens it for the user. The
+`dreamer-apps` skill describes the loop, the TypeScript API, and the
+components.
+
+| Tool | Does | Through |
+| --- | --- | --- |
+| `app_new` | A working package from a template (`name`; `template`: `table`, `form`, or `chat`; `dir`, default the name) | `dream app new` |
+| `app_check` | Build `app.ts` and check the package: `ok`, the grant it needs, and `problems`, each with `file`, `line`, `column`, and `message` | `dream app check --json` |
+| `app_preview` | The app drawn from its fixtures: `mode` `text` (default; `size` WxH) returns the screen as text; `mode` `image` returns a PNG as the desktop draws it | `dream app preview --text`; for an image `apps.launch`, `apps.tree`, `apps.capture`, `actions.submit` |
+| `app_test` | Replay `fixtures/events.jsonl` and compare each screen: `ok` and what differs; `update` records the screens drawn now | `dream app test` |
+| `app_install` | Check, preview, and install the package; the version it replaces is kept. Returns the installed `name` | `dream app install` |
+| `app_launch` | Open an installed app (`name`) with the grant it declares: beside the pane the server runs in (`TMUX_PANE`, the chat's pane), beside `beside`, or in a `new_window`. Returns the new `pane`, which this session owns | `apps.launch` |
+
+- **Directories.** `dir` is a package directory inside the apps
+  directory: `DREAMER_APPS_ROOT` when set, else the working directory the
+  server was started in (the harness's). A relative `dir` is taken from
+  there. A path with `..`, or one that leaves the directory through a
+  symbolic link, is refused; the tools read and write nothing outside it
+  except the installed copy in Dreamer's apps directory.
+- **Text, then image.** The text preview needs no daemon and works
+  everywhere. The image preview needs a running Dreamer window: without
+  one it fails at once with `no Dreamer window is running; --png needs
+  one`, before opening anything. With one, it opens the preview in a new
+  window of its own, waits until the desktop has drawn it, takes the
+  image, and closes the window again.
+- **Grants.** Checking, previewing as text, and testing need no level.
+  Installing needs a grant that may launch apps (`apps.launch`, given
+  from `own` up); at `observe` it is refused. Launching is an
+  `apps.launch` call the daemon checks: the app's grant must be within
+  the server's, beside a pane the server did not create it asks the user
+  at `elsewhere` and is refused at `own`, and in a new window it only
+  creates ([grants.md](grants.md#agents-and-apps)). An image preview
+  launches and closes its own pane, so it needs `own` too.
+
 
 | Tool | Does | API |
 | --- | --- | --- |
@@ -89,7 +125,8 @@ last row id it saw). Dreamer's pi extension does wake its agent
 | `list_filters` | The filters this session may manage, with their counts | `filters.manage` |
 | `stop_filter` | Remove a filter an app installed | `filters.manage` |
 
-Each tool is one call to the daemon over an ordinary connection. The
+Each of these tools, and each terminal and collector tool, is one call
+to the daemon over an ordinary connection. The
 daemon checks the connection's grant and the target exactly as for any
 other client ([grants.md](grants.md)), so MCP bypasses nothing. A refused
 or failed call comes back as a tool error whose text is the daemon's
@@ -123,6 +160,8 @@ those are `tmux.topology`, `terminal.list`, `terminal.read`,
 `collect.list`, `collect.query`, `memory.recall`, `memory.list`,
 `memory.get`, and `memory.remember`; `own` and `elsewhere` add
 `terminal.input`, `terminal.run`, `actions.submit`, `jobs.start`,
-`jobs.cancel`, `collect.stop`, `memory.update`, and `memory.forget`.
+`jobs.cancel`, `collect.stop`, `memory.update`, `memory.forget`,
+`apps.launch`, `apps.tree`, `apps.capture`, `daemon.status`, and
+`daemon.version`.
 
 The daemon works the same with no MCP client at all.

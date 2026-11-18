@@ -7,6 +7,11 @@
 //! connection first narrows its own grant (`grants.narrow`) to just that,
 //! before any tool runs; it can never widen afterwards. A refused or
 //! failed call is a tool error the agent can read, never a crash.
+//!
+//! The app tools (`app_*`) build packages with `dream app` in a directory
+//! inside the apps directory (appdir.rs), which needs no daemon; an image
+//! preview and launching an app are calls on this connection like the
+//! rest, and installing is allowed when its grant may launch apps.
 
 use std::sync::Arc;
 
@@ -29,6 +34,13 @@ struct Dreamer {
     client: Arc<client::Client>,
     /// Interaction leases this session holds, by pane.
     leases: Arc<tokio::sync::Mutex<Leases>>,
+    /// Where the app tools work (see appdir.rs), or why they cannot.
+    apps_root: Result<std::path::PathBuf, String>,
+    /// Whether this server may install apps, or why not: installing
+    /// needs the grant that launches them.
+    install: Result<(), String>,
+    /// The pane the agent runs in (`TMUX_PANE`): apps open beside it.
+    own_pane: Option<u32>,
 }
 
 #[derive(Default)]
@@ -443,6 +455,63 @@ struct OnePane {
     pane: u32,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+struct AppNew {
+    /// The app's name: lowercase letters, digits, and -, starting with a
+    /// letter. Its id is local.NAME.
+    name: String,
+    /// "table" (default), "form", or "chat".
+    template: Option<String>,
+    /// The package directory, inside the apps directory; default NAME.
+    dir: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct AppDir {
+    /// The package directory, inside the apps directory.
+    dir: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct AppPreview {
+    /// The package directory, inside the apps directory.
+    dir: String,
+    /// "text" (default): the app drawn from its fixtures as text. "image":
+    /// the desktop's drawing of it as a PNG; needs a running Dreamer window.
+    mode: Option<String>,
+    /// For text: WIDTHxHEIGHT, such as 80x24.
+    size: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct AppTest {
+    /// The package directory, inside the apps directory.
+    dir: String,
+    /// Record the screens drawn now as the expected ones, after a
+    /// deliberate change.
+    #[serde(default)]
+    update: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct AppInstall {
+    /// The package directory, inside the apps directory.
+    dir: String,
+    /// The installed name; default the app's id.
+    name: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct AppLaunch {
+    /// The installed name (what app_install said).
+    name: String,
+    /// Open it beside this pane; default the pane this agent runs in.
+    beside: Option<u32>,
+    /// Open it in a new window instead.
+    #[serde(default)]
+    new_window: bool,
+}
+
 fn direction(d: Option<&str>) -> Result<api::SplitDirection, String> {
     match d {
         None | Some("vertical") => Ok(api::SplitDirection::Vertical),
@@ -612,6 +681,20 @@ impl Dreamer {
             }
         }
         text(serde_json::json!({ "pane": pane, "bytes": sent }))
+    }
+
+    /// A package directory inside the apps directory, as a path.
+    fn app_dir(&self, dir: &str) -> Result<String, String> {
+        let root = self.apps_root.as_ref().map_err(Clone::clone)?;
+        crate::appdir::resolve(root, dir).map(|p| p.display().to_string())
+    }
+
+    /// `dream app ARGS`: what it printed and whether it succeeded, or why
+    /// it could not run.
+    async fn dream_app(&self, args: &[&str]) -> Result<crate::appdir::Ran, String> {
+        let mut all = vec!["app".to_owned()];
+        all.extend(args.iter().map(|a| (*a).to_owned()));
+        crate::appdir::dream(all).await
     }
 
     /// One typed call; its result as JSON, or a tool error saying why.
@@ -1236,6 +1319,249 @@ impl Dreamer {
         }))
         .await
     }
+
+    #[tool(
+        description = "Create a working app package to start from: app.toml, app.ts (TypeScript), fixtures to preview and test it, and types/dreamer.d.ts. Templates: table (a list of rows), form (fields and a button), chat (a log and an input). Directories are inside the apps directory (the working directory unless DREAMER_APPS_ROOT says otherwise). Then edit app.ts and run app_check."
+    )]
+    async fn app_new(
+        &self,
+        Parameters(p): Parameters<AppNew>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dir = match self.app_dir(p.dir.as_deref().unwrap_or(&p.name)) {
+            Ok(d) => d,
+            Err(e) => return Ok(failed(e)),
+        };
+        let template = p.template.unwrap_or_else(|| "table".into());
+        let ran = match self
+            .dream_app(&["new", &p.name, "--template", &template, "--dir", &dir])
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(failed(e)),
+        };
+        if !ran.ok {
+            return Ok(failed(ran.stderr));
+        }
+        Ok(text(serde_json::json!({
+            "dir": dir,
+            "id": format!("local.{}", p.name),
+            "output": ran.stdout.trim(),
+        })))
+    }
+
+    #[tool(
+        description = "Check an app package: build its app.ts, then the manifest, the grant it needs, TypeScript type errors, and the view tree. Returns ok, and problems as file, line, column, and message; fix each and check again."
+    )]
+    async fn app_check(
+        &self,
+        Parameters(p): Parameters<AppDir>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dir = match self.app_dir(&p.dir) {
+            Ok(d) => d,
+            Err(e) => return Ok(failed(e)),
+        };
+        let ran = match self.dream_app(&["check", &dir, "--json"]).await {
+            Ok(r) => r,
+            Err(e) => return Ok(failed(e)),
+        };
+        Ok(match serde_json::from_str::<Value>(ran.stdout.trim()) {
+            Ok(v) => text(v),
+            Err(_) => failed(ran.stderr),
+        })
+    }
+
+    #[tool(
+        description = "Preview an app from its fixtures, without the daemon's data. mode text (default) returns the screen as text, as the app host draws it in a terminal. mode image returns a PNG of the app as the Dreamer desktop draws it natively; it needs a running Dreamer window, opens the preview in a new window of its own, and closes it again."
+    )]
+    async fn app_preview(
+        &self,
+        Parameters(p): Parameters<AppPreview>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dir = match self.app_dir(&p.dir) {
+            Ok(d) => d,
+            Err(e) => return Ok(failed(e)),
+        };
+        match p.mode.as_deref() {
+            None | Some("text") => {
+                let mut args = vec!["preview", dir.as_str(), "--text"];
+                if let Some(s) = p.size.as_deref() {
+                    args.extend(["--size", s]);
+                }
+                Ok(match self.dream_app(&args).await {
+                    Ok(r) if r.ok => CallToolResult::success(vec![ContentBlock::text(r.stdout)]),
+                    Ok(r) => failed(r.stderr),
+                    Err(e) => failed(e),
+                })
+            }
+            Some("image") => {
+                if p.size.is_some() {
+                    return Ok(failed(
+                        "size is for mode text; the desktop draws the pane at its size".into(),
+                    ));
+                }
+                static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let file = std::env::temp_dir().join(format!(
+                    "dreamer-mcp-preview-{}-{n}.png",
+                    std::process::id()
+                ));
+                let shot = crate::preview::agent_png(&self.client, &dir, &file).await;
+                let png = std::fs::read(&file);
+                let _ = std::fs::remove_file(&file);
+                Ok(match (shot, png) {
+                    (Ok((got, problems)), Ok(bytes)) => {
+                        let mut said =
+                            format!("{}x{} as the desktop draws it", got.width, got.height);
+                        for problem in &problems {
+                            said.push_str(&format!("\nwarning: {problem}"));
+                        }
+                        CallToolResult::success(vec![
+                            ContentBlock::image(crate::appdir::base64(&bytes), "image/png"),
+                            ContentBlock::text(said),
+                        ])
+                    }
+                    (Ok(_), Err(e)) => failed(format!("{}: {e}", file.display())),
+                    (Err(e), _) => failed(e),
+                })
+            }
+            Some(other) => Ok(failed(format!("mode `{other}`: use text or image"))),
+        }
+    }
+
+    #[tool(
+        description = "Test an app: replay fixtures/events.jsonl and compare the screen after each event with fixtures/expect/. Returns ok and what differs. With update, record the screens drawn now as the expected ones (after a deliberate change)."
+    )]
+    async fn app_test(
+        &self,
+        Parameters(p): Parameters<AppTest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dir = match self.app_dir(&p.dir) {
+            Ok(d) => d,
+            Err(e) => return Ok(failed(e)),
+        };
+        let mut args = vec!["test", dir.as_str()];
+        if p.update {
+            args.push("--update");
+        }
+        Ok(match self.dream_app(&args).await {
+            Ok(r) => text(serde_json::json!({
+                "ok": r.ok,
+                "output": if r.ok { r.stdout.trim() } else { r.stderr.as_str() },
+            })),
+            Err(e) => failed(e),
+        })
+    }
+
+    #[tool(
+        description = "Install an app package for the user: check it, draw it from its fixtures, and copy it into Dreamer's apps directory. A version it replaces is kept (dream app rollback NAME puts it back). Returns the installed name for app_launch."
+    )]
+    async fn app_install(
+        &self,
+        Parameters(p): Parameters<AppInstall>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Err(e) = &self.install {
+            return Ok(failed(e.clone()));
+        }
+        let dir = match self.app_dir(&p.dir) {
+            Ok(d) => d,
+            Err(e) => return Ok(failed(e)),
+        };
+        let mut args = vec!["install", dir.as_str()];
+        if let Some(n) = p.name.as_deref() {
+            args.extend(["--name", n]);
+        }
+        let ran = match self.dream_app(&args).await {
+            Ok(r) => r,
+            Err(e) => return Ok(failed(e)),
+        };
+        if !ran.ok {
+            return Ok(failed(ran.stderr));
+        }
+        // "installed ID VERSION as NAME (DIR)"
+        let name = ran
+            .stdout
+            .split(" as ")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .unwrap_or_default()
+            .to_owned();
+        Ok(text(serde_json::json!({
+            "name": name,
+            "output": ran.stdout.trim(),
+        })))
+    }
+
+    #[tool(
+        description = "Open an installed app for the user in a pane beside the pane you run in (or `beside` another pane, or in a new window), with the grant it declares; that grant must be within yours. You own the new pane. Splitting a pane you did not create may wait for the user's approval."
+    )]
+    async fn app_launch(
+        &self,
+        Parameters(p): Parameters<AppLaunch>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let name = p.name.clone();
+        let request = tokio::task::spawn_blocking(move || crate::build::launch_request(&name))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r);
+        let mut r = match request {
+            Ok(r) => r,
+            Err(e) => return Ok(failed(e)),
+        };
+        r.split = if p.new_window {
+            None
+        } else {
+            p.beside.or(self.own_pane)
+        };
+        r.session = match crate::build::session_of(&self.client, r.split).await {
+            Ok(s) => s,
+            Err(e) => return Ok(failed(e)),
+        };
+        Ok(
+            match self.client.call(api::Request::AppsLaunch(r.clone())).await {
+                Ok(api::Response::AppsLaunch(l)) => text(serde_json::json!({
+                    "app_id": r.app_id,
+                    "name": p.name,
+                    "pane": l.pane,
+                    "beside": r.split,
+                    "launch_id": l.launch_id,
+                })),
+                Ok(_) => failed("apps.launch: unexpected answer".into()),
+                Err(e) => failed(e.to_string()),
+            },
+        )
+    }
+}
+
+/// `observe`, `own`, or `elsewhere` as an act level.
+pub(crate) fn parse_level(v: &str) -> Result<i32, String> {
+    Ok(match v {
+        "observe" => api::ActLevel::Observe,
+        "own" => api::ActLevel::Own,
+        "elsewhere" => api::ActLevel::Elsewhere,
+        _ => return Err("the level is observe, own, or elsewhere".into()),
+    } as i32)
+}
+
+/// An agent's grant at `level`: every pane, and the methods of its tools.
+pub(crate) fn agent_grant(level: i32) -> api::Grant {
+    api::Grant {
+        methods: agent_methods(level),
+        all_panes: true,
+        level,
+        ..api::Grant::default()
+    }
+}
+
+/// Whether `methods` (a grant's, `service.*` included) allow `method`.
+fn lists(methods: &[String], method: &str) -> bool {
+    methods.iter().any(|m| {
+        m == method
+            || m.strip_suffix(".*").is_some_and(|s| {
+                method
+                    .strip_prefix(s)
+                    .is_some_and(|rest| rest.starts_with('.'))
+            })
+    })
 }
 
 pub use api::agent_methods;
@@ -1273,12 +1599,12 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
             ),
             "--all-panes" => grant.all_panes = true,
             "--level" => {
-                grant.level = match it.next().map(String::as_str) {
-                    Some("observe") => api::ActLevel::Observe,
-                    Some("own") => api::ActLevel::Own,
-                    Some("elsewhere") => api::ActLevel::Elsewhere,
-                    _ => return Err("--level needs observe, own, or elsewhere".into()),
-                } as i32;
+                grant.level = it
+                    .next()
+                    .ok_or("--level needs observe, own, or elsewhere")
+                    .and_then(|v| {
+                        parse_level(v).map_err(|_| "--level needs observe, own, or elsewhere")
+                    })?;
             }
             other => return Err(format!("unknown option {other}")),
         }
@@ -1301,7 +1627,20 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         let c = session(d).await?;
         // Started by an agent session's harness: take the session's grant
         // first, so nothing here can exceed it.
-        if let Some(register) = session_registration() {
+        let registered = session_registration();
+        // Installing writes no pane, so the daemon does not see it: this
+        // server allows it exactly when its grant may launch apps.
+        let install = if registered.is_some() {
+            Err("an agent session's grant does not launch apps, so it does not install them".into())
+        } else if narrow && !lists(&grant.methods, api::method::APPS_LAUNCH) {
+            Err(format!(
+                "installing an app needs `{}` in this server's grant (an agent at own or elsewhere)",
+                api::method::APPS_LAUNCH
+            ))
+        } else {
+            Ok(())
+        };
+        if let Some(register) = registered {
             c.call(register)
                 .await
                 .map_err(|e| format!("the agent session's grant: {e}"))?;
@@ -1314,6 +1653,11 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         let server = Dreamer {
             client: Arc::new(c),
             leases: Arc::default(),
+            apps_root: crate::appdir::root(),
+            install,
+            own_pane: std::env::var("TMUX_PANE")
+                .ok()
+                .and_then(|p| p.trim_start_matches('%').parse().ok()),
         }
         .serve(rmcp::transport::stdio())
         .await

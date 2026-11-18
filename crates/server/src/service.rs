@@ -1069,7 +1069,15 @@ impl api::Service for DaemonService {
         self.0.hosts.upgrade(p).await
     }
 
-    async fn apps_launch(&self, p: api::LaunchApp) -> Result<api::LaunchedApp, RpcError> {
+    async fn apps_launch(&self, mut p: api::LaunchApp) -> Result<api::LaunchedApp, RpcError> {
+        let caller = crate::leases::caller();
+        // An app an agent launches acts at the agent's level at most.
+        if let Some(c) = caller.filter(|c| !c.owner && c.level != 0) {
+            let g = p.grant.get_or_insert_with(api::Grant::default);
+            if g.level == api::ActLevel::Unspecified as i32 {
+                g.level = c.level;
+            }
+        }
         let (id, env, expires) = self.0.apps.prepare(&p).await?;
         let launched = async {
             let guard = self.0.endpoint().await?;
@@ -1083,13 +1091,27 @@ impl api::Service for DaemonService {
                 background: false,
             };
             let name = p.name.clone().unwrap_or_else(|| p.app_id.clone());
-            tmux_backend::ops::new_window(
-                &ep.conn,
-                domain::TmuxSessionId(p.session),
-                Some(&name),
-                &launch,
-            )
-            .await
+            match p.split {
+                Some(beside) => {
+                    tmux_backend::ops::split_pane(
+                        &ep.conn,
+                        domain::TmuxPaneId(beside),
+                        tmux_backend::ops::Split::Horizontal,
+                        None,
+                        &launch,
+                    )
+                    .await
+                }
+                None => {
+                    tmux_backend::ops::new_window(
+                        &ep.conn,
+                        domain::TmuxSessionId(p.session),
+                        Some(&name),
+                        &launch,
+                    )
+                    .await
+                }
+            }
             .map_err(|e| {
                 RpcError::new(code::INVALID_PARAMS, tmux_backend::ops::failure_message(&e))
             })
@@ -1098,6 +1120,10 @@ impl api::Service for DaemonService {
         match launched {
             Ok(pane) => {
                 self.0.apps.launched(&id, pane.0).await;
+                // The connection that launched it owns the pane.
+                if let Some(c) = caller {
+                    self.0.approvals.created(c.conn, pane.0);
+                }
                 crate::log::info(format!("apps: launched `{}` in pane %{}", p.app_id, pane.0));
                 Ok(api::LaunchedApp {
                     launch_id: id,

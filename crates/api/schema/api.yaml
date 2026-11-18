@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 52 }
+version: { major: 1, minor: 53 }
 package: dreamer.v1
 
 types:
@@ -758,6 +758,7 @@ types:
       - { n: 5, name: name, type: string, optional: true, doc: "The window name; default the app id." }
       - { n: 6, name: cwd, type: string, optional: true }
       - { n: 7, name: ttl_ms, type: u32, optional: true, doc: "How long the ticket is valid; default 60000." }
+      - { n: 8, name: split, type: u32, optional: true, doc: "Open the app in a pane split from this one, side by side, instead of a new window of `session`." }
 
   - message: LaunchedApp
     fields:
@@ -2018,7 +2019,7 @@ methods:
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }
   - { method: grants.narrow, params: Grant, result: Grant, mutation: true, doc: "Give up authority on this connection: the new grant must be within the current one. Nothing widens a grant." }
   - { method: grants.current, params: Empty, result: Grant, doc: "The calling connection's own grant." }
-  - { method: apps.launch, params: LaunchApp, result: LaunchedApp, mutation: true, doc: "Start a program in a new tmux window with a single-use registration ticket (owner only)." }
+  - { method: apps.launch, params: LaunchApp, result: LaunchedApp, mutation: true, doc: "Start a program in a new tmux window, or a pane split from `split`, with a single-use registration ticket. The owner, or an agent's grant at own or elsewhere for an app grant within its own; never a registered app." }
   - { method: events.subscribe, params: EventSubscribe, result: EventSubscription, doc: "Follow the daemon's event log: `events.batch` events follow, with a gap whenever events were skipped." }
   - { method: events.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: messages.publish, params: MessagePublish, result: MessageSent, mutation: true, doc: "Send a topic or direct message; the daemon stamps the sender. Never typed into a pane." }
@@ -2081,8 +2082,8 @@ methods:
   - { method: memory.update, params: MemoryUpdate, result: MemoryItem, mutation: true }
   - { method: memory.forget, params: MemoryRef, result: MemoryItem, mutation: true, doc: "Delete a memory and its index line; the reply is what was deleted." }
   - { method: apps.publish_tree, params: AppTreePublish, result: Empty, mutation: true, doc: "A registered app host publishes a version of its view tree for its pane. A patch that does not follow the version kept is refused with a precondition error; the host then sends the whole tree." }
-  - { method: apps.tree, params: AppTreeQuery, result: AppTree, doc: "An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (owner only)." }
-  - { method: apps.capture, params: AppCapture, result: AppCaptured, mutation: true, doc: "An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (owner only)." }
+  - { method: apps.tree, params: AppTreeQuery, result: AppTree, doc: "An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (the owner, or an agent's grant at own or elsewhere for an app pane it launched)." }
+  - { method: apps.capture, params: AppCapture, result: AppCaptured, mutation: true, doc: "An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (the owner, or an agent's grant at own or elsewhere for an app pane it launched)." }
   - { method: apps.capture_wait, params: AppCaptureWait, result: AppCaptureRequest, doc: "A desktop waits for the next capture to make; while it waits, it counts as a desktop that answers captures (owner only)." }
   - { method: apps.capture_done, params: AppCaptureDone, result: Empty, mutation: true, doc: "A desktop's answer to a capture request (owner only)." }
 

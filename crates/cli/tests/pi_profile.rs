@@ -365,6 +365,15 @@ impl Live {
             .arg(manifest.join("../providers/pi-profile/extensions/dreamer/daemon.ts"))
             .args(args)
             .env("DREAMER_RUNTIME_DIR", self.env.root.join("rt"))
+            // What it runs (`dream`) stays in the private directories too.
+            .env("DREAMER_STATE_DIR", self.env.root.join("st"))
+            .env("DREAMER_DATA_DIR", self.env.root.join("data"))
+            .env("DREAMER_CONFIG_DIR", self.env.root.join("config"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .env("DREAMER_DAEMON", &self.daemon)
+            .env_remove("DREAMER_AGENT_LEVEL")
+            .env_remove("DREAMER_APPS_ROOT")
+            .env_remove("TMUX_PANE")
             .env_remove("DREAMER_RPC_SOCKET")
             .env_remove("DREAMER_SOCKET")
             .env_remove("DREAMER_DRAWER")
@@ -445,6 +454,39 @@ fn the_extension_client_works_under_an_agents_grant() {
             "rename",
             "woken",
             "grouped",
+        ],
+    );
+}
+
+/// The extension's app tools against a real daemon and this `dream`: a new
+/// package, a type error the check places, the fix, a text preview and the
+/// test, an image preview refused with no desktop, the install, and the
+/// app opened beside a pane the session created; at `observe`, installing
+/// and launching are refused.
+#[test]
+fn the_extension_builds_installs_and_opens_an_app() {
+    let Some(node) = node_for_types() else {
+        return;
+    };
+    let live = Live::start("apps", None);
+    let root = live.env.root.join("work");
+    std::fs::create_dir_all(&root).expect("work");
+    let child = live.node(&node, "pi_extension_apps.mjs", &[Path::new(DREAM), &root]);
+    live.steps(
+        child,
+        &[
+            "new",
+            "type error",
+            "fixed",
+            "outside",
+            "preview text",
+            "test",
+            "preview image",
+            "install",
+            "launch",
+            "observe check",
+            "observe install",
+            "observe launch",
         ],
     );
 }

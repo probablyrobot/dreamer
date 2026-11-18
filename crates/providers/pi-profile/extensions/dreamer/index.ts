@@ -7,6 +7,8 @@
 // (`DREAMER_AGENT_LEVEL`, default `elsewhere`). The daemon checks every
 // call; acting on a pane this session did not create waits for the user's
 // approval. This extension shows those approvals and never answers them.
+// The app tools run `dream app` in the apps directory, and open an
+// installed app with `apps.launch` on that same connection.
 //
 // Shipped with Dreamer as part of its pi profile. Edits here are kept when
 // Dreamer updates, but Dreamer's newer version of this file is then not
@@ -17,6 +19,8 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+	APP_TEMPLATES,
+	Apps,
 	COLLECTOR_PRESETS,
 	DELEGATES,
 	Session,
@@ -270,6 +274,91 @@ export default function (pi: ExtensionAPI) {
 			await session.connection();
 			return session.layout(p.action, p);
 		},
+	});
+
+	// Building apps: `dream app` in the apps directory (DREAMER_APPS_ROOT,
+	// else pi's working directory; nothing outside it), and opening an
+	// installed app on this session's connection, under its grant.
+	let apps: Apps | undefined;
+	const appTools = () => {
+		apps ??= new Apps(session, dream);
+		return apps;
+	};
+	const appDirParam = Type.String({ description: "The package directory, inside the apps directory (pi's working directory unless DREAMER_APPS_ROOT says otherwise)." });
+
+	tool({
+		name: "app_new",
+		label: "New app",
+		description: `Create a working app package to start from: app.toml, app.ts (TypeScript), fixtures to preview and test it, and types/dreamer.d.ts. Templates: ${APP_TEMPLATES.join(", ")}. Then edit app.ts and run app_check. The dreamer-apps skill has the components and the API.`,
+		parameters: Type.Object({
+			name: Type.String({ description: "Lowercase letters, digits, and -, starting with a letter; the app's id is local.NAME." }),
+			template: Type.Optional(Type.Union(APP_TEMPLATES.map((t) => Type.Literal(t)))),
+			dir: Type.Optional(Type.String({ description: "The package directory, inside the apps directory; default NAME." })),
+		}),
+		run: (p) => appTools().create(p),
+	});
+
+	tool({
+		name: "app_check",
+		label: "Check app",
+		description:
+			"Check an app package: build its app.ts, then the manifest, the grant it needs, TypeScript type errors, and the view tree. Returns ok, and problems as file, line, column, and message; fix each and check again.",
+		parameters: Type.Object({ dir: appDirParam }),
+		run: (p) => appTools().check(p),
+	});
+
+	pi.registerTool({
+		name: "app_preview",
+		label: "Preview app",
+		description:
+			"Preview an app from its fixtures. mode text (default) returns the screen as text, as the app host draws it in a terminal. mode image returns a PNG of the app as the Dreamer desktop draws it natively; it needs a running Dreamer window, opens the preview in a window of its own, and closes it again.",
+		parameters: Type.Object({
+			dir: appDirParam,
+			mode: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("image")])),
+			size: Type.Optional(Type.String({ description: "For text: WIDTHxHEIGHT, such as 80x24." })),
+		}),
+		async execute(_id: string, params: any, _signal: unknown, _onUpdate: unknown, ctx: any) {
+			if (ctx?.hasUI) ui = ctx.ui;
+			const r = await appTools().preview(params);
+			const content: any[] = [];
+			if (r.image !== undefined) content.push({ type: "image", data: r.image, mimeType: "image/png" });
+			content.push({ type: "text", text: r.text });
+			return { content, details: {} };
+		},
+	});
+
+	tool({
+		name: "app_test",
+		label: "Test app",
+		description:
+			"Test an app: replay fixtures/events.jsonl and compare the screen after each event with fixtures/expect/. Returns ok and what differs. With update, record the screens drawn now as the expected ones (after a deliberate change).",
+		parameters: Type.Object({ dir: appDirParam, update: Type.Optional(Type.Boolean()) }),
+		run: (p) => appTools().test(p),
+	});
+
+	tool({
+		name: "app_install",
+		label: "Install app",
+		description:
+			"Install an app package for the user: check it, draw it from its fixtures, and copy it into Dreamer's apps directory. A version it replaces is kept (dream app rollback NAME puts it back). Returns the installed name for app_launch. Not at the observe level.",
+		parameters: Type.Object({
+			dir: appDirParam,
+			name: Type.Optional(Type.String({ description: "The installed name; default the app's id." })),
+		}),
+		run: (p) => appTools().install(p),
+	});
+
+	tool({
+		name: "app_launch",
+		label: "Open app",
+		description:
+			"Open an installed app for the user in a pane beside the pane you run in (or `beside` another pane, or in a new window), with the grant it declares; that grant must be within yours. You own the new pane. Splitting a pane you did not create waits for the user's approval. Not at the observe level.",
+		parameters: Type.Object({
+			name: Type.String({ description: "The installed name (what app_install said)." }),
+			beside: Type.Optional(Type.Integer({ minimum: 0, description: "Open it beside this pane." })),
+			new_window: Type.Optional(Type.Boolean({ description: "Open it in a new window instead." })),
+		}),
+		run: (p) => appTools().launch(p),
 	});
 
 	// Delegation: hand a task to Claude Code or Codex, run headless on the

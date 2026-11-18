@@ -36,6 +36,7 @@
 
 mod agents;
 mod app;
+mod appdir;
 mod ask;
 mod bridge;
 mod build;

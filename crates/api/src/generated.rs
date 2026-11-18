@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 52;
+pub const PROTOCOL_MINOR: u32 = 53;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2709,6 +2709,10 @@ pub struct LaunchApp {
     #[prost(uint32, optional, tag = "7")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl_ms: Option<u32>,
+    /// Open the app in a pane split from this one, side by side, instead of a new window of `session`.
+    #[prost(uint32, optional, tag = "8")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -5569,7 +5573,7 @@ pub const METHODS: &[MethodInfo] = &[
         params: "LaunchApp",
         result: "LaunchedApp",
         mutation: true,
-        doc: "Start a program in a new tmux window with a single-use registration ticket (owner only).",
+        doc: "Start a program in a new tmux window, or a pane split from `split`, with a single-use registration ticket. The owner, or an agent's grant at own or elsewhere for an app grant within its own; never a registered app.",
     },
     MethodInfo {
         name: "events.subscribe",
@@ -6010,14 +6014,14 @@ pub const METHODS: &[MethodInfo] = &[
         params: "AppTreeQuery",
         result: "AppTree",
         mutation: false,
-        doc: "An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (owner only).",
+        doc: "An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (the owner, or an agent's grant at own or elsewhere for an app pane it launched).",
     },
     MethodInfo {
         name: "apps.capture",
         params: "AppCapture",
         result: "AppCaptured",
         mutation: true,
-        doc: "An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (owner only).",
+        doc: "An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (the owner, or an agent's grant at own or elsewhere for an app pane it launched).",
     },
     MethodInfo {
         name: "apps.capture_wait",
@@ -7562,7 +7566,7 @@ pub trait Service: Sync {
         &self,
         params: Empty,
     ) -> impl ::core::future::Future<Output = Result<Grant, RpcError>> + Send;
-    /// Start a program in a new tmux window with a single-use registration ticket (owner only).
+    /// Start a program in a new tmux window, or a pane split from `split`, with a single-use registration ticket. The owner, or an agent's grant at own or elsewhere for an app grant within its own; never a registered app.
     fn apps_launch(
         &self,
         params: LaunchApp,
@@ -7867,12 +7871,12 @@ pub trait Service: Sync {
         &self,
         params: AppTreePublish,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
-    /// An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (owner only).
+    /// An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (the owner, or an agent's grant at own or elsewhere for an app pane it launched).
     fn apps_tree(
         &self,
         params: AppTreeQuery,
     ) -> impl ::core::future::Future<Output = Result<AppTree, RpcError>> + Send;
-    /// An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (owner only).
+    /// An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (the owner, or an agent's grant at own or elsewhere for an app pane it launched).
     fn apps_capture(
         &self,
         params: AppCapture,

@@ -12,18 +12,25 @@
 //! - `--png FILE` asks the running desktop, through the daemon, for an
 //!   image of the app's preview pane as the desktop draws it (opening the
 //!   preview first when none is open). With no desktop it fails and says
-//!   so.
+//!   so. With `--level L` it does this as an agent at that level would:
+//!   its connection first narrows itself to the agent's grant, opens a
+//!   preview pane of its own, and closes it once the image is written.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::build::{USAGE, checked, manifest, ok_or_error, preview_text, termapp};
-use crate::daemon::{DaemonArgs, call};
+use crate::daemon::{DaemonArgs, explain};
 use crate::remote::session;
 use api::{Request, Response};
 
 /// What `--png` says when no desktop is there to draw the app.
 pub const NO_DESKTOP: &str = "no Dreamer window is running; --png needs one";
+
+/// One call on a shared connection.
+async fn ask(c: &client::Client, r: Request) -> Result<Response, String> {
+    c.call(r).await.map_err(explain)
+}
 
 /// How the app is previewed.
 #[derive(Debug, PartialEq, Eq)]
@@ -50,7 +57,7 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     if path.starts_with('-') {
         return Err(USAGE.into());
     }
-    let (mut modes, mut size, mut session_id) = (Vec::new(), None, None);
+    let (mut modes, mut size, mut session_id, mut level) = (Vec::new(), None, None, None);
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().ok_or(format!("{a} needs a value"));
@@ -60,6 +67,7 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
             "--pane" => modes.push(Mode::Pane),
             "--png" => modes.push(Mode::Png(PathBuf::from(value()?))),
             "--size" => size = Some(value()?),
+            "--level" => level = Some(crate::mcp::parse_level(&value()?)?),
             "--session" => {
                 let v = value()?;
                 session_id = Some(
@@ -79,6 +87,9 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
     if size.is_some() && mode != Mode::Text {
         return Err("--size is for --text; the desktop draws the pane at its size".into());
     }
+    if level.is_some() && !matches!(mode, Mode::Png(_)) {
+        return Err("--level is for --png".into());
+    }
     match mode {
         Mode::Text => {
             let m = manifest(path);
@@ -87,14 +98,17 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Mode::Open => open(d, path, session_id),
-        Mode::Png(file) => png(d, path, &file, session_id),
+        Mode::Png(file) => match level {
+            Some(level) => png_as_agent(d, path, &file, level),
+            None => png(d, path, &file, session_id),
+        },
         Mode::Pane => pane(path),
     }
 }
 
 /// A package ready to preview live: built, checked, and drawing its own
 /// view tree.
-struct Package {
+pub(crate) struct Package {
     dir: PathBuf,
     id: String,
     problems: Vec<crate::typecheck::Problem>,
@@ -107,7 +121,7 @@ impl Package {
     }
 }
 
-fn prepare(path: &str) -> Result<Package, String> {
+pub(crate) fn prepare(path: &str) -> Result<Package, String> {
     let m = manifest(path);
     let dir = m
         .parent()
@@ -136,16 +150,12 @@ fn prepare(path: &str) -> Result<Package, String> {
 }
 
 /// Start a preview pane for `pkg` in a new tmux window; its pane.
-async fn launch(
-    c: &mut client::Client,
-    pkg: &Package,
-    session_id: Option<u32>,
-) -> Result<u32, String> {
+async fn launch(c: &client::Client, pkg: &Package, session_id: Option<u32>) -> Result<u32, String> {
     let session_id = match session_id {
         Some(s) => s,
         None => {
             let Response::TmuxTopology(t) =
-                call(c, Request::TmuxTopology(api::TopologyParams::default())).await?
+                ask(c, Request::TmuxTopology(api::TopologyParams::default())).await?
             else {
                 return Err("unexpected reply".into());
             };
@@ -160,7 +170,7 @@ async fn launch(
         .dir
         .file_name()
         .map_or_else(|| pkg.id.clone(), |n| n.to_string_lossy().into_owned());
-    let Response::AppsLaunch(l) = call(
+    let Response::AppsLaunch(l) = ask(
         c,
         Request::AppsLaunch(api::LaunchApp {
             app_id: pkg.preview_id(),
@@ -178,6 +188,7 @@ async fn launch(
             name: Some(format!("preview {name}")),
             cwd: Some(pkg.dir.display().to_string()),
             ttl_ms: None,
+            split: None,
         }),
     )
     .await?
@@ -187,8 +198,8 @@ async fn launch(
     Ok(l.pane)
 }
 
-async fn desktops(c: &mut client::Client) -> Result<u32, String> {
-    let Response::DaemonStatus(s) = call(c, Request::DaemonStatus(api::Empty {})).await? else {
+async fn desktops(c: &client::Client) -> Result<u32, String> {
+    let Response::DaemonStatus(s) = ask(c, Request::DaemonStatus(api::Empty {})).await? else {
         return Err("unexpected reply".into());
     };
     Ok(s.desktops)
@@ -205,13 +216,13 @@ fn open(d: &DaemonArgs, path: &str, session_id: Option<u32>) -> Result<(), Strin
     let pkg = prepare(path)?;
     warn(&pkg.problems);
     rt()?.block_on(async {
-        let mut c = session(d).await?;
-        let pane = launch(&mut c, &pkg, session_id).await?;
+        let c = session(d).await?;
+        let pane = launch(&c, &pkg, session_id).await?;
         println!(
             "previewing {} in pane %{pane}; it reloads when the package changes (q in the pane ends it)",
             pkg.id
         );
-        if desktops(&mut c).await? == 0 {
+        if desktops(&c).await? == 0 {
             println!("no Dreamer window is running: the pane shows the app's text interface");
         }
         Ok(())
@@ -219,9 +230,9 @@ fn open(d: &DaemonArgs, path: &str, session_id: Option<u32>) -> Result<(), Strin
 }
 
 /// A live preview pane of `pkg` open now: the newest.
-async fn open_preview(c: &mut client::Client, pkg: &Package) -> Result<Option<u32>, String> {
+async fn open_preview(c: &client::Client, pkg: &Package) -> Result<Option<u32>, String> {
     let Response::TmuxTopology(t) =
-        call(c, Request::TmuxTopology(api::TopologyParams::default())).await?
+        ask(c, Request::TmuxTopology(api::TopologyParams::default())).await?
     else {
         return Err("unexpected reply".into());
     };
@@ -234,7 +245,7 @@ async fn open_preview(c: &mut client::Client, pkg: &Package) -> Result<Option<u3
 }
 
 /// The version of the pane's view tree once its host has published one.
-async fn published(c: &mut client::Client, pane: u32) -> Result<u64, String> {
+async fn published(c: &client::Client, pane: u32) -> Result<u64, String> {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let answer = c
@@ -271,42 +282,101 @@ fn png(d: &DaemonArgs, path: &str, file: &Path, session_id: Option<u32>) -> Resu
     };
     rt()?.block_on(async {
         // A desktop starts the daemon it uses: none running, no desktop.
-        let Ok(mut c) = crate::daemon::connect().await else {
+        let Ok(c) = crate::daemon::connect().await else {
             return Err(NO_DESKTOP.to_owned());
         };
-        if desktops(&mut c).await? == 0 {
+        if desktops(&c).await? == 0 {
             return Err(NO_DESKTOP.to_owned());
         }
         drop(c);
         let pkg = prepare(path)?;
         warn(&pkg.problems);
-        let mut c = session(d).await?;
-        let pane = match open_preview(&mut c, &pkg).await? {
+        let c = session(d).await?;
+        let pane = match open_preview(&c, &pkg).await? {
             Some(p) => p,
             None => {
-                let p = launch(&mut c, &pkg, session_id).await?;
+                let p = launch(&c, &pkg, session_id).await?;
                 println!("opened a preview of {} in pane %{p}", pkg.id);
                 p
             }
         };
-        let seq = published(&mut c, pane).await?;
-        let Response::AppsCapture(got) = call(
-            &mut c,
-            Request::AppsCapture(api::AppCapture {
-                pane,
-                path: file.display().to_string(),
-                seq,
-                wait_ms: Some(20_000),
-            }),
-        )
-        .await?
-        else {
-            return Err("unexpected reply".into());
-        };
+        let got = capture(&c, pane, &file).await?;
         println!(
             "wrote {} ({}x{}) from pane %{pane}",
             got.path, got.width, got.height
         );
+        Ok(())
+    })
+}
+
+/// The desktop's drawing of `pane`, once the pane has drawn, as a PNG
+/// file at `file`.
+async fn capture(c: &client::Client, pane: u32, file: &Path) -> Result<api::AppCaptured, String> {
+    let seq = published(c, pane).await?;
+    let Response::AppsCapture(got) = ask(
+        c,
+        Request::AppsCapture(api::AppCapture {
+            pane,
+            path: file.display().to_string(),
+            seq,
+            wait_ms: Some(20_000),
+        }),
+    )
+    .await?
+    else {
+        return Err("unexpected reply".into());
+    };
+    Ok(got)
+}
+
+/// An image preview as an agent takes it, on the agent's own connection:
+/// with no desktop, `NO_DESKTOP` before anything opens; else a preview pane
+/// of its own in a new window, the desktop's drawing of it written to
+/// `file`, and the pane closed again. The package's type problems, which
+/// do not stop a preview, come back with the image.
+pub(crate) async fn agent_png(
+    c: &client::Client,
+    path: &str,
+    file: &Path,
+) -> Result<(api::AppCaptured, Vec<crate::typecheck::Problem>), String> {
+    // A grant without daemon.status learns of a missing desktop from
+    // apps.capture instead.
+    if let Ok(0) = desktops(c).await {
+        return Err(NO_DESKTOP.to_owned());
+    }
+    let owned = path.to_owned();
+    let pkg = tokio::task::spawn_blocking(move || prepare(&owned))
+        .await
+        .map_err(|e| e.to_string())??;
+    let pane = launch(c, &pkg, None).await?;
+    let got = capture(c, pane, file).await;
+    // The pane was only for this image.
+    let _ = c
+        .call(Request::ActionsSubmit(api::SubmitAction {
+            action: Some(api::Action {
+                kind: Some(api::action::Kind::KillPane(api::KillPane { pane })),
+            }),
+            ..api::SubmitAction::default()
+        }))
+        .await;
+    Ok((got?, pkg.problems))
+}
+
+/// `--png FILE --level L`.
+fn png_as_agent(d: &DaemonArgs, path: &str, file: &Path, level: i32) -> Result<(), String> {
+    let file = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| e.to_string())?
+            .join(file)
+    };
+    rt()?.block_on(async {
+        let c = session(d).await?;
+        ask(&c, Request::GrantsNarrow(crate::mcp::agent_grant(level))).await?;
+        let (got, problems) = agent_png(&c, path, &file).await?;
+        warn(&problems);
+        println!("wrote {} ({}x{})", got.path, got.width, got.height);
         Ok(())
     })
 }
