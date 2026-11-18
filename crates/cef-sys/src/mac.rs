@@ -211,6 +211,22 @@ pub unsafe fn set_hidden(view: *mut c_void, hidden: bool) {
     }
 }
 
+/// Take `view` out of its superview (and its window).
+///
+/// # Safety
+///
+/// Main thread; `view` is null or a live `NSView`.
+pub unsafe fn remove_from_superview(view: *mut c_void) {
+    let view = view.cast::<AnyObject>();
+    if view.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees a live NSView.
+    unsafe {
+        let _: () = msg_send![view, removeFromSuperview];
+    }
+}
+
 /// Make `view` its window's first responder: keys go to it.
 ///
 /// # Safety
@@ -364,6 +380,24 @@ unsafe fn send(event: *mut AnyObject) -> Result<(), String> {
     Ok(())
 }
 
+/// Queue `event` behind the events already waiting, as a person's arrives:
+/// `NSApp postEvent:atStart:NO`. The application's event loop delivers it.
+///
+/// # Safety
+///
+/// Main thread; `event` is null or a live `NSEvent`.
+unsafe fn post(event: *mut AnyObject) -> Result<(), String> {
+    if event.is_null() {
+        return Err("AppKit made no event".into());
+    }
+    // SAFETY: the application object exists in a running app; main thread.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class(c"NSApplication")?, sharedApplication];
+        let _: () = msg_send![app, postEvent: event, atStart: Bool::NO];
+    }
+    Ok(())
+}
+
 /// Seconds since the system started, as event timestamps count.
 fn uptime() -> Result<f64, String> {
     // SAFETY: NSProcessInfo's documented calls.
@@ -374,10 +408,12 @@ fn uptime() -> Result<f64, String> {
 }
 
 /// Press and release a key in the window holding `view` (the key window),
-/// through `NSApp sendEvent:` as AppKit delivers a typed key: key
-/// equivalents (the window's views, then the menu bar) see it before the
-/// first responder. `key_code` is the virtual key code, `chars` what it
-/// types.
+/// queued on the application's events as a typed key is (`NSApp
+/// postEvent:atStart:`): the event loop delivers it later, through
+/// `sendEvent:`, so key equivalents (the window's views, then the menu
+/// bar) see it before the first responder, and a toolkit handling it is
+/// not already inside a call of its own. `key_code` is the virtual key
+/// code, `chars` what it types.
 ///
 /// # Safety
 ///
@@ -411,7 +447,7 @@ pub unsafe fn press_key(
                     isARepeat: Bool::NO,
                     keyCode: key_code,
                 ];
-                send(event)
+                post(event)
             })?;
         }
     }
