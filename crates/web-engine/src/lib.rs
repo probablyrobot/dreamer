@@ -29,6 +29,17 @@ pub struct Rect {
     pub height: f32,
 }
 
+/// One of Chromium's own edit commands, which the desktop's edit shortcuts
+/// become in a page: the clipboard, including rich and HTML contents,
+/// works as in Chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edit {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
 #[cfg(all(feature = "engine", target_os = "macos"))]
 mod engine;
 #[cfg(all(feature = "engine", target_os = "macos"))]

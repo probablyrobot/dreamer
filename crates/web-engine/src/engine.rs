@@ -525,13 +525,19 @@ impl WebView {
         self.visible.get()
     }
 
-    /// Give the page keyboard focus.
+    /// Give the page keyboard focus. A page that has it (a click in it)
+    /// keeps it where it is.
     pub fn focus(&self) {
+        if self.has_focus() {
+            return;
+        }
         if let Some(h) = self.host() {
             h.set_focus(1);
         }
-        // SAFETY: CEF's live view or null; main thread.
-        unsafe { appkit::make_first_responder(self.view()) };
+        if !self.has_focus() {
+            // SAFETY: CEF's live view or null; main thread.
+            unsafe { appkit::make_first_responder(self.view()) };
+        }
     }
 
     /// Whether the page's view has the window's keyboard focus now.
@@ -540,8 +546,12 @@ impl WebView {
         unsafe { appkit::has_first_responder(self.view()) }
     }
 
-    /// Take keyboard focus back to the window's own view.
+    /// Take keyboard focus back to the window's own view, if the page has
+    /// it (another page may have taken it already).
     pub fn release_focus(&self) {
+        if !self.has_focus() {
+            return;
+        }
         if let Some(h) = self.host() {
             h.set_focus(0);
         }
@@ -600,22 +610,77 @@ impl WebView {
         );
     }
 
+    /// Evaluate `expression` in the page (DevTools `Runtime.evaluate`);
+    /// `done` gets its value on the main thread, or `None` if the page did
+    /// not give one.
+    pub fn evaluate(
+        &self,
+        expression: &str,
+        done: impl FnOnce(Option<serde_json::Value>) + Send + 'static,
+    ) {
+        let params = serde_json::json!({ "expression": expression, "returnByValue": true });
+        self.devtools(
+            "Runtime.evaluate",
+            &params.to_string(),
+            Box::new(move |r| {
+                done(r.ok().and_then(|json| {
+                    let mut v: serde_json::Value = serde_json::from_slice(&json).ok()?;
+                    v.pointer_mut("/result/value").map(serde_json::Value::take)
+                }));
+            }),
+        );
+    }
+
     /// Ask for the page's scroll position in CSS pixels; `done` gets it on
     /// the main thread, or `None` if the page did not say.
     pub fn scroll_position(&self, done: impl FnOnce(Option<(i32, i32)>) + Send + 'static) {
-        self.devtools(
-            "Runtime.evaluate",
-            r#"{"expression":"[scrollX,scrollY]","returnByValue":true}"#,
-            Box::new(move |r| {
-                let at = r.ok().and_then(|json| {
-                    let v: serde_json::Value = serde_json::from_slice(&json).ok()?;
-                    let xy = v.pointer("/result/value")?.as_array()?;
-                    let n = |i: usize| Some(xy.get(i)?.as_f64()?.round() as i32);
-                    Some((n(0)?, n(1)?))
-                });
-                done(at);
-            }),
-        );
+        self.evaluate("[scrollX,scrollY]", move |v| {
+            done(v.and_then(|v| {
+                let xy = v.as_array()?;
+                let n = |i: usize| Some(xy.get(i)?.as_f64()?.round() as i32);
+                Some((n(0)?, n(1)?))
+            }));
+        });
+    }
+
+    /// Run one of Chromium's edit commands in the page's focused frame.
+    pub fn edit(&self, edit: crate::Edit) {
+        let Some(f) = self
+            .browser
+            .focused_frame()
+            .or_else(|| self.browser.main_frame())
+        else {
+            return;
+        };
+        match edit {
+            crate::Edit::Cut => f.cut(),
+            crate::Edit::Copy => f.copy(),
+            crate::Edit::Paste => f.paste(),
+            crate::Edit::SelectAll => f.select_all(),
+        }
+    }
+
+    /// Press and release a key as a person types it, through the window
+    /// (the desktop's shortcuts see it first): `key_code` is the macOS
+    /// virtual key code, `chars` what it types. The window must be the key
+    /// window. For smoke checks.
+    pub fn press_key(&self, key_code: u16, chars: &str, command: bool) -> Result<(), String> {
+        // SAFETY: CEF's live view or null; main thread.
+        unsafe { appkit::press_key(self.view(), key_code, chars, command) }
+    }
+
+    /// Click at (`x`, `y`) in the page, from its top left, through the
+    /// window. The window must be the key window. For smoke checks.
+    pub fn click(&self, x: f32, y: f32) -> Result<(), String> {
+        // SAFETY: CEF's live view or null; main thread.
+        unsafe { appkit::click(self.view(), f64::from(x), f64::from(y)) }
+    }
+
+    /// An input method's composition in the focused page: `marked` as
+    /// marked text, then `committed` in its place. For smoke checks.
+    pub fn compose(&self, marked: &str, committed: &str) -> Result<(), String> {
+        // SAFETY: CEF's live view or null; main thread.
+        unsafe { appkit::compose(self.view(), marked, committed) }
     }
 
     /// Scroll the page to (`x`, `y`) in CSS pixels: now if it has loaded,

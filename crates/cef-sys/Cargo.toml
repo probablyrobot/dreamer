@@ -19,7 +19,11 @@ cef = { version = "=156.6.0", default-features = false, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6.5", optional = true }
-objc2-foundation = { version = "0.3.2", optional = true, features = ["NSGeometry"] }
+objc2-foundation = { version = "0.3.2", optional = true, features = [
+    "NSGeometry",
+    "NSRange",
+    "NSString",
+] }
 
 [lints]
 workspace = true

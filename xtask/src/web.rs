@@ -209,11 +209,20 @@ const CAPTURES: [&str; 8] = [
     "closed.png",
 ];
 
+/// The input checks the web smoke reports passing (`smoke: web input:`):
+/// a click focuses the page, typing and an input method composition reach
+/// a field, Cmd+J shows the drawer from the page and hides it again, and
+/// Cmd+A is Chromium's select all. Copy, cut, and paste are not checked:
+/// they would use the system clipboard, which the gate never touches.
+const INPUT_CHECKS: usize = 5;
+
 /// Run the bundle's `dreamer --smoke-web` against an isolated tmux server
 /// with private daemon, desktop, and configuration directories, then check
 /// its captures as its `checks.txt` lists: the page's color fills the web
 /// pane's rectangle after each move, and is absent beside it, from it on
-/// another tab, and from the palette over it.
+/// another tab, and from the palette over it. The smoke's input checks
+/// (typing, an input method, Cmd+J, select all in the page) pass or
+/// fail in the app itself; each one passed is a line of its output.
 pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
     let pid = std::process::id();
@@ -222,6 +231,13 @@ pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(out);
     std::fs::create_dir_all(root.join("config")).map_err(|e| e.to_string())?;
+    // The drawer Cmd+J shows from inside the page runs a plain shell: the
+    // check is about the shortcut, not about any agent.
+    std::fs::write(
+        root.join("config/dreamer.yaml"),
+        "agents:\n  pi:\n    command: [env, 'PS1=$ ', /bin/sh]\n",
+    )
+    .map_err(|e| e.to_string())?;
     let started = Command::new(&tmux)
         .args(["-L", &socket, "-f", "/dev/null", "new-session", "-d"])
         .args(["-s", "main", "-x", "120", "-y", "36"])
@@ -320,6 +336,16 @@ pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
     }
     if let Some(missing) = CAPTURES.iter().find(|c| !checked.contains(**c)) {
         return Err(format!("the web smoke checked nothing in {missing}"));
+    }
+    let inputs = lines
+        .iter()
+        .filter(|l| l.starts_with("smoke: web input:"))
+        .count();
+    if inputs < INPUT_CHECKS {
+        return Err(format!(
+            "the web smoke passed {inputs} of {INPUT_CHECKS} input checks\n{}",
+            lines.join("\n")
+        ));
     }
     Ok(Smoke::Passed(lines))
 }
