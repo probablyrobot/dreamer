@@ -37,8 +37,17 @@ pub fn run(args: &[String]) -> Result<std::process::ExitCode, String> {
     // This wrapper's own pid: while it lives, a job whose program has
     // exited is still writing its status, not lost.
     write(dir, "wrapper", &format!("{}\n", std::process::id()));
+    // Started by the daemon: wait (briefly) until it has set the pane to
+    // stay after the program exits, so even instant output stays readable.
+    if std::env::var_os("DREAMER_JOB_HOLD").is_some() {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !dir.join("kept").exists() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     let child = std::process::Command::new(&argv[0])
         .args(&argv[1..])
+        .env_remove("DREAMER_JOB_HOLD")
         .spawn();
     let mut child = match child {
         Ok(c) => c,

@@ -48,6 +48,10 @@ gpui::actions!(
         Copy,
         /// Paste into the focused pane (bracketed when the program asked).
         Paste,
+        /// Cut the selection in a web page.
+        Cut,
+        /// Select everything in a web page's focused field or document.
+        SelectAll,
         CommandPalette,
         /// Show only the focused pane, or all of them again.
         ZoomPane,
@@ -72,6 +76,9 @@ pub(crate) struct Shortcut {
     pub mac: Option<&'static str>,
     pub linux: Option<&'static str>,
     make: fn() -> Box<dyn gpui::Action>,
+    /// The binding of these keys to the command, in a key context or
+    /// everywhere.
+    bind: fn(&'static str, Option<&'static str>) -> KeyBinding,
 }
 
 impl Shortcut {
@@ -91,6 +98,7 @@ macro_rules! shortcut {
             mac: $mac,
             linux: $linux,
             make: || Box::new($action),
+            bind: |keys, context| KeyBinding::new(keys, $action, context),
         }
     };
 }
@@ -128,15 +136,24 @@ pub(crate) const SHORTCUTS: &[Shortcut] = &[
     shortcut!(FontReset, Some("cmd-0"), None),
 ];
 
-fn bindings(cx: &App) -> Vec<KeyBinding> {
+/// The key context of a web pane (`crate::web::WebPane`).
+pub(crate) const WEB_PANE: &str = "WebPane";
+
+/// Shortcuts only a web page takes. With Copy and Paste above, they become
+/// Chromium's own edit commands there. Every other key goes to the page,
+/// except the shortcuts above, which work in a page as anywhere.
+pub(crate) const WEB_SHORTCUTS: &[Shortcut] = &[
+    shortcut!(Cut, Some("cmd-x"), Some("ctrl-shift-x")),
+    shortcut!(SelectAll, Some("cmd-a"), Some("ctrl-shift-a")),
+];
+
+fn bindings() -> Vec<KeyBinding> {
     SHORTCUTS
         .iter()
-        .filter_map(|s| {
-            let keys = s.keys()?;
-            Some(KeyBinding::load(keys, (s.make)(), None, false, None, cx))
-        })
-        .collect::<Result<_, _>>()
-        .unwrap_or_else(|e| panic!("a built-in shortcut does not parse: {e}"))
+        .map(|s| (s, None))
+        .chain(WEB_SHORTCUTS.iter().map(|s| (s, Some(WEB_PANE))))
+        .filter_map(|(s, context)| Some((s.bind)(s.keys()?, context)))
+        .collect()
 }
 
 /// This platform's shortcut for `action`, written for a menu: `⇧⌘D` on
@@ -246,8 +263,7 @@ impl gpui::Global for Opener {}
 /// drawer) are handled by the focused view; without one they do nothing.
 pub(crate) fn install(cx: &mut App, open_window: impl Fn(&mut App) + 'static) {
     cx.set_global(Opener(Box::new(open_window)));
-    let b = bindings(cx);
-    cx.bind_keys(b);
+    cx.bind_keys(bindings());
     cx.set_menus(menus());
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
@@ -357,11 +373,71 @@ fn bring_all_to_front(cx: &mut App) {
 mod tests {
     use super::*;
 
+    /// The command a keystroke runs: in a web page, or (`web` false) in
+    /// another pane.
+    fn command(keys: &'static str, web: bool) -> Option<String> {
+        let keymap = gpui::Keymap::new(bindings());
+        let context: Vec<gpui::KeyContext> = if web {
+            vec![gpui::KeyContext::parse(WEB_PANE).expect("context")]
+        } else {
+            Vec::new()
+        };
+        let ks = gpui::Keystroke::parse(keys).expect("keystroke");
+        let (found, _) = keymap.bindings_for_input(&[ks], &context);
+        found.first().map(|b| b.action().name().to_owned())
+    }
+
+    #[test]
+    fn a_page_gets_every_key_but_dreamers_shortcuts_and_edits_with_chromium() {
+        let (copy, paste, cut, all, drawer) = if cfg!(target_os = "macos") {
+            ("cmd-c", "cmd-v", "cmd-x", "cmd-a", "cmd-j")
+        } else {
+            (
+                "ctrl-shift-c",
+                "ctrl-shift-v",
+                "ctrl-shift-x",
+                "ctrl-shift-a",
+                "ctrl-shift-j",
+            )
+        };
+        // Dreamer's own shortcuts work from inside a page.
+        assert_eq!(
+            command(drawer, true).as_deref(),
+            Some("dreamer::ToggleDrawer")
+        );
+        // The edit shortcuts become Chromium's edit commands there.
+        for (keys, action) in [
+            (copy, "dreamer::Copy"),
+            (paste, "dreamer::Paste"),
+            (cut, "dreamer::Cut"),
+            (all, "dreamer::SelectAll"),
+        ] {
+            assert_eq!(command(keys, true).as_deref(), Some(action), "{keys}");
+        }
+        // Cut and select all are taken only in a page: elsewhere the keys
+        // reach the program in the pane.
+        assert_eq!(command(cut, false), None);
+        assert_eq!(command(all, false), None);
+        // Everything else goes to the page.
+        for keys in [
+            "a",
+            "shift-a",
+            "enter",
+            "escape",
+            "backspace",
+            "ctrl-a",
+            "alt-f",
+        ] {
+            assert_eq!(command(keys, true), None, "{keys}");
+        }
+    }
+
     #[test]
     fn every_shortcut_parses_and_none_is_taken_twice() {
         for platform in [true, false] {
             let keys: Vec<&str> = SHORTCUTS
                 .iter()
+                .chain(WEB_SHORTCUTS)
                 .filter_map(|s| if platform { s.mac } else { s.linux })
                 .collect();
             for k in &keys {
@@ -373,7 +449,7 @@ mod tests {
 
     #[test]
     fn linux_shortcuts_leave_plain_ctrl_and_alt_keys_to_the_terminal() {
-        for s in SHORTCUTS {
+        for s in SHORTCUTS.iter().chain(WEB_SHORTCUTS) {
             let Some(k) = s.linux else { continue };
             let ks = gpui::Keystroke::parse(k).expect("parse");
             let m = ks.modifiers;

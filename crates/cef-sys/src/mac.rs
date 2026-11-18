@@ -1,5 +1,6 @@
 //! macOS: CEF's application protocol on the toolkit's own `NSApplication`
-//! subclass, and the `NSView` calls that keep a browser's view on a pane.
+//! subclass, the `NSView` calls that keep a browser's view on a pane, and
+//! input sent as AppKit delivers it (for the desktop's smoke checks).
 //!
 //! All of it must run on the main thread.
 
@@ -8,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Bool, Imp, Sel};
 use objc2::{ffi, msg_send, sel};
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSPoint, NSRange, NSRect, NSSize, NSString};
 
 /// A rectangle in a view's coordinates, in points.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -310,4 +311,191 @@ pub unsafe fn from_top_left(parent: *mut c_void, frame: Frame) -> Frame {
         y: bounds.size.height - frame.y - frame.height,
         ..frame
     }
+}
+
+/// AppKit's event types and the Command modifier flag.
+const KEY_DOWN: usize = 10;
+const KEY_UP: usize = 11;
+const LEFT_MOUSE_DOWN: usize = 1;
+const LEFT_MOUSE_UP: usize = 2;
+const COMMAND: usize = 1 << 20;
+
+fn class(name: &CStr) -> Result<&'static AnyClass, String> {
+    AnyClass::get(name).ok_or_else(|| format!("no {} class", name.to_string_lossy()))
+}
+
+/// The number of the window holding `view`, which must be the key window.
+///
+/// # Safety
+///
+/// Main thread; `view` is null or a live `NSView`.
+unsafe fn key_window(view: *mut AnyObject) -> Result<isize, String> {
+    if view.is_null() {
+        return Err("no view".into());
+    }
+    // SAFETY: caller guarantees a live NSView; main thread.
+    unsafe {
+        let window: *mut AnyObject = msg_send![view, window];
+        if window.is_null() {
+            return Err("the view is in no window".into());
+        }
+        let key: Bool = msg_send![window, isKeyWindow];
+        if !key.as_bool() {
+            return Err("the window is not the key window".into());
+        }
+        Ok(msg_send![window, windowNumber])
+    }
+}
+
+/// Deliver `event` as AppKit delivers a person's: `NSApp sendEvent:`.
+///
+/// # Safety
+///
+/// Main thread; `event` is null or a live `NSEvent`.
+unsafe fn send(event: *mut AnyObject) -> Result<(), String> {
+    if event.is_null() {
+        return Err("AppKit made no event".into());
+    }
+    // SAFETY: the application object exists in a running app; main thread.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class(c"NSApplication")?, sharedApplication];
+        let _: () = msg_send![app, sendEvent: event];
+    }
+    Ok(())
+}
+
+/// Seconds since the system started, as event timestamps count.
+fn uptime() -> Result<f64, String> {
+    // SAFETY: NSProcessInfo's documented calls.
+    unsafe {
+        let info: *mut AnyObject = msg_send![class(c"NSProcessInfo")?, processInfo];
+        Ok(msg_send![info, systemUptime])
+    }
+}
+
+/// Press and release a key in the window holding `view` (the key window),
+/// through `NSApp sendEvent:` as AppKit delivers a typed key: key
+/// equivalents (the window's views, then the menu bar) see it before the
+/// first responder. `key_code` is the virtual key code, `chars` what it
+/// types.
+///
+/// # Safety
+///
+/// Main thread; `view` is null or a live `NSView`.
+pub unsafe fn press_key(
+    view: *mut c_void,
+    key_code: u16,
+    chars: &str,
+    command: bool,
+) -> Result<(), String> {
+    let chars = NSString::from_str(chars);
+    let flags = if command { COMMAND } else { 0 };
+    // SAFETY: live view (caller), main thread; the arguments match
+    // keyEventWithType:location:modifierFlags:timestamp:windowNumber:
+    // context:characters:charactersIgnoringModifiers:isARepeat:keyCode:.
+    unsafe {
+        let number = key_window(view.cast())?;
+        let events = class(c"NSEvent")?;
+        for kind in [KEY_DOWN, KEY_UP] {
+            objc2::rc::autoreleasepool(|_| {
+                let event: *mut AnyObject = msg_send![
+                    events,
+                    keyEventWithType: kind,
+                    location: NSPoint::new(0.0, 0.0),
+                    modifierFlags: flags,
+                    timestamp: uptime()?,
+                    windowNumber: number,
+                    context: std::ptr::null_mut::<AnyObject>(),
+                    characters: &*chars,
+                    charactersIgnoringModifiers: &*chars,
+                    isARepeat: Bool::NO,
+                    keyCode: key_code,
+                ];
+                send(event)
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Click (press and release the left button) at (`x`, `y`) in `view`,
+/// measured from its top left, through `NSApp sendEvent:`: the window
+/// gives it to whichever view is under the point.
+///
+/// # Safety
+///
+/// Main thread; `view` is null or a live `NSView`.
+pub unsafe fn click(view: *mut c_void, x: f64, y: f64) -> Result<(), String> {
+    let view = view.cast::<AnyObject>();
+    // SAFETY: live view (caller), main thread; the arguments match
+    // mouseEventWithType:location:modifierFlags:timestamp:windowNumber:
+    // context:eventNumber:clickCount:pressure:.
+    unsafe {
+        let number = key_window(view)?;
+        let (flipped, bounds): (Bool, NSRect) =
+            (msg_send![view, isFlipped], msg_send![view, bounds]);
+        let local = if flipped.as_bool() {
+            NSPoint::new(x, y)
+        } else {
+            NSPoint::new(x, bounds.size.height - y)
+        };
+        let at: NSPoint =
+            msg_send![view, convertPoint: local, toView: std::ptr::null_mut::<AnyObject>()];
+        let events = class(c"NSEvent")?;
+        for kind in [LEFT_MOUSE_DOWN, LEFT_MOUSE_UP] {
+            objc2::rc::autoreleasepool(|_| {
+                let event: *mut AnyObject = msg_send![
+                    events,
+                    mouseEventWithType: kind,
+                    location: at,
+                    modifierFlags: 0usize,
+                    timestamp: uptime()?,
+                    windowNumber: number,
+                    context: std::ptr::null_mut::<AnyObject>(),
+                    eventNumber: 0isize,
+                    clickCount: 1isize,
+                    pressure: 1.0f32,
+                ];
+                send(event)
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// An input method's composition in the first responder of `view`'s
+/// window, which must be `view` or inside it (`NSTextInputClient`):
+/// `marked` shown as marked text, then `committed` inserted in its place.
+///
+/// # Safety
+///
+/// Main thread; `view` is null or a live `NSView`.
+pub unsafe fn compose(view: *mut c_void, marked: &str, committed: &str) -> Result<(), String> {
+    // SAFETY: live view or null (caller); main thread.
+    if !unsafe { has_first_responder(view) } {
+        return Err("the view does not have keyboard focus".into());
+    }
+    let none = NSRange::new(isize::MAX as usize, 0);
+    let (marked, committed) = (NSString::from_str(marked), NSString::from_str(committed));
+    // SAFETY: the first responder is a live view inside `view` (checked
+    // above), asked whether it takes marked text before it is given any.
+    unsafe {
+        let window: *mut AnyObject = msg_send![view.cast::<AnyObject>(), window];
+        let input: *mut AnyObject = msg_send![window, firstResponder];
+        let client: Bool = msg_send![
+            input,
+            respondsToSelector: sel!(setMarkedText:selectedRange:replacementRange:)
+        ];
+        if !client.as_bool() {
+            return Err("the focused view takes no input method text".into());
+        }
+        let _: () = msg_send![
+            input,
+            setMarkedText: &*marked,
+            selectedRange: NSRange::new(marked.length(), 0),
+            replacementRange: none
+        ];
+        let _: () = msg_send![input, insertText: &*committed, replacementRange: none];
+    }
+    Ok(())
 }

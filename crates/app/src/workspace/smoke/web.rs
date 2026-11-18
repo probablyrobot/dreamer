@@ -8,6 +8,16 @@
 //! page kept, not reloaded), and covered by the palette (the page's
 //! snapshot shows, the palette over it) until the palette closes.
 //!
+//! Last, input, delivered through AppKit as a person's would be: a click
+//! in the page's text field focuses the pane; keys and an input method's
+//! composition type into the field (its value read back through
+//! DevTools); Cmd+J shows the harness drawer (a shell here) from inside
+//! the page and hides it again, focus going back to the page; and Cmd+A
+//! selects the whole field through Chromium's own edit command. Copy,
+//! cut, and paste are not pressed: they would use the system pasteboard,
+//! which a check never touches. A window that is not the key window
+//! cannot be typed into: exit 5.
+//!
 //! Writes to DIR the captures of the window (from `screencapture`) and
 //! `checks.txt`, what the gate checks in them: a line `window WIDTH
 //! HEIGHT`, then one line per check, `FILE COLOR min|max SHARE X Y WIDTH
@@ -25,10 +35,12 @@ use web_engine::Rect;
 use super::super::{PALETTE_WIDTH, PaneView, TAB_STRIP, Workspace};
 use super::{fail, read, wait_long};
 
-/// The page: one screen of the top color, then three of the bottom color.
-/// Its title counts animation frames (Chromium's compositor is drawing)
-/// and reports the scroll position.
+/// The page: one screen of the top color, then three of the bottom color,
+/// and a small text field that stays at its top left. Its title counts
+/// animation frames (Chromium's compositor is drawing) and reports the
+/// scroll position.
 pub(crate) const PAGE: &str = "data:text/html,<html><body style='margin:0'>\
+<input id=a style='position:fixed;left:16px;top:16px;width:160px;height:24px'>\
 <div style='height:100vh;background:%232a6fdb'></div>\
 <div style='height:300vh;background:%23d9822b'></div>\
 <script>let n=0;function f(){n++;document.title='raf '+n+' y '+Math.round(scrollY);\
@@ -489,9 +501,238 @@ pub(crate) async fn run(
     checks.inside_only("closed.png", BOTTOM, resized);
     println!("smoke: the palette closed: the live page is back");
 
+    input(any, &ws, cx, pane).await;
+
     if let Err(e) = std::fs::write(out.join("checks.txt"), &checks.0) {
         fail(&format!("checks.txt: {e}"));
     }
     println!("smoke: web captures in {}", out.display());
     cx.update(|cx| cx.quit());
+}
+
+/// What the input checks type into the page: keys, then an input method
+/// composing "日" and committing "日本".
+const TYPED: &str = "hi日本";
+
+/// macOS virtual key codes.
+const KEY_A: u16 = 0x00;
+const KEY_H: u16 = 0x04;
+const KEY_X: u16 = 0x07;
+const KEY_I: u16 = 0x22;
+const KEY_J: u16 = 0x26;
+const KEY_DELETE: u16 = 0x33;
+
+/// Use pane `pane`'s page, on the UI thread.
+fn with_view<T>(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    f: impl FnOnce(&web_engine::WebView) -> T,
+) -> T {
+    read(any, ws, cx, |w, cx| {
+        let p = w.panes.get(&pane)?.web_pane()?.read(cx);
+        p.view.as_ref().map(f)
+    })
+    .flatten()
+    .unwrap_or_else(|| fail("the web page is gone"))
+}
+
+/// Press a key (with Command or not) as a person would, through AppKit.
+fn press(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    keys: &[(u16, &str, bool)],
+) -> Result<(), String> {
+    for &(code, chars, command) in keys {
+        with_view(any, ws, cx, pane, |v| v.press_key(code, chars, command))
+            .map_err(|e| format!("a key press: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The value of `expression` in the page, through DevTools.
+async fn eval(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    expression: &str,
+) -> Option<serde_json::Value> {
+    let (tx, rx) = async_channel::bounded(1);
+    with_view(any, ws, cx, pane, |v| {
+        v.evaluate(expression, move |value| {
+            let _ = tx.try_send(value);
+        });
+    });
+    let timer = cx.background_executor().timer(THREE);
+    futures_lite::future::or(async { rx.recv().await.ok().flatten() }, async {
+        timer.await;
+        None
+    })
+    .await
+}
+
+/// Wait until `expression` in the page has the value `want`, at most ten
+/// seconds; the value last seen if it never does.
+async fn wait_value(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    expression: &str,
+    want: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + TEN;
+    loop {
+        let got = eval(any, ws, cx, pane, expression).await;
+        if got.as_ref().and_then(serde_json::Value::as_str) == Some(want) {
+            return Ok(());
+        }
+        if Instant::now() > deadline {
+            return Err(format!("`{expression}` is {got:?}, not {want:?}"));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    }
+}
+
+/// Whether pane `pane` is Dreamer's focused pane and its page has the
+/// window's keys, as `want`.
+fn page_focus(w: &Workspace, cx: &gpui::App, pane: u32, want: bool) -> bool {
+    let page = w
+        .panes
+        .get(&pane)
+        .and_then(PaneView::web_pane)
+        .is_some_and(|p| p.read(cx).page_has_focus());
+    (w.focused == Some(pane)) == want && page == want
+}
+
+/// A click focuses the page, keys and an input method type into it,
+/// Dreamer's own shortcut works from inside it, and copy and paste are
+/// Chromium's (see the module's description).
+async fn input(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncApp, pane: u32) {
+    let key = cx
+        .update_window(any, |_, window, _| {
+            window.activate_window();
+            window.is_window_active()
+        })
+        .unwrap_or(false);
+    if !key {
+        println!("smoke: the window is not the key window; it cannot be typed into; not run");
+        std::process::exit(crate::INCONCLUSIVE);
+    }
+    // Start from the shell pane, so the click has to move focus.
+    let Some(shell) = read(any, ws, cx, |w, _| {
+        w.pane_ids().into_iter().find(|p| *p != pane)
+    })
+    .flatten() else {
+        fail("no shell pane beside the web pane");
+    };
+    let _ = cx.update_window(any, |_, window, cx| {
+        let _ = ws.update(cx, |w, cx| w.click_pane(shell, window, cx));
+    });
+    wait_long(any, ws, cx, "the shell pane focused", TEN, move |w, cx| {
+        w.focused == Some(shell) && page_focus(w, cx, pane, false)
+    })
+    .await;
+    // The first field is at 16,16 (160x24) in the page.
+    if let Err(e) = with_view(any, ws, cx, pane, |v| v.click(60.0, 28.0)) {
+        fail(&format!("a click in the page: {e}"));
+    }
+    wait_long(
+        any,
+        ws,
+        cx,
+        "the clicked page focused",
+        TEN,
+        move |w, cx| page_focus(w, cx, pane, true),
+    )
+    .await;
+    if let Err(e) = wait_value(any, ws, cx, pane, "document.activeElement.id", "a").await {
+        fail(&format!("the click did not focus the field: {e}"));
+    }
+    println!("smoke: web input: a click in the page focused its pane and the field");
+
+    // Keys, a correction, then an input method's composition.
+    press(
+        any,
+        ws,
+        cx,
+        pane,
+        &[
+            (KEY_H, "h", false),
+            (KEY_I, "i", false),
+            (KEY_X, "x", false),
+            (KEY_DELETE, "\u{7f}", false),
+        ],
+    )
+    .unwrap_or_else(|e| fail(&e));
+    if let Err(e) = with_view(any, ws, cx, pane, |v| v.compose("日", "日本")) {
+        fail(&format!("the input method: {e}"));
+    }
+    let a = "document.getElementById('a').value";
+    if let Err(e) = wait_value(any, ws, cx, pane, a, TYPED).await {
+        fail(&format!("typing into the page: {e}"));
+    }
+    println!("smoke: web input: keys and an input method composition typed {TYPED:?}");
+
+    // Cmd+J from inside the page shows the drawer and focuses it; again,
+    // it hides and the page has the keys back.
+    let drawer = |w: &Workspace| {
+        let session = w.session?;
+        w.current
+            .as_ref()?
+            .panes
+            .iter()
+            .find(|p| p.drawer_of == Some(session))
+            .map(|p| p.id)
+    };
+    press(any, ws, cx, pane, &[(KEY_J, "j", true)]).unwrap_or_else(|e| fail(&e));
+    wait_long(
+        any,
+        ws,
+        cx,
+        "the drawer shown and focused by Cmd+J from the page",
+        Duration::from_secs(20),
+        move |w, cx| {
+            drawer(w).is_some_and(|d| w.focused == Some(d) && w.panes.contains_key(&d))
+                && page_focus(w, cx, pane, false)
+        },
+    )
+    .await;
+    println!("smoke: web input: Cmd+J in the page showed and focused the drawer");
+    press(any, ws, cx, pane, &[(KEY_J, "j", true)]).unwrap_or_else(|e| fail(&e));
+    wait_long(
+        any,
+        ws,
+        cx,
+        "the drawer hidden and the page focused again",
+        TEN,
+        move |w, cx| {
+            drawer(w).is_none_or(|d| !w.panes.contains_key(&d)) && page_focus(w, cx, pane, true)
+        },
+    )
+    .await;
+    println!("smoke: web input: Cmd+J hid the drawer; the page has the keys again");
+
+    // Select all becomes Chromium's own edit command: the caret at the
+    // field's end becomes the whole field selected. Copy, cut, and paste
+    // take the same path but use the system pasteboard, which the check
+    // leaves alone.
+    let selection = "(f => document.activeElement.id + ' ' + f.selectionStart + ',' + f.selectionEnd)\
+                     (document.getElementById('a'))";
+    let n = TYPED.encode_utf16().count();
+    let (caret, all) = (format!("a {n},{n}"), format!("a 0,{n}"));
+    if let Err(e) = wait_value(any, ws, cx, pane, selection, &caret).await {
+        fail(&format!("the field before select all: {e}"));
+    }
+    press(any, ws, cx, pane, &[(KEY_A, "a", true)]).unwrap_or_else(|e| fail(&e));
+    if let Err(e) = wait_value(any, ws, cx, pane, selection, &all).await {
+        fail(&format!("select all in the page: {e}"));
+    }
+    println!("smoke: web input: Cmd+A selected the whole field through Chromium's SelectAll");
 }

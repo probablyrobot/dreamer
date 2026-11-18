@@ -221,6 +221,7 @@ is still a few keystrokes away.
 | Next tab, previous tab | Cmd-Shift-], Cmd-Shift-[ | Ctrl-Shift-PageDown, Ctrl-Shift-PageUp |
 | Copy the selection | Cmd-C | Ctrl-Shift-C |
 | Paste | Cmd-V | Ctrl-Shift-V |
+| Cut, select all (in a [web pane](#web-panes) only) | Cmd-X, Cmd-A | Ctrl-Shift-X, Ctrl-Shift-A |
 | Find in the focused pane | Cmd-F | Ctrl-Shift-F |
 | Command palette | Cmd-Shift-P | Ctrl-Shift-P |
 | Sessions sidebar | Cmd-Shift-S | Ctrl-Shift-S |
@@ -530,8 +531,19 @@ come from tmux.
   open, web panes show a snapshot of the page taken as it opened, and the
   live page comes back when it closes.
 - **Focus.** Clicking the page focuses its pane, here and in tmux; keys
-  then go to the page. Focusing another pane (a click, the palette, tmux's
-  prefix keys) takes the keys back.
+  then go to the page. Focusing another pane (a click, the palette, the
+  find bar, the drawer, tmux's prefix keys) takes the keys back, and
+  focusing the web pane again gives them to the page.
+- **Input.** The mouse, the wheel, trackpad gestures, keys, and input
+  methods go to Chromium as in Chrome. Dreamer's own shortcuts still
+  work while a page
+  has the keys: Cmd+J shows the drawer from inside a page, for example.
+  See [Menus and shortcuts](#menus-and-shortcuts).
+- **Copy and paste.** In a page, Cmd+C, Cmd+X, Cmd+V, and Cmd+A
+  (Ctrl+Shift+C, X, V, and A on Linux) are Chromium's own copy, cut,
+  paste, and select all, so the clipboard, rich and HTML contents
+  included, works as in Chrome. Cmd+X and Cmd+A are taken only in a page;
+  elsewhere they still reach the program in the pane.
 - **Where pages run.** On this Mac, in the desktop's process and
   Chromium's helper processes; the profile is `web/` in the desktop's
   state directory. A pane of a remote host's tmux shows the placeholder's
@@ -542,8 +554,9 @@ come from tmux.
   to where tmux keeps it. Closing the pane closes the page. Chromium
   starts with the first web pane, not with the app.
 
-Not yet: copy and paste and input checks, more than one Mac display
-scale, Chromium's sandbox, signed helper apps, Linux.
+Not yet: a page's own clipboard writes following `clipboard.write`, the
+Linux primary selection, more than one Mac display scale, Chromium's
+sandbox, signed helper apps, Linux.
 
 ### A build with web panes
 
@@ -723,8 +736,10 @@ decides what it does.
   field; Paste and a middle click type into it; Copy takes the field to
   the clipboard and tmux's newest buffer; tmux's prefix and Left move
   focus to the terminal pane, and the prefix and Right back.
-- **Web pane:** not checked yet; copy and paste in a page is Chromium's
-  own.
+- **Web pane:** not checked: copy and paste in a page is Chromium's own,
+  on the system clipboard, which a check never touches. The [web pane
+  check](#web-pane-check) checks only that Cmd+A is Chromium's select
+  all.
 
 The macOS gate runs this as the `clipboard` step, and the Linux desktop
 gate on each backend ([linux-desktop-gate.md](linux-desktop-gate.md)).
@@ -756,6 +771,18 @@ configuration directories:
 - it opens the palette, waits for the pane to show the page's snapshot
   (`palette.png`), closes it, and waits for the live page
   (`closed.png`);
+- then input, sent through AppKit as a person's would be: a click in the
+  page's text field focuses the web pane (it starts on the shell pane);
+  keys, a Delete, and an input method composing "日" and committing "日本"
+  type `hi日本` into the field, read back through DevTools; Cmd+J pressed
+  in the page shows and focuses the harness drawer (a shell in this
+  check's configuration), and pressed again hides it and gives the keys
+  back to the page; Cmd+A selects the whole field (its selection read
+  back through DevTools), through Chromium's own select all. Copy, cut,
+  and paste are not pressed: they use the system clipboard, which the
+  gate never touches, so copy and paste in a page is not checked by the
+  gate. Each passed input check is a `smoke: web input:` line, and the
+  gate wants all five;
 - the gate checks each capture as the smoke's `checks.txt` lists: the
   page's color covers at least 90% of the pane's rectangle (of the
   zoomed pane, or of the part beside the palette) and at most 1% of the
@@ -764,8 +791,9 @@ configuration directories:
   crosses the pane is the page's.
 
 The captures and `checks.txt` are kept in `target/gate/web/`.
-Without CEF provisioned, without a display that refreshes, or when
-Chromium stops drawing frames, the step is recorded as not run.
+Without CEF provisioned, without a display that refreshes, when
+Chromium stops drawing frames, or when the window is not the key window
+(it cannot be typed into), the step is recorded as not run.
 
 ### Pixel evidence
 

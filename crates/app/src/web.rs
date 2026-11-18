@@ -10,6 +10,14 @@
 //! snapshot instead, taken as the overlay opens; the overlay shows once
 //! the live page is off the screen ([`decide`]).
 //!
+//! Input: Chromium's view takes the mouse, the wheel, and trackpad
+//! gestures itself, and the keys while the pane has Dreamer's focus; a
+//! click in the page gives the pane that focus. Dreamer's own shortcuts
+//! come first: AppKit offers every shortcut to the window's own view
+//! before the page sees the key, so they work from inside a page, and the
+//! edit shortcuts (copy, cut, paste, select all) become Chromium's own
+//! edit commands there.
+//!
 //! The page's title and scroll position are kept in the placeholder
 //! (`web.state`), so a page opened again (after the desktop restarts, or
 //! once its view was let go) scrolls back to where it was.
@@ -23,8 +31,9 @@ use std::sync::Arc;
 
 use gpui::{
     Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, RenderImage,
-    Styled, StyledImage as _, WeakEntity, Window, div, px,
+    Styled, StyledImage as _, Subscription, WeakEntity, Window, div, px,
 };
+use web_engine::Edit;
 
 use crate::theme::c;
 use crate::workspace::Workspace;
@@ -84,6 +93,8 @@ pub(crate) struct WebPane {
     pub(crate) problem: Option<String>,
     #[cfg(feature = "web")]
     pub(crate) view: Option<web_engine::WebView>,
+    /// The page has the keys exactly while the pane has Dreamer's focus.
+    _focus: [Subscription; 2],
 }
 
 impl WebPane {
@@ -94,6 +105,7 @@ impl WebPane {
         url: String,
         kept: (String, i32, i32),
         workspace: WeakEntity<Workspace>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> WebPane {
         // Chromium starts with the first web pane, here rather than while
@@ -105,10 +117,17 @@ impl WebPane {
             "This build of Dreamer has no web engine (web panes are built on macOS with the `web` feature)."
                 .to_owned(),
         );
+        // Whatever takes Dreamer's focus from the pane (another pane, the
+        // palette, the find bar) takes the keys from the page too.
+        let focus = cx.focus_handle();
+        let _focus = [
+            cx.on_focus(&focus, window, |w, _, _| w.take_focus()),
+            cx.on_blur(&focus, window, |w, _, _| w.release_focus()),
+        ];
         WebPane {
             pane,
             url,
-            focus: cx.focus_handle(),
+            focus,
             workspace,
             place: Place::Shown,
             live: true,
@@ -117,6 +136,7 @@ impl WebPane {
             problem,
             #[cfg(feature = "web")]
             view: None,
+            _focus,
         }
     }
 
@@ -195,6 +215,17 @@ impl WebPane {
         if let Some(v) = &self.view {
             v.release_focus();
         }
+    }
+
+    /// One of Chromium's edit commands in the page, for the desktop's edit
+    /// shortcuts.
+    fn edit(&mut self, edit: Edit) {
+        #[cfg(feature = "web")]
+        if let Some(v) = &self.view {
+            v.edit(edit);
+        }
+        #[cfg(not(feature = "web"))]
+        let _ = edit;
     }
 
     /// Whether the pane shows the page's snapshot now (smoke evidence).
@@ -381,7 +412,6 @@ fn decode_snapshot(reply: &[u8]) -> Result<Arc<RenderImage>, String> {
 impl Render for WebPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = crate::theme::for_window(window);
-        let _ = &cx;
         // What shows where the page is not drawn: under the page for a
         // moment as it starts, or instead of it.
         let notice = div()
@@ -414,6 +444,11 @@ impl Render for WebPane {
             .relative()
             .bg(c(t.background))
             .track_focus(&self.focus)
+            .key_context(crate::keymap::WEB_PANE)
+            .on_action(cx.listener(|w, _: &crate::keymap::Copy, _, _| w.edit(Edit::Copy)))
+            .on_action(cx.listener(|w, _: &crate::keymap::Cut, _, _| w.edit(Edit::Cut)))
+            .on_action(cx.listener(|w, _: &crate::keymap::Paste, _, _| w.edit(Edit::Paste)))
+            .on_action(cx.listener(|w, _: &crate::keymap::SelectAll, _, _| w.edit(Edit::SelectAll)))
             .child(notice)
             .children(snapshot);
         #[cfg(feature = "web")]

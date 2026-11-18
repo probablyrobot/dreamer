@@ -261,6 +261,10 @@ pub async fn start_at(
         .map(|e| (e.name.clone(), e.value.clone()))
         .collect();
     env.push(("DREAMER_JOB_ID".into(), id.clone()));
+    // The wrapper starts the program only once the pane is set to stay
+    // after it exits (`kept` below); a program that ends at once would
+    // otherwise take its pane, and its output, with it.
+    env.push(("DREAMER_JOB_HOLD".into(), "1".into()));
     env.push((
         "DREAMER_JOB_ARTIFACTS".into(),
         artifacts.display().to_string(),
@@ -318,6 +322,7 @@ pub async fn start_at(
             pane
         }
     };
+    let _ = std::fs::write(dir.join("kept"), "");
     let job = json!({
         "id": id,
         "argv": p.argv,

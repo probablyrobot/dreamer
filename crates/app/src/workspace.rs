@@ -1752,7 +1752,8 @@ impl Workspace {
         if let Some(url) = web_drawn(p, &self.via) {
             let (url, ws) = (url.to_owned(), cx.entity().downgrade());
             let kept = (p.title.clone(), p.web_scroll_x, p.web_scroll_y);
-            let view = cx.new(|cx| crate::web::WebPane::new(pane, url.clone(), kept, ws, cx));
+            let view =
+                cx.new(|cx| crate::web::WebPane::new(pane, url.clone(), kept, ws, window, cx));
             return Some(PaneView::Web { view, url });
         }
         if let Some(instance) = app_drawn(p, &self.via) {
