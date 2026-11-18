@@ -48,6 +48,7 @@ mod hosts;
 mod jobrun;
 mod mcp;
 mod memory;
+mod preview;
 mod profile;
 mod remote;
 mod service;
@@ -170,7 +171,9 @@ fn main() -> ExitCode {
         ["app", "new", rest @ ..] => templates::new(&to_owned(rest)),
         ["app", "check", rest @ ..] => build::check(&to_owned(rest)),
         ["app", "test", rest @ ..] => build::test(&to_owned(rest)),
-        ["app", "preview", rest @ ..] => build::preview(&to_owned(rest)),
+        ["app", "preview", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| preview::run(&d, &extra))
+        }
         ["app", "install", rest @ ..] => build::install(&to_owned(rest)),
         ["app", "rollback", rest @ ..] => build::rollback(&to_owned(rest)),
         ["app", "list"] => build::list(),

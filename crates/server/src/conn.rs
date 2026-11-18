@@ -412,6 +412,7 @@ pub async fn connection_as(
     }
     state.leases.drop_conn(conn.id);
     state.approvals.drop_conn(conn.id);
+    state.captures.drop_conn(conn.id);
     // An app host that left: its panes keep their last view, as stale.
     if state.apps.closed(conn.id)
         && let Some(ep) = state.endpoint.lock().await.as_ref()
@@ -517,6 +518,10 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         api::method::APPS_VIEW,
         api::method::APPS_TREE,
         api::method::APPS_INPUT,
+        // Images of app panes are the user's desktop's to make.
+        api::method::APPS_CAPTURE,
+        api::method::APPS_CAPTURE_WAIT,
+        api::method::APPS_CAPTURE_DONE,
     ]
     .contains(&req.method.as_str())
     {

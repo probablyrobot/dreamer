@@ -94,6 +94,8 @@ pub struct State {
     pub hosts: crate::hosts::Hosts,
     /// Pane app launches waiting for registration.
     pub apps: crate::apps::Apps,
+    /// Desktops that make images of app panes, and the requests for them.
+    pub captures: crate::captures::Captures,
     /// The event log `events.subscribe` follows.
     pub events: Arc<crate::events::Events>,
     /// Structured messages between connections.
@@ -477,6 +479,7 @@ impl api::Service for DaemonService {
             version: Some(version_info(&s.identity)),
             clients: s.clients.load(Ordering::Relaxed),
             heap_in_use: platform::heap_in_use(),
+            desktops: s.captures.desktops(),
         })
     }
 
@@ -1453,6 +1456,23 @@ impl api::Service for DaemonService {
 
     async fn apps_input(&self, p: api::AppInput) -> Result<api::Empty, RpcError> {
         self.0.apps.input(&p).map(|()| api::Empty {})
+    }
+
+    async fn apps_capture(&self, p: api::AppCapture) -> Result<api::AppCaptured, RpcError> {
+        self.0.captures.capture(&p).await
+    }
+
+    async fn apps_capture_wait(
+        &self,
+        p: api::AppCaptureWait,
+    ) -> Result<api::AppCaptureRequest, RpcError> {
+        let conn = crate::leases::caller().ok_or_else(|| for_a_connection("apps.capture_wait"))?;
+        self.0.captures.wait(conn.conn, &p).await
+    }
+
+    async fn apps_capture_done(&self, p: api::AppCaptureDone) -> Result<api::Empty, RpcError> {
+        let conn = crate::leases::caller().ok_or_else(|| for_a_connection("apps.capture_done"))?;
+        self.0.captures.done(conn.conn, &p).map(|()| api::Empty {})
     }
 
     async fn filters_list(&self, _: api::Empty) -> Result<api::FilterList, RpcError> {

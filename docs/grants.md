@@ -47,6 +47,7 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `drawer.toggle` | The owner grant: it starts the user's harness with the user's authority. `drawer.status` needs only the method |
 | `extensions.restart`, `apps.launch`, `scripts.load`, `scripts.reload`, `scripts.stop` | The owner grant: no app, extension, script, or filter, whatever its grant lists |
 | `apps.view`, `apps.tree`, `apps.input` | The owner grant: app panes are the user's to read and type into |
+| `apps.capture`, `apps.capture_wait`, `apps.capture_done` | The owner grant: images of panes are made by the user's desktop, for the user |
 | `apps.publish`, `apps.publish_tree` | A registered app host's own connection, whatever its grant lists; it publishes for its own pane only |
 | `filters.install`, `filters.list`, `filters.pause`, `filters.resume`, `filters.remove` | The owner grant, or `filters.manage` plus content read; see [Filters an app installs](filters.md#filters-an-app-installs) |
 | `messages.*` | Only the method; messages never reach a pane (see [messages.md](messages.md)) |

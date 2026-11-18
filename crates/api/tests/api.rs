@@ -370,6 +370,18 @@ impl Service for Fixed {
     async fn apps_input(&self, _: api::AppInput) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn apps_capture(&self, _: api::AppCapture) -> Result<api::AppCaptured, RpcError> {
+        Ok(api::AppCaptured::default())
+    }
+    async fn apps_capture_wait(
+        &self,
+        _: api::AppCaptureWait,
+    ) -> Result<api::AppCaptureRequest, RpcError> {
+        Ok(api::AppCaptureRequest::default())
+    }
+    async fn apps_capture_done(&self, _: api::AppCaptureDone) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
     async fn scripts_validate(&self, _: api::ScriptSource) -> Result<api::ScriptCheck, RpcError> {
         Ok(api::ScriptCheck::default())
     }

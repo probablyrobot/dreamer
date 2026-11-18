@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 51;
+pub const PROTOCOL_MINOR: u32 = 52;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1496,6 +1496,9 @@ pub struct DaemonStatus {
     #[prost(uint64, optional, tag = "9")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heap_in_use: Option<u64>,
+    /// Desktop processes connected now that answer apps.capture.
+    #[prost(uint32, tag = "10")]
+    pub desktops: u32,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -2841,6 +2844,76 @@ pub struct AppTree {
     /// The changes from the caller's version, one JSON list of ops per version, in order.
     #[prost(string, repeated, tag = "8")]
     pub patches: Vec<String>,
+}
+
+/// Ask the user's desktop for an image of an app pane as the desktop draws it natively (dream app preview --png).
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppCapture {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// Absolute path of the PNG file the desktop writes; replaced when it exists.
+    #[prost(string, tag = "2")]
+    pub path: String,
+    /// Wait until the desktop has drawn at least this version of the pane's view tree; 0 takes what it shows.
+    #[prost(uint64, tag = "3")]
+    pub seq: u64,
+    /// How long to wait for the desktop's answer; default 10000, at most 60000.
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppCaptured {
+    #[prost(string, tag = "1")]
+    pub path: String,
+    /// The image's width in pixels.
+    #[prost(uint32, tag = "2")]
+    pub width: u32,
+    /// The image's height in pixels.
+    #[prost(uint32, tag = "3")]
+    pub height: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppCaptureWait {
+    /// How long to wait for a request; default 20000, at most 60000. Answered with id 0 when none came.
+    #[prost(uint32, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
+}
+
+/// A capture for a desktop to make, answered with apps.capture_done.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppCaptureRequest {
+    /// 0 when no request came within the wait.
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    #[prost(string, tag = "3")]
+    pub path: String,
+    #[prost(uint64, tag = "4")]
+    pub seq: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppCaptureDone {
+    #[prost(uint64, tag = "1")]
+    pub id: u64,
+    /// Why this desktop wrote no image (for example, it does not show the pane); absent when it wrote one.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[prost(uint32, tag = "3")]
+    pub width: u32,
+    #[prost(uint32, tag = "4")]
+    pub height: u32,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -5238,6 +5311,9 @@ pub mod method {
     pub const MEMORY_FORGET: &str = "memory.forget";
     pub const APPS_PUBLISH_TREE: &str = "apps.publish_tree";
     pub const APPS_TREE: &str = "apps.tree";
+    pub const APPS_CAPTURE: &str = "apps.capture";
+    pub const APPS_CAPTURE_WAIT: &str = "apps.capture_wait";
+    pub const APPS_CAPTURE_DONE: &str = "apps.capture_done";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5936,6 +6012,27 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: false,
         doc: "An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (owner only).",
     },
+    MethodInfo {
+        name: "apps.capture",
+        params: "AppCapture",
+        result: "AppCaptured",
+        mutation: true,
+        doc: "An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (owner only).",
+    },
+    MethodInfo {
+        name: "apps.capture_wait",
+        params: "AppCaptureWait",
+        result: "AppCaptureRequest",
+        mutation: false,
+        doc: "A desktop waits for the next capture to make; while it waits, it counts as a desktop that answers captures (owner only).",
+    },
+    MethodInfo {
+        name: "apps.capture_done",
+        params: "AppCaptureDone",
+        result: "Empty",
+        mutation: true,
+        doc: "A desktop's answer to a capture request (owner only).",
+    },
 ];
 
 /// A typed request for one method.
@@ -6039,6 +6136,9 @@ pub enum Request {
     MemoryForget(MemoryRef),
     AppsPublishTree(AppTreePublish),
     AppsTree(AppTreeQuery),
+    AppsCapture(AppCapture),
+    AppsCaptureWait(AppCaptureWait),
+    AppsCaptureDone(AppCaptureDone),
 }
 
 impl Request {
@@ -6142,6 +6242,9 @@ impl Request {
             Self::MemoryForget(_) => "memory.forget",
             Self::AppsPublishTree(_) => "apps.publish_tree",
             Self::AppsTree(_) => "apps.tree",
+            Self::AppsCapture(_) => "apps.capture",
+            Self::AppsCaptureWait(_) => "apps.capture_wait",
+            Self::AppsCaptureDone(_) => "apps.capture_done",
         }
     }
 
@@ -6246,6 +6349,9 @@ impl Request {
             Self::MemoryForget(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsPublishTree(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsTree(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsCapture(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsCaptureWait(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsCaptureDone(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -6371,6 +6477,9 @@ impl Request {
             "memory.forget" => Ok(Self::MemoryForget(::prost::Message::decode(bytes)?)),
             "apps.publish_tree" => Ok(Self::AppsPublishTree(::prost::Message::decode(bytes)?)),
             "apps.tree" => Ok(Self::AppsTree(::prost::Message::decode(bytes)?)),
+            "apps.capture" => Ok(Self::AppsCapture(::prost::Message::decode(bytes)?)),
+            "apps.capture_wait" => Ok(Self::AppsCaptureWait(::prost::Message::decode(bytes)?)),
+            "apps.capture_done" => Ok(Self::AppsCaptureDone(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6475,6 +6584,9 @@ impl Request {
             Self::MemoryForget(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsPublishTree(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsTree(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsCapture(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsCaptureWait(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsCaptureDone(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -6594,6 +6706,9 @@ impl Request {
             "memory.forget" => Ok(Self::MemoryForget(serde_json::from_value(value)?)),
             "apps.publish_tree" => Ok(Self::AppsPublishTree(serde_json::from_value(value)?)),
             "apps.tree" => Ok(Self::AppsTree(serde_json::from_value(value)?)),
+            "apps.capture" => Ok(Self::AppsCapture(serde_json::from_value(value)?)),
+            "apps.capture_wait" => Ok(Self::AppsCaptureWait(serde_json::from_value(value)?)),
+            "apps.capture_done" => Ok(Self::AppsCaptureDone(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6700,6 +6815,9 @@ pub enum Response {
     MemoryForget(MemoryItem),
     AppsPublishTree(Empty),
     AppsTree(AppTree),
+    AppsCapture(AppCaptured),
+    AppsCaptureWait(AppCaptureRequest),
+    AppsCaptureDone(Empty),
 }
 
 impl Response {
@@ -6803,6 +6921,9 @@ impl Response {
             Self::MemoryForget(_) => "memory.forget",
             Self::AppsPublishTree(_) => "apps.publish_tree",
             Self::AppsTree(_) => "apps.tree",
+            Self::AppsCapture(_) => "apps.capture",
+            Self::AppsCaptureWait(_) => "apps.capture_wait",
+            Self::AppsCaptureDone(_) => "apps.capture_done",
         }
     }
 
@@ -6907,6 +7028,9 @@ impl Response {
             Self::MemoryForget(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsPublishTree(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsTree(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsCapture(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsCaptureWait(v) => ::prost::Message::encode_to_vec(v),
+            Self::AppsCaptureDone(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -7032,6 +7156,9 @@ impl Response {
             "memory.forget" => Ok(Self::MemoryForget(::prost::Message::decode(bytes)?)),
             "apps.publish_tree" => Ok(Self::AppsPublishTree(::prost::Message::decode(bytes)?)),
             "apps.tree" => Ok(Self::AppsTree(::prost::Message::decode(bytes)?)),
+            "apps.capture" => Ok(Self::AppsCapture(::prost::Message::decode(bytes)?)),
+            "apps.capture_wait" => Ok(Self::AppsCaptureWait(::prost::Message::decode(bytes)?)),
+            "apps.capture_done" => Ok(Self::AppsCaptureDone(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7136,6 +7263,9 @@ impl Response {
             Self::MemoryForget(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsPublishTree(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsTree(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsCapture(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsCaptureWait(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::AppsCaptureDone(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -7255,6 +7385,9 @@ impl Response {
             "memory.forget" => Ok(Self::MemoryForget(serde_json::from_value(value)?)),
             "apps.publish_tree" => Ok(Self::AppsPublishTree(serde_json::from_value(value)?)),
             "apps.tree" => Ok(Self::AppsTree(serde_json::from_value(value)?)),
+            "apps.capture" => Ok(Self::AppsCapture(serde_json::from_value(value)?)),
+            "apps.capture_wait" => Ok(Self::AppsCaptureWait(serde_json::from_value(value)?)),
+            "apps.capture_done" => Ok(Self::AppsCaptureDone(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7739,6 +7872,21 @@ pub trait Service: Sync {
         &self,
         params: AppTreeQuery,
     ) -> impl ::core::future::Future<Output = Result<AppTree, RpcError>> + Send;
+    /// An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (owner only).
+    fn apps_capture(
+        &self,
+        params: AppCapture,
+    ) -> impl ::core::future::Future<Output = Result<AppCaptured, RpcError>> + Send;
+    /// A desktop waits for the next capture to make; while it waits, it counts as a desktop that answers captures (owner only).
+    fn apps_capture_wait(
+        &self,
+        params: AppCaptureWait,
+    ) -> impl ::core::future::Future<Output = Result<AppCaptureRequest, RpcError>> + Send;
+    /// A desktop's answer to a capture request (owner only).
+    fn apps_capture_done(
+        &self,
+        params: AppCaptureDone,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -7959,6 +8107,15 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .await
             .map(Response::AppsPublishTree),
         Request::AppsTree(p) => service.apps_tree(p).await.map(Response::AppsTree),
+        Request::AppsCapture(p) => service.apps_capture(p).await.map(Response::AppsCapture),
+        Request::AppsCaptureWait(p) => service
+            .apps_capture_wait(p)
+            .await
+            .map(Response::AppsCaptureWait),
+        Request::AppsCaptureDone(p) => service
+            .apps_capture_done(p)
+            .await
+            .map(Response::AppsCaptureDone),
     }
 }
 

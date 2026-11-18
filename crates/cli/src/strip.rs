@@ -14,7 +14,7 @@ use swc_common::sync::Lrc;
 use swc_common::{GLOBALS, Globals, SourceMap};
 
 /// The `[script] source` a manifest names, if it is a script app.
-fn script_source(manifest: &Path) -> Result<Option<String>, String> {
+pub(crate) fn script_source(manifest: &Path) -> Result<Option<String>, String> {
     let text =
         std::fs::read_to_string(manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
     // A manifest that does not parse is reported by the check itself.
@@ -49,8 +49,13 @@ pub fn build(manifest: &Path) -> Result<(), String> {
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    std::fs::write(&out, app_protocol::build::stamp(&js, &ts))
-        .map_err(|e| format!("{}: {e}", out.display()))
+    let built = app_protocol::build::stamp(&js, &ts);
+    // Unchanged, it is left alone: a live preview restarts the app when
+    // the file changes.
+    if std::fs::read_to_string(&out).is_ok_and(|old| old == built) {
+        return Ok(());
+    }
+    std::fs::write(&out, built).map_err(|e| format!("{}: {e}", out.display()))
 }
 
 /// A script app's type-level mistakes ([`crate::typecheck`]); none for

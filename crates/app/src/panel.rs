@@ -66,8 +66,13 @@ pub(crate) struct AppPanel {
     pub(crate) focus: FocusHandle,
     /// The model drawn last (smoke evidence).
     pub(crate) shown: Option<App>,
-    /// An app pane's view tree as its host last published it.
+    /// An app pane's view tree as its host last published it, and its
+    /// version (0 before the first).
     tree: Arc<Mutex<Option<Tree>>>,
+    seq: Arc<std::sync::atomic::AtomicU64>,
+    /// The version of the tree in the frame drawn last (a capture waits
+    /// for the version it was asked for).
+    pub(crate) painted: u64,
     /// Per node key: scroll handles, and the selection last scrolled to.
     scrolls: HashMap<String, gpui::ScrollHandle>,
     scrolled_to: HashMap<String, Option<String>>,
@@ -182,6 +187,8 @@ impl AppPanel {
             focus: cx.focus_handle(),
             shown: None,
             tree: Arc::default(),
+            seq: Arc::default(),
+            painted: 0,
             scrolls: HashMap::new(),
             scrolled_to: HashMap::new(),
             prefixed: false,
@@ -212,7 +219,14 @@ impl AppPanel {
         let tree: Arc<Mutex<Option<Tree>>> = Arc::default();
         let streams = app_model::bound::Streams::default();
         let (calls, calls_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (l, e, tr, st) = (latest.clone(), ended.clone(), tree.clone(), streams.clone());
+        let seq: Arc<std::sync::atomic::AtomicU64> = Arc::default();
+        let (l, e, tr, st, sq) = (
+            latest.clone(),
+            ended.clone(),
+            tree.clone(),
+            streams.clone(),
+            seq.clone(),
+        );
         let spawned = std::thread::Builder::new()
             .name(format!("dreamer-app-pane-{pane}"))
             .spawn(move || {
@@ -230,6 +244,7 @@ impl AppPanel {
                     ended: e,
                     tree: tr,
                     streams: st,
+                    seq: sq,
                 };
                 rt.block_on(follow_pane(pane, socket, rx, calls_rx, shared, wake));
             });
@@ -255,6 +270,8 @@ impl AppPanel {
             focus: cx.focus_handle(),
             shown: None,
             tree,
+            seq,
+            painted: 0,
             scrolls: HashMap::new(),
             scrolled_to: HashMap::new(),
             prefixed: false,
@@ -739,6 +756,8 @@ struct Shared {
     ended: Arc<Mutex<Option<String>>>,
     tree: Arc<Mutex<Option<Tree>>>,
     streams: app_model::bound::Streams,
+    /// The view tree's version in `tree`, stored after the tree.
+    seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 async fn follow_pane(
@@ -755,6 +774,7 @@ async fn follow_pane(
         ended,
         tree,
         streams,
+        seq,
     } = shared;
     // The streams the tree binds, followed for the app in this pane.
     let mut follower = app_model::bound::Follower::new(Some(pane));
@@ -896,6 +916,9 @@ async fn follow_pane(
                                 if changed && let Ok(mut l) = tree.lock() {
                                     l.clone_from(&mirror.frame);
                                 }
+                                // After the tree: a reader that sees this
+                                // version has the tree too.
+                                seq.store(mirror.seq, std::sync::atomic::Ordering::Release);
                                 if changed
                                     && let Some(f) = mirror.frame.as_ref()
                                     && let Err(e) = follower.sync(&c, f, &streams).await
@@ -1007,6 +1030,8 @@ impl Render for AppPanel {
 impl AppPanel {
     fn render_panel(&mut self, window_: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = theme::for_window(window_);
+        // Before the tree is read, so the version is never ahead of it.
+        self.painted = self.seq.load(std::sync::atomic::Ordering::Acquire);
         let latest = self.latest.lock().ok().and_then(|l| l.clone());
         if latest.is_some() {
             self.shown = latest;
@@ -1196,6 +1221,8 @@ impl AppPanel {
             focus: cx.focus_handle(),
             shown: None,
             tree: Arc::new(Mutex::new(Some(tree))),
+            seq: Arc::default(),
+            painted: 0,
             scrolls: HashMap::new(),
             scrolled_to: HashMap::new(),
             prefixed: false,

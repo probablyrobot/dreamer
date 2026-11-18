@@ -1527,6 +1527,7 @@ dependencies = [
  "client",
  "gpui",
  "gpui_platform",
+ "png 0.18.1",
  "replica",
  "serde_json",
  "terminal-ghostty",

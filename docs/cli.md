@@ -84,7 +84,9 @@ Building an app package ([termapp.md](termapp.md#building-an-app)):
 | `dream app new NAME [--template table\|form\|chat] [--dir DIR]` | Write a working package to start from: `app.toml`, `app.ts`, fixtures, the editor declarations, and its test's expected screens ([termapp.md](termapp.md#starting-from-a-template)) |
 | `dream app check PATH [--json]` | Validate a package (its directory or `app.toml`) and say what grant it needs; for a script app, also report type-level mistakes in its `app.ts` ([termapp.md](termapp.md#types-and-dream-app-check)) |
 | `dream app types DIR` | Write `types/dreamer.d.ts` into a package, and a `tsconfig.json` that uses it when there is none, for editors |
-| `dream app preview PATH [--text] [--size WxH]` | Draw it once from `fixtures/`, with no daemon, as text (80x24 by default; `--text` is the only form there is) |
+| `dream app preview PATH [--text] [--size WxH]` | Draw it once from `fixtures/`, with no daemon, as text (80x24 by default) |
+| `dream app preview PATH --open [--session $N]` | Open a live preview in a new tmux window, drawn natively by the desktop; it reloads when the package changes ([termapp.md](termapp.md#live-preview)) |
+| `dream app preview PATH --png FILE` | Write the desktop's drawing of the app's preview pane as a PNG, opening a preview first when none is open; fails with `no Dreamer window is running; --png needs one` when no desktop is running |
 | `dream app test PATH [--update] [--size WxH]` | Replay `fixtures/events.jsonl` with no daemon and compare the screen after each event with `fixtures/expect/`; `--update` records them ([termapp.md](termapp.md#testing-an-app)) |
 | `dream app install PATH [--name NAME]` | Check, preview, and copy it into `<config dir>/apps/`; the version it replaces is kept |
 | `dream app rollback NAME` | Put the kept version back (and keep the one it replaces) |

@@ -237,6 +237,11 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         });
         stages.push(Stage {
+            name: "preview",
+            action: Builtin(app_preview),
+            when: When::Code,
+        });
+        stages.push(Stage {
             name: "remote",
             action: Builtin(remote_smoke),
             when: When::Code,
@@ -852,6 +857,31 @@ fn screens(dir: &Path) -> Result<Done, String> {
         "gate:   screen: the switch to gruvbox-dark reached every pane and the chrome; the OSC 11 background stayed"
     );
     Ok(Done::Passed)
+}
+
+/// Live and image previews: a template app opened as a preview pane in
+/// the desktop (`dream app preview --open`), drawn by the desktop as a PNG
+/// (`--png`) whose pixels are the scheme's in both skins, and a save to
+/// its `app.ts` shown in the pane within a second. The images stay in
+/// `target/gate/screens/`. Not run on a locked screen, without Screen
+/// Recording permission, or when the window stops repainting.
+fn app_preview(dir: &Path) -> Result<Done, String> {
+    if !cfg!(target_os = "macos") || !require_refreshing_display()? {
+        return Ok(Done::NotRun);
+    }
+    let out = crate::util::repo_root().join("target/gate/screens");
+    match crate::preview::check(dir, &out)? {
+        crate::preview::Outcome::Passed(lines) => {
+            for l in lines {
+                println!("gate:   {l}");
+            }
+            Ok(Done::Passed)
+        }
+        crate::preview::Outcome::NotRun(why) => {
+            println!("gate: {why}; the preview check is recorded as not run");
+            Ok(Done::NotRun)
+        }
+    }
 }
 
 /// The reference app's components in both skins: the app as a registered

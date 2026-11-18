@@ -14,6 +14,7 @@
 mod agents;
 mod approvals;
 mod apps;
+mod captures;
 mod collect_presets;
 mod collectors;
 mod config_watch;
@@ -301,6 +302,7 @@ fn run(args: Args) -> Result<ExitCode, String> {
             agents: agents::Agents::default(),
             sessions: Arc::new(sessions::Sessions::load()),
             apps: apps::Apps::default(),
+            captures: captures::Captures::default(),
             // Epochs must never repeat across daemon restarts: a client
             // resuming with an old epoch must not replay a new mirror.
             epochs: (started_unix_ms * 1000).into(),

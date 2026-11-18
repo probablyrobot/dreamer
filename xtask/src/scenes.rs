@@ -18,22 +18,22 @@ use crate::util::repo_root;
 
 const SH: &str = "env PS1='$ ' /bin/sh";
 
-struct Scene {
-    name: &'static str,
-    what: &'static str,
+pub(crate) struct Scene {
+    pub(crate) name: &'static str,
+    pub(crate) what: &'static str,
     /// tmux commands after the `main` session exists.
-    setup: &'static [&'static [&'static str]],
+    pub(crate) setup: &'static [&'static [&'static str]],
     /// Text typed into every pane, then Enter.
-    type_all: Option<&'static str>,
+    pub(crate) type_all: Option<&'static str>,
     /// Extra `dreamer` arguments.
-    args: &'static [&'static str],
+    pub(crate) args: &'static [&'static str],
     /// tmux commands once the app is up.
-    after: &'static [&'static [&'static str]],
+    pub(crate) after: &'static [&'static [&'static str]],
     /// An app package (its manifest, from the repository root) shown in a
     /// new window once the app is up: on the left as a registered app,
     /// which the desktop draws natively; on the right started from a
     /// shell, unregistered, so the desktop shows its terminal interface.
-    app: Option<&'static str>,
+    pub(crate) app: Option<&'static str>,
 }
 
 const SCENES: &[Scene] = &[
@@ -118,7 +118,7 @@ const SCENES: &[Scene] = &[
 /// The reference app with every text, input, and status component.
 pub const COMPONENTS_APP: &str = "examples/apps/components/app.toml";
 
-fn build(root: &Path) -> Result<(), String> {
+pub(crate) fn build(root: &Path) -> Result<(), String> {
     let build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .args([
             "build",
@@ -174,16 +174,16 @@ fn show(root: &Path, scene: &Scene, skin: &str) -> Result<(), String> {
 }
 
 /// A scene's app, tmux server, and private directories.
-struct Running {
+pub(crate) struct Running {
     app: std::process::Child,
-    tmux: String,
-    socket: String,
-    dir: PathBuf,
+    pub(crate) tmux: String,
+    pub(crate) socket: String,
+    pub(crate) dir: PathBuf,
 }
 
 impl Running {
     /// Stop the app, its daemon, and the tmux server; remove the files.
-    fn finish(mut self) {
+    pub(crate) fn finish(mut self) {
         let _ = self.app.kill();
         let _ = self.app.wait();
         if let Some(pid) = std::fs::read_to_string(self.dir.join("rt/dreamerd.lock"))
@@ -202,7 +202,12 @@ impl Running {
 }
 
 /// Start `scene` in `skin`, with `extra` appended to its `dreamer.yaml`.
-fn launch(root: &Path, scene: &Scene, skin: &str, extra: &str) -> Result<Running, String> {
+pub(crate) fn launch(
+    root: &Path,
+    scene: &Scene,
+    skin: &str,
+    extra: &str,
+) -> Result<Running, String> {
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
     let id = format!("{}-{skin}-{}", scene.name, std::process::id());
     let socket = format!("dreamer-scene-{id}");
