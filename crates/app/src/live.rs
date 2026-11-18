@@ -23,6 +23,9 @@ use crate::theme::Theme;
 #[derive(Debug, Clone)]
 pub(crate) struct Live {
     pub font: TermFont,
+    /// The font size the configuration gives; `font.size` differs from it
+    /// after the text was made bigger or smaller.
+    pub font_base: f32,
     pub theme: Theme,
     pub links: LinkSettings,
     pub clipboard: ClipboardWrite,
@@ -82,10 +85,13 @@ pub(crate) fn preview(cx: &mut App, scheme: Option<&'static Scheme>) {
 /// Make `settings` the ones in force, and repaint every window.
 pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Scheme>) {
     let chosen = crate::fonts::choose(cx, settings);
+    // Text made bigger or smaller stays so by as much on the new size.
+    let step = with(|l| l.font.size - l.font_base).unwrap_or(0.0);
     let live = Live {
+        font_base: settings.font.size,
         font: TermFont {
             family: chosen.family,
-            size: settings.font.size,
+            size: clamp_font(settings.font.size + step),
             line_height: settings.font.line_height,
             letter_spacing: settings.font.letter_spacing,
             source: chosen.source,
@@ -107,6 +113,23 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
     if let Ok(mut l) = LIVE.write() {
         *l = Some(live);
     }
+    cx.refresh_windows();
+}
+
+/// The sizes the settings allow.
+fn clamp_font(size: f32) -> f32 {
+    size.clamp(6.0, 72.0)
+}
+
+/// The terminal text `by` points bigger (or smaller), or with `None` back
+/// to the configured size, in every window. The file is not changed.
+pub(crate) fn font_step(cx: &mut App, by: Option<f32>) {
+    adjust(|l| {
+        l.font.size = match by {
+            Some(by) => clamp_font(l.font.size + by),
+            None => l.font_base,
+        }
+    });
     cx.refresh_windows();
 }
 

@@ -3,9 +3,9 @@
 use std::time::Duration;
 
 use api::{
-    Action, ActionRecord, ActionState, KillPane, KillWindow, MovePane, NewWindow, RenameSession,
-    RenameWindow, ResizePane, SelectPane, SelectWindow, SendInput, SendKeys, SplitDirection,
-    SplitPane, SubmitAction, ZoomPane, action::Kind,
+    Action, ActionRecord, ActionState, KillPane, KillWindow, MovePane, NewSession, NewWindow,
+    RenameSession, RenameWindow, ResizePane, SelectPane, SelectWindow, SendInput, SendKeys,
+    SplitDirection, SplitPane, SubmitAction, ZoomPane, action::Kind,
 };
 use domain::ServerKey;
 use tmux_backend::server::tmux_program;
@@ -668,5 +668,43 @@ async fn panes_from_three_windows_gather_in_a_named_window() {
             .expect("submit");
         assert_eq!(r.state, ActionState::Failed as i32, "{r:?}");
     }
+    drop(h.server);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_session_runs_the_default_shell_and_reports_its_first_pane() {
+    let mut h = start("session").await;
+    let mut actions = h.actions(Hooks::default());
+    let before = h.ep.tracker.inventory().sessions.len();
+    let r = actions
+        .submit(&mut h.ep, submit(Kind::NewSession(NewSession::default())))
+        .await
+        .expect("new session");
+    assert!(
+        completed(&r).starts_with("created session $"),
+        "{}",
+        completed(&r)
+    );
+    let pane = r.new_pane.expect("new pane");
+    let inv = h.ep.tracker.inventory();
+    assert_eq!(inv.sessions.len(), before + 1);
+    let window = inv.panes[&domain::TmuxPaneId(pane)].window;
+    let session = *inv.windows[&window].sessions.first().expect("session");
+    assert_eq!(inv.sessions[&session].windows.len(), 1);
+
+    // A name already taken is refused before anything reaches tmux.
+    let taken = inv.sessions[&session].name.clone();
+    let r = actions
+        .submit(
+            &mut h.ep,
+            submit(Kind::NewSession(NewSession {
+                name: Some(taken),
+                ..NewSession::default()
+            })),
+        )
+        .await
+        .expect("submit");
+    assert_eq!(r.state, ActionState::Failed as i32, "{r:?}");
+    assert_eq!(h.ep.tracker.inventory().sessions.len(), before + 1);
     drop(h.server);
 }

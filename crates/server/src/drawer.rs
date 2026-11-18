@@ -348,7 +348,7 @@ impl Run<'_> {
 
     async fn new_holding(&mut self, l: &Launch) -> Result<(TmuxSessionId, TmuxPaneId), RpcError> {
         let conn = &self.ep.conn;
-        let (h, pane) = ops::new_session(conn, ops::DRAWER_HOLDING, l)
+        let (h, pane) = ops::new_session(conn, Some(ops::DRAWER_HOLDING), l)
             .await
             .map_err(|e| refused(&e))?;
         ops::keep_unattached(conn, h)

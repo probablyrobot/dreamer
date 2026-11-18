@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 53 }
+version: { major: 1, minor: 54 }
 package: dreamer.v1
 
 types:
@@ -186,6 +186,16 @@ types:
       - { n: 3, name: argv, type: string, repeated: true, doc: Exact program and arguments; never a shell string. }
       - { n: 4, name: cwd, type: string, optional: true }
 
+  - message: NewSession
+    doc: >-
+      A new detached session with one window; it runs the default shell
+      unless argv is given. tmux names it when `name` is absent. The
+      record's `new_pane` is its first pane.
+    fields:
+      - { n: 1, name: name, type: string, optional: true }
+      - { n: 2, name: argv, type: string, repeated: true, doc: Exact program and arguments; never a shell string. }
+      - { n: 3, name: cwd, type: string, optional: true }
+
   - message: ResizePane
     fields:
       - { n: 1, name: pane, type: u32 }
@@ -268,6 +278,7 @@ types:
         - { n: 11, name: kill_window, type: KillWindow }
         - { n: 12, name: new_window, type: NewWindow }
         - { n: 13, name: move_pane, type: MovePane }
+        - { n: 14, name: new_session, type: NewSession }
 
   - message: SubmitAction
     fields:

@@ -472,17 +472,20 @@ pub async fn break_pane_to(
     .map(drop)
 }
 
-/// Create a detached session named `name`; returns it and its first pane.
+/// Create a detached session named `name` (tmux names it when `None`);
+/// returns it and its first pane.
 pub async fn new_session(
     conn: &Connection,
-    name: &str,
+    name: Option<&str>,
     launch: &Launch,
 ) -> Result<(TmuxSessionId, TmuxPaneId), CommandError> {
     let mut cmd = TmuxCommand::new("new-session")
         .flag("-d")
         .flag("-P")
-        .opt_format("-F", "#{session_id} #{pane_id}")
-        .opt("-s", name.to_owned());
+        .opt_format("-F", "#{session_id} #{pane_id}");
+    if let Some(name) = name {
+        cmd = cmd.opt("-s", name.to_owned());
+    }
     if let Some(cwd) = &launch.cwd {
         cmd = cmd.opt("-c", cwd.clone());
     }

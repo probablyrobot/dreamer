@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 53;
+pub const PROTOCOL_MINOR: u32 = 54;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1726,6 +1726,21 @@ pub struct NewWindow {
     pub cwd: Option<String>,
 }
 
+/// A new detached session with one window; it runs the default shell unless argv is given. tmux names it when `name` is absent. The record's `new_pane` is its first pane.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NewSession {
+    #[prost(string, optional, tag = "1")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Exact program and arguments; never a shell string.
+    #[prost(string, repeated, tag = "2")]
+    pub argv: Vec<String>,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ResizePane {
@@ -1847,7 +1862,7 @@ pub struct MovePane {
 pub struct Action {
     #[prost(
         oneof = "action::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
     )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<action::Kind>,
@@ -1885,6 +1900,8 @@ pub mod action {
         NewWindow(super::NewWindow),
         #[prost(message, tag = "13")]
         MovePane(super::MovePane),
+        #[prost(message, tag = "14")]
+        NewSession(super::NewSession),
     }
 }
 

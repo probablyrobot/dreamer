@@ -1148,6 +1148,15 @@ impl Shell {
                         s.open_link_at(grid.cell_at(ev.position), cx);
                         return;
                     }
+                    // A right click opens the workspace's context menu
+                    // unless the application tracks the mouse; with Shift
+                    // it does even then. Either way it is not reported.
+                    if ev.button == gpui::MouseButton::Right
+                        && s.embedded
+                        && (!s.frame.view.mouse_tracking || ev.modifiers.shift)
+                    {
+                        return;
+                    }
                     // Selection unless the application tracks the mouse;
                     // Shift selects even then.
                     let select = ev.button == gpui::MouseButton::Left
@@ -1813,6 +1822,8 @@ fn main() -> ExitCode {
     if args.smoke {
         // No smoke run reads or replaces what the user copied.
         clip::use_memory();
+        // Nor saves its windows anywhere but a private directory.
+        workspace::SMOKE_RUN.store(true, std::sync::atomic::Ordering::Relaxed);
         println!("smoke: backend {backend}");
         if backend == "headless" {
             // A headless platform would "present" frames without drawing.
@@ -1881,7 +1892,9 @@ fn main() -> ExitCode {
     app.run(move |cx: &mut App| {
         keymap::install(cx, move |cx| {
             let launch = client::Launch::new(window_args.clone());
-            if let Err(e) = workspace::open(cx, launch, None, Vec::new()) {
+            // A new window is a new session, as a terminal's is a new shell.
+            if let Err(e) = workspace::open(cx, launch, None, Vec::new(), workspace::Start::NewSession)
+            {
                 eprintln!("dreamer: {e}");
             }
         });
@@ -1901,7 +1914,14 @@ fn main() -> ExitCode {
                 // Connect the host unless it is live (a profile, or a host
                 // the daemon knows); the window shows it once it is.
                 replica::hosts::connect_once(launch.clone(), host.clone());
-                match workspace::open_via(cx, launch, via, None, args.open.clone()) {
+                match workspace::open_via(
+                    cx,
+                    launch,
+                    via,
+                    None,
+                    args.open.clone(),
+                    workspace::Start::Saved(None),
+                ) {
                     Ok(w) if args.remote => workspace::smoke_remote(cx, w),
                     Ok(_) => {}
                     Err(e) => {
@@ -1922,7 +1942,7 @@ fn main() -> ExitCode {
                 (false, false) => workspace::SmokeRun::Workspace,
             };
             let smoke = args.smoke.then(|| (args.daemon.clone(), run));
-            if let Err(e) = workspace::open(cx, launch, smoke, args.open.clone()) {
+            if let Err(e) = workspace::open_saved(cx, launch, smoke, args.open.clone()) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }

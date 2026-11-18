@@ -8,11 +8,15 @@
 //! and are never taken). Closing a window or quitting closes views only:
 //! tmux sessions and panes keep running.
 
-use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType};
+use gpui::{App, AppContext as _, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType};
 
 gpui::actions!(
     dreamer,
     [
+        /// The app's name and version.
+        About,
+        /// Open `dreamer.yaml` in the user's editor, creating it if missing.
+        OpenSettings,
         /// Quit the desktop app. tmux and the daemon keep running.
         Quit,
         /// Hide the app (macOS).
@@ -21,14 +25,25 @@ gpui::actions!(
         HideOthers,
         /// Show all apps (macOS).
         ShowAll,
-        /// Open another workspace window.
+        /// Open another window on a new tmux session.
         NewWindow,
+        /// A new tab: a new tmux window in this window's session.
+        NewTab,
+        /// Split the focused pane: the new pane on the right.
+        SplitRight,
+        /// Split the focused pane: the new pane below.
+        SplitDown,
         /// Close this window; its tmux session keeps running.
         CloseWindow,
         Minimize,
         /// The window's zoom (macOS "Zoom"): fill the screen without full screen.
         ZoomWindow,
         ToggleFullScreen,
+        /// Every Dreamer window in front of other apps' windows.
+        BringAllToFront,
+        /// The session's next or previous tmux window.
+        NextTab,
+        PreviousTab,
         /// Copy the focused pane's selection.
         Copy,
         /// Paste into the focused pane (bracketed when the program asked).
@@ -43,6 +58,11 @@ gpui::actions!(
         ToggleDrawer,
         /// Start a fresh harness in the drawer.
         NewDrawer,
+        /// The terminal text one point bigger or smaller, or back to the
+        /// configured size, in every window (the file is not changed).
+        FontBigger,
+        FontSmaller,
+        FontReset,
     ]
 );
 
@@ -75,14 +95,26 @@ macro_rules! shortcut {
     };
 }
 
+/// Every command with a menu item, a shortcut, or both. Shifted symbols
+/// are written as the symbol (`cmd-}` is Cmd+Shift+]), as GPUI reports them.
 pub(crate) const SHORTCUTS: &[Shortcut] = &[
+    shortcut!(About, None, None),
+    shortcut!(OpenSettings, Some("cmd-,"), None),
     shortcut!(Quit, Some("cmd-q"), Some("ctrl-shift-q")),
     shortcut!(Hide, Some("cmd-h"), None),
     shortcut!(HideOthers, Some("alt-cmd-h"), None),
+    shortcut!(ShowAll, None, None),
     shortcut!(NewWindow, Some("cmd-n"), Some("ctrl-shift-n")),
+    shortcut!(NewTab, Some("cmd-t"), Some("ctrl-shift-t")),
+    shortcut!(SplitRight, Some("cmd-d"), Some("ctrl-shift-o")),
+    shortcut!(SplitDown, Some("cmd-shift-d"), Some("ctrl-shift-e")),
     shortcut!(CloseWindow, Some("cmd-w"), Some("ctrl-shift-w")),
     shortcut!(Minimize, Some("cmd-m"), None),
+    shortcut!(ZoomWindow, None, None),
     shortcut!(ToggleFullScreen, Some("ctrl-cmd-f"), Some("f11")),
+    shortcut!(BringAllToFront, None, None),
+    shortcut!(NextTab, Some("cmd-}"), Some("ctrl-shift-pagedown")),
+    shortcut!(PreviousTab, Some("cmd-{"), Some("ctrl-shift-pageup")),
     shortcut!(Copy, Some("cmd-c"), Some("ctrl-shift-c")),
     shortcut!(Paste, Some("cmd-v"), Some("ctrl-shift-v")),
     shortcut!(CommandPalette, Some("cmd-shift-p"), Some("ctrl-shift-p")),
@@ -91,6 +123,9 @@ pub(crate) const SHORTCUTS: &[Shortcut] = &[
     shortcut!(Find, Some("cmd-f"), Some("ctrl-shift-f")),
     shortcut!(ToggleDrawer, Some("cmd-j"), Some("ctrl-shift-j")),
     shortcut!(NewDrawer, Some("cmd-shift-j"), Some("ctrl-alt-shift-j")),
+    shortcut!(FontBigger, Some("cmd-="), None),
+    shortcut!(FontSmaller, Some("cmd--"), None),
+    shortcut!(FontReset, Some("cmd-0"), None),
 ];
 
 fn bindings(cx: &App) -> Vec<KeyBinding> {
@@ -104,10 +139,56 @@ fn bindings(cx: &App) -> Vec<KeyBinding> {
         .unwrap_or_else(|e| panic!("a built-in shortcut does not parse: {e}"))
 }
 
-/// The macOS menu bar. Each item's shortcut is shown from the bindings.
+/// This platform's shortcut for `action`, written for a menu: `⇧⌘D` on
+/// macOS, `Ctrl+Shift+O` on Linux.
+pub(crate) fn shortcut_label(action: &dyn gpui::Action) -> Option<String> {
+    let keys = SHORTCUTS
+        .iter()
+        .find(|s| (s.make)().partial_eq(action))?
+        .keys()?;
+    let ks = gpui::Keystroke::parse(keys).ok()?;
+    let m = ks.modifiers;
+    let key = match ks.key.as_str() {
+        "enter" => "Return".to_owned(),
+        "pagedown" => "PageDown".to_owned(),
+        "pageup" => "PageUp".to_owned(),
+        k => k.to_uppercase(),
+    };
+    Some(if cfg!(target_os = "macos") {
+        let mut s = String::new();
+        for (on, sym) in [
+            (m.control, "⌃"),
+            (m.alt, "⌥"),
+            (m.shift, "⇧"),
+            (m.platform, "⌘"),
+        ] {
+            if on {
+                s.push_str(sym);
+            }
+        }
+        s + &key
+    } else {
+        let mut parts: Vec<&str> = Vec::new();
+        for (on, name) in [(m.control, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift")] {
+            if on {
+                parts.push(name);
+            }
+        }
+        parts.push(&key);
+        parts.join("+")
+    })
+}
+
+/// The macOS menu bar, short like a terminal's. Each item's shortcut is
+/// shown from the bindings. The menu named "Window" is the app's window
+/// menu, so macOS lists the open windows under it.
 fn menus() -> Vec<Menu> {
     vec![
         Menu::new("Dreamer").items([
+            MenuItem::action("About Dreamer", About),
+            MenuItem::separator(),
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
             MenuItem::action("Hide Dreamer", Hide),
@@ -118,6 +199,10 @@ fn menus() -> Vec<Menu> {
         ]),
         Menu::new("Shell").items([
             MenuItem::action("New Window", NewWindow),
+            MenuItem::action("New Tab", NewTab),
+            MenuItem::separator(),
+            MenuItem::action("Split Right", SplitRight),
+            MenuItem::action("Split Down", SplitDown),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
         ]),
@@ -130,15 +215,23 @@ fn menus() -> Vec<Menu> {
         Menu::new("View").items([
             MenuItem::action("Command Palette", CommandPalette),
             MenuItem::action("Sessions Sidebar", ToggleSidebar),
-            MenuItem::action("Zoom Pane", ZoomPane),
             MenuItem::action("Harness Drawer", ToggleDrawer),
-            MenuItem::action("New Harness Drawer", NewDrawer),
+            MenuItem::action("Zoom Pane", ZoomPane),
+            MenuItem::separator(),
+            MenuItem::action("Bigger", FontBigger),
+            MenuItem::action("Smaller", FontSmaller),
+            MenuItem::action("Actual Size", FontReset),
             MenuItem::separator(),
             MenuItem::action("Enter Full Screen", ToggleFullScreen),
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", ZoomWindow),
+            MenuItem::separator(),
+            MenuItem::action("Next Tab", NextTab),
+            MenuItem::action("Previous Tab", PreviousTab),
+            MenuItem::separator(),
+            MenuItem::action("Bring All to Front", BringAllToFront),
         ]),
     ]
 }
@@ -149,8 +242,8 @@ pub(crate) struct Opener(pub Box<dyn Fn(&mut App)>);
 impl gpui::Global for Opener {}
 
 /// Bind the shortcuts, set the menu bar, and handle the app-wide commands.
-/// View commands (copy, paste, palette, zoom, sidebar, drawer) are handled by the
-/// focused view; without one they do nothing.
+/// View commands (copy, paste, tabs, splits, palette, zoom, sidebar,
+/// drawer) are handled by the focused view; without one they do nothing.
 pub(crate) fn install(cx: &mut App, open_window: impl Fn(&mut App) + 'static) {
     cx.set_global(Opener(Box::new(open_window)));
     let b = bindings(cx);
@@ -161,15 +254,21 @@ pub(crate) fn install(cx: &mut App, open_window: impl Fn(&mut App) + 'static) {
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(|_: &NewWindow, cx| new_window(cx));
-    let on_active = |cx: &mut App, f: fn(&mut gpui::Window)| {
+    cx.on_action(|_: &About, cx| about(cx));
+    cx.on_action(|_: &OpenSettings, cx| open_settings(cx));
+    cx.on_action(|_: &FontBigger, cx| crate::live::font_step(cx, Some(1.0)));
+    cx.on_action(|_: &FontSmaller, cx| crate::live::font_step(cx, Some(-1.0)));
+    cx.on_action(|_: &FontReset, cx| crate::live::font_step(cx, None));
+    cx.on_action(|_: &BringAllToFront, cx| bring_all_to_front(cx));
+    let on_active = |cx: &mut App, f: fn(&mut gpui::Window, &mut App)| {
         if let Some(w) = cx.active_window() {
-            let _ = w.update(cx, |_, window, _| f(window));
+            let _ = w.update(cx, |_, window, cx| f(window, cx));
         }
     };
-    cx.on_action(move |_: &CloseWindow, cx| on_active(cx, gpui::Window::remove_window));
-    cx.on_action(move |_: &Minimize, cx| on_active(cx, |w| w.minimize_window()));
-    cx.on_action(move |_: &ZoomWindow, cx| on_active(cx, |w| w.zoom_window()));
-    cx.on_action(move |_: &ToggleFullScreen, cx| on_active(cx, |w| w.toggle_fullscreen()));
+    cx.on_action(move |_: &CloseWindow, cx| on_active(cx, crate::workspace::close_window));
+    cx.on_action(move |_: &Minimize, cx| on_active(cx, |w, _| w.minimize_window()));
+    cx.on_action(move |_: &ZoomWindow, cx| on_active(cx, |w, _| w.zoom_window()));
+    cx.on_action(move |_: &ToggleFullScreen, cx| on_active(cx, |w, _| w.toggle_fullscreen()));
     // On Linux an app without a window has nothing left to show; macOS
     // apps stay in the Dock and reopen a window from there.
     if !cfg!(target_os = "macos") {
@@ -190,6 +289,68 @@ pub(crate) fn new_window(cx: &mut App) {
     let opener = cx.remove_global::<Opener>();
     (opener.0)(cx);
     cx.set_global(opener);
+}
+
+/// A minimal about box: the name and the version.
+fn about(cx: &mut App) {
+    let Some(w) = cx.active_window().or_else(|| cx.windows().first().copied()) else {
+        return;
+    };
+    let _ = w.update(cx, |_, window, cx| {
+        let answer = window.prompt(
+            gpui::PromptLevel::Info,
+            "Dreamer",
+            Some(&format!("Version {}", env!("CARGO_PKG_VERSION"))),
+            &["OK"],
+            cx,
+        );
+        cx.foreground_executor()
+            .spawn(async move {
+                let _ = answer.await;
+            })
+            .detach();
+    });
+}
+
+/// Open `dreamer.yaml` in the user's editor (`open -t` on macOS,
+/// `xdg-open` on Linux), first creating it with no settings if it is
+/// missing. Off the UI thread.
+fn open_settings(cx: &mut App) {
+    let Some(path) = workspace_config::settings_path() else {
+        eprintln!("dreamer: no configuration directory (HOME is not set)");
+        return;
+    };
+    cx.background_spawn(async move {
+        if let Err(e) = workspace_config::ensure_settings_file(&path) {
+            eprintln!("dreamer: cannot create {}: {e}", path.display());
+            return;
+        }
+        let mut open = if cfg!(target_os = "macos") {
+            let mut c = std::process::Command::new("open");
+            c.arg("-t");
+            c
+        } else {
+            std::process::Command::new("xdg-open")
+        };
+        match open.arg(&path).status() {
+            Ok(s) if s.success() => {}
+            Ok(s) => eprintln!("dreamer: opening {} failed ({s})", path.display()),
+            Err(e) => eprintln!("dreamer: cannot open {}: {e}", path.display()),
+        }
+    })
+    .detach();
+}
+
+/// Every window to the front, the active one last so it stays on top.
+fn bring_all_to_front(cx: &mut App) {
+    let active = cx.active_window();
+    let mut windows = cx.windows();
+    windows.retain(|w| Some(*w) != active);
+    windows.extend(active);
+    for w in windows {
+        let _ = w.update(cx, |_, window, _| window.activate_window());
+    }
+    cx.activate(true);
 }
 
 #[cfg(test)]
@@ -221,6 +382,45 @@ mod tests {
                 function_key || (m.control && m.shift),
                 "{k} would take a key the program in the pane may need"
             );
+            // GPUI drops Shift from a shifted symbol (Ctrl+Shift+, arrives
+            // as Ctrl+<), so a symbol here would never match.
+            assert!(
+                ks.key.len() > 1 || ks.key.chars().all(|c| c.is_ascii_alphabetic()),
+                "{k}: use a letter or a named key with Ctrl+Shift"
+            );
         }
+    }
+
+    #[test]
+    fn every_menu_item_is_a_command_in_the_table() {
+        fn walk(items: &[MenuItem], out: &mut Vec<String>) {
+            for item in items {
+                match item {
+                    MenuItem::Action { name, action, .. } => {
+                        if !SHORTCUTS.iter().any(|s| (s.make)().partial_eq(&**action)) {
+                            out.push(name.to_string());
+                        }
+                    }
+                    MenuItem::Submenu(m) => walk(&m.items, out),
+                    MenuItem::Separator | MenuItem::SystemMenu(_) => {}
+                }
+            }
+        }
+        let mut missing = Vec::new();
+        for m in menus() {
+            walk(&m.items, &mut missing);
+        }
+        assert!(missing.is_empty(), "not in SHORTCUTS: {missing:?}");
+    }
+
+    #[test]
+    fn menu_shortcut_labels_name_the_platforms_keys() {
+        let label = shortcut_label(&SplitDown).expect("split down");
+        if cfg!(target_os = "macos") {
+            assert_eq!(label, "⇧⌘D");
+        } else {
+            assert_eq!(label, "Ctrl+Shift+E");
+        }
+        assert_eq!(shortcut_label(&About), None);
     }
 }
