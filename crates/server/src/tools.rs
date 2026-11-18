@@ -286,7 +286,8 @@ pub async fn run(
     let finished = record.state != api::JobState::Running as i32;
     let pane = domain::TmuxPaneId(record.pane);
     // The wrapper's last line follows everything the program wrote: wait
-    // briefly for it, so the output is complete.
+    // for it, so the output is complete. It usually lands at once; on a
+    // loaded or emulated machine the mirror can trail the exit by seconds.
     let read = |host: mirror::MirrorHost| async move {
         match host.read(pane, lines).await {
             Some(Ok(r)) => Some(r.lines),
@@ -295,7 +296,7 @@ pub async fn run(
     };
     let mut text = read(host.clone()).await.unwrap_or_default();
     if finished {
-        let settle = Instant::now() + Duration::from_secs(2);
+        let settle = Instant::now() + Duration::from_secs(10);
         while !text.iter().any(|l| wrapper_line(l)) && Instant::now() < settle {
             tokio::time::sleep(LOOK).await;
             text = read(host.clone()).await.unwrap_or_default();
