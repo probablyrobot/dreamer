@@ -121,7 +121,8 @@ cargo xtask package --fresh [--arch arm64|amd64]
     only the packages above, then `dreamer --smoke` on X11 (Xvfb, with
     Mesa's software Vulkan), which must present a frame.
 
-  CI runs it for x86-64 on every pull request.
+  The weekly Linux workflow (`.github/workflows/full.yml`, also run on
+  version tags and on demand) and the release workflow run it for x86-64.
 
 The repository is private for now. Until it is public, the `curl` line and
 release downloads need GitHub access; use `--from` with a tarball from a CI
@@ -149,9 +150,9 @@ and the build fails if any is graphical (X11, xcb, Wayland, xkbcommon,
 Vulkan, GL, fontconfig, FreeType, HarfBuzz, AppKit, Metal, CoreText,
 CoreGraphics, QuartzCore).
 
-CI builds and uploads `x86_64-unknown-linux-gnu` and
-`aarch64-unknown-linux-gnu` as workflow artifacts on every run; the Mac
-builds `aarch64-apple-darwin`.
+The weekly Linux workflow builds and uploads `x86_64-unknown-linux-gnu`
+and `aarch64-unknown-linux-gnu` as workflow artifacts; the Mac builds
+`aarch64-apple-darwin`.
 
 ## Releases
 
@@ -249,8 +250,9 @@ font, from Arch's official repositories), `fontconfig`, `freetype2`, `libxkbcomm
 `libxkbcommon-x11`, `libx11`, `libxcb`, `wayland`, and
 `vulkan-icd-loader` (plus a Vulkan driver for your GPU).
 
-Linux CI builds the package in an `archlinux:base-devel` container on every
-pull request. It then installs the package with `pacman -U` and runs the
+The weekly Linux workflow (`.github/workflows/full.yml`, also run on
+version tags and on demand) builds the package in an `archlinux:base-devel`
+container. It then installs the package with `pacman -U` and runs the
 installed binaries:
 - the daemon's self-check;
 - the CLI's version;

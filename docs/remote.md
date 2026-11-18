@@ -328,6 +328,9 @@ involved:
 - **Cleanup:** everything started from the private directory is stopped,
   and the directory is removed.
 
-It needs `sshd` (on Linux, the `openssh-server` package). CI runs it on
-x86-64 Linux. Incompatible-build cases run against a stand-in SSH in
+It needs `sshd` (on Linux, the `openssh-server` package). The Mac's full
+gate runs it on ARM64 Linux in a container, as root, before every push;
+the weekly Linux workflow (`.github/workflows/full.yml`, also run on
+version tags and on demand) runs it on x86-64 as an unprivileged user.
+Incompatible-build cases run against a stand-in SSH in
 `crates/server/tests/hosts.rs`.

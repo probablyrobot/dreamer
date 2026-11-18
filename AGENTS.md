@@ -39,8 +39,8 @@ These are settled. Changing one needs an ADR (kept outside the repository, in `~
 
 There are two lanes, and both must pass.
 
-- **Linux:** GitHub Actions. Never add a `macos-*` runner to a workflow.
-- **macOS:** a pre-commit hook on the development Mac runs `cargo xtask gate mac --staged` against the staged tree; pre-push runs the full gate. Install hooks with `cargo xtask hooks install`.
+- **Linux:** GitHub Actions and the Mac's container stage. Every pull request runs one x86-64 job (`.github/workflows/ci.yml`): fmt, policy, the `--check` commands, clippy, build, and tests. The slower Linux checks (remote acceptance through real OpenSSH, the ARM64 cross-build under emulation, the Arch package, the tarball through `install.sh`) are in `.github/workflows/full.yml`, which runs weekly, on `v*` tags, and on demand. Before every push, the Mac's full gate runs clippy, the headless tests, and remote acceptance on ARM64 Linux in a container. Never add a `macos-*` runner to a workflow.
+- **macOS:** a pre-commit hook on the development Mac runs `cargo xtask gate mac --staged` against the staged tree; pre-push runs the full gate on `HEAD`, reusing the stages a pre-commit run passed for the same tree. Install hooks with `cargo xtask hooks install`.
 
 Rules:
 
