@@ -3,7 +3,10 @@
 //! `--staged` (pre-commit) tests exactly what is staged: the index is written
 //! to a tree and checked out into a persistent gate worktree with its own warm
 //! target directory, so unstaged edits can neither break nor rescue a commit.
-//! `--full` (pre-push) tests `HEAD` and runs every stage regardless of paths.
+//! `--full` (pre-push) tests `HEAD` and runs every stage regardless of paths,
+//! except that stages a passing `--staged` run of the same tree passed are
+//! reused when the gate worktree is still on that tree (see
+//! [`reusable_stages`]).
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -68,6 +71,8 @@ enum Outcome {
     Skipped,
     /// The stage could not run on this machine; recorded, not a pass.
     NotRun,
+    /// `--full` only: passed in a `--staged` run of the same tree.
+    Reused,
 }
 
 impl Outcome {
@@ -77,6 +82,7 @@ impl Outcome {
             Outcome::Failed => "failed",
             Outcome::Skipped => "skipped",
             Outcome::NotRun => "not_run",
+            Outcome::Reused => "reused",
         }
     }
 }
@@ -1173,8 +1179,122 @@ fn package_away_from_tree(dir: &Path) -> Result<Done, String> {
     Ok(Done::Passed)
 }
 
-/// Native ARM64 Linux tests in a container when a container runtime is
-/// running; otherwise recorded as not run (spec 17.4).
+/// Packages the gate's ARM64 Linux image adds to `ubuntu:24.04`: the build
+/// tools, GPUI's Linux build dependencies (for clippy; the same list as the
+/// GUI dependencies in `.github/workflows/ci.yml`), the tmux baseline's
+/// build dependencies, and OpenSSH plus `pkill` for remote acceptance.
+const ARM64_PACKAGES: &[&str] = &[
+    "build-essential",
+    "pkg-config",
+    "curl",
+    "ca-certificates",
+    "xz-utils",
+    "git",
+    "libclang-dev",
+    "python3",
+    "libfontconfig-dev",
+    "libfreetype-dev",
+    "libwayland-dev",
+    "libxkbcommon-dev",
+    "libxkbcommon-x11-dev",
+    "libx11-xcb-dev",
+    "libxcb1-dev",
+    "libvulkan-dev",
+    "libevent-dev",
+    "libncurses-dev",
+    "bison",
+    "openssh-server",
+    "openssh-client",
+    "procps",
+];
+
+/// Raise when the image changes in a way the package list does not show.
+const ARM64_IMAGE_REVISION: u32 = 1;
+
+/// The Dockerfile of the gate's ARM64 image. Its hash names the image, so a
+/// changed package list builds a new one.
+fn arm64_dockerfile() -> String {
+    format!(
+        "# dreamer gate ARM64 Linux image, revision {ARM64_IMAGE_REVISION}\n\
+         FROM ubuntu:24.04\n\
+         ENV DEBIAN_FRONTEND=noninteractive\n\
+         RUN apt-get update -qq \\\n \
+         && apt-get install -y -qq --no-install-recommends {} \\\n \
+         && rm -rf /var/lib/apt/lists/* \\\n \
+         && mkdir -p /run/sshd\n",
+        ARM64_PACKAGES.join(" ")
+    )
+}
+
+/// `dreamer-gate-arm64:<hash of the Dockerfile>`. FNV-1a, so the name does
+/// not change with the Rust release that built xtask.
+fn arm64_image_tag(dockerfile: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in dockerfile.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("dreamer-gate-arm64:{:012x}", h >> 16)
+}
+
+/// The gate's ARM64 image, built on first use (or when its Dockerfile
+/// changed); older builds of it are removed.
+fn ensure_arm64_image() -> Result<String, String> {
+    use std::io::Write as _;
+    let dockerfile = arm64_dockerfile();
+    let tag = arm64_image_tag(&dockerfile);
+    let present = Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", &tag])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if present {
+        println!("gate:   image {tag}");
+        return Ok(tag);
+    }
+    println!("gate:   building image {tag} (once per package list)");
+    let mut child = Command::new("docker")
+        .args(["build", "--platform", "linux/arm64", "-t", &tag, "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("docker build: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("docker build: no stdin")?
+        .write_all(dockerfile.as_bytes())
+        .map_err(|e| format!("docker build: {e}"))?;
+    let status = child.wait().map_err(|e| format!("docker build: {e}"))?;
+    if !status.success() {
+        return Err(format!("building the image {tag} failed"));
+    }
+    if let Ok(out) = Command::new("docker")
+        .args([
+            "image",
+            "ls",
+            "dreamer-gate-arm64",
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+        ])
+        .output()
+    {
+        for old in String::from_utf8_lossy(&out.stdout).lines() {
+            if old != tag {
+                let _ = Command::new("docker")
+                    .args(["image", "rm", old])
+                    .stdout(std::process::Stdio::null())
+                    .status();
+            }
+        }
+    }
+    Ok(tag)
+}
+
+/// Native ARM64 Linux checks in a container when a container runtime is
+/// running; otherwise recorded as not run (spec 17.4). In order: clippy on
+/// Linux (code behind `cfg(target_os = "macos")` hides nothing there), the
+/// headless crates' tests against the pinned tmux, and the remote
+/// acceptance cases through real OpenSSH (`cargo xtask remote-acceptance`,
+/// as root with a private sshd on a loopback port).
 fn arm64_container(dir: &Path) -> Result<Done, String> {
     // `docker info` exits 0 even when Docker Desktop failed to start, so
     // require an actual server version.
@@ -1186,20 +1306,24 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
         println!("gate: no container runtime running; ARM64 Linux suite recorded as not run");
         return Ok(Done::NotRun);
     }
+    let image = ensure_arm64_image()?;
     // `ulimit -c 0`: one test makes dreamerd abort on purpose, and the
     // container would otherwise write its core into the mounted tree.
     // Only this checkout's target is kept in the shared cache volume; the
     // others belong to gate worktrees that have since been rebuilt.
-    let script = "set -e; ulimit -c 0; export DEBIAN_FRONTEND=noninteractive; \
+    // `USER`: remote acceptance logs in to its sshd as this user.
+    let script = "set -e; ulimit -c 0; export USER=root; mkdir -p /run/sshd; \
         find /root/.cache -maxdepth 1 -name 'dreamer-target-*' ! -path \"$CARGO_TARGET_DIR\" -exec rm -rf {} +; \
-        apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-          build-essential pkg-config curl ca-certificates xz-utils git libclang-dev \
-          libevent-dev libncurses-dev bison python3 >/dev/null; \
         command -v rustup >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none; \
         . \"$HOME/.cargo/env\"; \
         cargo xtask deps prepare --locked; \
         export DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1); \
-        cargo test --locked $(cargo xtask headless --cargo-args)";
+        echo 'gate:   arm64: clippy'; \
+        cargo clippy --workspace --all-targets --locked -- -D warnings; \
+        echo 'gate:   arm64: headless tests'; \
+        cargo test --locked $(cargo xtask headless --cargo-args); \
+        echo 'gate:   arm64: remote acceptance'; \
+        cargo xtask remote-acceptance";
     // One target directory per checkout: every checkout is mounted at the
     // same /src, and cargo judges freshness by file times, so a build from
     // another checkout's newer files could otherwise pass for this one's.
@@ -1230,7 +1354,7 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
             "CARGO_INCREMENTAL=0",
             "-w",
             "/src",
-            "ubuntu:24.04",
+            &image,
             "bash",
             "-c",
             script,
@@ -1287,7 +1411,28 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     };
 
+    let reports = root.join("target").join("gate").join(platform.name());
+    let record = reuse_record_path(&reports, &tree);
+    let last_tree_path = reports.join("worktree-tree");
+    let reusable = match mode {
+        Mode::Full => reusable_stages(
+            std::fs::read_to_string(&record).ok().as_deref(),
+            &tree,
+            std::fs::read_to_string(&last_tree_path).ok().as_deref(),
+        ),
+        // A new staged run of this tree decides afresh what it passed.
+        Mode::Staged => {
+            let _ = std::fs::remove_file(&record);
+            Vec::new()
+        }
+    };
+
     let worktree = prepare_worktree(&root, &tree)?;
+    // Which tree the gate worktree (and so its build output) was last
+    // checked out for: a `--full` run reuses only on top of that tree.
+    std::fs::create_dir_all(&reports)
+        .and_then(|()| std::fs::write(&last_tree_path, &tree))
+        .map_err(|e| format!("cannot write {}: {e}", last_tree_path.display()))?;
     println!(
         "gate {} {}: tree {} ({})",
         platform.name(),
@@ -1326,6 +1471,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 name: stage.name,
                 command,
                 outcome: Outcome::Skipped,
+                millis: 0,
+            });
+            continue;
+        }
+        if stage.when != When::Full && reusable.iter().any(|r| r == stage.name) {
+            println!(
+                "gate: {:<8} reused  (passed in pre-commit for tree {})",
+                stage.name,
+                &tree[..12.min(tree.len())]
+            );
+            results.push(StageResult {
+                name: stage.name,
+                command,
+                outcome: Outcome::Reused,
                 millis: 0,
             });
             continue;
@@ -1379,6 +1538,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let report = write_report(&root, platform, mode, &tree, scope, &results)?;
     println!("gate: report {}", report.display());
+    if mode == Mode::Staged && failed.is_none() {
+        std::fs::write(&record, reuse_record(&tree, &results))
+            .map_err(|e| format!("cannot write {}: {e}", record.display()))?;
+    }
 
     match failed {
         None => Ok(()),
@@ -1455,6 +1618,43 @@ fn scope_for<'a>(paths: impl IntoIterator<Item = &'a str>) -> Scope {
         }
     }
     if any { Scope::Docs } else { Scope::Code }
+}
+
+/// Where a passing `--staged` run of `tree` records the stages it passed.
+fn reuse_record_path(reports: &Path, tree: &str) -> PathBuf {
+    reports.join(format!("{tree}-staged-passed.txt"))
+}
+
+/// The record a passing `--staged` run leaves: its tree, then each stage
+/// that passed. Stages that were skipped or not run are not listed.
+fn reuse_record(tree: &str, results: &[StageResult]) -> String {
+    let mut out = format!("tree {tree}\n");
+    for r in results.iter().filter(|r| r.outcome == Outcome::Passed) {
+        let _ = writeln!(out, "passed {}", r.name);
+    }
+    out
+}
+
+/// The stages a `--full` run of `tree` may take as passed from a
+/// `--staged` run: those listed in its record, only when the record is for
+/// exactly this tree and the gate worktree was last checked out for this
+/// tree (so no later run of another tree has rebuilt what those stages
+/// built). Anything else reuses nothing.
+fn reusable_stages(record: Option<&str>, tree: &str, worktree_tree: Option<&str>) -> Vec<String> {
+    let Some(record) = record else {
+        return Vec::new();
+    };
+    if tree.is_empty() || worktree_tree.map(str::trim) != Some(tree) {
+        return Vec::new();
+    }
+    let mut lines = record.lines();
+    if lines.next() != Some(&format!("tree {tree}")) {
+        return Vec::new();
+    }
+    lines
+        .filter_map(|l| l.strip_prefix("passed "))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Check the tree out into `target/gate/worktree`, creating the worktree on
@@ -1608,6 +1808,40 @@ mod tests {
     #[test]
     fn an_empty_change_set_is_treated_as_code() {
         assert_eq!(scope_for(std::iter::empty()), Scope::Code);
+    }
+
+    fn result(name: &'static str, outcome: Outcome) -> StageResult {
+        StageResult {
+            name,
+            command: String::new(),
+            outcome,
+            millis: 0,
+        }
+    }
+
+    #[test]
+    fn full_runs_reuse_only_what_a_staged_run_of_the_same_tree_passed() {
+        let record = reuse_record(
+            "aaa",
+            &[
+                result("clippy", Outcome::Passed),
+                result("live", Outcome::NotRun),
+                result("arm64", Outcome::Skipped),
+            ],
+        );
+        assert_eq!(
+            reusable_stages(Some(&record), "aaa", Some("aaa\n")),
+            ["clippy"]
+        );
+        // Another tree, a worktree since checked out for another tree, or
+        // no record: nothing is reused.
+        assert!(reusable_stages(Some(&record), "bbb", Some("bbb")).is_empty());
+        assert!(reusable_stages(Some(&record), "aaa", Some("bbb")).is_empty());
+        assert!(reusable_stages(Some(&record), "aaa", None).is_empty());
+        assert!(reusable_stages(None, "aaa", Some("aaa")).is_empty());
+        // A record whose content names another tree than its file name.
+        let other = reuse_record("bbb", &[result("clippy", Outcome::Passed)]);
+        assert!(reusable_stages(Some(&other), "aaa", Some("aaa")).is_empty());
     }
 
     #[test]

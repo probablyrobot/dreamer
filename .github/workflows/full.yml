@@ -1,0 +1,238 @@
+# The Linux checks that are too slow to run on every pull request: real
+# OpenSSH remote acceptance, the ARM64 cross-build under emulation, the Arch
+# package, and the generic tarball through install.sh. They run weekly, on
+# version tags, and on demand. Between runs, the development Mac's full gate
+# covers ARM64 Linux natively in a container (clippy, the headless tests,
+# and remote acceptance); see AGENTS.md.
+name: full linux
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: full-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+# Linux only. `cargo xtask policy` fails if any workflow uses a macOS runner.
+
+jobs:
+  remote-acceptance:
+    name: remote acceptance (real OpenSSH, linux x86-64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install OpenSSH server and tmux build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends openssh-server libevent-dev libncurses-dev bison
+          # sshd checks for its privilege separation directory even when
+          # it runs unprivileged.
+          sudo mkdir -p /run/sshd
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-remote-acceptance
+      - name: Cache pinned native dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dreamer/deps
+          key: deps-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/baseline.toml') }}
+      - run: cargo xtask deps prepare --locked
+      - name: Build the pinned tmux baseline
+        run: echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
+      # An unprivileged sshd on a loopback port with generated keys; the
+      # runner's own SSH setup is not used.
+      - run: cargo xtask remote-acceptance
+
+  linux-aarch64:
+    name: headless cross-build (linux arm64, emulated tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      TARGET: aarch64-unknown-linux-gnu
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned toolchain and target
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add "$TARGET"
+      - name: Install cross linker and user-mode emulator
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-aarch64
+      - name: Cache pinned native dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dreamer/deps
+          key: deps-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/baseline.toml') }}
+      - run: cargo xtask deps prepare --locked --target "$TARGET"
+      - name: Generate snapshot fixtures under emulation
+        run: cargo run --locked --target "$TARGET" -p terminal-ghostty --bin snapshot-fixtures -- target/snapshot-fixtures
+      - name: Upload this architecture's snapshot fixtures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshots-aarch64-unknown-linux-gnu
+          path: target/snapshot-fixtures/
+          if-no-files-found: ignore
+      # Emulated runs are correctness evidence only, never performance evidence.
+      - name: Test headless crates under emulation
+        run: |
+          cargo test --locked --target "$TARGET" $(cargo xtask headless --cargo-args-without-tmux)
+          # No ARM64 tmux baseline binary exists here: unit tests only. The
+          # tmux integration suite runs natively on x86-64 and macOS.
+          cargo test --locked --target "$TARGET" --lib --bins $(cargo xtask headless --needs-tmux)
+      - name: Run headless binaries under emulation
+        run: |
+          cargo build --locked --release --target "$TARGET" $(cargo xtask headless --cargo-args)
+          for bin in dreamerd dream dreamer-termapp; do
+            file "target/$TARGET/release/$bin"
+            qemu-aarch64 -L /usr/aarch64-linux-gnu "target/$TARGET/release/$bin" --version
+          done
+      - name: Headless server archive (packed, unpacked, run under emulation)
+        run: cargo xtask package --platform server --target "$TARGET"
+      - name: Upload the server archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dreamer-server-aarch64-unknown-linux-gnu
+          path: target/package/server/dreamer-server-*.tar.gz*
+          if-no-files-found: error
+
+  arch-package:
+    name: arch package (makepkg, install, run)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      # base-devel, pinned by digest. Arch is rolling: the job updates the
+      # system before building, as an Arch user would.
+      image: archlinux:base-devel@sha256:fa2d4ce3310ddd90a4208e5168be8ad367da5129af1245f38fd2d803bcbe3239
+    steps:
+      - name: Install build and runtime packages
+        run: >-
+          pacman -Syu --noconfirm --needed git rustup tmux ttf-jetbrains-mono-nerd pkgconf curl xz
+          fontconfig freetype2 libxkbcommon libxkbcommon-x11 libx11 libxcb
+          wayland vulkan-icd-loader
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the package as an unprivileged user
+        run: |
+          useradd -m builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          sudo -u builder git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sudo -u builder bash -c "cd '$GITHUB_WORKSPACE' && cargo xtask package --platform arch"
+      - name: Install the package and run what it installed
+        run: |
+          pacman -U --noconfirm target/package/arch/dreamer-*.pkg.tar.zst
+          pacman -Ql dreamer
+          test -f /usr/share/icons/hicolor/256x256/apps/dev.dreamer.Dreamer.png
+          test -f /usr/share/icons/hicolor/scalable/apps/dev.dreamer.Dreamer.svg
+          # No build-directory paths in the installed binaries.
+          if grep -l "package/arch/src" /usr/bin/dreamer /usr/bin/dreamerd /usr/bin/dream /usr/bin/dreamer-termapp; then
+            echo "build paths leaked into the binaries above"; exit 1
+          fi
+          dreamerd --self-check
+          dream --version
+          dreamer-termapp --version
+          # No display in CI: the app must say so and exit 4.
+          set +e; dreamer --smoke; code=$?; set -e
+          test "$code" -eq 4
+          # The installed CLI starts the installed daemon and drives an
+          # isolated tmux server.
+          tmux -L ci-arch -f /dev/null new-session -d -s main "sleep 600"
+          export DREAMER_RUNTIME_DIR=/tmp/drm-arch/rt DREAMER_STATE_DIR=/tmp/drm-arch/st DREAMER_FORBID_DEFAULT_TMUX=1
+          dream ls -L ci-arch | tee /tmp/ls.txt
+          grep -q 'main' /tmp/ls.txt
+          dream shutdown
+          tmux -L ci-arch kill-server
+
+  linux-tarball:
+    name: linux tarball (install.sh)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install GUI build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev \
+            libevent-dev libncurses-dev bison
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-tarball
+      - name: Cache pinned native dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dreamer/deps
+          key: deps-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deps/baseline.toml') }}
+      - run: cargo xtask deps prepare --locked
+      - run: cargo xtask package --platform linux
+      - name: Headless server archive (packed, unpacked, run)
+        run: cargo xtask package --platform server
+      - name: Upload the server archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dreamer-server-x86_64-unknown-linux-gnu
+          path: target/package/server/dreamer-server-*.tar.gz*
+          if-no-files-found: error
+      - name: Both archives on fresh ubuntu:24.04 containers (server bare; desktop draws a frame on Xvfb)
+        run: cargo xtask package --fresh --arch amd64
+      - name: Install into an empty home, run, uninstall
+        run: |
+          tmux_bin="$(cargo xtask deps tmux | tail -n 1)"
+          tarball="$PWD/target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz"
+          tar -tzf "$tarball" | sort
+          home="$(mktemp -d)"
+          HOME="$home" XDG_DATA_HOME= XDG_CONFIG_HOME= sh packaging/install.sh --from "$tarball"
+          bin="$home/.local/bin"
+          "$bin/dreamerd" --self-check
+          "$bin/dream" --version
+          "$bin/dreamer-termapp" --version
+          # No display in CI: the app must say so and exit 4.
+          set +e; "$bin/dreamer" --smoke; code=$?; set -e
+          test "$code" -eq 4
+          grep -q "Exec=$bin/dreamer" "$home/.local/share/applications/dev.dreamer.Dreamer.desktop"
+          ls "$home/.local/share/fonts/dreamer/JetBrainsMonoNerdFontMono-Regular.ttf"
+          ls "$home/.local/share/icons/hicolor/256x256/apps/dev.dreamer.Dreamer.png" \
+            "$home/.local/share/icons/hicolor/scalable/apps/dev.dreamer.Dreamer.svg"
+          # The installed CLI starts the installed daemon and drives an
+          # isolated tmux server (the pinned baseline).
+          "$tmux_bin" -L ci-tarball -f /dev/null new-session -d -s main "sleep 600"
+          export DREAMER_RUNTIME_DIR="$home/rt" DREAMER_STATE_DIR="$home/st" DREAMER_FORBID_DEFAULT_TMUX=1
+          "$bin/dream" ls -L ci-tarball --tmux "$tmux_bin" | tee /tmp/ls.txt
+          grep -q 'main' /tmp/ls.txt
+          "$bin/dream" shutdown
+          "$tmux_bin" -L ci-tarball kill-server
+          HOME="$home" XDG_DATA_HOME= XDG_CONFIG_HOME= sh packaging/install.sh --uninstall
+          test ! -e "$bin/dream" && test ! -e "$bin/dreamer-termapp" && test ! -e "$home/.local/share/dreamer"
+          test ! -e "$home/.local/share/icons/hicolor/256x256/apps/dev.dreamer.Dreamer.png"
+      - name: Keep the tarball
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dreamer-x86_64-unknown-linux-gnu
+          path: |
+            target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz
+            target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz.sha256
