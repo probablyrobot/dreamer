@@ -30,6 +30,9 @@ const TAB_STRIP: f32 = if cfg!(target_os = "macos") {
 };
 /// Room for the macOS window buttons at the strip's left.
 const TITLE_BUTTONS: f32 = if cfg!(target_os = "macos") { 78.0 } else { 0.0 };
+/// How far in from a window's edge a press resizes it, when the window has
+/// no system frame (Linux, `window.decorations: none`).
+const RESIZE_EDGE: f32 = 5.0;
 /// Space between the window's edges and the panes, so text never touches
 /// the window frame.
 const PANE_INSET: f32 = 6.0;
@@ -1983,7 +1986,10 @@ impl Render for Workspace {
             }
         };
         // The tab strip, in the terminal's own background so it reads as
-        // part of the same surface; on macOS it is the title bar.
+        // part of the same surface; on macOS, or with no decorations, it is
+        // the title bar.
+        let bare = crate::live::with(|l| l.decorations).unwrap_or_default()
+            == workspace_config::Decorations::None;
         let strip = div()
             .id("title-bar")
             .h(px(TAB_STRIP))
@@ -1992,13 +1998,13 @@ impl Render for Workspace {
             .flex_row()
             .items_stretch()
             .gap_1()
-            .pl(px(TITLE_BUTTONS + 8.0))
+            .pl(px(if bare { 0.0 } else { TITLE_BUTTONS } + 8.0))
             .pr_2()
             .bg(c(t.background))
             .border_b_1()
             .border_color(c(t.divider))
             .text_size(px(12.0))
-            .when(cfg!(target_os = "macos"), |d| {
+            .when(cfg!(target_os = "macos") || bare, |d| {
                 d.window_control_area(gpui::WindowControlArea::Drag)
                     .on_mouse_down(
                         MouseButton::Left,
@@ -2015,7 +2021,11 @@ impl Render for Workspace {
                     }))
                     .on_click(|ev, window, _| {
                         if ev.click_count() == 2 {
-                            window.titlebar_double_click();
+                            if cfg!(target_os = "macos") {
+                                window.titlebar_double_click();
+                            } else {
+                                window.zoom_window();
+                            }
                         }
                     })
             })
@@ -2522,7 +2532,61 @@ impl Render for Workspace {
             // Last, so it floats over the panes rather than under them.
             .children(palette)
             .children(menu)
+            .when(bare && !cfg!(target_os = "macos"), |d| {
+                d.children(resize_edges())
+            })
     }
+}
+
+/// Show or hide the system's title bar and window buttons. macOS hides the
+/// buttons (the window keeps its resizable frame); Linux asks for
+/// client-side decorations and draws none.
+pub(crate) fn decorate(window: &mut Window, decorations: workspace_config::Decorations) {
+    let bare = decorations == workspace_config::Decorations::None;
+    #[cfg(target_os = "macos")]
+    window.set_native_titlebar_visibility(!bare);
+    #[cfg(not(target_os = "macos"))]
+    window.request_decorations(if bare {
+        gpui::WindowDecorations::Client
+    } else {
+        gpui::WindowDecorations::Server
+    });
+}
+
+/// Thin bands along a frameless window's edges and corners that resize it.
+fn resize_edges() -> impl Iterator<Item = gpui::AnyElement> {
+    use gpui::ResizeEdge as E;
+    let w = px(RESIZE_EDGE);
+    [
+        E::Top,
+        E::TopRight,
+        E::Right,
+        E::BottomRight,
+        E::Bottom,
+        E::BottomLeft,
+        E::Left,
+        E::TopLeft,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(move |(i, edge)| {
+        let d = div().id(("resize-edge", i)).absolute();
+        let d = match edge {
+            E::Top => d.top_0().left(w).right(w).h(w).cursor_ns_resize(),
+            E::Bottom => d.bottom_0().left(w).right(w).h(w).cursor_ns_resize(),
+            E::Left => d.left_0().top(w).bottom(w).w(w).cursor_ew_resize(),
+            E::Right => d.right_0().top(w).bottom(w).w(w).cursor_ew_resize(),
+            E::TopLeft => d.top_0().left_0().size(w).cursor_nwse_resize(),
+            E::BottomRight => d.bottom_0().right_0().size(w).cursor_nwse_resize(),
+            E::TopRight => d.top_0().right_0().size(w).cursor_nesw_resize(),
+            E::BottomLeft => d.bottom_0().left_0().size(w).cursor_nesw_resize(),
+        };
+        d.on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
+            window.start_window_resize(edge);
+        })
+        .into_any_element()
+    })
 }
 
 /// The pane context menu's entries; `None` is a separator.
@@ -2953,6 +3017,7 @@ pub(crate) fn open_via(
     });
     let closing = store.clone();
     let t = topology.clone();
+    let decorations = crate::live::with(|l| l.decorations).unwrap_or_default();
     let window = cx
         .open_window(
             WindowOptions {
@@ -2966,9 +3031,15 @@ pub(crate) fn open_via(
                     traffic_light_position: cfg!(target_os = "macos")
                         .then(|| gpui::point(px(12.0), px((TAB_STRIP - 14.0) / 2.0))),
                 }),
+                window_decorations: (decorations == workspace_config::Decorations::None)
+                    .then_some(gpui::WindowDecorations::Client),
                 ..Default::default()
             },
             |window, cx| {
+                // Linux took its decorations from the options above.
+                if cfg!(target_os = "macos") {
+                    decorate(window, decorations);
+                }
                 let ws = cx.new(|cx| {
                     let mut ws = Workspace::new(cx, t, socket, daemon_args);
                     ws.via = via.clone();

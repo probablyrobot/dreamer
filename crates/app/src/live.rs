@@ -1,9 +1,10 @@
 //! The settings in force in this desktop, replaced live when the
 //! configuration changes (`dreamer.yaml`, or a theme file beside it): the
 //! terminal font, the chrome's theme, which links open, clipboard writes,
-//! and the fallback terminal. Every window repaints with the new ones. A
-//! file that does not read changes nothing; its error is kept here for the
-//! tab strip to show until a valid file replaces it.
+//! the fallback terminal, and the windows' decorations. Every window
+//! repaints with the new ones. A file that does not read changes nothing;
+//! its error is kept here for the tab strip to show until a valid file
+//! replaces it.
 //!
 //! The terminals' own colors and cursor are the daemon's (it applies the
 //! same file to its mirrors), so terminals and chrome change together.
@@ -34,6 +35,8 @@ pub(crate) struct Live {
     pub copy_on_select: bool,
     pub middle_click: workspace_config::MiddleClick,
     pub fallback: Vec<String>,
+    /// The system's title bar and window buttons, or none.
+    pub decorations: workspace_config::Decorations,
     /// The scheme in force, and every theme there is to choose from.
     pub scheme: &'static Scheme,
     pub themes: Vec<&'static Scheme>,
@@ -87,6 +90,8 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
     let chosen = crate::fonts::choose(cx, settings);
     // Text made bigger or smaller stays so by as much on the new size.
     let step = with(|l| l.font.size - l.font_base).unwrap_or(0.0);
+    let decorations = settings.window.decorations;
+    let redecorate = with(|l| l.decorations != decorations).unwrap_or(false);
     let live = Live {
         font_base: settings.font.size,
         font: TermFont {
@@ -105,6 +110,7 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
         copy_on_select: settings.clipboard.copy_on_select,
         middle_click: settings.clipboard.middle_click,
         fallback: settings.fallback.launch.clone(),
+        decorations,
         scheme: settings.scheme(),
         themes,
         preview: None,
@@ -112,6 +118,15 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
     };
     if let Ok(mut l) = LIVE.write() {
         *l = Some(live);
+    }
+    if redecorate {
+        for w in cx.windows() {
+            if let Some(w) = w.downcast::<crate::workspace::Workspace>() {
+                let _ = w.update(cx, |_, window, _| {
+                    crate::workspace::decorate(window, decorations);
+                });
+            }
+        }
     }
     cx.refresh_windows();
 }
