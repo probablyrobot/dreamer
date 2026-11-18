@@ -103,6 +103,10 @@ pub(crate) struct WebPane {
     app: Option<web_engine::AppPage>,
     #[cfg(feature = "web")]
     pub(crate) view: Option<web_engine::WebView>,
+    /// Waiting for Chromium to make or load the page's profile before the
+    /// page opens.
+    #[cfg(feature = "web")]
+    profile_wait: bool,
     /// The page has the keys exactly while the pane has Dreamer's focus.
     _focus: [Subscription; 2],
 }
@@ -149,6 +153,8 @@ impl WebPane {
             app,
             #[cfg(feature = "web")]
             view: None,
+            #[cfg(feature = "web")]
+            profile_wait: false,
             _focus,
         }
     }
@@ -333,6 +339,40 @@ impl WebPane {
         .detach();
     }
 
+    /// Whether the page's browser profile is ready for it to open. If not,
+    /// Chromium is making (or loading) it, and the pane paints again once
+    /// it is.
+    #[cfg(feature = "web")]
+    fn profile_ready(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.profile_wait {
+            return false;
+        }
+        let (tx, rx) = async_channel::bounded::<()>(1);
+        let app = self.app.as_ref().map(|a| a.app.as_str());
+        match web_engine::profile_ready(app, move || {
+            let _ = tx.try_send(());
+        }) {
+            Ok(true) => true,
+            Ok(false) => {
+                self.profile_wait = true;
+                cx.spawn(async move |this, cx| {
+                    let _ = rx.recv().await;
+                    let _ = this.update(cx, |w, cx| {
+                        w.profile_wait = false;
+                        cx.notify();
+                    });
+                })
+                .detach();
+                false
+            }
+            Err(e) => {
+                self.problem = Some(e);
+                cx.notify();
+                false
+            }
+        }
+    }
+
     /// Painted at `bounds`: open the page on first paint, then keep its
     /// view on the pane.
     #[cfg(feature = "web")]
@@ -351,6 +391,9 @@ impl WebPane {
             width: f32::from(bounds.size.width),
             height: f32::from(bounds.size.height),
         };
+        if self.view.is_none() && !self.profile_ready(cx) {
+            return;
+        }
         if self.view.is_none() {
             // A click in the page focuses this pane, as a click on a
             // terminal pane does.

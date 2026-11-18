@@ -409,7 +409,7 @@ any other address is refused and the page stays where it is. A page
 opens no windows.
 
 **Profile.** Each app's pages have a browser profile of their own,
-`web/apps/<app id>/` in the desktop's state directory: their cookies and
+`web/app-<app id>/` in the desktop's state directory: their cookies and
 storage are kept apart from every other app's and from plain web panes'.
 
 **Elsewhere.** The pane's own terminal shows `[web: ADDRESS; open in

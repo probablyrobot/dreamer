@@ -649,6 +649,16 @@ async fn input(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncA
         w.focused == Some(shell) && page_focus(w, cx, pane, false)
     })
     .await;
+    // The window's focus listeners (the page's pane losing it) run as it
+    // next draws: let them, before the click.
+    let drawn = terminal_render::paint_count();
+    let deadline = Instant::now() + TEN;
+    while terminal_render::paint_count() < drawn + 2 && Instant::now() < deadline {
+        let _ = cx.update_window(any, |_, window, _| window.refresh());
+        cx.background_executor()
+            .timer(Duration::from_millis(20))
+            .await;
+    }
     // The first field is at 16,16 (160x24) in the page.
     if let Err(e) = with_view(any, ws, cx, pane, |v| v.click(60.0, 28.0)) {
         fail(&format!("a click in the page: {e}"));
@@ -681,10 +691,14 @@ async fn input(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut AsyncA
         ],
     )
     .unwrap_or_else(|e| fail(&e));
+    // The keys are queued as a person's are; the composition is not.
+    let a = "document.getElementById('a').value";
+    if let Err(e) = wait_value(any, ws, cx, pane, a, "hi").await {
+        fail(&format!("typing into the page: {e}"));
+    }
     if let Err(e) = with_view(any, ws, cx, pane, |v| v.compose("日", "日本")) {
         fail(&format!("the input method: {e}"));
     }
-    let a = "document.getElementById('a').value";
     if let Err(e) = wait_value(any, ws, cx, pane, a, TYPED).await {
         fail(&format!("typing into the page: {e}"));
     }

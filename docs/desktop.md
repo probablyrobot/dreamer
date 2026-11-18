@@ -529,7 +529,8 @@ come from tmux.
   tab, or another pane zoomed). A native view is drawn above anything
   Dreamer draws, so while the command palette or the context menu is
   open, web panes show a snapshot of the page taken as it opened, and the
-  live page comes back when it closes.
+  live page comes back when it closes. Pages are drawn in sRGB, as the
+  terminals are, so the snapshot has the live page's colors.
 - **Focus.** Clicking the page focuses its pane, here and in tmux; keys
   then go to the page. Focusing another pane (a click, the palette, the
   find bar, the drawer, tmux's prefix keys) takes the keys back, and
@@ -562,7 +563,7 @@ way: Chromium's view over the node's place in the pane, hidden and
 covered like a web pane's. What is different:
 
 - **The app's own.** The page opens in a browser profile of the app's
-  (`web/apps/<app id>/` in the desktop's state directory). It may
+  (`web/app-<app id>/` in the desktop's state directory). It may
   navigate only to the app's origin and the origins its manifest allows;
   any other navigation is refused and the page stays.
 - **The package's files** are served on `dreamer-app://<app id>/` from

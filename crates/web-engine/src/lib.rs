@@ -51,4 +51,4 @@ pub use site::{AppPage, BridgeCall};
 #[cfg(all(feature = "engine", target_os = "macos"))]
 mod engine;
 #[cfg(all(feature = "engine", target_os = "macos"))]
-pub use engine::{WebView, do_work, run_subprocess, shutdown, start, started};
+pub use engine::{WebView, do_work, profile_ready, run_subprocess, shutdown, start, started};

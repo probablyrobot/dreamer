@@ -69,8 +69,15 @@ mod handlers {
             ) {
                 // Chromium's cookie encryption key would otherwise go into
                 // the login keychain, with a prompt.
+                // Pages are drawn in sRGB, as the rest of the window is:
+                // a page's capture (its snapshot under an overlay) then
+                // has the colors the live page shows.
                 if let Some(cl) = command_line {
                     cl.append_switch(Some(&CefString::from("use-mock-keychain")));
+                    cl.append_switch_with_value(
+                        Some(&CefString::from("force-color-profile")),
+                        Some(&CefString::from("srgb")),
+                    );
                 }
             }
             fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
@@ -201,6 +208,16 @@ mod handlers {
             serve: Arc<Serve>,
         }
         impl ResourceRequestHandler {
+            // The binding's default cancels every request: go on.
+            fn on_before_resource_load(
+                &self,
+                _browser: Option<&mut Browser>,
+                _frame: Option<&mut Frame>,
+                _request: Option<&mut Request>,
+                _callback: Option<&mut Callback>,
+            ) -> ReturnValue {
+                ReturnValue::CONTINUE
+            }
             fn resource_handler(
                 &self,
                 _browser: Option<&mut Browser>,
@@ -376,6 +393,42 @@ mod handlers {
         }
     }
 
+    // A profile Chromium made or loaded: pages may open in it now.
+    wrap_request_context_handler! {
+        pub struct DreamerProfile {
+            ready: Arc<ProfileReady>,
+        }
+        impl RequestContextHandler {
+            fn on_request_context_initialized(&self, _context: Option<&mut RequestContext>) {
+                let waiting = match self.ready.waiting.lock() {
+                    Ok(mut w) => {
+                        self.ready.done.store(true, Ordering::Release);
+                        std::mem::take(&mut *w)
+                    }
+                    Err(_) => return,
+                };
+                for f in waiting {
+                    f();
+                }
+            }
+        }
+    }
+
+    // Load `url` in `browser`'s main frame, as a task of its own.
+    wrap_task! {
+        pub struct LoadLater {
+            browser: Browser,
+            url: String,
+        }
+        impl Task {
+            fn execute(&self) {
+                if let Some(f) = self.browser.main_frame() {
+                    f.load_url(Some(&CefString::from(self.url.as_str())));
+                }
+            }
+        }
+    }
+
     wrap_dev_tools_message_observer! {
         pub struct DreamerDevTools {
             shared: Arc<Shared>,
@@ -424,6 +477,18 @@ mod handlers {
                 _extra_info: Option<&mut Option<DictionaryValue>>,
                 _no_javascript_access: Option<&mut i32>,
             ) -> i32 {
+                1
+            }
+            // The page's view goes, not the window: by default CEF asks
+            // the window holding a closing browser to close
+            // (`performClose:`). Taking the view out of the window
+            // completes the browser's close.
+            fn do_close(&self, browser: Option<&mut Browser>) -> i32 {
+                if let Some(h) = browser.and_then(|b| b.host()) {
+                    // SAFETY: CEF's UI thread is the main thread; the view
+                    // is the closing browser's live view, or null.
+                    unsafe { appkit::remove_from_superview(h.window_handle().cast()) };
+                }
                 1
             }
             fn on_before_close(&self, _browser: Option<&mut Browser>) {
@@ -620,6 +685,8 @@ pub fn shutdown(timeout: Duration) -> Result<(), String> {
         do_message_loop_work();
         std::thread::sleep(Duration::from_millis(5));
     }
+    // Chromium shuts down with no profile still held.
+    PROFILES.with(|p| p.borrow_mut().clear());
     cef::shutdown();
     STARTED.with(|s| *s.borrow_mut() = Some(Err("Chromium was shut down".into())));
     Ok(())
@@ -642,27 +709,98 @@ pub fn run_subprocess() -> i32 {
     )
 }
 
-/// A browser profile of app `app`'s own: `apps/<app>` in Chromium's
-/// profile directory.
-fn app_context(app: &str) -> Result<RequestContext, String> {
+/// The directory, in Chromium's profile directory, of app `app`'s own
+/// profile: `app-<app>`. Chromium makes a profile only directly inside its
+/// root (any deeper directory is refused), so the profiles sit side by
+/// side there.
+fn profile_name(app: &str) -> Result<String, String> {
     let plain = !app.is_empty()
         && app
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
         && !app.starts_with('.');
-    let root = ROOT.get().ok_or("Chromium is not running")?;
     if !plain {
         return Err(format!("`{app}` is not an app id"));
     }
-    let dir = root.join("apps").join(app);
+    Ok(format!("app-{app}"))
+}
+
+/// A profile's request context, asked of Chromium once per process and
+/// kept: Chromium makes (or loads) a profile on disk asynchronously, and
+/// a browser can be created in it only once it is initialized.
+struct Profile {
+    context: RequestContext,
+    ready: Arc<ProfileReady>,
+}
+
+#[derive(Default)]
+struct ProfileReady {
+    done: AtomicBool,
+    /// What runs when it is.
+    waiting: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
+}
+
+thread_local! {
+    /// The profiles asked for so far, by directory name.
+    static PROFILES: RefCell<HashMap<String, Profile>> = RefCell::new(HashMap::new());
+}
+
+/// The request context of profile `name` (see [`profile_name`]), asked of
+/// Chromium if it was not yet, and whether it is ready for a browser.
+fn profile(name: &str) -> Result<(RequestContext, Arc<ProfileReady>), String> {
+    if let Some(p) = PROFILES.with(|p| {
+        p.borrow()
+            .get(name)
+            .map(|p| (p.context.clone(), p.ready.clone()))
+    }) {
+        return Ok(p);
+    }
+    let root = ROOT.get().ok_or("Chromium is not running")?;
+    let dir = root.join(name);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let settings = RequestContextSettings {
         cache_path: CefString::from(dir.to_string_lossy().as_ref()),
         persist_session_cookies: 1,
         ..Default::default()
     };
-    request_context_create_context(Some(&settings), None)
-        .ok_or_else(|| format!("Chromium made no profile for {app}"))
+    let ready = Arc::new(ProfileReady::default());
+    let mut handler = handlers::DreamerProfile::new(ready.clone());
+    let context = request_context_create_context(Some(&settings), Some(&mut handler))
+        .ok_or_else(|| format!("Chromium made no profile at {}", dir.display()))?;
+    PROFILES.with(|p| {
+        p.borrow_mut().insert(
+            name.to_owned(),
+            Profile {
+                context: context.clone(),
+                ready: ready.clone(),
+            },
+        )
+    });
+    Ok((context, ready))
+}
+
+/// Whether the profile a page of app `app` opens in is ready for it (a
+/// plain page's, Chromium's own, always is). If not, Chromium is making it
+/// now, and `ready` runs (on the main thread, from [`do_work`]) once it is:
+/// open the page then. [`WebView::open`] refuses a page whose profile is
+/// not ready.
+pub fn profile_ready(
+    app: Option<&str>,
+    ready: impl FnOnce() + Send + 'static,
+) -> Result<bool, String> {
+    if !started() {
+        return Err("Chromium is not running".into());
+    }
+    let Some(app) = app else { return Ok(true) };
+    let (_, r) = profile(&profile_name(app)?)?;
+    let mut waiting = r.waiting.lock().map_err(|_| "a profile's lock")?;
+    // Checked under the lock the initializer takes, so `ready` is never
+    // left behind.
+    if r.done.load(Ordering::Acquire) {
+        return Ok(true);
+    }
+    waiting.push(Box::new(ready));
+    Ok(false)
 }
 
 /// The `NSView` of a window, from its handle.
@@ -726,7 +864,13 @@ impl WebView {
         // SAFETY: `parent` is the window's live content view; main thread.
         let frame = unsafe { appkit::from_top_left(parent, frame_of(rect)) };
         let mut context = match &app {
-            Some(a) => Some(app_context(&a.app)?),
+            Some(a) => {
+                let (context, ready) = profile(&profile_name(&a.app)?)?;
+                if !ready.done.load(Ordering::Acquire) {
+                    return Err("the page's browser profile is not ready yet".into());
+                }
+                Some(context)
+            }
             None => None,
         };
         let script = app.as_ref().map(crate::AppPage::bridge_script);
@@ -774,16 +918,23 @@ impl WebView {
             _devtools: devtools,
         };
         view.place(rect);
+        // Scripts added for new documents run only while the page domain
+        // is enabled.
+        view.devtools("Page.enable", "{}", Box::new(|_| {}));
         if let Some(script) = script {
             let params = serde_json::json!({ "source": script }).to_string();
             let (browser, url) = (view.browser.clone(), url.to_owned());
             view.devtools(
                 "Page.addScriptToEvaluateOnNewDocument",
                 &params,
+                // Loaded after Chromium's call into the DevTools observer
+                // returns: a navigation started inside it changes what
+                // Chromium is iterating over.
                 Box::new(move |_| {
-                    if let Some(f) = browser.main_frame() {
-                        f.load_url(Some(&CefString::from(url.as_str())));
-                    }
+                    post_task(
+                        ThreadId::UI,
+                        Some(&mut handlers::LoadLater::new(browser, url)),
+                    );
                 }),
             );
         }
