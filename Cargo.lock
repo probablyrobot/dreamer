@@ -1613,6 +1613,7 @@ version = "0.2.0"
 dependencies = [
  "api",
  "app-model",
+ "app-protocol",
  "app-script",
  "client",
  "crossterm",

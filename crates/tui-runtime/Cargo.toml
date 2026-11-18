@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 crossterm = "=0.29.0"
 app-model = { path = "../app-model" }
+app-protocol = { path = "../app-protocol" }
 app-script = { path = "../app-script" }
 view-tree = { path = "../view-tree" }
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }

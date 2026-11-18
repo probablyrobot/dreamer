@@ -636,6 +636,120 @@ async fn run_command(
     }
 }
 
+/// What `input` does to `app` (not an agentic pane's keys): the commands
+/// it runs, by name, with the component event that ran each (a key's, a
+/// form's submit, or an input component's event's); none when it quits
+/// the app.
+fn take_input(app: &mut App, input: Input) -> Option<Vec<(String, Option<Event>)>> {
+    let mut commands: Vec<(String, Option<Event>)> = Vec::new();
+    match input {
+        Input::Quit => return None,
+        Input::Redraw => return Some(commands),
+        Input::Text(text) => {
+            app.insert_text(&text);
+        }
+        Input::Select { node, index } => {
+            app.select_at(node.as_deref(), index);
+        }
+        Input::Scroll { node, steps } => {
+            app.scroll(node.as_deref(), steps);
+        }
+        Input::Key(name) => {
+            // A tree: Tab moves the focus, Left and Right switch tabs.
+            if app.manifest.is_tree() {
+                match name.as_str() {
+                    "Tab" => {
+                        app.focus_next();
+                        return Some(commands);
+                    }
+                    "Left" | "Right" => {
+                        app.switch_tab(if name == "Left" { -1 } else { 1 });
+                        return Some(commands);
+                    }
+                    _ => {}
+                }
+            }
+            let form = app.in_form();
+            let typing = app.in_input();
+            if app.control_key(&name) {
+                // The component's events are handled below.
+            } else if form
+                && !matches!(name.as_str(), "Enter" | "Esc" | "Ctrl-c")
+                && !name.starts_with('F')
+            {
+                app.form_key(if name == " " { "Space" } else { &name });
+            } else if form && name == "Enter" {
+                commands.extend(app.form_submit().map(|c| (c, None)));
+            } else {
+                match name.as_str() {
+                    "Ctrl-c" => return None,
+                    "q" if !form && !typing => return None,
+                    "Esc" if form || typing => return None,
+                    "Up" | "k" => app.move_by(-1),
+                    "Down" | "j" => app.move_by(1),
+                    "PageUp" => app.move_by(-10),
+                    "PageDown" => app.move_by(10),
+                    _ => commands.extend(
+                        app.manifest
+                            .commands
+                            .iter()
+                            .find(|(_, c)| !c.key.is_empty() && c.key == name)
+                            .map(|(n, _)| (n.clone(), None)),
+                    ),
+                }
+            }
+        }
+    }
+    for e in app.take_events() {
+        if let Some(c) = app.command_for(&e) {
+            commands.push((c, Some(e)));
+        }
+    }
+    Some(commands)
+}
+
+/// Replay `inputs` against the package at `path` as [`preview`] draws it,
+/// from its fixtures and with no daemon: `each` gets the app as it first
+/// looks and after every input. The commands an input runs are not run;
+/// the status line names them. Input after the app quit is an error.
+pub async fn replay(
+    path: &Path,
+    inputs: Vec<Input>,
+    each: &mut dyn FnMut(&App) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut app = preview(path).await?;
+    each(&app)?;
+    let mut quit = false;
+    for (n, input) in inputs.into_iter().enumerate() {
+        if quit {
+            return Err(format!("event {}: the app had quit", n + 1));
+        }
+        if let Input::Key(name) = &input
+            && app.manifest.view.kind == ViewKind::Agent
+        {
+            let name = name.clone();
+            quit = matches!(crate::agent::key(&mut app, &name), crate::agent::Key::Quit);
+        } else {
+            match take_input(&mut app, input) {
+                None => quit = true,
+                Some(commands) if commands.is_empty() => {}
+                Some(commands) => {
+                    let names: Vec<String> = commands
+                        .into_iter()
+                        .map(|(c, _)| {
+                            let label = app.manifest.commands.get(&c).and_then(|c| c.label.clone());
+                            label.unwrap_or(c)
+                        })
+                        .collect();
+                    app.status = Some(format!("{}: not run in a test", names.join(", ")));
+                }
+            }
+        }
+        each(&app)?;
+    }
+    Ok(())
+}
+
 /// Run the package at `path` against the daemon at `endpoint`: connect,
 /// fetch, follow events, run commands for keys from `inputs`, and reload
 /// the package when its files change. `publish` gets the model whenever
@@ -747,28 +861,15 @@ pub async fn run_with(
             }
             ev = next_input(inputs, &mut remote) => {
                 dirty = true;
-                // Commands to run, by name: a key's, a form's submit, or an
-                // input component's event's.
-                let mut commands: Vec<(String, Option<Event>)> = Vec::new();
-                let name = match ev {
+                let ev = match ev {
                     None | Some(Input::Quit) => return Ok(()),
                     Some(Input::Redraw) => continue,
-                    Some(Input::Text(text)) => {
-                        app.insert_text(&text);
-                        None
-                    }
-                    Some(Input::Select { node, index }) => {
-                        app.select_at(node.as_deref(), index);
-                        None
-                    }
-                    Some(Input::Scroll { node, steps }) => {
-                        app.scroll(node.as_deref(), steps);
-                        None
-                    }
-                    Some(Input::Key(name)) => Some(name),
+                    Some(ev) => ev,
                 };
-                if let Some(name) = name {
-                if app.manifest.view.kind == ViewKind::Agent {
+                if let Input::Key(name) = &ev
+                    && app.manifest.view.kind == ViewKind::Agent
+                {
+                    let name = name.clone();
                     match crate::agent::key(&mut app, &name) {
                         crate::agent::Key::Handled => {}
                         crate::agent::Key::Quit => return Ok(()),
@@ -810,54 +911,9 @@ pub async fn run_with(
                     }
                     continue;
                 }
-                // A tree: Tab moves the focus, Left and Right switch tabs.
-                if app.manifest.is_tree() {
-                    match name.as_str() {
-                        "Tab" => {
-                            app.focus_next();
-                            continue;
-                        }
-                        "Left" | "Right" => {
-                            app.switch_tab(if name == "Left" { -1 } else { 1 });
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-                let form = app.in_form();
-                let typing = app.in_input();
-                if app.control_key(&name) {
-                    // The component's events are handled below.
-                } else if form && !matches!(name.as_str(), "Enter" | "Esc" | "Ctrl-c")
-                    && !name.starts_with('F')
-                {
-                    app.form_key(if name == " " { "Space" } else { &name });
-                } else if form && name == "Enter" {
-                    commands.extend(app.form_submit().map(|c| (c, None)));
-                } else {
-                    match name.as_str() {
-                        "Ctrl-c" => return Ok(()),
-                        "q" if !form && !typing => return Ok(()),
-                        "Esc" if form || typing => return Ok(()),
-                        "Up" | "k" => app.move_by(-1),
-                        "Down" | "j" => app.move_by(1),
-                        "PageUp" => app.move_by(-10),
-                        "PageDown" => app.move_by(10),
-                        _ => commands.extend(
-                            app.manifest
-                                .commands
-                                .iter()
-                                .find(|(_, c)| !c.key.is_empty() && c.key == name)
-                                .map(|(n, _)| (n.clone(), None)),
-                        ),
-                    }
-                }
-                }
-                for e in app.take_events() {
-                    if let Some(c) = app.command_for(&e) {
-                        commands.push((c, Some(e)));
-                    }
-                }
+                let Some(commands) = take_input(&mut app, ev) else {
+                    return Ok(());
+                };
                 // What transcripts and composers asked: on the app's own
                 // connection, under its grant.
                 for ask in app.take_asks() {

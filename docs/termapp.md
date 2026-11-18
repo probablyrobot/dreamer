@@ -17,6 +17,7 @@ own pane, from the model the running app publishes (see
 dreamer-termapp app.toml            # run it in this terminal
 dreamer-termapp --check app.toml    # validate only (--json: also the grant it needs)
 dreamer-termapp --preview app.toml  # draw it once from fixtures, no daemon
+dreamer-termapp --replay app.toml   # replay fixtures/events.jsonl (dream app test)
 dream app run panes --method tmux.topology --method actions.submit --all-panes \
     -- dreamer-termapp app.toml      # run it in a new window with a narrow grant
 ```
@@ -493,8 +494,9 @@ command = ["./counter", "--fast"]   # the program and its arguments; no shell
   starts it again and `q` quits. The manifest is not reloaded while it
   runs.
 - **Preview.** `--preview` (and `dream app preview`) runs the program
-  with no daemon and draws its first view; its calls are answered with
-  an error.
+  with no daemon and draws its first view; its calls are answered from
+  `fixtures/calls.json` ([testing an app](#testing-an-app)), or with an
+  error.
 
 A [script app](#script-apps-appts) is the other way to draw a tree from
 code: TypeScript run by the host itself, sandboxed, with no `process`
@@ -734,18 +736,21 @@ input, so a slow app cannot hold up the pane or the desktop.
 - **Preview.** `--preview` (and `dream app preview`) runs the app with
   no daemon. With a `fixtures/load.json`, that is its `data` and `load`
   is not called; without one, the pane says it is waiting for the
-  daemon.
+  daemon. Its calls are answered from `fixtures/calls.json`
+  ([testing an app](#testing-an-app)), or with an error.
 
 ## Building an app
 
-Building an app takes five steps, each a `dream app` command
+Building an app takes these steps, each a `dream app` command
 ([cli.md](cli.md#apps)). An agent can do all of them: `dream skills install`
 gives Claude Code and Codex the `dreamer-apps` skill, which walks through
 them.
 
-1. **Write** the package directory: `app.toml`, and for each view's data
-   source a `fixtures/<source>.json` holding what its method returns (for
-   a script app, `app.ts` and a `fixtures/load.json` holding what its
+1. **Start:** `dream app new NAME --template T` writes a working package
+   ([below](#starting-from-a-template)). Or write the package directory
+   yourself: `app.toml`, and for each view's data source a
+   `fixtures/<source>.json` holding what its method returns (for a
+   script app, `app.ts` and a `fixtures/load.json` holding what its
    `load` returns).
 2. **Check:** `dream app check DIR` builds a script app's JavaScript from
    its `app.ts` and checks its uses of the API and the builders
@@ -753,14 +758,18 @@ them.
    follows events and `collect.query` when a source is a collector, on its
    own pane, its agent's panes, or every pane with `all_panes` (or a
    collector source).
-3. **Preview:** `dream app preview DIR` draws the app once from its
-   fixtures, through its module's `transform`, with no daemon. The status
-   line says `preview from fixtures`.
-4. **Install:** `dream app install DIR` checks it, previews it when it has
+3. **Preview:** `dream app preview DIR --text` draws the app once from its
+   fixtures, through its module's `transform`, with no daemon, as text on
+   a screen of 80x24 (`--size WxH` for another). The status line of a
+   manifest app says `preview from fixtures`. Text is the only preview
+   there is; `--text` says so.
+4. **Test:** `dream app test DIR` replays the app's events and compares
+   each screen with the one expected ([below](#testing-an-app)).
+5. **Install:** `dream app install DIR` checks it, previews it when it has
    fixtures, and copies it to `<config dir>/apps/<id>/`. A package that
    fails changes nothing. The version it replaces is kept in
    `apps/.last-good/`, and `dream app rollback NAME` swaps it back.
-5. **Launch:** `dream app launch NAME` runs it in a new tmux window as a
+6. **Launch:** `dream app launch NAME` runs it in a new tmux window as a
    registered app with exactly the grant it needs. It keeps running with
    no desktop window open.
 
@@ -770,6 +779,84 @@ leaves the running one in place.
 
 Events about a pane reach an app only when that pane is in its grant. A
 monitor of jobs, which run in their own panes, sets `all_panes = true`.
+
+### Starting from a template
+
+`dream app new NAME [--template T] [--dir DIR]` writes a script app into
+`DIR` (`./NAME` by default), which must be missing or empty. `NAME` is
+lowercase letters, digits, and `-`; the app's id is `local.NAME`.
+
+| Template | The app | Capabilities |
+| --- | --- | --- |
+| `table` (the default) | The panes in a table; Enter selects the pane | `tmux.topology`, `actions.submit`, `all_panes` |
+| `form` | A select, an input, and a button that rename a window | `tmux.topology`, `actions.submit`, `all_panes` |
+| `chat` | A transcript (`log`) and a composer (`input`); each message gets an answer from a function in `app.ts` to replace | `daemon.version` |
+
+There is no `web` template: `--template web` is refused, because this
+version has no web panes.
+
+The package has `app.toml`, `app.ts`, `fixtures/load.json`,
+`fixtures/events.jsonl`, `fixtures/calls.json` when the app calls a
+method in its test, `types/dreamer.d.ts` and `tsconfig.json` (as
+`dream app types` writes them), the JavaScript built from `app.ts`, and
+the expected screens of its test, recorded as it is made. So it passes
+`dream app check`, `preview`, and `test` straight away. The templates
+are part of the `dream` program.
+
+### Testing an app
+
+`dream app test DIR [--update] [--size WxH]` runs the app as the preview
+does, from its fixtures and with no daemon, and replays
+`fixtures/events.jsonl` against it. It draws the screen as text at the
+start and after each event, and compares each with
+`fixtures/expect/NNN.txt`: `000.txt` is the first view, `001.txt` the
+screen after the first event, and so on.
+
+- **Events** are one per line, as the [app process
+  protocol](app-protocol.md) sends them; blank lines and lines starting
+  with `#` are skipped:
+
+  ```jsonl
+  {"kind":"key","key":"Down"}
+  {"kind":"text","text":"hello"}
+  {"kind":"key","key":"Enter"}
+  {"kind":"select","node":"panes","index":2}
+  {"kind":"scroll","node":"log","steps":3}
+  {"kind":"component","node":"name","action":"submit","value":"x"}
+  ```
+
+  Keys are named as in [keys and focus](#keys-and-focus). A `component`
+  event is for script and process apps; a manifest app is driven with
+  keys, text, select, and scroll.
+- **A screen** is what `dream app preview --text` prints, then a line for
+  each thing the text does not show: `--- focus: KEY` for the focused
+  node, and `--- KEY: row ROW selected` for each table or list with a
+  selected row.
+- **Calls** to `dreamer.*` (and a process app's calls) are answered from
+  `fixtures/calls.json`: an object of results by method name, the same
+  result for every call of that method. A call to a method outside the
+  app's capabilities is refused as it would be in a pane, and a method
+  with no result in the file is refused with an error the app sees.
+- **Settling.** After each event the test waits until the app has handled
+  it and every call it led to, then takes the screen: it asks for the
+  whole tree (`resync`) and answers each call before asking again.
+  Timers are not waited for. A process app must send its whole tree only
+  when asked (first, and after `resync`), as the Rust SDK does.
+- **Manifest apps** (version 1 and 2) take events as in a pane, but their
+  commands do not run: the status line names the commands an event would
+  run, with `not run in a test`.
+- **Failing.** Each screen that differs is reported with the event before
+  it and the rows that differ, `-` expected and `+` drawn; a missing
+  expected screen, and one no event draws any more, are reported too.
+  The command then fails. An app that stops, quits before its last event,
+  or takes more than 5 seconds to settle fails the test with why.
+- **Recording.** `--update` writes every screen as the expected one and
+  removes the ones no event draws. Use it after a deliberate change, and
+  read the screens it wrote. Record and test at the same `--size`.
+
+`dreamer-termapp --replay app.toml [--size WxH]` does the replay and
+prints the screens as JSON (`{"screens": [...]}`); `dream app test` runs
+it and compares.
 
 ## Modules
 
