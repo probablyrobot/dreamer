@@ -5,3 +5,8 @@ xtask = "run --quiet --package xtask --"
 # One deployment target for Rust, C, and the Zig-built libghostty-vt
 # (aarch64-macos.15.0 in deps/baseline.toml). Ignored on Linux.
 MACOSX_DEPLOYMENT_TARGET = "15.0"
+# The cef crate's build script downloads CEF from this index when CEF_PATH
+# does not hold the pinned distribution. Builds never download a changing
+# source: this address cannot resolve, so that download fails instead.
+# `cargo xtask deps web` provides the distribution (deps/baseline.toml).
+CEF_DOWNLOAD_URL = "https://cef-downloads-are-disabled.invalid"

@@ -91,6 +91,7 @@ const USAGE: &str = "usage:
   dream mcp [--level observe|own|elsewhere] [--method M]... [--pane %N]... [--all-panes]
   dream approvals [--json] | allow ID [--pane] | deny ID
   dream drawer toggle|show|hide|status|new [--yes] [--session $N|NAME] [--window @N] [--pane %N] [--json]
+  dream web open URL [--session $N|NAME | --pane %N] [--json]   (a web page in a new pane; drawn by the desktop)
   dream agents status [--json] | update [--version X.Y.Z] | rollback   (the pi Dreamer installs)
   dream agents pi [ARGS...] | dream agents profile init|status|log|diff|revert|commit|check   (its profile)
   dream agents runs [--host NAME]... [--json] | dream agents hooks [--write FILE]
@@ -185,6 +186,9 @@ fn main() -> ExitCode {
         ["app"] => Err(build::USAGE.into()),
         ["app", "run", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| app::run(&d, &extra))
+        }
+        ["web", rest @ ..] => {
+            daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::web(&d, &extra))
         }
         ["drawer", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| remote::drawer(&d, &extra))

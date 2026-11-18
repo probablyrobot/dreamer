@@ -558,6 +558,17 @@ fn run_checked(cmd: &mut Command, what: &str) -> Result<String, String> {
 
 /// Build `dreamer` in `root` and assemble `out/Dreamer.app`.
 pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf, String> {
+    build_bundle_with(root, profile, out, None)
+}
+
+/// [`build_bundle`], with `web`: the desktop built with web panes, and the
+/// CEF framework and its helper apps in `Contents/Frameworks`.
+pub fn build_bundle_with(
+    root: &Path,
+    profile: Profile,
+    out: &Path,
+    web: Option<&crate::deps::WebDeps>,
+) -> Result<PathBuf, String> {
     let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
     cargo
         .args([
@@ -575,6 +586,11 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
         .current_dir(root);
     if profile == Profile::Release {
         cargo.arg("--release");
+    }
+    if let Some(web) = web {
+        cargo
+            .args(["--package", "web-engine", "--features", "dreamer-app/web"])
+            .envs(web.env());
     }
     let status = cargo.status().map_err(|e| format!("cargo build: {e}"))?;
     if !status.success() {
@@ -645,6 +661,9 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
 "#
     );
     std::fs::write(app.join("Contents").join("Info.plist"), plist).map_err(|e| e.to_string())?;
+    if let Some(web) = web {
+        crate::web::add_engine(&app, &bin_dir, web, &version)?;
+    }
     // Ad hoc signature: enough to run locally and to give the bundle a
     // stable code identity. Public builds are Developer ID signed later.
     // Helpers are signed before the bundle that seals them.

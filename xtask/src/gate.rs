@@ -247,6 +247,11 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         });
         stages.push(Stage {
+            name: "web",
+            action: Builtin(web_panes),
+            when: When::Code,
+        });
+        stages.push(Stage {
             name: "package",
             action: Builtin(package_away_from_tree),
             when: When::Full,
@@ -1090,6 +1095,64 @@ fn bundle_smoke(dir: &Path) -> Result<Done, String> {
         println!("gate:   {line}");
     }
     Ok(Done::Passed)
+}
+
+/// Web panes (macOS), when `cargo xtask deps web` has provisioned the
+/// pinned CEF: the desktop with its `web` feature passes clippy, bundles
+/// with the framework and its helper apps (a helper loads the framework),
+/// and, with a refreshing display, draws a page in a pane and scrolls it,
+/// checked in captures of the window. Without CEF, or without a display
+/// that refreshes, recorded as not run.
+fn web_panes(dir: &Path) -> Result<Done, String> {
+    let Some(web) = crate::web::provisioned()? else {
+        println!(
+            "gate: the web engine is not provisioned (cargo xtask deps web); web panes recorded as not run"
+        );
+        return Ok(Done::NotRun);
+    };
+    let clippy = clean_git_env(Command::new("cargo"))
+        .args([
+            "clippy",
+            "--locked",
+            "--package",
+            "dreamer-app",
+            "--package",
+            "web-engine",
+            "--package",
+            "cef-sys",
+            "--all-targets",
+            "--features",
+            "dreamer-app/web",
+            "--",
+            "-D",
+            "warnings",
+        ])
+        .envs(web.env())
+        .current_dir(dir)
+        .status()
+        .map_err(|e| format!("cargo clippy: {e}"))?;
+    if !clippy.success() {
+        return Err("clippy with the web feature failed".into());
+    }
+    let app = crate::web::bundle(dir, crate::package::Profile::Debug, &web)?;
+    if !require_refreshing_display()? {
+        return Ok(Done::NotRun);
+    }
+    match crate::web::smoke(&app, &dir.join("target/gate/web"))? {
+        crate::web::Smoke::Passed(lines) => {
+            for line in lines {
+                println!("gate:   {line}");
+            }
+            Ok(Done::Passed)
+        }
+        crate::web::Smoke::NotRun(lines) => {
+            for line in lines.lines() {
+                println!("gate:   {line}");
+            }
+            println!("gate: the web pane was not being drawn; web pane checks recorded as not run");
+            Ok(Done::NotRun)
+        }
+    }
 }
 
 /// Release bundle and zip, unpacked and launched outside the source tree.

@@ -61,15 +61,20 @@ pub const NEEDS_TMUX: &[&str] = &[
 /// build tooling outside the shipped graph.
 const NOT_HEADLESS: &[&str] = &[
     "api-gen",
+    "cef-sys",
     "dreamer-app",
     "ghostty-bindgen",
     "terminal-render",
+    "web-engine",
     "xtask",
 ];
 
 /// Crate name prefixes that must never appear in a headless dependency
-/// graph: the UI framework, windowing, GPU, and font stacks.
+/// graph: the UI framework, windowing, GPU, and font stacks, and the web
+/// engine (Chromium through CEF, and the crates that wrap it).
 const FORBIDDEN: &[&str] = &[
+    "cef",
+    "web-engine",
     "gpui",
     "wgpu",
     "naga",
@@ -249,6 +254,10 @@ mod tests {
             "wayland-client",
             "font-kit",
             "objc2",
+            "cef",
+            "cef-dll-sys",
+            "cef-sys",
+            "web-engine",
         ] {
             assert!(is_forbidden(name), "{name}");
         }

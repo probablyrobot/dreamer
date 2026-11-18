@@ -3195,6 +3195,10 @@
           "repeated": false,
           "type": "u32"
         },
+        "web": {
+          "repeated": false,
+          "type": "string"
+        },
         "width": {
           "repeated": false,
           "type": "u32"
@@ -4679,6 +4683,34 @@
         }
       }
     },
+    "WebOpen": {
+      "fields": {
+        "endpoint": {
+          "repeated": false,
+          "type": "string"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "session": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "url": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "WebOpened": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
     "Window": {
       "fields": {
         "active_pane": {
@@ -4833,7 +4865,8 @@
     "tmux.prefix_key": "PrefixKey",
     "tmux.size_window": "SizeWindow",
     "tmux.topology": "TopologyParams",
-    "tmux.watch": "TopologyParams"
+    "tmux.watch": "TopologyParams",
+    "web.open": "WebOpen"
   },
   "ui": {
     "common": {
@@ -5084,5 +5117,5 @@
       }
     }
   },
-  "version": "1.54"
+  "version": "1.55"
 }

@@ -532,6 +532,64 @@ pub fn share_near(path: &Path, color: u32, tolerance: i32) -> Result<f64, String
     Ok(near as f64 / all.max(1) as f64)
 }
 
+/// The share of the pixels inside `rect` (points, from the window's top
+/// left; `window_width` in points gives the capture's scale) within 30 per
+/// channel of `color`, and the most common color there. A few points at
+/// the edges are left out (borders, antialiasing).
+pub fn share_in(
+    path: &Path,
+    color: u32,
+    window_width: f64,
+    rect: (f64, f64, f64, f64),
+) -> Result<(f64, u32), String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut buf = vec![0; reader.output_buffer_size().unwrap_or(0)];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let channels = match info.color_type {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        other => return Err(format!("{}: color type {other:?}", path.display())),
+    };
+    let scale = f64::from(info.width) / window_width.max(1.0);
+    let inset = 4.0;
+    let (x, y, w, h) = rect;
+    let px = |v: f64, max: u32| ((v * scale).round().max(0.0) as u32).min(max);
+    let (x0, x1) = (px(x + inset, info.width), px(x + w - inset, info.width));
+    let (y0, y1) = (px(y + inset, info.height), px(y + h - inset, info.height));
+    if x1 <= x0 || y1 <= y0 {
+        return Err(format!("{}: the rectangle is empty", path.display()));
+    }
+    let want = [(color >> 16) as u8, (color >> 8) as u8, color as u8];
+    let mut counts: std::collections::HashMap<[u8; 3], usize> = std::collections::HashMap::new();
+    let (mut near, mut all) = (0usize, 0usize);
+    let stride = info.line_size;
+    for row in y0..y1 {
+        for col in x0..x1 {
+            let at = row as usize * stride + col as usize * channels;
+            let c = [buf[at], buf[at + 1], buf[at + 2]];
+            *counts.entry(c).or_default() += 1;
+            all += 1;
+            if c.iter()
+                .zip(want)
+                .all(|(a, b)| (i32::from(*a) - i32::from(b)).abs() <= 30)
+            {
+                near += 1;
+            }
+        }
+    }
+    let main = counts.iter().max_by_key(|(_, n)| **n).map_or(0, |(c, _)| {
+        u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2])
+    });
+    Ok((near as f64 / all.max(1) as f64, main))
+}
+
 /// What a capture shows, checked against the scheme it was drawn in: the
 /// dominant color must be the scheme's background (the theme reached the
 /// terminals and the chrome alike), `ink` (a color the scene prints) must

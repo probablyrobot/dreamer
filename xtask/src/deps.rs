@@ -1,5 +1,7 @@
 //! `cargo xtask deps prepare [--target <triple>]...`: fetch, verify, and build
-//! pinned native dependencies (Zig and `libghostty-vt`).
+//! pinned native dependencies (Zig and `libghostty-vt`). `cargo xtask deps
+//! web` fetches the web engine's (CEF, cmake, Ninja), which only builds with
+//! the desktop's `web` feature need.
 //!
 //! Everything lands in a per-user cache (`DREAMER_DEPS_DIR`, default
 //! `~/Library/Caches/dreamer/deps` or `$XDG_CACHE_HOME/dreamer/deps`) keyed by
@@ -15,7 +17,7 @@ use crate::manifest::Manifest;
 pub fn run(args: &[String]) -> Result<(), String> {
     let (cmd, rest) = args
         .split_first()
-        .ok_or("usage: cargo xtask deps <prepare|path|tmux> [--target <triple>]...")?;
+        .ok_or("usage: cargo xtask deps <prepare|path|tmux|fonts|web> [--target <triple>]...")?;
     let mut targets = Vec::new();
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
@@ -57,8 +59,21 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "web" => {
+            let web = ensure_web(&manifest)?;
+            println!(
+                "deps: CEF {} at {}",
+                manifest.get("cef", "version")?,
+                web.cef_dir.display()
+            );
+            println!("CEF_PATH={}", web.cef_path.display());
+            for dir in &web.tools {
+                println!("tools: {}", dir.display());
+            }
+            Ok(())
+        }
         other => Err(format!(
-            "unknown deps command `{other}` (prepare, path, tmux, fonts)"
+            "unknown deps command `{other}` (prepare, path, tmux, fonts, web)"
         )),
     }
 }
@@ -135,6 +150,152 @@ fn ensure_tmux(manifest: &Manifest) -> Result<PathBuf, String> {
     run("make", &["install"])?;
     std::fs::write(prefix.join(".complete"), sha).map_err(|e| e.to_string())?;
     Ok(bin)
+}
+
+/// The web engine's build inputs: the CEF distribution, unpacked where the
+/// `cef-dll-sys` build script looks (`CEF_PATH/<version>/<dir>`), and the
+/// cmake and Ninja that build CEF's C++ wrapper.
+#[derive(Debug)]
+pub struct WebDeps {
+    /// `CEF_PATH` for the build.
+    pub cef_path: PathBuf,
+    /// The unpacked distribution (holds the framework).
+    pub cef_dir: PathBuf,
+    /// The directories holding `cmake` and `ninja`, put first on `PATH`.
+    pub tools: Vec<PathBuf>,
+}
+
+impl WebDeps {
+    /// Environment for a cargo build with the `web` feature: the pinned
+    /// distribution and tools.
+    pub fn env(&self) -> Vec<(&'static str, std::ffi::OsString)> {
+        let mut paths = self.tools.clone();
+        if let Some(p) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&p));
+        }
+        vec![
+            ("CEF_PATH", self.cef_path.clone().into_os_string()),
+            ("PATH", std::env::join_paths(paths).unwrap_or_default()),
+        ]
+    }
+
+    /// The CEF framework bundle.
+    pub fn framework(&self) -> PathBuf {
+        self.cef_dir.join("Chromium Embedded Framework.framework")
+    }
+}
+
+/// The host the web engine is pinned for, or why there is none.
+fn web_host() -> Result<&'static str, String> {
+    match host_triple()? {
+        t @ "aarch64-apple-darwin" => Ok(t),
+        other => Err(format!(
+            "web panes build on macOS (arm64) only so far, not on {other}"
+        )),
+    }
+}
+
+fn web_paths(manifest: &Manifest, host: &str) -> Result<WebDeps, String> {
+    let deps = deps_dir()?;
+    let cef_path = deps.join("cef");
+    let cef_dir = cef_path
+        .join(manifest.get("cef", "version")?)
+        .join(manifest.get("cef", &format!("{host}-dir"))?);
+    let cmake = deps
+        .join("cmake")
+        .join(manifest.get("cmake", "version")?)
+        .join(host)
+        .join(manifest.get("cmake", &format!("{host}-bin"))?);
+    let ninja = deps
+        .join("ninja")
+        .join(manifest.get("ninja", "version")?)
+        .join(host);
+    Ok(WebDeps {
+        cef_path,
+        cef_dir,
+        tools: vec![cmake, ninja],
+    })
+}
+
+/// The web engine's dependencies if `cargo xtask deps web` has provisioned
+/// them on this host; never downloads anything.
+pub fn web_deps(manifest: &Manifest) -> Result<Option<WebDeps>, String> {
+    let web = web_paths(manifest, web_host()?)?;
+    let complete = web.cef_dir.join("archive.json").is_file()
+        && web.framework().is_dir()
+        && web.tools[0].join("cmake").is_file()
+        && web.tools[1].join("ninja").is_file();
+    Ok(complete.then_some(web))
+}
+
+/// Fetch (checksum-verified) and unpack the CEF distribution, cmake, and
+/// Ninja for this host.
+pub fn ensure_web(manifest: &Manifest) -> Result<WebDeps, String> {
+    let host = web_host()?;
+    let web = web_paths(manifest, host)?;
+    let deps = deps_dir()?;
+    // cmake: the release's universal tarball, its one top directory dropped.
+    if !web.tools[0].join("cmake").is_file() {
+        let version = manifest.get("cmake", "version")?;
+        let archive = download(
+            manifest.get("cmake", host)?,
+            &format!("cmake-{version}-macos-universal.tar.gz"),
+            manifest.get("cmake", &format!("{host}-sha256"))?,
+        )?;
+        extract(&archive, &deps.join("cmake").join(version).join(host), true)?;
+    }
+    // Ninja: a zip holding the one executable.
+    if !web.tools[1].join("ninja").is_file() {
+        let version = manifest.get("ninja", "version")?;
+        let archive = download(
+            manifest.get("ninja", host)?,
+            &format!("ninja-{version}-mac.zip"),
+            manifest.get("ninja", &format!("{host}-sha256"))?,
+        )?;
+        extract(&archive, &web.tools[1], false)?;
+    }
+    // CEF: laid out as `<version>/<dir>` the way the cef crate's own
+    // download does it (the `Release` directory, with the headers, wrapper
+    // sources, and cmake files beside it), then the `archive.json` that the
+    // cef-dll-sys build script checks the version against, written last.
+    if !web.cef_dir.join("archive.json").is_file() {
+        let name = manifest.get("cef", &format!("{host}-name"))?;
+        let archive = download(
+            manifest.get("cef", host)?,
+            name,
+            manifest.get("cef", &format!("{host}-sha256"))?,
+        )?;
+        let staging = web.cef_dir.with_file_name("unpacked");
+        extract(&archive, &staging, true)?;
+        if web.cef_dir.exists() {
+            std::fs::remove_dir_all(&web.cef_dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(staging.join("Release"), &web.cef_dir)
+            .map_err(|e| format!("{name} has no Release directory: {e}"))?;
+        for item in [
+            "CMakeLists.txt",
+            "cmake",
+            "include",
+            "libcef_dll",
+            "CREDITS.html",
+            "LICENSE.txt",
+        ] {
+            std::fs::rename(staging.join(item), web.cef_dir.join(item))
+                .map_err(|e| format!("{name}: {item}: {e}"))?;
+        }
+        std::fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
+        let sha1 = manifest.get("cef", &format!("{host}-sha1"))?;
+        let json = format!(
+            "{{\n  \"type\": \"minimal\",\n  \"name\": \"{name}\",\n  \"sha1\": \"{sha1}\"\n}}\n"
+        );
+        std::fs::write(web.cef_dir.join("archive.json"), json).map_err(|e| e.to_string())?;
+    }
+    web_deps(manifest)?.ok_or_else(|| {
+        format!(
+            "the web dependencies are incomplete after unpacking; remove {} and run again",
+            web.cef_dir.display()
+        )
+    })
 }
 
 fn zig_host_key() -> Result<&'static str, String> {

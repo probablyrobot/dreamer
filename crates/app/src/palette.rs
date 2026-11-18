@@ -32,6 +32,7 @@ pub(crate) enum Command {
     ToggleDecorations,
     OpenPanel,
     ClosePanel,
+    OpenWebPage,
     Theme,
     /// Another OS window, on a new tmux session.
     NewOsWindow,
@@ -53,7 +54,7 @@ pub(crate) enum Command {
     Contributed(u16),
 }
 
-pub(crate) const ALL: [Command; 40] = [
+pub(crate) const ALL: [Command; 41] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -79,6 +80,7 @@ pub(crate) const ALL: [Command; 40] = [
     Command::ToggleDecorations,
     Command::OpenPanel,
     Command::ClosePanel,
+    Command::OpenWebPage,
     Command::Theme,
     Command::NewOsWindow,
     Command::Settings,
@@ -124,6 +126,7 @@ impl Command {
             Command::ToggleDecorations => "Show or hide decorations in this pane (filter marks)",
             Command::OpenPanel => "Open an app package as a panel… (its manifest's path)",
             Command::ClosePanel => "Close the app panel",
+            Command::OpenWebPage => "Open a web page… (its URL, in a pane beside this one)",
             Command::Theme => "Theme… (colors of the terminals and the window)",
             Command::NewOsWindow => "New Dreamer window (on a new session)",
             Command::Settings => "Settings… (open dreamer.yaml)",
@@ -187,6 +190,7 @@ impl Command {
                 | Command::EditHost
                 | Command::RemoveHost
                 | Command::OpenPanel
+                | Command::OpenWebPage
         )
     }
 }

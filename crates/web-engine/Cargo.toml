@@ -1,0 +1,27 @@
+[package]
+name = "web-engine"
+description = "Safe web views for the desktop: Chromium (CEF) drawing a page into a pane's rectangle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Chromium through CEF. Needs `cargo xtask deps web` (see cef-sys); without
+# it the crate builds no engine and the desktop says how to get one.
+engine = ["cef-sys/cef", "dep:raw-window-handle"]
+
+# The helper executable CEF starts for its renderer, GPU, and utility
+# processes. A bundle copies it into its five helper apps.
+[[bin]]
+name = "dreamer-web-helper"
+path = "src/bin/helper.rs"
+required-features = ["engine"]
+
+[dependencies]
+cef-sys = { path = "../cef-sys" }
+raw-window-handle = { version = "0.6.2", optional = true }
+
+[lints]
+workspace = true

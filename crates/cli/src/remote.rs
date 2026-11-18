@@ -872,6 +872,84 @@ fn print_job(j: &api::JobRecord) {
     );
 }
 
+// ---- web --------------------------------------------------------------------
+
+/// `dream web open URL`: a web page in a new tmux pane, which Dreamer's
+/// desktop draws the page in. Without `--session` or `--pane`, the pane this
+/// runs in (`TMUX_PANE`) is split.
+pub fn web(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: dream web open URL [--session $N|NAME | --pane %N] [--json]";
+    let [verb, url, rest @ ..] = args else {
+        return Err(USAGE.into());
+    };
+    if verb != "open" {
+        return Err(USAGE.into());
+    }
+    let mut req = api::WebOpen {
+        url: url.clone(),
+        ..api::WebOpen::default()
+    };
+    let mut session_name = None;
+    let mut json = false;
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        let mut value = || {
+            it.next()
+                .ok_or_else(|| format!("{a} needs a value\n{USAGE}"))
+        };
+        match a.as_str() {
+            "--session" => {
+                let v = value()?;
+                match id(v, '$', "session") {
+                    Ok(n) => req.session = Some(n),
+                    Err(_) => session_name = Some(v.clone()),
+                }
+            }
+            "--pane" => req.pane = Some(id(value()?, '%', "pane")?),
+            "--json" => json = true,
+            other => return Err(format!("unknown option `{other}`\n{USAGE}")),
+        }
+    }
+    if req.session.is_none() && session_name.is_none() && req.pane.is_none() {
+        let here = std::env::var("TMUX_PANE").map_err(|_| {
+            format!("not inside tmux: name a session with --session or a pane with --pane\n{USAGE}")
+        })?;
+        req.pane = Some(id(&here, '%', "pane")?);
+    }
+    rt()?.block_on(async {
+        let mut c = session(d).await?;
+        if let Some(name) = session_name {
+            let Response::TmuxTopology(t) = call(
+                &mut c,
+                Request::TmuxTopology(api::TopologyParams::default()),
+            )
+            .await?
+            else {
+                return Err("unexpected reply".into());
+            };
+            req.session = Some(
+                t.sessions
+                    .iter()
+                    .find(|s| s.name == name && !s.holding)
+                    .ok_or_else(|| format!("no tmux session named `{name}`"))?
+                    .id,
+            );
+        }
+        let Response::WebOpen(opened) = call(&mut c, Request::WebOpen(req)).await? else {
+            return Err("unexpected reply".into());
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&opened).map_err(|e| e.to_string())?
+            );
+        } else {
+            println!("%{}", opened.pane);
+        }
+        Ok(())
+    })
+}
+
 // ---- drawer -----------------------------------------------------------------
 
 /// `dream drawer toggle|show|hide|status|new`: a tmux session's harness

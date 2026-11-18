@@ -1,0 +1,25 @@
+[package]
+name = "cef-sys"
+description = "The pinned Chromium Embedded Framework bindings and the macOS glue CEF needs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Builds against CEF. Needs `cargo xtask deps web`: the pinned distribution
+# as CEF_PATH, and cmake and Ninja on PATH. Without it the crate is empty.
+cef = ["dep:cef", "dep:objc2", "dep:objc2-foundation"]
+
+[dependencies]
+# Binds CEF 156.0.30 (Chromium 156.0.8078.96); see deps/baseline.toml.
+# No default features: no sandbox (not run yet), no bundler, no resources.
+cef = { version = "=156.6.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.5", optional = true }
+objc2-foundation = { version = "0.3.2", optional = true, features = ["NSGeometry"] }
+
+[lints]
+workspace = true

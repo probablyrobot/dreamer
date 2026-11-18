@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 54 }
+version: { major: 1, minor: 55 }
 package: dreamer.v1
 
 types:
@@ -116,6 +116,7 @@ types:
       - { n: 13, name: mode, type: string, optional: true, doc: "A tmux-drawn mode the pane is in (copy-mode, tree-mode, ...). Its screen is tmux's, not the program's, and Dreamer does not draw it." }
       - { n: 14, name: drawer_of, type: u32, optional: true, doc: "This pane is the harness drawer of that tmux session (drawer.toggle)." }
       - { n: 15, name: app, type: PaneApp, doc: "The registered app whose host is this pane's program, if any: desktops draw its view (apps.view) in the pane's rectangle instead of the terminal." }
+      - { n: 16, name: web, type: string, optional: true, doc: "This pane is a placeholder for a web page at this URL (web.open): desktops that can draw web pages show the page in the pane's rectangle instead of the terminal; other clients see the placeholder's text." }
 
   - message: PaneApp
     fields:
@@ -1731,6 +1732,24 @@ types:
       - { n: 10, name: problem, type: string, optional: true, doc: "Why the harness could not start; the pane says the same." }
       - { n: 11, name: from_pane, type: u32, optional: true, doc: "The pane that had focus before the drawer was last shown or focused, while it exists: where hiding returns focus, and the pane the harness's context commands read." }
 
+  # ---- web panes ----------------------------------------------------------
+
+  - message: WebOpen
+    doc: >-
+      Open a web page in a new tmux pane: a placeholder pane, marked as a
+      web pane, whose rectangle desktops that can draw web pages fill with
+      the page. With pane, the pane is split; otherwise a new window opens
+      in session.
+    fields:
+      - { n: 1, name: url, type: string, doc: "http, https, file, data, or about:blank." }
+      - { n: 2, name: session, type: u32, optional: true, doc: "The session to open a new window in." }
+      - { n: 3, name: pane, type: u32, optional: true, doc: "The pane to split (side by side) instead." }
+      - { n: 4, name: endpoint, type: string, optional: true }
+
+  - message: WebOpened
+    fields:
+      - { n: 1, name: pane, type: u32, doc: "The new web pane." }
+
   # ---- agent sessions -----------------------------------------------------
 
   - enum: AgentSessionState
@@ -2097,6 +2116,7 @@ methods:
   - { method: apps.capture, params: AppCapture, result: AppCaptured, mutation: true, doc: "An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (the owner, or an agent's grant at own or elsewhere for an app pane it launched)." }
   - { method: apps.capture_wait, params: AppCaptureWait, result: AppCaptureRequest, doc: "A desktop waits for the next capture to make; while it waits, it counts as a desktop that answers captures (owner only)." }
   - { method: apps.capture_done, params: AppCaptureDone, result: Empty, mutation: true, doc: "A desktop's answer to a capture request (owner only)." }
+  - { method: web.open, params: WebOpen, result: WebOpened, mutation: true, doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner only)." }
 
 # What the daemon pushes on a connection, by topic. JSON-RPC clients receive
 # each as a notification whose method is the topic and whose params is the

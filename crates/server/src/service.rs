@@ -1675,6 +1675,11 @@ impl api::Service for DaemonService {
         crate::drawer::run(&self.0, p, false).await
     }
 
+    async fn web_open(&self, p: api::WebOpen) -> Result<api::WebOpened, RpcError> {
+        self.check_endpoint(p.endpoint.as_deref())?;
+        crate::web::open(&self.0, p).await
+    }
+
     async fn agent_sessions_create(
         &self,
         _: api::AgentSessionCreate,

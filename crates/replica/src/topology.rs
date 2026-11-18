@@ -41,6 +41,7 @@ enum Command {
         rows: u32,
     },
     Drawer(api::DrawerRequest),
+    WebOpen(api::WebOpen),
 }
 
 #[derive(Debug)]
@@ -141,6 +142,12 @@ impl TopologyFeed {
     /// (`drawer.toggle`). Its result shows up as a newer topology.
     pub fn drawer(&self, request: api::DrawerRequest) {
         let _ = self.actions.send(Command::Drawer(request));
+    }
+
+    /// Open a web page in a new placeholder pane (`web.open`). The pane
+    /// shows up as a newer topology.
+    pub fn web_open(&self, request: api::WebOpen) {
+        let _ = self.actions.send(Command::WebOpen(request));
     }
 
     /// Ask for a tmux window's size in cells. Applied only while this view
@@ -312,6 +319,11 @@ impl Owner {
                     Some(Command::Drawer(request)) => {
                         // The outcome arrives as a topology change.
                         let _ = self.via.call(&c, Request::DrawerToggle(request)).await;
+                    }
+                    Some(Command::WebOpen(request)) => {
+                        if let Err(e) = self.via.call(&c, Request::WebOpen(request)).await {
+                            eprintln!("dreamer: the web page did not open: {e}");
+                        }
                     }
                     None => return Ok(()),
                 },
