@@ -47,6 +47,7 @@ fn forwardable(method: &str) -> bool {
         method,
         "terminal.subscribe" | "terminal.unsubscribe" | "tmux.watch"
     ) && !method.starts_with("hosts.")
+        && !method.starts_with("forward.")
 }
 
 /// The `ssh` program: `DREAMER_SSH` (tests use a stand-in), else `ssh`
@@ -207,6 +208,8 @@ struct Routes {
     by_sub: HashMap<u64, Route>,
     unclaimed: HashMap<u64, Vec<RelayItem>>,
     spoiled: std::collections::HashSet<u64>,
+    /// Forward streams of this link: where their data goes.
+    streams: HashMap<u64, tokio::sync::mpsc::UnboundedSender<api::ForwardData>>,
 }
 
 impl Routes {
@@ -298,6 +301,37 @@ impl Host {
                 revision,
                 topology: t,
             })));
+    }
+
+    /// Open a stream to `port` on the host's loopback over the live link,
+    /// and route its data. The host sends nothing until given credit.
+    async fn open_stream(&self, port: u16) -> Result<crate::forward::Link, String> {
+        let (client, link, _) = self
+            .client()
+            .ok_or_else(|| format!("host `{}` is not connected", self.name))?;
+        let opened = client
+            .call(api::Request::ForwardOpen(api::ForwardOpen {
+                port: u32::from(port),
+            }))
+            .await;
+        let stream = match opened {
+            Ok(api::Response::ForwardOpen(s)) => s.stream,
+            Ok(_) => return Err("a reply to another method".into()),
+            Err(e) => return Err(format!("host `{}` port {port}: {e}", self.name)),
+        };
+        let (tx, data) = tokio::sync::mpsc::unbounded_channel();
+        {
+            let mut routes = lock(&self.routes);
+            if routes.link != link {
+                return Err(format!("host `{}`: the link ended", self.name));
+            }
+            routes.streams.insert(stream, tx);
+        }
+        Ok(crate::forward::Link {
+            client,
+            stream,
+            data,
+        })
     }
 
     /// The live link's client, if any.
@@ -413,6 +447,8 @@ async fn close(client: Option<Arc<Client>>, child: Option<Child>) {
 pub struct Hosts {
     hosts: tokio::sync::Mutex<HashMap<String, Arc<Host>>>,
     events: Arc<crate::events::Events>,
+    /// Loopback ports of hosts, reached from this machine's loopback.
+    pub forwards: crate::forward::Forwards,
 }
 
 impl std::fmt::Debug for Hosts {
@@ -439,6 +475,7 @@ impl Hosts {
         Hosts {
             hosts: tokio::sync::Mutex::default(),
             events,
+            forwards: crate::forward::Forwards::default(),
         }
     }
 
@@ -529,6 +566,26 @@ impl Hosts {
             *lock(&host.config) = Config::from(&p);
         }
         start(host).await
+    }
+
+    /// Hold a forward from a port on this machine's loopback to `port` on
+    /// the host's, for connection `conn`. Connections through it reach the
+    /// host over its current link; while it has none, they close at once.
+    pub async fn forward(
+        &self,
+        p: api::HostForward,
+        conn: u64,
+    ) -> Result<api::HostForwarded, RpcError> {
+        let port = u16::try_from(p.port)
+            .ok()
+            .filter(|p| *p != 0)
+            .ok_or_else(|| RpcError::new(code::INVALID_PARAMS, "a port from 1 to 65535"))?;
+        let host = self.get(&p.name).await?;
+        let open: crate::forward::Opener = Arc::new(move || {
+            let host = host.clone();
+            Box::pin(async move { host.open_stream(port).await })
+        });
+        self.forwards.hold(&p.name, port, conn, open).await
     }
 
     pub async fn disconnect(&self, name: &str) -> Result<api::HostStatus, RpcError> {
@@ -988,6 +1045,23 @@ fn dispatch(host: &Host, link: u64, p: Pushed) {
             }
             _ => return,
         },
+        Pushed::Bulk { topic, data, .. } if topic == api::topic::FORWARD_DATA => {
+            let Ok(d) = api::ForwardData::decode(data.as_slice()) else {
+                return;
+            };
+            let mut routes = lock(&host.routes);
+            if routes.link == link {
+                let (stream, eof) = (d.stream, d.eof);
+                let sent = routes
+                    .streams
+                    .get(&stream)
+                    .is_some_and(|tx| tx.send(d).is_ok());
+                if !sent || eof {
+                    routes.streams.remove(&stream);
+                }
+            }
+            return;
+        }
         Pushed::Bulk { topic, data, .. } if topic == "terminal.checkpoint" => {
             match api::CheckpointData::decode(data.as_slice()) {
                 Ok(d) => (d.subscription, RelayItem::Checkpoint(d)),

@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 59 }
+version: { major: 1, minor: 60 }
 package: dreamer.v1
 
 types:
@@ -735,6 +735,55 @@ types:
       - { n: 4, name: pid_before, type: u32, optional: true }
       - { n: 5, name: pid_after, type: u32, optional: true }
       - { n: 6, name: note, type: string }
+
+  - message: HostForward
+    doc: >-
+      A TCP port on a connected host's own loopback, to reach from this
+      machine through the host's SSH connection (hosts.forward). Nothing
+      on the host listens for it, and nothing is exposed on the network.
+    fields:
+      - { n: 1, name: name, type: string, doc: "The host." }
+      - { n: 2, name: port, type: u32, doc: "The port on the host's loopback (127.0.0.1, else ::1)." }
+
+  - message: HostForwarded
+    doc: >-
+      A forward held by the calling connection until hosts.unforward or
+      until the connection closes. Holds of one host port share one
+      listener, closed when the last hold goes.
+    fields:
+      - { n: 1, name: forward, type: u64, doc: "This hold, for hosts.unforward." }
+      - { n: 2, name: local_port, type: u32, doc: "The port on this machine's 127.0.0.1 that reaches the host's port." }
+
+  - message: HostForwardRef
+    fields:
+      - { n: 1, name: forward, type: u64 }
+
+  - message: ForwardOpen
+    doc: >-
+      A new stream to a port on this daemon's own loopback, for the
+      coordinator's connection (forward.open). Its data arrives as
+      `forward.data` bulk records, only as far as the caller's credit
+      (forward.ack) allows.
+    fields:
+      - { n: 1, name: port, type: u32 }
+
+  - message: ForwardStream
+    fields:
+      - { n: 1, name: stream, type: u64, doc: "Unique within the daemon; belongs to the connection that opened it." }
+
+  - message: ForwardData
+    doc: Bytes of a forward stream, in order, in either direction.
+    fields:
+      - { n: 1, name: stream, type: u64 }
+      - { n: 2, name: data, type: bytes }
+      - { n: 3, name: eof, type: bool, doc: "Nothing more follows in this direction (after data, if any)." }
+      - { n: 4, name: error, type: string, optional: true, doc: "Why the stream ended, when it failed." }
+
+  - message: ForwardAck
+    doc: Credit for a stream's incoming data, in bytes, given as the receiver passes data on.
+    fields:
+      - { n: 1, name: stream, type: u64 }
+      - { n: 2, name: bytes, type: u32 }
 
   - message: HostReply
     doc: The remote daemon's result for a HostCall, as Protobuf.
@@ -2151,6 +2200,12 @@ methods:
   - { method: hosts.install, params: InstallParams, result: InstallResult, mutation: true, doc: "Install the reviewed plan: stream the archive, verify its SHA-256 on the host, unpack into a versioned directory, switch atomically." }
   - { method: hosts.upgrade, params: UpgradeParams, result: UpgradeResult, mutation: true, doc: "Install the reviewed plan, restart the host's daemon on it (tmux keeps running), and reconnect." }
   - { method: hosts.call, params: HostCall, result: HostReply, mutation: true, doc: "Forward one typed call to a connected host's daemon." }
+  - { method: hosts.forward, params: HostForward, result: HostForwarded, mutation: true, doc: "Reach a port on a connected host's loopback from a port on this machine's 127.0.0.1, over the host's SSH connection; held until hosts.unforward or the connection closes (needs web.forward in the grant)." }
+  - { method: hosts.unforward, params: HostForwardRef, result: Empty, mutation: true, doc: "Give up a hold from hosts.forward; the listener closes with its last hold." }
+  - { method: forward.open, params: ForwardOpen, result: ForwardStream, mutation: true, doc: "Open a stream to a port on this daemon's loopback (the coordinator's, owner only); data arrives as forward.data within the credit forward.ack gives." }
+  - { method: forward.write, params: ForwardData, result: Empty, mutation: true, doc: "Send bytes on a forward stream, or end its sending side (eof); answered once queued." }
+  - { method: forward.ack, params: ForwardAck, result: Empty, mutation: true, doc: "Give a forward stream credit for this many more bytes of incoming data." }
+  - { method: forward.close, params: ForwardStream, result: Empty, mutation: true, doc: "Close a forward stream in both directions." }
   - { method: grants.narrow, params: Grant, result: Grant, mutation: true, doc: "Give up authority on this connection: the new grant must be within the current one. Nothing widens a grant." }
   - { method: grants.current, params: Empty, result: Grant, doc: "The calling connection's own grant." }
   - { method: apps.launch, params: LaunchApp, result: LaunchedApp, mutation: true, doc: "Start a program in a new tmux window, or a pane split from `split`, with a single-use registration ticket. The owner, or an agent's grant at own or elsewhere for an app grant within its own; never a registered app." }
@@ -2241,4 +2296,5 @@ notifications:
   - { topic: messages.deliver, payload: MessageDelivery, doc: "A message for a messages.subscribe subscription." }
   - { topic: taps.data, payload: TapData, doc: "Output of a taps.subscribe subscription, for one pane." }
   - { topic: agent.sessions.events, payload: AgentSessionEvents, doc: "Events of a followed agent session, in order." }
+  - { topic: forward.data, payload: ForwardData, doc: "Data of a forward stream from the host's port, in order (a bulk record on the native wire, behind every priority frame); the last has eof." }
   - { topic: apps.input, payload: AppInput, doc: "A key, text, click, or wheel steps for this registered app host, sent by the user's desktop (apps.input)." }

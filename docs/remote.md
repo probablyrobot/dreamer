@@ -9,7 +9,10 @@ SSH is the only way between hosts. Dreamer opens no network sockets of its
 own, so every byte between the main terminal and a host is SSH's
 encrypted, authenticated channel, under your own SSH configuration and
 keys. `cargo xtask policy` (the gate's first stage) fails if product code
-uses a TCP or UDP socket.
+uses a TCP or UDP socket. The one exception is [forwards](#forwards):
+a listener on this machine's 127.0.0.1 and connections to a host's own
+loopback, both in `crates/server/src/forward.rs`, which the policy allows
+TCP only on the loopback.
 
 ## The coordinator
 
@@ -206,6 +209,45 @@ checkpoint and matches the remote mirror. Killing the remote daemon then
 ends the subscription with `host_restarted`. A second test keeps a host's
 topology updating across a cut.
 
+## Forwards
+
+A web pane in a host's window shows a page on that host's own loopback
+(a dev server on `localhost:3000`) through a forward over the host's
+existing SSH connection ([desktop.md](desktop.md#pages-of-a-remote-host)).
+
+- **`hosts.forward`** `{name, port}` returns a port on this machine's
+  127.0.0.1 (ephemeral, chosen by the system) that reaches `port` on the
+  host's loopback (127.0.0.1, else ::1). Nothing is bound on any other
+  address, here or on the host, and the host side only connects.
+- **Holds.** The forward is held by the calling connection until
+  `hosts.unforward` `{forward}` or until that connection closes. Holds of
+  one host port share one listener, which closes, with every connection
+  through it, when its last hold goes.
+- **Streams.** Each connection accepted on the local port becomes a
+  stream on the host's link: `forward.open` `{port}` on the host's daemon
+  connects there, `forward.write` carries the browser's bytes (with `eof`
+  for the end of its side), the host's bytes come back as `forward.data`,
+  and `forward.close` ends the stream. `forward.*` are the coordinator's:
+  the owner grant only, and never forwarded by `hosts.call`. A host's
+  streams close with the connection that opened them; when the link drops,
+  connections through the forward close, and new ones use the next link.
+- **Terminal output first.** Data from the host travels only within the
+  credit the coordinator gives as it passes data on (`forward.ack`, at most
+  128 KiB per stream), as bulk records that the host's daemon writes only
+  when no terminal record, reply, or other frame is waiting. Data to the
+  host goes one 16 KiB `forward.write` at a time per stream. A busy
+  forward therefore never queues terminal records behind it; what remains
+  is SSH's own buffering of the data already in flight.
+- **Grants.** The owner may forward. A narrow grant needs `web.forward`
+  ([grants.md](grants.md#reaching-a-hosts-loopback)).
+
+`crates/server/tests/hosts.rs` forwards a port through a stand-in SSH:
+four 8 MiB pages at once arrive byte for byte while terminal echoes on
+the host stay on time, the listener refuses connections from this
+machine's other addresses, a second hold shares the listener, and the
+listener closes with its last hold and with a closed connection's holds.
+A connection without `web.forward` is refused.
+
 ## Profiles
 
 Hosts can be defined in `hosts.yaml` in the configuration directory
@@ -324,6 +366,9 @@ involved:
   - input sent while the link is down, which is never replayed;
   - a new view's megabyte checkpoint while timing small calls, to show
     there is no starvation;
+  - a page served only on the host's loopback, fetched through a
+    forward (`hosts.forward`) byte for byte while the host's terminal
+    output is timed, and the forward closed with its hold;
   - a remote daemon restart, which ends the view with `host_restarted`.
 - **Cleanup:** everything started from the private directory is stopped,
   and the directory is removed.

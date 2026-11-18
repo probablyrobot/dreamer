@@ -21,6 +21,7 @@ pub mod copy_mode;
 pub mod decorations;
 pub mod feed;
 mod follow;
+pub mod forward;
 pub mod hosts;
 pub mod keys;
 pub mod search;

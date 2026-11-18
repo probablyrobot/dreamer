@@ -24,6 +24,7 @@ mod drawer;
 mod events;
 mod extensions;
 mod filters;
+mod forward;
 mod grants;
 mod hosts;
 mod install;

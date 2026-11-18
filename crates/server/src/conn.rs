@@ -24,6 +24,8 @@ use crate::service::{DaemonService, State};
 const SUBSCRIBER_QUEUE: usize = 4096;
 /// Frames waiting for the connection's writer.
 const CONNECTION_QUEUE: usize = 256;
+/// Forward data waiting for the writer, on the lane it takes last.
+const FORWARD_LANE: usize = 8;
 /// Limits of one pushed batch.
 const BATCH_RECORDS: usize = 512;
 const BATCH_BYTES: usize = 256 << 10;
@@ -81,6 +83,8 @@ struct Conn {
     identity: Arc<std::sync::Mutex<Option<crate::messages::Identity>>>,
     /// The message rate limit.
     bucket: Arc<std::sync::Mutex<crate::messages::Bucket>>,
+    /// Streams to this host's loopback ports, for a coordinator.
+    streams: Arc<crate::forward::Streams>,
 }
 
 impl Conn {
@@ -183,7 +187,8 @@ pub async fn connection_as(
     };
     state.clients.fetch_add(1, Ordering::Relaxed);
     let (out, out_rx) = mpsc::channel(queues().1);
-    let writer = tokio::spawn(write_loop(w, out_rx, negotiated.limits));
+    let (lane, lane_rx) = mpsc::channel(FORWARD_LANE);
+    let writer = tokio::spawn(write_loop(w, out_rx, lane_rx, negotiated.limits));
     let conn = Conn {
         out,
         subs: Arc::default(),
@@ -197,6 +202,7 @@ pub async fn connection_as(
         id: CONNECTIONS.fetch_add(1, Ordering::Relaxed) + 1,
         identity: Arc::new(std::sync::Mutex::new(identity)),
         bucket: Arc::default(),
+        streams: Arc::new(crate::forward::Streams::new(lane)),
     };
     let service = DaemonService(state.clone());
     loop {
@@ -236,6 +242,14 @@ pub async fn connection_as(
                                 Kind::Response,
                                 failure(req.id, e).encode_to_vec(),
                             ))
+                            .await;
+                        return;
+                    }
+                    if req.method.starts_with("forward.") {
+                        let response = forward(&conn, &req).await;
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(Kind::Response, response.encode_to_vec()))
                             .await;
                         return;
                     }
@@ -426,6 +440,8 @@ pub async fn connection_as(
     }
     state.leases.drop_conn(conn.id);
     state.approvals.drop_conn(conn.id);
+    state.hosts.forwards.drop_conn(conn.id);
+    conn.streams.close_all();
     state.captures.drop_conn(conn.id);
     // An app host that left: its panes keep their last view, as stale.
     if state.apps.closed(conn.id)
@@ -442,8 +458,15 @@ pub async fn connection_as(
 }
 
 /// Owns the socket's write half: priority frames first, bulk data in
-/// chunks between them.
-async fn write_loop(mut w: OwnedWriteHalf, mut rx: mpsc::Receiver<Out>, limits: Limits) {
+/// chunks between them. Forward data (`lane`) is taken only when nothing
+/// else waits, so it never delays terminal records or replies by more
+/// than the one chunk being written.
+async fn write_loop(
+    mut w: OwnedWriteHalf,
+    mut rx: mpsc::Receiver<Out>,
+    mut lane: mpsc::Receiver<Vec<u8>>,
+    limits: Limits,
+) {
     let mut outbox = Outbox::new(limits);
     let push = |outbox: &mut Outbox, msg: Out| -> Result<(), WireError> {
         match msg {
@@ -451,11 +474,19 @@ async fn write_loop(mut w: OwnedWriteHalf, mut rx: mpsc::Receiver<Out>, limits: 
             Out::Bulk(data) => outbox.push_bulk(data),
         }
     };
+    let mut lane_open = true;
     loop {
         let msg = if outbox.is_empty() {
-            match rx.recv().await {
-                Some(m) => Some(m),
-                None => break,
+            tokio::select! {
+                biased;
+                m = rx.recv() => match m {
+                    Some(m) => Some(m),
+                    None => break,
+                },
+                b = lane.recv(), if lane_open => {
+                    lane_open = b.is_some();
+                    b.map(Out::Bulk)
+                }
             }
         } else {
             rx.try_recv().ok()
@@ -492,6 +523,43 @@ pub async fn answer(service: &DaemonService, req: wire::Request) -> wire::Respon
             error_code: None,
             error_message: String::new(),
         },
+        Err(e) => failure(req.id, e),
+    }
+}
+
+/// `forward.*`: streams to this host's loopback ports, for the
+/// coordinator's connection. The owner grant only, whatever a narrow
+/// grant lists.
+async fn forward(conn: &Conn, req: &wire::Request) -> wire::Response {
+    if !conn.grant.lock().is_ok_and(|g| g.0.owner) {
+        return failure(
+            req.id,
+            RpcError::new(
+                code::FORBIDDEN,
+                format!(
+                    "`{}` is the coordinator's: the owner grant only",
+                    req.method
+                ),
+            ),
+        );
+    }
+    let request = match api::Request::decode(&req.method, &req.payload) {
+        Ok(r) => r,
+        Err(e) => return failure(req.id, e.into()),
+    };
+    let s = &conn.streams;
+    let result = match request {
+        api::Request::ForwardOpen(p) => s.open(p).await.map(|r| r.encode_to_vec()),
+        api::Request::ForwardWrite(p) => s.write(p).await.map(|r| r.encode_to_vec()),
+        api::Request::ForwardAck(p) => s.ack(p).map(|r| r.encode_to_vec()),
+        api::Request::ForwardClose(p) => s.close(p).map(|r| r.encode_to_vec()),
+        _ => Err(RpcError::new(
+            code::METHOD_NOT_FOUND,
+            "no such forward method",
+        )),
+    };
+    match result {
+        Ok(payload) => ok(req.id, payload),
         Err(e) => failure(req.id, e),
     }
 }

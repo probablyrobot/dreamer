@@ -5,7 +5,10 @@
 //! - Product code opens no network sockets: remote hosts are reached only
 //!   through system OpenSSH, and the daemon listens only on owner-only Unix
 //!   sockets. Test code (a crate's `tests/`, `#[cfg(test)]` modules) and
-//!   xtask may, for example to run a local sshd.
+//!   xtask may, for example to run a local sshd. One file is the exception
+//!   ([`LOOPBACK_ONLY`]): forwards to a remote host's loopback ports, which
+//!   travel over the host's SSH connection. It may use TCP, and only on the
+//!   loopback: each of its binds and connects names `LOCALHOST`.
 
 use crate::util::repo_root;
 
@@ -92,6 +95,10 @@ const NETWORK: [&str; 6] = [
     "std::net::",
 ];
 
+/// The one product file that may use TCP (`web.forward`): it listens on
+/// this machine's loopback and connects to the host's, nothing else.
+const LOOPBACK_ONLY: &str = "crates/server/src/forward.rs";
+
 /// Every `.rs` file under each crate's `src/` (not `tests/`, `benches/`,
 /// or `examples/`), sorted.
 fn rust_sources(crates: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
@@ -128,6 +135,19 @@ fn check_source(name: &str, text: &str) -> Vec<String> {
         }
         if line.starts_with("//") {
             continue;
+        }
+        if name == LOOPBACK_ONLY {
+            if (line.contains("::bind(") || line.contains("::connect("))
+                && !line.contains("LOCALHOST")
+            {
+                out.push(format!(
+                    "{name}:{}: forwards bind and connect only on the loopback (`Ipv4Addr::LOCALHOST`, `Ipv6Addr::LOCALHOST`)",
+                    i + 1
+                ));
+            }
+            if !line.contains("Udp") {
+                continue;
+            }
         }
         if let Some(api) = NETWORK.iter().find(|n| line.contains(**n)) {
             out.push(format!(
@@ -201,5 +221,14 @@ mod tests {
         assert_eq!(check_source("f.rs", bad).len(), 2);
         let ok = "use tokio::net::UnixStream;\n// a TcpStream in a comment\n#[cfg(test)]\nmod tests { use std::net::TcpListener; }\n";
         assert!(check_source("f.rs", ok).is_empty());
+    }
+
+    #[test]
+    fn forwards_use_tcp_only_on_the_loopback() {
+        let ok = "use tokio::net::TcpListener;\nlet l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await;\nlet s = TcpStream::connect((Ipv6Addr::LOCALHOST, port)).await;\n";
+        assert!(check_source(LOOPBACK_ONLY, ok).is_empty());
+        assert_eq!(check_source("crates/x/src/f.rs", ok).len(), 3);
+        let wide = "let l = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).await;\nlet s = TcpStream::connect(addr).await;\nlet u = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0));\n";
+        assert_eq!(check_source(LOOPBACK_ONLY, wide).len(), 3);
     }
 }

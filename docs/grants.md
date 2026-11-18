@@ -42,6 +42,9 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `actions.submit` on a pane (split, resize, select, zoom, input, keys, kill) | That pane in scope |
 | `actions.submit` on a window or session (select, rename, kill, new window) | `all_panes` |
 | `terminal.mirrors`, `daemon.shutdown`, `tmux.prefix_key` (it runs whatever the user bound to the key), every `hosts.*` method | `all_panes` |
+| `hosts.forward`, `hosts.unforward` | `web.forward` in the grant (never the methods by name) and `all_panes`; see [Reaching a host's loopback](#reaching-a-hosts-loopback) |
+| `hosts.call` of `web.open` or `web.navigate` at a loopback address | Also `web.forward` |
+| `forward.open`, `forward.write`, `forward.ack`, `forward.close` | The owner grant: they are the coordinator's, on the host's daemon |
 | Metadata and the caller's own state (`tmux.topology`, `tmux.watch`, `terminal.list`, `daemon.version`, `actions.get`, `terminal.unsubscribe`, …) | Only the method |
 | `approvals.list`, `approvals.answer` | The owner grant: an agent never answers its own approvals |
 | `drawer.toggle` | The owner grant: it starts the user's harness with the user's authority. `drawer.status` needs only the method |
@@ -274,6 +277,33 @@ page is refused, and typing in its own page is routed to the desktop. With
 no desktop the call fails at once, and a desktop that does not show the
 pane says so to the caller. `crates/tui-runtime/tests/web_app.rs` checks
 that a web app's bridge is refused `web.read` without it.
+
+### Reaching a host's loopback
+
+A page at a remote host's loopback address (`localhost`, `127.x.y.z`,
+`[::1]`, over `http` or `https`) is shown in the desktop through a forward
+over the host's SSH connection ([remote.md](remote.md#forwards)). That
+reaches services the host exposes to no one else, so it takes one grant
+entry, `web.forward`:
+
+- **Not a method.** Listing `hosts.forward` by name (or `hosts.*`) allows
+  nothing; `web.forward` (or `web.*`) allows `hosts.forward` and
+  `hosts.unforward`. Like every `hosts.*` method they also need
+  `all_panes`.
+- **Pages on a host.** `hosts.call` of `web.open` or `web.navigate` whose
+  address is on the host's loopback (as typed: `localhost:3000` counts) is
+  refused without `web.forward`, so an agent cannot have the desktop
+  forward a port it may not.
+- **The owner may.** The owner grant has it: the desktop forwards the page
+  of any web pane in a host's window, and the user's own `dream` may call
+  `hosts.forward`.
+- **Apps.** An app holds it only when its manifest's `capabilities` list
+  `web.forward`. An agent session holds it only when its grant lists it.
+
+`crates/server/src/grants.rs` and `crates/server/tests/hosts.rs` check
+that a connection with `hosts.*` and every pane, but not `web.forward`,
+is refused both `hosts.forward` and a `web.open` of `localhost:PORT` on a
+host.
 
 ### What this does and does not protect
 

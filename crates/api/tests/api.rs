@@ -445,6 +445,24 @@ impl Service for Fixed {
     async fn hosts_call(&self, _: api::HostCall) -> Result<api::HostReply, RpcError> {
         Ok(api::HostReply::default())
     }
+    async fn hosts_forward(&self, _: api::HostForward) -> Result<api::HostForwarded, RpcError> {
+        Ok(api::HostForwarded::default())
+    }
+    async fn hosts_unforward(&self, _: api::HostForwardRef) -> Result<api::Empty, RpcError> {
+        Ok(api::Empty::default())
+    }
+    async fn forward_open(&self, _: api::ForwardOpen) -> Result<api::ForwardStream, RpcError> {
+        Ok(api::ForwardStream::default())
+    }
+    async fn forward_write(&self, _: api::ForwardData) -> Result<api::Empty, RpcError> {
+        Ok(api::Empty::default())
+    }
+    async fn forward_ack(&self, _: api::ForwardAck) -> Result<api::Empty, RpcError> {
+        Ok(api::Empty::default())
+    }
+    async fn forward_close(&self, _: api::ForwardStream) -> Result<api::Empty, RpcError> {
+        Ok(api::Empty::default())
+    }
     async fn agent_sessions_create(
         &self,
         _: api::AgentSessionCreate,

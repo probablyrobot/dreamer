@@ -550,13 +550,40 @@ it across desktop restarts all come from tmux.
   elsewhere they still reach the program in the pane.
 - **Where pages run.** On this Mac, in the desktop's process and
   Chromium's helper processes; Chromium's profiles are in `web/` in the
-  desktop's state directory. A pane of a remote host's tmux shows the placeholder's
-  text, not the page.
+  desktop's state directory. See [Pages of a remote host](#pages-of-a-remote-host)
+  for web panes in a host's window.
 - **Lifetime.** The page lives while a desktop window shows its pane (or
   kept it among its recently shown panes) and loads again when the pane
   is shown after that, after a desktop restart for example, scrolled back
   to where tmux keeps it. Closing the pane closes the page. Chromium
   starts with the first web pane, not with the app.
+
+### Pages of a remote host
+
+A web pane in a remote host's window shows its page here too, on this
+machine. A page on the host's own loopback (`http://localhost:3000`,
+`127.0.0.1`, `[::1]`) is reached through a forward over the SSH
+connection the coordinator already holds
+([remote.md](remote.md#forwards)): no new SSH connection, and nothing
+listening on any network.
+
+- **Addresses.** Chromium loads the page from the forward's port on this
+  machine's 127.0.0.1 (`http://localhost:49731/` for the host's
+  `http://localhost:3000/`). Everything else keeps the address as the host
+  means it: the address bar, what the placeholder and tmux keep, and
+  `dream browser --pane`. Only the forwarded port is translated; a link
+  to another loopback port loads this machine's. The note under the page
+  names the host (`web: http://localhost:3000/ on devbox`).
+- **Who may.** The desktop holds the owner grant, so it forwards any page
+  of a host's window the user looks at. An agent or app that opens or
+  loads such a page on a host needs `web.forward` in its grant
+  ([grants.md](grants.md#reaching-a-hosts-loopback)).
+- **Lifetime.** The pane holds the forward while its page is held (shown,
+  or among recently shown panes), on a connection of its own to the local
+  daemon; when no pane holds it, the forward and every connection through
+  it close. A page moved to another port gets a new forward.
+- **Not drawn.** A `file:` page in a host's window is the host's file, so
+  the pane shows the placeholder's text instead.
 
 ### The browser
 

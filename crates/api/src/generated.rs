@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 59;
+pub const PROTOCOL_MINOR: u32 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2674,6 +2674,81 @@ pub struct UpgradeResult {
     pub pid_after: Option<u32>,
     #[prost(string, tag = "6")]
     pub note: String,
+}
+
+/// A TCP port on a connected host's own loopback, to reach from this machine through the host's SSH connection (hosts.forward). Nothing on the host listens for it, and nothing is exposed on the network.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostForward {
+    /// The host.
+    #[prost(string, tag = "1")]
+    pub name: String,
+    /// The port on the host's loopback (127.0.0.1, else ::1).
+    #[prost(uint32, tag = "2")]
+    pub port: u32,
+}
+
+/// A forward held by the calling connection until hosts.unforward or until the connection closes. Holds of one host port share one listener, closed when the last hold goes.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostForwarded {
+    /// This hold, for hosts.unforward.
+    #[prost(uint64, tag = "1")]
+    pub forward: u64,
+    /// The port on this machine's 127.0.0.1 that reaches the host's port.
+    #[prost(uint32, tag = "2")]
+    pub local_port: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostForwardRef {
+    #[prost(uint64, tag = "1")]
+    pub forward: u64,
+}
+
+/// A new stream to a port on this daemon's own loopback, for the coordinator's connection (forward.open). Its data arrives as `forward.data` bulk records, only as far as the caller's credit (forward.ack) allows.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ForwardOpen {
+    #[prost(uint32, tag = "1")]
+    pub port: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ForwardStream {
+    /// Unique within the daemon; belongs to the connection that opened it.
+    #[prost(uint64, tag = "1")]
+    pub stream: u64,
+}
+
+/// Bytes of a forward stream, in order, in either direction.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ForwardData {
+    #[prost(uint64, tag = "1")]
+    pub stream: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    #[serde(with = "crate::json::base64")]
+    pub data: Vec<u8>,
+    /// Nothing more follows in this direction (after data, if any).
+    #[prost(bool, tag = "3")]
+    pub eof: bool,
+    /// Why the stream ended, when it failed.
+    #[prost(string, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Credit for a stream's incoming data, in bytes, given as the receiver passes data on.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ForwardAck {
+    #[prost(uint64, tag = "1")]
+    pub stream: u64,
+    #[prost(uint32, tag = "2")]
+    pub bytes: u32,
 }
 
 /// The remote daemon's result for a HostCall, as Protobuf.
@@ -5479,6 +5554,12 @@ pub mod method {
     pub const HOSTS_INSTALL: &str = "hosts.install";
     pub const HOSTS_UPGRADE: &str = "hosts.upgrade";
     pub const HOSTS_CALL: &str = "hosts.call";
+    pub const HOSTS_FORWARD: &str = "hosts.forward";
+    pub const HOSTS_UNFORWARD: &str = "hosts.unforward";
+    pub const FORWARD_OPEN: &str = "forward.open";
+    pub const FORWARD_WRITE: &str = "forward.write";
+    pub const FORWARD_ACK: &str = "forward.ack";
+    pub const FORWARD_CLOSE: &str = "forward.close";
     pub const GRANTS_NARROW: &str = "grants.narrow";
     pub const GRANTS_CURRENT: &str = "grants.current";
     pub const APPS_LAUNCH: &str = "apps.launch";
@@ -5791,6 +5872,48 @@ pub const METHODS: &[MethodInfo] = &[
         result: "HostReply",
         mutation: true,
         doc: "Forward one typed call to a connected host's daemon.",
+    },
+    MethodInfo {
+        name: "hosts.forward",
+        params: "HostForward",
+        result: "HostForwarded",
+        mutation: true,
+        doc: "Reach a port on a connected host's loopback from a port on this machine's 127.0.0.1, over the host's SSH connection; held until hosts.unforward or the connection closes (needs web.forward in the grant).",
+    },
+    MethodInfo {
+        name: "hosts.unforward",
+        params: "HostForwardRef",
+        result: "Empty",
+        mutation: true,
+        doc: "Give up a hold from hosts.forward; the listener closes with its last hold.",
+    },
+    MethodInfo {
+        name: "forward.open",
+        params: "ForwardOpen",
+        result: "ForwardStream",
+        mutation: true,
+        doc: "Open a stream to a port on this daemon's loopback (the coordinator's, owner only); data arrives as forward.data within the credit forward.ack gives.",
+    },
+    MethodInfo {
+        name: "forward.write",
+        params: "ForwardData",
+        result: "Empty",
+        mutation: true,
+        doc: "Send bytes on a forward stream, or end its sending side (eof); answered once queued.",
+    },
+    MethodInfo {
+        name: "forward.ack",
+        params: "ForwardAck",
+        result: "Empty",
+        mutation: true,
+        doc: "Give a forward stream credit for this many more bytes of incoming data.",
+    },
+    MethodInfo {
+        name: "forward.close",
+        params: "ForwardStream",
+        result: "Empty",
+        mutation: true,
+        doc: "Close a forward stream in both directions.",
     },
     MethodInfo {
         name: "grants.narrow",
@@ -6368,6 +6491,12 @@ pub enum Request {
     HostsInstall(InstallParams),
     HostsUpgrade(UpgradeParams),
     HostsCall(HostCall),
+    HostsForward(HostForward),
+    HostsUnforward(HostForwardRef),
+    ForwardOpen(ForwardOpen),
+    ForwardWrite(ForwardData),
+    ForwardAck(ForwardAck),
+    ForwardClose(ForwardStream),
     GrantsNarrow(Grant),
     GrantsCurrent(Empty),
     AppsLaunch(LaunchApp),
@@ -6482,6 +6611,12 @@ impl Request {
             Self::HostsInstall(_) => "hosts.install",
             Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
+            Self::HostsForward(_) => "hosts.forward",
+            Self::HostsUnforward(_) => "hosts.unforward",
+            Self::ForwardOpen(_) => "forward.open",
+            Self::ForwardWrite(_) => "forward.write",
+            Self::ForwardAck(_) => "forward.ack",
+            Self::ForwardClose(_) => "forward.close",
             Self::GrantsNarrow(_) => "grants.narrow",
             Self::GrantsCurrent(_) => "grants.current",
             Self::AppsLaunch(_) => "apps.launch",
@@ -6597,6 +6732,12 @@ impl Request {
             Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsForward(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsUnforward(v) => ::prost::Message::encode_to_vec(v),
+            Self::ForwardOpen(v) => ::prost::Message::encode_to_vec(v),
+            Self::ForwardWrite(v) => ::prost::Message::encode_to_vec(v),
+            Self::ForwardAck(v) => ::prost::Message::encode_to_vec(v),
+            Self::ForwardClose(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsNarrow(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
@@ -6719,6 +6860,12 @@ impl Request {
             "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
+            "hosts.forward" => Ok(Self::HostsForward(::prost::Message::decode(bytes)?)),
+            "hosts.unforward" => Ok(Self::HostsUnforward(::prost::Message::decode(bytes)?)),
+            "forward.open" => Ok(Self::ForwardOpen(::prost::Message::decode(bytes)?)),
+            "forward.write" => Ok(Self::ForwardWrite(::prost::Message::decode(bytes)?)),
+            "forward.ack" => Ok(Self::ForwardAck(::prost::Message::decode(bytes)?)),
+            "forward.close" => Ok(Self::ForwardClose(::prost::Message::decode(bytes)?)),
             "grants.narrow" => Ok(Self::GrantsNarrow(::prost::Message::decode(bytes)?)),
             "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
             "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
@@ -6848,6 +6995,12 @@ impl Request {
             Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsForward(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsUnforward(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ForwardOpen(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ForwardWrite(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ForwardAck(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ForwardClose(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsNarrow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -6968,6 +7121,12 @@ impl Request {
             "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
+            "hosts.forward" => Ok(Self::HostsForward(serde_json::from_value(value)?)),
+            "hosts.unforward" => Ok(Self::HostsUnforward(serde_json::from_value(value)?)),
+            "forward.open" => Ok(Self::ForwardOpen(serde_json::from_value(value)?)),
+            "forward.write" => Ok(Self::ForwardWrite(serde_json::from_value(value)?)),
+            "forward.ack" => Ok(Self::ForwardAck(serde_json::from_value(value)?)),
+            "forward.close" => Ok(Self::ForwardClose(serde_json::from_value(value)?)),
             "grants.narrow" => Ok(Self::GrantsNarrow(serde_json::from_value(value)?)),
             "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
             "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
@@ -7095,6 +7254,12 @@ pub enum Response {
     HostsInstall(InstallResult),
     HostsUpgrade(UpgradeResult),
     HostsCall(HostReply),
+    HostsForward(HostForwarded),
+    HostsUnforward(Empty),
+    ForwardOpen(ForwardStream),
+    ForwardWrite(Empty),
+    ForwardAck(Empty),
+    ForwardClose(Empty),
     GrantsNarrow(Grant),
     GrantsCurrent(Grant),
     AppsLaunch(LaunchedApp),
@@ -7209,6 +7374,12 @@ impl Response {
             Self::HostsInstall(_) => "hosts.install",
             Self::HostsUpgrade(_) => "hosts.upgrade",
             Self::HostsCall(_) => "hosts.call",
+            Self::HostsForward(_) => "hosts.forward",
+            Self::HostsUnforward(_) => "hosts.unforward",
+            Self::ForwardOpen(_) => "forward.open",
+            Self::ForwardWrite(_) => "forward.write",
+            Self::ForwardAck(_) => "forward.ack",
+            Self::ForwardClose(_) => "forward.close",
             Self::GrantsNarrow(_) => "grants.narrow",
             Self::GrantsCurrent(_) => "grants.current",
             Self::AppsLaunch(_) => "apps.launch",
@@ -7324,6 +7495,12 @@ impl Response {
             Self::HostsInstall(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsUpgrade(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsCall(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsForward(v) => ::prost::Message::encode_to_vec(v),
+            Self::HostsUnforward(v) => ::prost::Message::encode_to_vec(v),
+            Self::ForwardOpen(v) => ::prost::Message::encode_to_vec(v),
+            Self::ForwardWrite(v) => ::prost::Message::encode_to_vec(v),
+            Self::ForwardAck(v) => ::prost::Message::encode_to_vec(v),
+            Self::ForwardClose(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsNarrow(v) => ::prost::Message::encode_to_vec(v),
             Self::GrantsCurrent(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsLaunch(v) => ::prost::Message::encode_to_vec(v),
@@ -7446,6 +7623,12 @@ impl Response {
             "hosts.install" => Ok(Self::HostsInstall(::prost::Message::decode(bytes)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(::prost::Message::decode(bytes)?)),
             "hosts.call" => Ok(Self::HostsCall(::prost::Message::decode(bytes)?)),
+            "hosts.forward" => Ok(Self::HostsForward(::prost::Message::decode(bytes)?)),
+            "hosts.unforward" => Ok(Self::HostsUnforward(::prost::Message::decode(bytes)?)),
+            "forward.open" => Ok(Self::ForwardOpen(::prost::Message::decode(bytes)?)),
+            "forward.write" => Ok(Self::ForwardWrite(::prost::Message::decode(bytes)?)),
+            "forward.ack" => Ok(Self::ForwardAck(::prost::Message::decode(bytes)?)),
+            "forward.close" => Ok(Self::ForwardClose(::prost::Message::decode(bytes)?)),
             "grants.narrow" => Ok(Self::GrantsNarrow(::prost::Message::decode(bytes)?)),
             "grants.current" => Ok(Self::GrantsCurrent(::prost::Message::decode(bytes)?)),
             "apps.launch" => Ok(Self::AppsLaunch(::prost::Message::decode(bytes)?)),
@@ -7575,6 +7758,12 @@ impl Response {
             Self::HostsInstall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsUpgrade(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsCall(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsForward(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::HostsUnforward(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ForwardOpen(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ForwardWrite(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ForwardAck(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ForwardClose(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsNarrow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::GrantsCurrent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsLaunch(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -7695,6 +7884,12 @@ impl Response {
             "hosts.install" => Ok(Self::HostsInstall(serde_json::from_value(value)?)),
             "hosts.upgrade" => Ok(Self::HostsUpgrade(serde_json::from_value(value)?)),
             "hosts.call" => Ok(Self::HostsCall(serde_json::from_value(value)?)),
+            "hosts.forward" => Ok(Self::HostsForward(serde_json::from_value(value)?)),
+            "hosts.unforward" => Ok(Self::HostsUnforward(serde_json::from_value(value)?)),
+            "forward.open" => Ok(Self::ForwardOpen(serde_json::from_value(value)?)),
+            "forward.write" => Ok(Self::ForwardWrite(serde_json::from_value(value)?)),
+            "forward.ack" => Ok(Self::ForwardAck(serde_json::from_value(value)?)),
+            "forward.close" => Ok(Self::ForwardClose(serde_json::from_value(value)?)),
             "grants.narrow" => Ok(Self::GrantsNarrow(serde_json::from_value(value)?)),
             "grants.current" => Ok(Self::GrantsCurrent(serde_json::from_value(value)?)),
             "apps.launch" => Ok(Self::AppsLaunch(serde_json::from_value(value)?)),
@@ -7946,6 +8141,36 @@ pub trait Service: Sync {
         &self,
         params: HostCall,
     ) -> impl ::core::future::Future<Output = Result<HostReply, RpcError>> + Send;
+    /// Reach a port on a connected host's loopback from a port on this machine's 127.0.0.1, over the host's SSH connection; held until hosts.unforward or the connection closes (needs web.forward in the grant).
+    fn hosts_forward(
+        &self,
+        params: HostForward,
+    ) -> impl ::core::future::Future<Output = Result<HostForwarded, RpcError>> + Send;
+    /// Give up a hold from hosts.forward; the listener closes with its last hold.
+    fn hosts_unforward(
+        &self,
+        params: HostForwardRef,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Open a stream to a port on this daemon's loopback (the coordinator's, owner only); data arrives as forward.data within the credit forward.ack gives.
+    fn forward_open(
+        &self,
+        params: ForwardOpen,
+    ) -> impl ::core::future::Future<Output = Result<ForwardStream, RpcError>> + Send;
+    /// Send bytes on a forward stream, or end its sending side (eof); answered once queued.
+    fn forward_write(
+        &self,
+        params: ForwardData,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Give a forward stream credit for this many more bytes of incoming data.
+    fn forward_ack(
+        &self,
+        params: ForwardAck,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Close a forward stream in both directions.
+    fn forward_close(
+        &self,
+        params: ForwardStream,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
     /// Give up authority on this connection: the new grant must be within the current one. Nothing widens a grant.
     fn grants_narrow(
         &self,
@@ -8403,6 +8628,15 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::HostsInstall(p) => service.hosts_install(p).await.map(Response::HostsInstall),
         Request::HostsUpgrade(p) => service.hosts_upgrade(p).await.map(Response::HostsUpgrade),
         Request::HostsCall(p) => service.hosts_call(p).await.map(Response::HostsCall),
+        Request::HostsForward(p) => service.hosts_forward(p).await.map(Response::HostsForward),
+        Request::HostsUnforward(p) => service
+            .hosts_unforward(p)
+            .await
+            .map(Response::HostsUnforward),
+        Request::ForwardOpen(p) => service.forward_open(p).await.map(Response::ForwardOpen),
+        Request::ForwardWrite(p) => service.forward_write(p).await.map(Response::ForwardWrite),
+        Request::ForwardAck(p) => service.forward_ack(p).await.map(Response::ForwardAck),
+        Request::ForwardClose(p) => service.forward_close(p).await.map(Response::ForwardClose),
         Request::GrantsNarrow(p) => service.grants_narrow(p).await.map(Response::GrantsNarrow),
         Request::GrantsCurrent(p) => service.grants_current(p).await.map(Response::GrantsCurrent),
         Request::AppsLaunch(p) => service.apps_launch(p).await.map(Response::AppsLaunch),
@@ -8579,6 +8813,8 @@ pub mod topic {
     pub const TAPS_DATA: &str = "taps.data";
     /// Events of a followed agent session, in order.
     pub const AGENT_SESSIONS_EVENTS: &str = "agent.sessions.events";
+    /// Data of a forward stream from the host's port, in order (a bulk record on the native wire, behind every priority frame); the last has eof.
+    pub const FORWARD_DATA: &str = "forward.data";
     /// A key, text, click, or wheel steps for this registered app host, sent by the user's desktop (apps.input).
     pub const APPS_INPUT: &str = "apps.input";
 }
@@ -8594,6 +8830,7 @@ pub enum Notification {
     MessagesDeliver(MessageDelivery),
     TapsData(TapData),
     AgentSessionsEvents(AgentSessionEvents),
+    ForwardData(ForwardData),
     AppsInput(AppInput),
 }
 
@@ -8608,6 +8845,7 @@ impl Notification {
             Self::MessagesDeliver(_) => "messages.deliver",
             Self::TapsData(_) => "taps.data",
             Self::AgentSessionsEvents(_) => "agent.sessions.events",
+            Self::ForwardData(_) => "forward.data",
             Self::AppsInput(_) => "apps.input",
         }
     }
@@ -8622,6 +8860,7 @@ impl Notification {
             Self::MessagesDeliver(v) => ::prost::Message::encode_to_vec(v),
             Self::TapsData(v) => ::prost::Message::encode_to_vec(v),
             Self::AgentSessionsEvents(v) => ::prost::Message::encode_to_vec(v),
+            Self::ForwardData(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsInput(v) => ::prost::Message::encode_to_vec(v),
         }
     }
@@ -8638,6 +8877,7 @@ impl Notification {
             "agent.sessions.events" => {
                 Ok(Self::AgentSessionsEvents(::prost::Message::decode(bytes)?))
             }
+            "forward.data" => Ok(Self::ForwardData(::prost::Message::decode(bytes)?)),
             "apps.input" => Ok(Self::AppsInput(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
@@ -8653,6 +8893,7 @@ impl Notification {
             Self::MessagesDeliver(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TapsData(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AgentSessionsEvents(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::ForwardData(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsInput(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
@@ -8669,6 +8910,7 @@ impl Notification {
             "agent.sessions.events" => {
                 Ok(Self::AgentSessionsEvents(serde_json::from_value(value)?))
             }
+            "forward.data" => Ok(Self::ForwardData(serde_json::from_value(value)?)),
             "apps.input" => Ok(Self::AppsInput(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }

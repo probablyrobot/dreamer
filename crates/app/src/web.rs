@@ -40,6 +40,14 @@
 //! daemon through the bridge as the app ([`web_engine::site`]). It has no
 //! browser chrome, and its title and scroll position are not kept anywhere.
 //!
+//! A web pane in a remote host's session shows its page on this machine.
+//! A page on the host's own loopback (`http://localhost:3000`) is reached
+//! through a forward over the host's SSH connection ([`Forward`]): the
+//! page loads from the forward's port on this machine's loopback, while
+//! the address bar, the placeholder, and what is kept in tmux keep the
+//! address as the host means it. The forward is held while the pane's
+//! page is, and closes when no web pane uses it.
+//!
 //! Chromium starts with the first web pane, not with the app. A build
 //! without the `web` feature, or one not running from a bundle with the
 //! framework and its helper apps, shows the page's address and why it
@@ -231,6 +239,16 @@ fn found_text(found: Option<(u32, u32)>, query: &str) -> String {
     }
 }
 
+/// A page on a remote host's loopback, reached through a forward
+/// (`hosts.forward`): the host, the page's port there, and, once the
+/// forward is up, the port on this machine's loopback that reaches it.
+pub(crate) struct Forward {
+    pub(crate) host: String,
+    remote: u16,
+    local: Option<u16>,
+    _held: replica::forward::Held,
+}
+
 pub(crate) struct WebPane {
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     pub(crate) pane: u32,
@@ -255,6 +273,8 @@ pub(crate) struct WebPane {
     app: Option<web_engine::AppPage>,
     /// The browser's chrome (a plain web pane only).
     pub(crate) bar: Bar,
+    /// For a page on a remote host's loopback: its forward.
+    pub(crate) forward: Option<Forward>,
     #[cfg(feature = "web")]
     pub(crate) view: Option<web_engine::WebView>,
     /// Waiting for Chromium to make or load the page's profile before the
@@ -306,11 +326,91 @@ impl WebPane {
             problem,
             app,
             bar: Bar::default(),
+            forward: None,
             #[cfg(feature = "web")]
             view: None,
             #[cfg(feature = "web")]
             profile_wait: false,
             _focus,
+        }
+    }
+
+    /// Reach the page, on port `port` of remote host `host`'s loopback,
+    /// through a forward from the daemon at `socket`. The page opens once
+    /// the forward is up.
+    pub(crate) fn forward_from(
+        &mut self,
+        host: String,
+        port: u16,
+        socket: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let (held, rx) = match replica::forward::hold(socket, host.clone(), port) {
+            Ok(h) => h,
+            Err(e) => {
+                self.problem = Some(format!("No forward to port {port} on {host}: {e}"));
+                return;
+            }
+        };
+        self.forward = Some(Forward {
+            host: host.clone(),
+            remote: port,
+            local: None,
+            _held: held,
+        });
+        cx.spawn(async move |this, cx| {
+            let got = rx
+                .recv()
+                .await
+                .unwrap_or_else(|_| Err("the forward ended".into()));
+            let _ = this.update(cx, |w, cx| {
+                match got {
+                    Ok(local) => {
+                        if let Some(f) = &mut w.forward {
+                            f.local = Some(local);
+                        }
+                    }
+                    Err(e) => {
+                        w.problem = Some(format!("No forward to port {port} on {host}: {e}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The address Chromium loads for `url`: through the forward when it
+    /// is the forwarded page's port on the loopback.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    fn load_url(&self, url: &str) -> String {
+        use workspace_config::browser::{loopback_port, on_port};
+        match &self.forward {
+            Some(Forward {
+                remote,
+                local: Some(local),
+                ..
+            }) if loopback_port(url) == Some(*remote) => {
+                on_port(url, *local).unwrap_or_else(|| url.to_owned())
+            }
+            _ => url.to_owned(),
+        }
+    }
+
+    /// The address as the host means it, for an address Chromium shows:
+    /// the forward's port becomes the host's again.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    fn host_url(&self, url: &str) -> String {
+        use workspace_config::browser::{loopback_port, on_port};
+        match &self.forward {
+            Some(Forward {
+                remote,
+                local: Some(local),
+                ..
+            }) if loopback_port(url) == Some(*local) => {
+                on_port(url, *remote).unwrap_or_else(|| url.to_owned())
+            }
+            _ => url.to_owned(),
         }
     }
 
@@ -452,7 +552,7 @@ impl WebPane {
         let now: Option<String> = None;
         let url = now
             .filter(|u| !u.is_empty())
-            .unwrap_or_else(|| self.url.clone());
+            .map_or_else(|| self.url.clone(), |u| self.host_url(&u));
         self.bar.open_address(&url);
         self.release_focus();
         cx.notify();
@@ -515,7 +615,7 @@ impl WebPane {
                     self.bar.keys = false;
                     #[cfg(feature = "web")]
                     if let Some(v) = &self.view {
-                        v.load(&url);
+                        v.load(&self.load_url(&url));
                     }
                     #[cfg(not(feature = "web"))]
                     let _ = url;
@@ -583,7 +683,7 @@ impl WebPane {
                 } else {
                     error
                 };
-                self.bar.address = Some((url, false));
+                self.bar.address = Some((self.host_url(&url), false));
                 self.bar.error = Some(error);
                 self.bar.keys = self.focus_is_ours(cx);
                 if self.bar.keys {
@@ -632,7 +732,7 @@ impl WebPane {
         self.kept = (String::new(), 0, 0);
         #[cfg(feature = "web")]
         if let Some(v) = &self.view {
-            v.load(url);
+            v.load(&self.load_url(url));
         }
     }
 
@@ -692,7 +792,7 @@ impl WebPane {
             return;
         }
         let title = v.title();
-        let url = Some(v.url())
+        let url = Some(self.host_url(&v.url()))
             .filter(|u| *u != self.url && workspace_config::browser::web_url_allowed(u));
         let (tx, rx) = async_channel::bounded(1);
         v.scroll_position(move |at| {
@@ -778,7 +878,9 @@ impl WebPane {
             width: f32::from(bounds.size.width),
             height: f32::from(bounds.size.height),
         };
-        if self.view.is_none() && !self.profile_ready(cx) {
+        // A page through a forward opens once the forward is up.
+        let forwarding = self.forward.as_ref().is_some_and(|f| f.local.is_none());
+        if self.view.is_none() && (forwarding || !self.profile_ready(cx)) {
             return;
         }
         if self.view.is_none() {
@@ -803,7 +905,8 @@ impl WebPane {
             })
             .detach();
             let app = self.app.clone();
-            match web_engine::WebView::open(window, rect, &self.url, app, move |e| {
+            let url = self.load_url(&self.url);
+            match web_engine::WebView::open(window, rect, &url, app, move |e| {
                 let _ = tx.try_send(e);
             }) {
                 Ok(v) => {
@@ -966,7 +1069,10 @@ impl Render for WebPane {
             .gap_1()
             .text_size(px(12.0))
             .text_color(c(t.muted))
-            .child(format!("web: {}", shorten(&self.url, 200)))
+            .child(match &self.forward {
+                Some(f) => format!("web: {} on {}", shorten(&self.url, 200), f.host),
+                None => format!("web: {}", shorten(&self.url, 200)),
+            })
             .children(
                 self.problem
                     .clone()
