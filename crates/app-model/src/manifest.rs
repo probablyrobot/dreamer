@@ -1072,7 +1072,12 @@ impl Manifest {
                 Some(s) => api::METHODS
                     .iter()
                     .any(|m| m.name.starts_with(&format!("{s}."))),
-                None => method_info(c).is_some() || c == api::MANAGE_FILTERS || c == PROCESS,
+                None => {
+                    method_info(c).is_some()
+                        || c == api::MANAGE_FILTERS
+                        || c == api::INSPECT_WEB
+                        || c == PROCESS
+                }
             };
             if !known {
                 errors.push(format!(

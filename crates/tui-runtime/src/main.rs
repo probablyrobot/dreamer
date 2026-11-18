@@ -109,9 +109,18 @@ fn main() -> ExitCode {
                 }
             };
             match checked(path) {
+                // A web app's view is its page: the host runs it as
+                // usual, and the desktop draws the page.
+                Ok(m) if m.is_web_app() => match run(PathBuf::from(path), false, None) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("dreamer-termapp: {e}");
+                        ExitCode::FAILURE
+                    }
+                },
                 Ok(m) if !m.draws_own_view() => {
                     eprintln!(
-                        "a live preview runs script and process apps; preview a manifest app with --preview"
+                        "a live preview runs script, process, and web apps; preview a manifest app with --preview"
                     );
                     ExitCode::from(2)
                 }

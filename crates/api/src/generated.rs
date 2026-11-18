@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 58;
+pub const PROTOCOL_MINOR: u32 = 59;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2929,6 +2929,12 @@ pub struct AppCaptureRequest {
     pub path: String,
     #[prost(uint64, tag = "4")]
     pub seq: u64,
+    /// A web.* method (web.read, web.screenshot, web.click, web.type) to run on the pane's page instead of taking an image; empty for apps.capture.
+    #[prost(string, tag = "5")]
+    pub method: String,
+    /// That method's parameters, as the API's JSON.
+    #[prost(string, tag = "6")]
+    pub params: String,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -2944,6 +2950,9 @@ pub struct AppCaptureDone {
     pub width: u32,
     #[prost(uint32, tag = "4")]
     pub height: u32,
+    /// For a request with a method, its result as the API's JSON.
+    #[prost(string, tag = "5")]
+    pub result: String,
 }
 
 /// A call a web page of the app in pane makes through its bridge (window.dreamer.call), passed on by the desktop drawing the page. The daemon runs it as that app: under the app's grant, as the app's own connection would.
@@ -4827,6 +4836,113 @@ pub struct WebNavigate {
     pub endpoint: Option<String>,
 }
 
+/// Read the page of a web pane, or of an app pane whose view is a page (a web app), from the desktop showing it. Needs web.inspect in the caller's grant.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebRead {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// Also the page's accessibility tree.
+    #[prost(bool, tag = "2")]
+    pub tree: bool,
+    /// How long to wait for the desktop's answer; default 10000, at most 60000.
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
+}
+
+/// A node of a page's accessibility tree, in document order.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebNode {
+    /// The element's id for web.click and web.type, valid while the page stays loaded; 0 when the node is not an element.
+    #[prost(uint64, tag = "1")]
+    pub node: u64,
+    /// How many of the nodes listed contain it.
+    #[prost(uint32, tag = "2")]
+    pub depth: u32,
+    /// Its role, such as heading, link, textbox, or button.
+    #[prost(string, tag = "3")]
+    pub role: String,
+    /// Its accessible name.
+    #[prost(string, tag = "4")]
+    pub name: String,
+    /// Its value, for a field.
+    #[prost(string, tag = "5")]
+    pub value: String,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebPage {
+    #[prost(string, tag = "1")]
+    pub url: String,
+    #[prost(string, tag = "2")]
+    pub title: String,
+    /// The page's text as it is rendered (the body's innerText), at most 100000 characters.
+    #[prost(string, tag = "3")]
+    pub text: String,
+    /// With tree: the accessibility tree without ignored, generic, and inline text nodes, at most 2000 nodes.
+    #[prost(message, repeated, tag = "4")]
+    pub nodes: Vec<WebNode>,
+    /// The text or the tree was cut at its bound.
+    #[prost(bool, tag = "5")]
+    pub truncated: bool,
+}
+
+/// An image of the page of a web pane (or a web app's pane) as Chromium draws it, written as a PNG file by the desktop showing it. Needs web.inspect.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebScreenshot {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    /// Absolute path of the PNG file; replaced when it exists.
+    #[prost(string, tag = "2")]
+    pub path: String,
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
+}
+
+/// Click an element of the page of a web pane (or a web app's pane): a mouse click in the middle of the element, once it is scrolled into view. Name the element by node (from web.read's tree) or by a CSS selector (its first match). Needs web.inspect.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebClick {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(uint64, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<u64>,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    #[prost(uint32, optional, tag = "4")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
+}
+
+/// Type text into the page of a web pane (or a web app's pane): into the element named by node or selector, focused first, else into what has the page's focus. The text is inserted at the caret as typed; the clipboard is not used. Needs web.inspect.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebType {
+    #[prost(uint32, tag = "1")]
+    pub pane: u32,
+    #[prost(uint64, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<u64>,
+    #[prost(string, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    #[prost(string, tag = "4")]
+    pub text: String,
+    /// Then press Enter, which submits a form from one of its fields.
+    #[prost(bool, tag = "5")]
+    pub submit: bool,
+    #[prost(uint32, optional, tag = "6")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
+}
+
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSessionCreate {
@@ -5436,6 +5552,10 @@ pub mod method {
     pub const WEB_OPEN: &str = "web.open";
     pub const WEB_STATE: &str = "web.state";
     pub const WEB_NAVIGATE: &str = "web.navigate";
+    pub const WEB_READ: &str = "web.read";
+    pub const WEB_SCREENSHOT: &str = "web.screenshot";
+    pub const WEB_CLICK: &str = "web.click";
+    pub const WEB_TYPE: &str = "web.type";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6183,6 +6303,34 @@ pub const METHODS: &[MethodInfo] = &[
         mutation: true,
         doc: "Load another address in a web pane: its URL in tmux changes, and the desktop drawing it navigates there (owner, or an agent at own or elsewhere, which asks for a pane it did not create).",
     },
+    MethodInfo {
+        name: "web.read",
+        params: "WebRead",
+        result: "WebPage",
+        mutation: false,
+        doc: "A page's address, title, text, and (tree) accessibility tree, from the desktop showing it (needs web.inspect in the grant).",
+    },
+    MethodInfo {
+        name: "web.screenshot",
+        params: "WebScreenshot",
+        result: "AppCaptured",
+        mutation: true,
+        doc: "A page as Chromium draws it, written as a PNG file by the desktop showing it (needs web.inspect).",
+    },
+    MethodInfo {
+        name: "web.click",
+        params: "WebClick",
+        result: "Empty",
+        mutation: true,
+        doc: "Click an element of a page, by node or CSS selector (needs web.inspect; an agent acts on the pane, under its act level).",
+    },
+    MethodInfo {
+        name: "web.type",
+        params: "WebType",
+        result: "Empty",
+        mutation: true,
+        doc: "Type text into a page, into an element focused first if named, then optionally press Enter (needs web.inspect; an agent acts on the pane, under its act level).",
+    },
 ];
 
 /// A typed request for one method.
@@ -6293,6 +6441,10 @@ pub enum Request {
     WebOpen(WebOpen),
     WebState(WebState),
     WebNavigate(WebNavigate),
+    WebRead(WebRead),
+    WebScreenshot(WebScreenshot),
+    WebClick(WebClick),
+    WebType(WebType),
 }
 
 impl Request {
@@ -6403,6 +6555,10 @@ impl Request {
             Self::WebOpen(_) => "web.open",
             Self::WebState(_) => "web.state",
             Self::WebNavigate(_) => "web.navigate",
+            Self::WebRead(_) => "web.read",
+            Self::WebScreenshot(_) => "web.screenshot",
+            Self::WebClick(_) => "web.click",
+            Self::WebType(_) => "web.type",
         }
     }
 
@@ -6514,6 +6670,10 @@ impl Request {
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
             Self::WebState(v) => ::prost::Message::encode_to_vec(v),
             Self::WebNavigate(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebRead(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebScreenshot(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebClick(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebType(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -6646,6 +6806,10 @@ impl Request {
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
             "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
             "web.navigate" => Ok(Self::WebNavigate(::prost::Message::decode(bytes)?)),
+            "web.read" => Ok(Self::WebRead(::prost::Message::decode(bytes)?)),
+            "web.screenshot" => Ok(Self::WebScreenshot(::prost::Message::decode(bytes)?)),
+            "web.click" => Ok(Self::WebClick(::prost::Message::decode(bytes)?)),
+            "web.type" => Ok(Self::WebType(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6757,6 +6921,10 @@ impl Request {
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebNavigate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebRead(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebScreenshot(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebClick(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebType(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -6883,6 +7051,10 @@ impl Request {
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
             "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
             "web.navigate" => Ok(Self::WebNavigate(serde_json::from_value(value)?)),
+            "web.read" => Ok(Self::WebRead(serde_json::from_value(value)?)),
+            "web.screenshot" => Ok(Self::WebScreenshot(serde_json::from_value(value)?)),
+            "web.click" => Ok(Self::WebClick(serde_json::from_value(value)?)),
+            "web.type" => Ok(Self::WebType(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -6996,6 +7168,10 @@ pub enum Response {
     WebOpen(WebOpened),
     WebState(Empty),
     WebNavigate(Empty),
+    WebRead(WebPage),
+    WebScreenshot(AppCaptured),
+    WebClick(Empty),
+    WebType(Empty),
 }
 
 impl Response {
@@ -7106,6 +7282,10 @@ impl Response {
             Self::WebOpen(_) => "web.open",
             Self::WebState(_) => "web.state",
             Self::WebNavigate(_) => "web.navigate",
+            Self::WebRead(_) => "web.read",
+            Self::WebScreenshot(_) => "web.screenshot",
+            Self::WebClick(_) => "web.click",
+            Self::WebType(_) => "web.type",
         }
     }
 
@@ -7217,6 +7397,10 @@ impl Response {
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
             Self::WebState(v) => ::prost::Message::encode_to_vec(v),
             Self::WebNavigate(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebRead(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebScreenshot(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebClick(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebType(v) => ::prost::Message::encode_to_vec(v),
         }
     }
 
@@ -7349,6 +7533,10 @@ impl Response {
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
             "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
             "web.navigate" => Ok(Self::WebNavigate(::prost::Message::decode(bytes)?)),
+            "web.read" => Ok(Self::WebRead(::prost::Message::decode(bytes)?)),
+            "web.screenshot" => Ok(Self::WebScreenshot(::prost::Message::decode(bytes)?)),
+            "web.click" => Ok(Self::WebClick(::prost::Message::decode(bytes)?)),
+            "web.type" => Ok(Self::WebType(::prost::Message::decode(bytes)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -7460,6 +7648,10 @@ impl Response {
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebNavigate(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebRead(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebScreenshot(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebClick(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebType(v) => serde_json::to_value(v).unwrap_or_default(),
         }
     }
 
@@ -7586,6 +7778,10 @@ impl Response {
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
             "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
             "web.navigate" => Ok(Self::WebNavigate(serde_json::from_value(value)?)),
+            "web.read" => Ok(Self::WebRead(serde_json::from_value(value)?)),
+            "web.screenshot" => Ok(Self::WebScreenshot(serde_json::from_value(value)?)),
+            "web.click" => Ok(Self::WebClick(serde_json::from_value(value)?)),
+            "web.type" => Ok(Self::WebType(serde_json::from_value(value)?)),
             other => Err(crate::CallError::UnknownMethod(other.to_owned())),
         }
     }
@@ -8105,6 +8301,26 @@ pub trait Service: Sync {
         &self,
         params: WebNavigate,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// A page's address, title, text, and (tree) accessibility tree, from the desktop showing it (needs web.inspect in the grant).
+    fn web_read(
+        &self,
+        params: WebRead,
+    ) -> impl ::core::future::Future<Output = Result<WebPage, RpcError>> + Send;
+    /// A page as Chromium draws it, written as a PNG file by the desktop showing it (needs web.inspect).
+    fn web_screenshot(
+        &self,
+        params: WebScreenshot,
+    ) -> impl ::core::future::Future<Output = Result<AppCaptured, RpcError>> + Send;
+    /// Click an element of a page, by node or CSS selector (needs web.inspect; an agent acts on the pane, under its act level).
+    fn web_click(
+        &self,
+        params: WebClick,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Type text into a page, into an element focused first if named, then optionally press Enter (needs web.inspect; an agent acts on the pane, under its act level).
+    fn web_type(
+        &self,
+        params: WebType,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
 }
 
 /// Route a typed request to its method.
@@ -8338,6 +8554,10 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::WebOpen(p) => service.web_open(p).await.map(Response::WebOpen),
         Request::WebState(p) => service.web_state(p).await.map(Response::WebState),
         Request::WebNavigate(p) => service.web_navigate(p).await.map(Response::WebNavigate),
+        Request::WebRead(p) => service.web_read(p).await.map(Response::WebRead),
+        Request::WebScreenshot(p) => service.web_screenshot(p).await.map(Response::WebScreenshot),
+        Request::WebClick(p) => service.web_click(p).await.map(Response::WebClick),
+        Request::WebType(p) => service.web_type(p).await.map(Response::WebType),
     }
 }
 

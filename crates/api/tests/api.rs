@@ -373,6 +373,18 @@ impl Service for Fixed {
     async fn web_state(&self, _: api::WebState) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn web_read(&self, _: api::WebRead) -> Result<api::WebPage, RpcError> {
+        Ok(api::WebPage::default())
+    }
+    async fn web_screenshot(&self, _: api::WebScreenshot) -> Result<api::AppCaptured, RpcError> {
+        Ok(api::AppCaptured::default())
+    }
+    async fn web_click(&self, _: api::WebClick) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
+    async fn web_type(&self, _: api::WebType) -> Result<Empty, RpcError> {
+        Ok(Empty {})
+    }
     async fn web_navigate(&self, _: api::WebNavigate) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }

@@ -119,9 +119,15 @@ export type Rows = { collector: string; first: number; last: number; count: numb
 /** How long rows gather before the agent hears of them. */
 const ROWS_MS = 1500;
 
-/** The narrowed grant: every pane, at the level. */
-export function agentGrant(l: Level): Record<string, unknown> {
-	return { methods: agentMethods(l), all_panes: true, level: l };
+/** Screenshots of pages taken so far, for their temporary files' names. */
+let shots = 0;
+
+/** The narrowed grant: every pane, at the level; reading and driving
+ * pages (`web.inspect`) only when `DREAMER_AGENT_WEB_INSPECT` is `1`. */
+export function agentGrant(l: Level, env: Record<string, string | undefined> = process.env): Record<string, unknown> {
+	const methods = agentMethods(l);
+	if (env.DREAMER_AGENT_WEB_INSPECT === "1") methods.push("web.inspect");
+	return { methods, all_panes: true, level: l };
 }
 
 /** A JSON-RPC error from the daemon. */
@@ -820,6 +826,18 @@ export class Session {
 		}
 		const o = await this.acting_on(beside, () => this.call("web.open", params));
 		return { pane: o.pane, url: p.url, beside: beside ?? null };
+	}
+
+	/** A page in a web pane or a web app's pane, as the desktop showing it
+	 * draws it: a PNG in base64, and its size. */
+	async webScreenshot(pane: number): Promise<{ image: string; width: number; height: number }> {
+		const file = path.join(fs.realpathSync(os.tmpdir()), `dreamer-pi-web-${process.pid}-${shots++}.png`);
+		try {
+			const r = await this.call("web.screenshot", { pane, path: file });
+			return { image: fs.readFileSync(file).toString("base64"), width: r.width, height: r.height };
+		} finally {
+			fs.rmSync(file, { force: true });
+		}
 	}
 
 	/** Hand `task` to `to` as a job in a new window this session owns (so

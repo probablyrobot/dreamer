@@ -255,6 +255,7 @@ API as `dream mcp` ([mcp.md](mcp.md#terminal-tools)):
 | `claude_code`, `codex` | `terminal.run` of `dream agents delegate` ([below](#delegation-to-claude-code-and-codex)); each only when `agents.pi.delegates` lists it, and not at the `observe` level |
 | `app_new`, `app_check`, `app_preview`, `app_test`, `app_install`, `app_launch` | As `dream mcp`'s app tools ([mcp.md](mcp.md#app-tools)), below |
 | `browser_open` | `web.open`, `web.navigate`, as `dream mcp`'s ([mcp.md](mcp.md#browser-tool)); not at the `observe` level |
+| `web_read`, `web_click`, `web_type`, `web_screenshot` | `web.read`, `web.click`, `web.type`, `web.screenshot`, as `dream mcp`'s page tools ([mcp.md](mcp.md#page-tools)); only with `web.inspect` in the grant |
 | `dreamer_profile_commit` | `dream agents profile commit` (below) |
 
 It also adds the commands `/dreamer` (whether the daemon is reachable,
@@ -270,7 +271,9 @@ the level, the profile), `/dreamer-reload` (commit, then reload),
   agent's grant ([grants.md](grants.md#act-levels-and-approvals)): every
   pane, the level from `DREAMER_AGENT_LEVEL` (`observe`, `own`, or
   `elsewhere`, the default), and the tools' methods plus
-  `events.subscribe` and `drawer.status`. The collector methods are in the grant at every
+  `events.subscribe` and `drawer.status`; with `DREAMER_AGENT_WEB_INSPECT=1`,
+  also `web.inspect` for the page tools
+  ([grants.md](grants.md#reading-and-driving-pages)). The collector methods are in the grant at every
   level, `observe` included: collectors only read
   ([collectors.md](collectors.md#grants)). In an agent session the
   daemon runs ([below](#grants)), it takes that session's grant with
@@ -736,6 +739,9 @@ Each session holds a grant (see [grants.md](grants.md)):
 
 - It must be within the grant of the connection that creates it. Without
   one, it is the terminal tools on every pane at the `observe` level.
+- It holds `web.inspect`, to read and drive pages, only when the grant it
+  is created with lists it
+  ([grants.md](grants.md#reading-and-driving-pages)).
 - It never holds the owner grant, `agent.*`, `apps.*`, or `approvals.*`:
   a harness neither starts sessions nor answers approvals.
 - A program the harness starts reaches Dreamer with that grant: it calls

@@ -136,9 +136,12 @@ pub(crate) fn prepare(path: &str) -> Result<Package, String> {
     ok_or_error(&v)?;
     let text = std::fs::read_to_string(&m).map_err(|e| format!("{}: {e}", m.display()))?;
     let table: toml::Table = text.parse().map_err(|e| format!("{}: {e}", m.display()))?;
-    if !table.contains_key("script") && !table.contains_key("process") {
+    // A web app's view is its page (`[web]`, no view of its own).
+    let web_app =
+        table.contains_key("web") && !table.contains_key("root") && !table.contains_key("nodes");
+    if !table.contains_key("script") && !table.contains_key("process") && !web_app {
         return Err(
-            "--open and --png preview script and process apps; preview a manifest app with --text"
+            "--open and --png preview script, process, and web apps; preview a manifest app with --text"
                 .into(),
         );
     }

@@ -25,6 +25,7 @@ mod fallback;
 mod find;
 mod fonts;
 mod input;
+mod inspect;
 mod keymap;
 mod live;
 mod palette;

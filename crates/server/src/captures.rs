@@ -8,6 +8,11 @@
 //! image one of them wrote; a desktop that does not show the pane answers
 //! with why, and the caller gets those reasons when no desktop wrote one.
 //! With no desktop connected, it is refused at once.
+//!
+//! The `web.*` methods that read and drive a page (`web.read`,
+//! `web.screenshot`, `web.click`, `web.type`) travel the same way: the
+//! request names the method and carries its parameters, and the desktop
+//! showing the pane's page runs it there and answers with its result.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
@@ -18,6 +23,9 @@ use tokio::sync::{oneshot, watch};
 
 /// What `apps.capture` says when no desktop answers captures.
 pub const NO_DESKTOP: &str = "no Dreamer window is running; --png needs one";
+/// What the `web.*` methods say when no desktop answers them.
+pub const NO_PAGE: &str =
+    "no Dreamer window is running: a page is read and driven in the desktop showing it";
 /// How long a desktop counts as present after its last wait ended: it asks
 /// again at once, so this only covers the gap between two waits.
 const PRESENT: Duration = Duration::from_secs(5);
@@ -42,8 +50,7 @@ impl Server {
 struct Pending {
     asked: HashSet<u64>,
     errors: Vec<String>,
-    tx: oneshot::Sender<Result<api::AppCaptured, String>>,
-    path: String,
+    tx: oneshot::Sender<Result<api::AppCaptureDone, String>>,
 }
 
 #[derive(Debug, Default)]
@@ -71,6 +78,17 @@ impl Default for Captures {
 
 fn poisoned() -> RpcError {
     RpcError::new(code::INTERNAL, "capture registry poisoned")
+}
+
+fn absolute(path: &str) -> Result<(), RpcError> {
+    if std::path::Path::new(path).is_absolute() {
+        Ok(())
+    } else {
+        Err(RpcError::new(
+            code::INVALID_PARAMS,
+            "the image's path must be absolute",
+        ))
+    }
 }
 
 /// The answer once every desktop asked said why it wrote nothing.
@@ -121,12 +139,58 @@ impl Captures {
     /// Ask every desktop present for an image of `q.pane`; the first one
     /// written, or why none was.
     pub async fn capture(&self, q: &api::AppCapture) -> Result<api::AppCaptured, RpcError> {
-        if !std::path::Path::new(&q.path).is_absolute() {
-            return Err(RpcError::new(
-                code::INVALID_PARAMS,
-                "the image's path must be absolute",
-            ));
+        absolute(&q.path)?;
+        let request = api::AppCaptureRequest {
+            pane: q.pane,
+            path: q.path.clone(),
+            seq: q.seq,
+            ..api::AppCaptureRequest::default()
+        };
+        let done = self.ask(request, q.wait_ms, NO_DESKTOP).await?;
+        Ok(api::AppCaptured {
+            path: q.path.clone(),
+            width: done.width,
+            height: done.height,
+        })
+    }
+
+    /// Run web method `request` (one of [`api::INSPECT_METHODS`]) on the
+    /// page of pane `pane`, in the desktop showing it; its result.
+    pub async fn web(
+        &self,
+        pane: u32,
+        request: &api::Request,
+        wait_ms: Option<u32>,
+    ) -> Result<api::Response, RpcError> {
+        if let api::Request::WebScreenshot(s) = request {
+            absolute(&s.path)?;
         }
+        let method = request.method();
+        let asked = api::AppCaptureRequest {
+            pane,
+            method: method.to_owned(),
+            params: request.to_json().to_string(),
+            ..api::AppCaptureRequest::default()
+        };
+        let done = self.ask(asked, wait_ms, NO_PAGE).await?;
+        let bad = |e: String| {
+            RpcError::new(
+                code::INTERNAL,
+                format!("the desktop's answer to {method}: {e}"),
+            )
+        };
+        let value = serde_json::from_str(&done.result).map_err(|e| bad(e.to_string()))?;
+        api::Response::from_json(method, value).map_err(|e| bad(e.to_string()))
+    }
+
+    /// Hand `request` to every desktop present; the first answer that is
+    /// not a refusal, or the refusals. With no desktop present, `none`.
+    async fn ask(
+        &self,
+        request: api::AppCaptureRequest,
+        wait_ms: Option<u32>,
+        none: &str,
+    ) -> Result<api::AppCaptureDone, RpcError> {
         let (id, rx) = {
             let mut i = self.inner.lock().map_err(|_| poisoned())?;
             let asked: HashSet<u64> = i
@@ -136,16 +200,11 @@ impl Captures {
                 .map(|(c, _)| *c)
                 .collect();
             if asked.is_empty() {
-                return Err(RpcError::new(code::UNAVAILABLE, NO_DESKTOP));
+                return Err(RpcError::new(code::UNAVAILABLE, none));
             }
             i.next += 1;
             let id = i.next;
-            let request = api::AppCaptureRequest {
-                id,
-                pane: q.pane,
-                path: q.path.clone(),
-                seq: q.seq,
-            };
+            let request = api::AppCaptureRequest { id, ..request };
             for c in &asked {
                 if let Some(s) = i.servers.get_mut(c) {
                     s.queue.push_back(request.clone());
@@ -158,13 +217,12 @@ impl Captures {
                     asked,
                     errors: Vec::new(),
                     tx,
-                    path: q.path.clone(),
                 },
             );
             (id, rx)
         };
         self.wake();
-        let wait = Duration::from_millis(u64::from(q.wait_ms.unwrap_or(CAPTURE_MS).min(MAX_MS)));
+        let wait = Duration::from_millis(u64::from(wait_ms.unwrap_or(CAPTURE_MS).min(MAX_MS)));
         let answer = tokio::time::timeout(wait, rx).await;
         if let Ok(mut i) = self.inner.lock() {
             i.pending.remove(&id);
@@ -238,11 +296,7 @@ impl Captures {
         match &d.error {
             None => {
                 if let Some(p) = i.pending.remove(&d.id) {
-                    let _ = p.tx.send(Ok(api::AppCaptured {
-                        path: p.path,
-                        width: d.width,
-                        height: d.height,
-                    }));
+                    let _ = p.tx.send(Ok(d.clone()));
                 }
             }
             Some(why) => {
@@ -326,6 +380,7 @@ mod tests {
                         error: None,
                         width: 640,
                         height: 400,
+                        ..Default::default()
                     },
                 )
                 .expect("done");
@@ -340,6 +395,74 @@ mod tests {
         desktop.await.expect("desktop");
         // Another connection cannot answer for it.
         assert!(c.done(9, &api::AppCaptureDone::default()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_web_method_reaches_the_desktop_and_its_result_comes_back() {
+        let c = Arc::new(Captures::default());
+        let read = api::Request::WebRead(api::WebRead {
+            pane: 6,
+            tree: true,
+            wait_ms: Some(5_000),
+        });
+        assert_eq!(
+            c.web(6, &read, Some(5_000))
+                .await
+                .expect_err("none")
+                .message,
+            NO_PAGE
+        );
+        let desktop = {
+            let c = c.clone();
+            tokio::spawn(async move {
+                let r = c
+                    .wait(
+                        7,
+                        &api::AppCaptureWait {
+                            wait_ms: Some(5_000),
+                        },
+                    )
+                    .await
+                    .expect("request");
+                assert_eq!((r.pane, r.method.as_str()), (6, "web.read"));
+                let asked = api::Request::from_json(
+                    &r.method,
+                    serde_json::from_str(&r.params).expect("json"),
+                )
+                .expect("params");
+                assert!(matches!(asked, api::Request::WebRead(p) if p.tree));
+                let page = api::Response::WebRead(api::WebPage {
+                    title: "form".into(),
+                    text: "Name".into(),
+                    ..api::WebPage::default()
+                });
+                c.done(
+                    7,
+                    &api::AppCaptureDone {
+                        id: r.id,
+                        result: page.to_json().to_string(),
+                        ..Default::default()
+                    },
+                )
+                .expect("done");
+            })
+        };
+        while c.desktops() == 0 {
+            tokio::task::yield_now().await;
+        }
+        let got = c.web(6, &read, Some(5_000)).await.expect("read");
+        let api::Response::WebRead(page) = got else {
+            panic!("{got:?}");
+        };
+        assert_eq!((page.title.as_str(), page.text.as_str()), ("form", "Name"));
+        desktop.await.expect("desktop");
+        // A screenshot's path must be absolute before any desktop is asked.
+        let relative = api::Request::WebScreenshot(api::WebScreenshot {
+            pane: 6,
+            path: "shot.png".into(),
+            wait_ms: None,
+        });
+        assert!(c.web(6, &relative, None).await.is_err());
     }
 
     #[tokio::test]

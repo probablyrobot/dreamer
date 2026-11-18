@@ -425,15 +425,20 @@ impl AppPanel {
         self.pages.views.values().cloned().collect()
     }
 
-    /// Where the keys go when the pane has the focus: the page of an app
-    /// whose view is a page; else the app.
-    pub(crate) fn keys_to(&self, cx: &gpui::App) -> FocusHandle {
+    /// The page that is this app's whole view (a web app), if it is one.
+    pub(crate) fn root_page(&self) -> Option<Entity<crate::web::WebPane>> {
         let root = self
             .tree
             .lock()
             .ok()
-            .and_then(|t| t.as_ref().map(|t| t.root.key.clone()));
-        root.and_then(|k| self.pages.views.get(&k))
+            .and_then(|t| t.as_ref().map(|t| t.root.key.clone()))?;
+        self.pages.views.get(&root).cloned()
+    }
+
+    /// Where the keys go when the pane has the focus: the page of an app
+    /// whose view is a page; else the app.
+    pub(crate) fn keys_to(&self, cx: &gpui::App) -> FocusHandle {
+        self.root_page()
             .map_or_else(|| self.focus.clone(), |v| v.read(cx).focus.clone())
     }
 

@@ -768,6 +768,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "result": {
+            "description": "For a request with a method, its result as the API's JSON.",
+            "type": "string"
+          },
           "width": {
             "minimum": 0,
             "type": "integer"
@@ -783,9 +787,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "method": {
+            "description": "A web.* method (web.read, web.screenshot, web.click, web.type) to run on the pane's page instead of taking an image; empty for apps.capture.",
+            "type": "string"
+          },
           "pane": {
             "minimum": 0,
             "type": "integer"
+          },
+          "params": {
+            "description": "That method's parameters, as the API's JSON.",
+            "type": "string"
           },
           "path": {
             "type": "string"
@@ -5294,6 +5306,27 @@
         },
         "type": "object"
       },
+      "WebClick": {
+        "description": "Click an element of the page of a web pane (or a web app's pane): a mouse click in the middle of the element, once it is scrolled into view. Name the element by node (from web.read's tree) or by a CSS selector (its first match). Needs web.inspect.",
+        "properties": {
+          "node": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "wait_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "WebNavigate": {
         "description": "Load another address in an existing web pane (the browser), as if it were typed into its address bar: the pane's web URL changes, and a desktop drawing the page loads it there, its back stack kept.",
         "properties": {
@@ -5307,6 +5340,34 @@
           },
           "url": {
             "description": "A URL or a typed address, as in WebOpen.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "WebNode": {
+        "description": "A node of a page's accessibility tree, in document order.",
+        "properties": {
+          "depth": {
+            "description": "How many of the nodes listed contain it.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Its accessible name.",
+            "type": "string"
+          },
+          "node": {
+            "description": "The element's id for web.click and web.type, valid while the page stays loaded; 0 when the node is not an element.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "role": {
+            "description": "Its role, such as heading, link, textbox, or button.",
+            "type": "string"
+          },
+          "value": {
+            "description": "Its value, for a field.",
             "type": "string"
           }
         },
@@ -5345,6 +5406,69 @@
         },
         "type": "object"
       },
+      "WebPage": {
+        "properties": {
+          "nodes": {
+            "description": "With tree: the accessibility tree without ignored, generic, and inline text nodes, at most 2000 nodes.",
+            "items": {
+              "$ref": "#/components/schemas/WebNode"
+            },
+            "type": "array"
+          },
+          "text": {
+            "description": "The page's text as it is rendered (the body's innerText), at most 100000 characters.",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "truncated": {
+            "description": "The text or the tree was cut at its bound.",
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "WebRead": {
+        "description": "Read the page of a web pane, or of an app pane whose view is a page (a web app), from the desktop showing it. Needs web.inspect in the caller's grant.",
+        "properties": {
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tree": {
+            "description": "Also the page's accessibility tree.",
+            "type": "boolean"
+          },
+          "wait_ms": {
+            "description": "How long to wait for the desktop's answer; default 10000, at most 60000.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "WebScreenshot": {
+        "description": "An image of the page of a web pane (or a web app's pane) as Chromium draws it, written as a PNG file by the desktop showing it. Needs web.inspect.",
+        "properties": {
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Absolute path of the PNG file; replaced when it exists.",
+            "type": "string"
+          },
+          "wait_ms": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "WebState": {
         "description": "What a web pane's page shows, from the desktop drawing it, kept in the placeholder: the page's title as the pane's title and in the placeholder's text for plain tmux clients, and its scroll position for the page to open there again.",
         "properties": {
@@ -5369,6 +5493,34 @@
           "url": {
             "description": "The page's address now, when the page navigated (the browser): kept as the pane's web URL, so it opens there again. Ignored unless it is a URL a web pane may show.",
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "WebType": {
+        "description": "Type text into the page of a web pane (or a web app's pane): into the element named by node or selector, focused first, else into what has the page's focus. The text is inserted at the caret as typed; the clipboard is not used. Needs web.inspect.",
+        "properties": {
+          "node": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "submit": {
+            "description": "Then press Enter, which submits a form from one of its fields.",
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          },
+          "wait_ms": {
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -5439,7 +5591,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.58"
+    "version": "1.59"
   },
   "methods": [
     {
@@ -8978,6 +9130,13 @@
             "minimum": 0,
             "type": "integer"
           }
+        },
+        {
+          "description": "For a request with a method, its result as the API's JSON.",
+          "name": "result",
+          "schema": {
+            "type": "string"
+          }
         }
       ],
       "result": {
@@ -9154,6 +9313,172 @@
         }
       },
       "summary": "Load another address in a web pane: its URL in tmux changes, and the desktop drawing it navigates there (owner, or an agent at own or elsewhere, which asks for a pane it did not create).",
+      "x-mutation": true
+    },
+    {
+      "name": "web.read",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "pane",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "Also the page's accessibility tree.",
+          "name": "tree",
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "How long to wait for the desktop's answer; default 10000, at most 60000.",
+          "name": "wait_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/WebPage"
+        }
+      },
+      "summary": "A page's address, title, text, and (tree) accessibility tree, from the desktop showing it (needs web.inspect in the grant).",
+      "x-mutation": false
+    },
+    {
+      "name": "web.screenshot",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "pane",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "Absolute path of the PNG file; replaced when it exists.",
+          "name": "path",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "wait_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AppCaptured"
+        }
+      },
+      "summary": "A page as Chromium draws it, written as a PNG file by the desktop showing it (needs web.inspect).",
+      "x-mutation": true
+    },
+    {
+      "name": "web.click",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "pane",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "node",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "selector",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "wait_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Empty"
+        }
+      },
+      "summary": "Click an element of a page, by node or CSS selector (needs web.inspect; an agent acts on the pane, under its act level).",
+      "x-mutation": true
+    },
+    {
+      "name": "web.type",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "pane",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "node",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "selector",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "text",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Then press Enter, which submits a form from one of its fields.",
+          "name": "submit",
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "wait_ms",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Empty"
+        }
+      },
+      "summary": "Type text into a page, into an element focused first if named, then optionally press Enter (needs web.inspect; an agent acts on the pane, under its act level).",
       "x-mutation": true
     }
   ],

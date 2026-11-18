@@ -816,6 +816,10 @@
           "repeated": false,
           "type": "u64"
         },
+        "result": {
+          "repeated": false,
+          "type": "string"
+        },
         "width": {
           "repeated": false,
           "type": "u32"
@@ -828,9 +832,17 @@
           "repeated": false,
           "type": "u64"
         },
+        "method": {
+          "repeated": false,
+          "type": "string"
+        },
         "pane": {
           "repeated": false,
           "type": "u32"
+        },
+        "params": {
+          "repeated": false,
+          "type": "string"
         },
         "path": {
           "repeated": false,
@@ -4715,6 +4727,26 @@
         }
       }
     },
+    "WebClick": {
+      "fields": {
+        "node": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "selector": {
+          "repeated": false,
+          "type": "string"
+        },
+        "wait_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
     "WebNavigate": {
       "fields": {
         "endpoint": {
@@ -4726,6 +4758,30 @@
           "type": "u32"
         },
         "url": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "WebNode": {
+      "fields": {
+        "depth": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "node": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "role": {
+          "repeated": false,
+          "type": "string"
+        },
+        "value": {
           "repeated": false,
           "type": "string"
         }
@@ -4759,6 +4815,62 @@
         }
       }
     },
+    "WebPage": {
+      "fields": {
+        "nodes": {
+          "repeated": true,
+          "type": "WebNode"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        },
+        "truncated": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "url": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
+    "WebRead": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "tree": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "wait_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "WebScreenshot": {
+      "fields": {
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "path": {
+          "repeated": false,
+          "type": "string"
+        },
+        "wait_ms": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
     "WebState": {
       "fields": {
         "endpoint": {
@@ -4784,6 +4896,34 @@
         "url": {
           "repeated": false,
           "type": "string"
+        }
+      }
+    },
+    "WebType": {
+      "fields": {
+        "node": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "selector": {
+          "repeated": false,
+          "type": "string"
+        },
+        "submit": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        },
+        "wait_ms": {
+          "repeated": false,
+          "type": "u32"
         }
       }
     },
@@ -4943,9 +5083,13 @@
     "tmux.size_window": "SizeWindow",
     "tmux.topology": "TopologyParams",
     "tmux.watch": "TopologyParams",
+    "web.click": "WebClick",
     "web.navigate": "WebNavigate",
     "web.open": "WebOpen",
-    "web.state": "WebState"
+    "web.read": "WebRead",
+    "web.screenshot": "WebScreenshot",
+    "web.state": "WebState",
+    "web.type": "WebType"
   },
   "ui": {
     "common": {
@@ -5204,5 +5348,5 @@
       }
     }
   },
-  "version": "1.58"
+  "version": "1.59"
 }

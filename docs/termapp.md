@@ -400,6 +400,9 @@ resolves to the result, or rejects with an error that has the API's
 - Requests answered once only: subscriptions, and what only an app host
   does (registering, publishing its view, narrowing its grant), are
   refused.
+- Reading and driving pages (`web.read`, `web.click`, `web.type`,
+  `web.screenshot`) needs `web.inspect` in `capabilities`
+  ([grants.md](grants.md#reading-and-driving-pages)).
 - A page on any other origin, an allowed one or a frame inside the app's
   page, has no `window.dreamer`, and its requests to the bridge are
   refused.
@@ -1005,6 +1008,12 @@ it.
 - With no desktop running (no daemon, or a daemon no desktop is
   connected to), it fails at once with `no Dreamer window is running;
   --png needs one`.
+- **A web app** ([above](#web-pages-and-web-apps)) is previewed too: its
+  preview pane runs it as it runs anywhere (it has no fixtures; its
+  page's calls are refused, since a preview's grant is empty), and the
+  image is its page alone, from Chromium in the desktop
+  ([desktop.md](desktop.md#agents-and-pages)), not a capture of the
+  screen. `--open` shows it the same way; it is not reloaded on a save.
 - On macOS the desktop captures its own window with the system's
   `screencapture`, so the first capture may ask to allow Dreamer, or the
   terminal that started it, to record the screen. Other platforms answer

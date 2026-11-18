@@ -624,6 +624,42 @@ Not yet: a page's own clipboard writes following `clipboard.write`, the
 Linux primary selection, more than one Mac display scale, Chromium's
 sandbox, signed helper apps, Linux.
 
+### Agents and pages
+
+An agent whose grant holds `web.inspect`
+([grants.md](grants.md#reading-and-driving-pages)) reads and drives the
+page of a web pane, or of a web app's pane, through the daemon. The
+daemon hands each call to the desktops connected, as it does an app
+pane's image (`apps.capture`); the window that shows the pane runs it on
+the page, through Chromium's DevTools protocol, and answers:
+
+| Method | Does |
+| --- | --- |
+| `web.read` | The page's address, title, and text (the body's `innerText`, at most 100,000 characters), and with `tree` its accessibility tree in document order: each node's id, depth, role, name, and value, without ignored, generic, and inline text nodes, at most 2,000 nodes |
+| `web.click` | Scrolls the element into view and clicks the middle of its first box with the left button, as a mouse would |
+| `web.type` | Focuses the element, if one is named, inserts the text at the caret as typed, and with `submit` presses Enter, which submits a form from its field |
+| `web.screenshot` | Writes the page as Chromium draws it, alone and at the display's scale, as a PNG file |
+
+- **Naming an element.** `node` is a node id from `web.read`'s tree (the
+  element's DevTools backend node id, which stays the element's while
+  the page is loaded), or `selector` is a CSS selector, whose first match
+  is taken. A selector is passed to `document.querySelector` as a
+  string, never as code.
+- **Where.** The pane must be shown in a Dreamer window (the active
+  window of its session); otherwise the desktop says so, and with no
+  desktop running the call fails at once. A page still loading is waited
+  for, up to 10 seconds.
+- **Nothing else.** Only these DevTools methods run, with parameters
+  Dreamer builds; the clipboard is never used.
+- **Previews.** `dream app preview --png` of a web app
+  ([termapp.md](termapp.md#live-preview)), and `apps.capture` of any pane
+  that shows a page, is the page's own image from Chromium, the same as
+  `web.screenshot`.
+
+MCP has these as `web_read`, `web_click`, `web_type`, and
+`web_screenshot` ([mcp.md](mcp.md#page-tools)), and so does Dreamer's pi
+extension ([agents.md](agents.md#dreamers-tools-inside-pi)).
+
 ### A build with web panes
 
 Web panes need the Chromium Embedded Framework, which the default build
@@ -853,12 +889,15 @@ configuration directories:
   (`examples/apps/panes-web`), granted `tmux.topology`, opens beside the
   shell pane. Its page lists the panes through the bridge, and a call
   through it lists the app's own pane (`app.png`); `terminal.list`,
-  outside its grant, is refused with `-32005`; a sandboxed frame inside
-  it (another origin) has no `window.dreamer` and cannot reach the
-  bridge, nor does the plain web pane have one; and a navigation to
+  outside its grant, is refused with `-32005`, and so is `web.read`
+  (its grant has no `web.inspect`); `apps.capture` of its pane, as
+  `dream app preview --png` asks, writes its page's own image
+  (`app-page.png`, mostly the page's `#1e1e1e`); a sandboxed frame
+  inside it (another origin) has no `window.dreamer` and cannot reach
+  the bridge, nor does the plain web pane have one; and a navigation to
   `https://example.invalid/`, outside its allow-list, is refused and the
   page stays on its origin. Each passed check is a `smoke: web app:`
-  line, and the gate wants all five;
+  line, and the gate wants all seven;
 - then the [browser](#the-browser), in the plain web pane, against a
   test site the gate serves on `127.0.0.1` (nothing from the internet):
   `web.navigate` loads its login, which sets a session cookie; Cmd+L,
@@ -873,6 +912,16 @@ configuration directories:
   must still get the login's session cookie. Each passed check is a
   `smoke: web browser:` line, and the gate wants all eleven. The swipe is
   not checked;
+- then [an agent and a page](#agents-and-pages), through the daemon on
+  connections narrowed to an agent's grant at `own`: the agent opens the
+  test site's form in a window of its own; without `web.inspect`,
+  `web.read` is refused; with it, `web.read` reads the form and finds its
+  field in the tree, `web.type` fills the field by its node and presses
+  Enter, `web.click` follows a link by its selector, and
+  `web.screenshot` writes the page (`web-inspect.png`). Each passed check
+  is a `smoke: web inspect:` line, and the gate wants all five, the site
+  must have got the form with the name typed, and the screenshot must be
+  mostly the form's `#3fa34d`;
 - the gate checks each capture as the smoke's `checks.txt` lists: the
   page's color covers at least 90% of the pane's rectangle (of the
   zoomed pane, or of the part beside the palette) and at most 1% of the
@@ -881,6 +930,8 @@ configuration directories:
   crosses the pane is the page's.
 
 The captures and `checks.txt` are kept in `target/gate/web/`.
+`cargo xtask web smoke` builds the bundle and runs the same check by
+itself, keeping them in `target/web-smoke/`.
 Without CEF provisioned, without a display that refreshes, when
 Chromium stops drawing frames, or when the window is not the key window
 (it cannot be typed into), the step is recorded as not run.

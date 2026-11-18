@@ -2355,7 +2355,11 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             "terminal_send",
             "terminal_watch",
             "terminals_list",
-            "watch_lines"
+            "watch_lines",
+            "web_click",
+            "web_read",
+            "web_screenshot",
+            "web_type"
         ]
     );
     let panes = m.call("list_panes", serde_json::json!({}));
@@ -2447,6 +2451,24 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             .contains("via-mcp"),
         "{read}"
     );
+    // Pages are not an agent's to read unless its grant says so.
+    let page = m.call("web_read", serde_json::json!({ "pane": 0 }));
+    assert_eq!(page["isError"], true, "{page}");
+    assert!(
+        page["content"][0]["text"]
+            .to_string()
+            .contains("`web.read` is not in this connection's grant"),
+        "{page}"
+    );
+    let mut inspecting = Mcp::start(cli.mcp(&["--level", "observe", "--web-inspect"]));
+    let page = inspecting.call("web_read", serde_json::json!({ "pane": 0 }));
+    assert!(
+        page["content"][0]["text"]
+            .to_string()
+            .contains("no Dreamer window is running"),
+        "{page}"
+    );
+    drop(inspecting);
     let typed = m.call(
         "terminal_send",
         serde_json::json!({ "pane": 0, "text": "x" }),

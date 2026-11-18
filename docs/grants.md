@@ -52,6 +52,7 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `apps.capture_wait`, `apps.capture_done` | The owner grant: images of panes are made by the user's desktop, for the user |
 | `web.open`, `web.navigate` | The owner grant, or an agent's grant at `own` or `elsewhere` (never an app's); `web.open` with `pane`, that pane in scope, else `all_panes`; `web.navigate`, its pane in scope |
 | `web.state` | The owner grant: the desktop drawing a page reports it |
+| `web.read`, `web.screenshot`, `web.click`, `web.type` | `web.inspect` in the grant (never the methods by name) and the pane in scope; see [Reading and driving pages](#reading-and-driving-pages) |
 | `apps.call` | The owner grant (the desktop showing an app's page). The call it carries is checked against that app's grant, as the app's own ([below](#web-pages-of-apps)) |
 | `apps.publish`, `apps.publish_tree` | A registered app host's own connection, whatever its grant lists; it publishes for its own pane only |
 | `filters.install`, `filters.list`, `filters.pause`, `filters.resume`, `filters.remove` | The owner grant, or `filters.manage` plus content read; see [Filters an app installs](filters.md#filters-an-app-installs) |
@@ -93,6 +94,7 @@ What counts as acting, and on which panes:
 | `terminal.run` with `split` | The pane it splits |
 | `apps.launch` with `split` | The pane it splits |
 | `web.open` with `pane`, `web.navigate` | The pane it splits, or the web pane it loads another address in |
+| `web.click`, `web.type` | The pane whose page it clicks or types into |
 | `jobs.start`, `terminal.run` without `split`, `actions.submit` new window, `apps.launch` without `split`, `web.open` without `pane` | Nothing: they create, and the connection owns what they create |
 
 Reading, searching, watching, and listing are never acting. Neither is
@@ -239,6 +241,39 @@ the example web app, granted `tmux.topology`, lists the panes through
 subscription, publishing, narrowing, and `daemon.shutdown`; a pane
 without an app is not found; a narrowed connection may not call
 `apps.call`; and after the app quits, its calls are refused.
+
+### Reading and driving pages
+
+`web.read`, `web.screenshot`, `web.click`, and `web.type` read and drive
+the page of a web pane, or of an app pane whose view is a page (a web
+app), in the user's desktop ([desktop.md](desktop.md#agents-and-pages)).
+A page may hold whatever the user is logged in to, so they are allowed
+only by one grant entry, `web.inspect`:
+
+- **Not a method.** Listing `web.read` (or the others) by name allows
+  nothing; `web.inspect` (or `web.*`) allows all four. The owner grant
+  has it.
+- **Never by default.** An agent's grant at any level does not hold it;
+  it is given with `dream mcp --web-inspect`,
+  `DREAMER_AGENT_WEB_INSPECT=1` for Dreamer's pi extension, or in the
+  grant an agent session is created with
+  ([agents.md](agents.md#grants)). An app holds it only when its
+  manifest's `capabilities` list `web.inspect`, so a page's bridge is
+  refused these methods otherwise.
+- **Panes and levels.** The pane must be in scope. Reading and taking an
+  image are not acting; clicking and typing act on the pane, so an agent
+  at `observe` is refused them, at `own` they are allowed in the web
+  panes it opened, and at `elsewhere` elsewhere after the user approves.
+- **No clipboard.** Typing inserts the text as typed; nothing reads or
+  writes the clipboard.
+
+`crates/server/tests/web.rs` checks this against a real tmux: an agent
+without `web.inspect` is refused `web.read`; with it, reading passes the
+grant at `observe` and clicking does not, at `own` clicking in the user's
+page is refused, and typing in its own page is routed to the desktop. With
+no desktop the call fails at once, and a desktop that does not show the
+pane says so to the caller. `crates/tui-runtime/tests/web_app.rs` checks
+that a web app's bridge is refused `web.read` without it.
 
 ### What this does and does not protect
 

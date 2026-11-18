@@ -28,6 +28,20 @@ pub const APP_TYPES: &str = include_str!("../generated/app-types.json");
 /// `docs/grants.md`.
 pub const MANAGE_FILTERS: &str = "filters.manage";
 
+/// Not a method: the grant entry that allows the methods that read and
+/// drive pages ([`INSPECT_METHODS`]). No grant holds it unless it is given:
+/// an agent's default grant does not. See `docs/grants.md`.
+pub const INSPECT_WEB: &str = "web.inspect";
+
+/// The methods [`INSPECT_WEB`] allows; a grant listing one of them by name
+/// does not.
+pub const INSPECT_METHODS: [&str; 4] = [
+    method::WEB_READ,
+    method::WEB_SCREENSHOT,
+    method::WEB_CLICK,
+    method::WEB_TYPE,
+];
+
 /// The methods an agent's grant holds at `level` (an [`ActLevel`] number):
 /// the terminal tools that observe at every level, and those that act from
 /// `own` up. See `docs/grants.md`.
