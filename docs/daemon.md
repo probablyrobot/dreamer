@@ -51,7 +51,8 @@ The **state directory** is `DREAMER_STATE_DIR`, then
 `$XDG_STATE_HOME/dreamer`, then `~/.local/state/dreamer`.
 
 The **data directory**, where Dreamer installs pi
-([agents.md](agents.md#pi-installed-by-dreamer)), is `DREAMER_DATA_DIR`,
+([agents.md](agents.md#pi-installed-by-dreamer)) and Dreamer Web
+([desktop.md](desktop.md#dreamer-web)), is `DREAMER_DATA_DIR`,
 then `$XDG_DATA_HOME/dreamer`, then `~/.local/share/dreamer`.
 
 Both directories are created with mode 0700. The daemon refuses to start if

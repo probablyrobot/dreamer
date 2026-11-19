@@ -1768,6 +1768,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
+ "sha2 0.10.9",
  "swc_common",
  "swc_ecma_ast",
  "swc_ecma_parser",
@@ -1778,6 +1779,7 @@ dependencies = [
  "tmux-backend",
  "tokio",
  "toml 0.8.23",
+ "web-component",
  "workspace-config",
  "workspace-host",
 ]
@@ -7448,6 +7450,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-component"
+version = "0.5.0"
+dependencies = [
+ "platform",
+ "serde_json",
+]
+
+[[package]]
 name = "web-engine"
 version = "0.5.0"
 dependencies = [
@@ -7455,6 +7465,7 @@ dependencies = [
  "raw-window-handle",
  "serde_json",
  "view-tree",
+ "web-component",
 ]
 
 [[package]]
@@ -8290,6 +8301,7 @@ dependencies = [
  "png 0.18.1",
  "resvg",
  "serde_json",
+ "web-component",
 ]
 
 [[package]]

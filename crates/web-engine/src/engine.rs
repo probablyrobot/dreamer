@@ -15,8 +15,27 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::Rect;
 
-/// Where the framework sits relative to an executable in `Contents/MacOS`.
-const FRAMEWORK: &str = "Chromium Embedded Framework.framework/Chromium Embedded Framework";
+// The component's CEF release must be the one these bindings are for: a
+// component checked against it has a framework they can call.
+const _: () = assert!(
+    same_version(web_component::CEF_VERSION.as_bytes(), sys::CEF_VERSION),
+    "web_component::CEF_VERSION is not the CEF release the cef crate binds"
+);
+
+/// Whether `ours` is `cef`'s version string (which ends in a NUL).
+const fn same_version(ours: &[u8], cef: &[u8]) -> bool {
+    if ours.len() + 1 != cef.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < ours.len() {
+        if ours[i] != cef[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
 /// Called by CEF, from any thread, when it wants [`do_work`] after the
 /// given delay in milliseconds.
@@ -734,51 +753,56 @@ static ROOT: OnceLock<PathBuf> = OnceLock::new();
 /// DevTools message ids, unique in the process.
 static MESSAGE: AtomicI32 = AtomicI32::new(1);
 
-/// The path of the framework binary next to the running executable's
-/// bundle, if it is there.
-fn framework_beside(exe: &Path, helper: bool) -> Option<PathBuf> {
-    let up = if helper { "../../.." } else { "../Frameworks" };
-    let path = exe.parent()?.join(up).join(FRAMEWORK);
-    path.is_file().then_some(path)
-}
-
-/// Load the framework from the app bundle (once per process; it stays
-/// loaded).
-fn load_framework(helper: bool) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?;
-    if framework_beside(&exe, helper).is_none() {
-        return Err(
-            "the Chromium Embedded Framework is not in this app's bundle \
-             (a build with web panes runs from a bundle made by `cargo xtask web bundle`)"
-                .into(),
-        );
+/// Load the framework library at `path` (once per process; it stays
+/// loaded: unloading it would pull the framework out from under CEF).
+fn load_framework(path: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("{}: not a usable path", path.display()))?;
+    // The binding takes the string as a reference to its first character.
+    // SAFETY: `name` is NUL-terminated and outlives the call.
+    let first = unsafe { &*name.as_ptr() };
+    if load_library(Some(first)) != 1 {
+        return Err(format!(
+            "the Chromium Embedded Framework at {} did not load",
+            path.display()
+        ));
     }
-    let loader = library_loader::LibraryLoader::new(&exe, helper);
-    if !loader.load() {
-        return Err("the Chromium Embedded Framework did not load".into());
-    }
-    // Unloading on drop would pull the framework out from under CEF.
-    std::mem::forget(loader);
     // Declares the API version the wrapper was built for.
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     Ok(())
 }
 
-/// Start CEF in this process, once: load the framework from the app
-/// bundle, make the application object answer CEF's protocol, and
-/// initialize with an external message pump. `cache_dir` holds Chromium's
-/// profile. `wake` is called from any thread with a delay in milliseconds
-/// whenever CEF wants [`do_work`]; the caller should also call it at least
-/// every 33 ms or so while browsers exist.
+/// The app bundle the running executable is in (`Dreamer.app` for
+/// `Dreamer.app/Contents/MacOS/dreamer`), if it is in one.
+fn app_bundle(exe: &Path) -> Option<PathBuf> {
+    let bundle = exe.parent()?.parent()?.parent()?;
+    (bundle.extension()? == "app").then(|| bundle.to_path_buf())
+}
+
+/// Start CEF in this process, once: load the framework from Dreamer Web
+/// (the component installed apart from the app, `web/` in Dreamer's data
+/// directory; see [`web_component`]), make the application object answer
+/// CEF's protocol, and initialize with an external message pump. Chromium
+/// runs its helper processes from the component's helper apps.
+/// `cache_dir` holds Chromium's profile. `wake` is called from any thread
+/// with a delay in milliseconds whenever CEF wants [`do_work`]; the caller
+/// should also call it at least every 33 ms or so while browsers exist.
 ///
 /// Main thread only, inside the toolkit's running application. A second
-/// call returns the first one's outcome.
+/// call returns the first one's outcome, except while the component is
+/// not installed (or not this build's): it is looked for again each time,
+/// so adding it needs no restart.
 pub fn start(cache_dir: &Path, wake: impl Fn(i64) + Send + Sync + 'static) -> Result<(), String> {
     if let Some(done) = STARTED.with(|s| s.borrow().clone()) {
         return done;
     }
+    let component = web_component::installed_dir();
+    if let Some(problem) = web_component::check(&component).problem(&component) {
+        return Err(format!("{problem} Then open the page again."));
+    }
     let result = (|| {
-        load_framework(false)?;
+        load_framework(&component.join(web_component::FRAMEWORK_BINARY))?;
         // SAFETY: main thread, framework loaded, NSApp exists (inside the
         // toolkit's run loop), before initialize.
         unsafe { appkit::adopt_application_protocol()? };
@@ -790,7 +814,16 @@ pub fn start(cache_dir: &Path, wake: impl Fn(i64) + Send + Sync + 'static) -> Re
             .canonicalize()
             .unwrap_or_else(|_| cache_dir.to_path_buf());
         let _ = ROOT.set(cache_dir.clone());
+        // The framework and the helper apps are outside the app's bundle,
+        // so CEF is told where. It passes these on to the helpers; the main
+        // bundle is named too, so they take the app's rather than their own.
+        let path = |p: &Path| CefString::from(p.to_string_lossy().as_ref());
+        let exe =
+            std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?;
         let settings = Settings {
+            framework_dir_path: path(&component.join(web_component::FRAMEWORK)),
+            browser_subprocess_path: path(&web_component::helper_executable(&component, "")),
+            main_bundle_path: app_bundle(&exe).as_deref().map(path).unwrap_or_default(),
             // Chromium's sandbox is not set up for these helpers yet.
             no_sandbox: 1,
             external_message_pump: 1,
@@ -879,8 +912,28 @@ pub fn shutdown(timeout: Duration) -> Result<(), String> {
 
 /// The entry point of the helper executable (CEF's renderer, GPU, and
 /// utility processes): returns its exit code.
+///
+/// The helper apps sit beside the framework in the component's directory:
+/// from `dreamer Helper.app/Contents/MacOS/dreamer Helper`, the framework
+/// is three directories up.
 pub fn run_subprocess() -> i32 {
-    if let Err(e) = load_framework(true) {
+    let framework = std::env::current_exe()
+        .map_err(|e| format!("cannot find this executable: {e}"))
+        .and_then(|exe| {
+            let dir = exe
+                .ancestors()
+                .nth(4)
+                .ok_or("not inside a helper app")?
+                .to_path_buf();
+            let path = dir.join(web_component::FRAMEWORK_BINARY);
+            if path.is_file() {
+                Ok(path)
+            } else {
+                Err(format!("{} is missing", path.display()))
+            }
+        })
+        .and_then(|path| load_framework(&path));
+    if let Err(e) = framework {
         eprintln!("dreamer-web-helper: {e}");
         return 1;
     }

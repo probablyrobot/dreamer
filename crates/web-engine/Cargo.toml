@@ -13,7 +13,8 @@ publish = false
 engine = ["cef-sys/cef", "dep:raw-window-handle"]
 
 # The helper executable CEF starts for its renderer, GPU, and utility
-# processes. A bundle copies it into its five helper apps.
+# processes. The Dreamer Web component (web-component) holds it in its five
+# helper apps.
 [[bin]]
 name = "dreamer-web-helper"
 path = "src/bin/helper.rs"
@@ -24,6 +25,7 @@ cef-sys = { path = "../cef-sys" }
 raw-window-handle = { version = "0.6.2", optional = true }
 serde_json = "1.0.154"
 view-tree = { path = "../view-tree" }
+web-component = { path = "../web-component" }
 
 [lints]
 workspace = true

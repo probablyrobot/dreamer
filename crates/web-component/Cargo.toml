@@ -1,0 +1,19 @@
+[package]
+name = "web-component"
+description = "Dreamer Web, the Chromium component installed apart from the app: its layout, its manifest, and where it is installed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# No Chromium here: the packager (xtask), the installer (`dream web`), and
+# the desktop's engine share this description of the component, and the
+# CLI must stay headless.
+[dependencies]
+platform = { path = "../platform" }
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

@@ -2,7 +2,7 @@
 
 | Platform | Command | Output |
 | --- | --- | --- |
-| macOS (Apple Silicon) | `cargo xtask package --platform macos` | `target/package/Dreamer.app` and `dreamer-<version>-aarch64-apple-darwin.zip` with its `.sha256` |
+| macOS (Apple Silicon) | `cargo xtask package --platform macos` | `target/package/Dreamer.app` and `dreamer-<version>-aarch64-apple-darwin.zip` with its `.sha256`; and the [Dreamer Web](#dreamer-web) component, `target/package/dreamer-web/` and `dreamer-web-<version>-aarch64-apple-darwin.zip` with its `.sha256` |
 | Any Linux (generic) | `cargo xtask package --platform linux` (on Linux) | `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256`, installed into your home directory by `install.sh` |
 | Arch Linux | `cargo xtask package --platform arch` | `target/package/arch/`: source tarball, `PKGBUILD`, and, on Arch, `dreamer-<version>-1-<arch>.pkg.tar.zst` |
 
@@ -47,6 +47,49 @@ then confirm.
 The macOS gate builds a debug bundle on every commit (`bundle`), and the
 release zip on every push (`package`). Both are launched outside the
 source tree.
+
+### Dreamer Web
+
+Chromium, which draws [web panes](desktop.md#web-panes), is not in
+`Dreamer.app`. It is a second artifact, the Dreamer Web component, that
+users add with `dream web install` ([desktop.md](desktop.md#dreamer-web)).
+The app is built with web panes (its `web` feature), so the same
+`Dreamer.app` works with or without the component; `cargo xtask package`
+fails if the framework or a helper app ends up in the bundle.
+
+`cargo xtask package --platform macos` builds both. The component needs
+the pinned CEF distribution, which `cargo xtask deps web` provides; the
+package step fetches it (checksum-verified) when it is missing.
+
+| Path in `dreamer-web/` | Content |
+| --- | --- |
+| `Chromium Embedded Framework.framework` | CEF's framework, from the pinned distribution, signed ad hoc |
+| `dreamer Helper.app`, `dreamer Helper (GPU).app`, `dreamer Helper (Renderer).app`, `dreamer Helper (Plugin).app`, `dreamer Helper (Alerts).app` | The helper apps Chromium runs its renderer, GPU, and utility processes from, each holding `dreamer-web-helper` and signed ad hoc |
+| `LICENSE.txt`, `CREDITS.html` | CEF's license and Chromium's third-party notices |
+| `component.json` | The component's Dreamer version, CEF release, and target |
+
+The zip, `dreamer-web-<version>-aarch64-apple-darwin.zip`, unpacks to
+`dreamer-web/`. Beside it, `<zip>.sha256` and `<zip>.json` (size and
+SHA-256, the commit, the CEF release, the contents, and the signing
+state) are written as for the app's zip. `cargo xtask package` checks
+the component before zipping it: the manifest, every file, `codesign
+--verify --strict --deep` of the framework and each helper app, and a
+helper loading the framework from where it sits.
+
+`cargo xtask package --fresh --platform macos` then adds the component
+the way a user does, away from the tree: it unpacks the app's zip into a
+new temporary directory and, with an empty data directory, checks that
+its `dream web status` says Dreamer Web is missing and how to add it,
+installs the component from a copy of its zip with `dream web install`,
+checks `dream web status` again, and removes it. It writes
+`target/package/fresh-macos.json`, which the build report matches to the
+zip by checksum. This runs on the development Mac, not a fresh one. The
+gate's `package` stage runs the same check on every push, and its `web`
+stage installs the debug component and draws pages with it
+([dependency-baseline.md](dependency-baseline.md#web-engine)).
+
+The Linux component (an optional `dreamer-web` archive) is not built
+yet: web panes are macOS only so far.
 
 ## Generic Linux (any distribution, no root)
 

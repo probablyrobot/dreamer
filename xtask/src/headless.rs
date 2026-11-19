@@ -39,6 +39,7 @@ pub const PACKAGES: &[&str] = &[
     "tmux-backend",
     "tmux-protocol",
     "view-tree",
+    "web-component",
     "wire",
     "workspace-config",
     "workspace-host",

@@ -6,11 +6,14 @@
 //! - the source (commit, tree, whether the work tree is clean) and the
 //!   pinned toolchains and native dependencies;
 //! - every artifact under `target/package` (size, SHA-256 checked against
-//!   its `.sha256` file, target, and for the macOS zip its signing state);
+//!   its `.sha256` file, target, and for the macOS zips, the base app's
+//!   and the Dreamer Web component's, their signing state);
 //! - the runtime evidence:
 //!   - the macOS gate report for this exact tree;
-//!   - the fresh-container checks (`cargo xtask package --fresh`), matched
-//!     to the artifacts by checksum;
+//!   - the fresh-container checks (`cargo xtask package --fresh`), and the
+//!     Dreamer Web zip added away from the tree on the Mac (`cargo xtask
+//!     package --fresh --platform macos`), matched to the artifacts by
+//!     checksum;
 //!   - with `--ci-run`, that GitHub Actions run's jobs;
 //! - everything not run.
 //!
@@ -135,7 +138,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut not_run: Vec<String> = Vec::new();
 
     // Fresh-container checks, by checksum.
-    let fresh: Vec<Value> = ["arm64", "amd64"]
+    // (`macos`: the Dreamer Web zip added away from the tree on this Mac.)
+    let fresh: Vec<Value> = ["arm64", "amd64", "macos"]
         .iter()
         .filter_map(|a| read_json(&out.join(format!("fresh-{a}.json"))))
         .collect();
@@ -165,6 +169,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // version: install.sh fetches it by a stable name.)
         let versioned = name
             .strip_prefix("dreamer-server-")
+            .or_else(|| name.strip_prefix("dreamer-web-"))
             .or_else(|| name.strip_prefix("dreamer-"))
             .and_then(|rest| rest.split('-').next())
             .filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()));
@@ -189,7 +194,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     "{name}: its record is for another commit; rebuild it"
                 ));
             }
-            checked = Some("the macOS gate's package stage (see the gate report)".into());
+            if checked.is_none() {
+                checked = Some("the macOS gate's package stage (see the gate report)".into());
+            }
         }
         if checked.is_none() {
             not_run.push(format!("{name}: not run on a fresh machine"));
@@ -301,6 +308,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 toml_value(&baseline, "ghostty", "commit")
             ),
             "tmux_baseline": toml_value(&baseline, "tmux", "version"),
+            // In the Dreamer Web component only, never in the base packages.
+            "cef": format!(
+                "{} (Chromium {}), in the Dreamer Web component",
+                toml_value(&baseline, "cef", "version"),
+                toml_value(&baseline, "cef", "chromium")
+            ),
             "gpui": "pinned in Cargo.toml and Cargo.lock (see docs/dependency-baseline.md)",
         },
         "compatibility": {
@@ -350,7 +363,7 @@ fn markdown(r: &Value) -> String {
     let t = &r["toolchains"];
     let d = &r["dependencies"];
     m.push_str(&format!(
-        "- **Toolchains:** Rust {} (`{}`), Zig {}{}\n- **Pinned:** libghostty-vt {}, tmux baseline {}; GPUI {}\n",
+        "- **Toolchains:** Rust {} (`{}`), Zig {}{}\n- **Pinned:** libghostty-vt {}, tmux baseline {}; GPUI {}; CEF {}\n",
         s(&t["rust"]),
         s(&t["rustc"]),
         s(&t["zig"]),
@@ -358,6 +371,7 @@ fn markdown(r: &Value) -> String {
         s(&d["libghostty-vt"]),
         s(&d["tmux_baseline"]),
         s(&d["gpui"]),
+        s(&d["cef"]),
     ));
     m.push_str(&format!(
         "- **Compatibility:** {}; Linux {}\n\n## Artifacts\n\n| Artifact | Target | Size | SHA-256 | Signing | Runtime check |\n| --- | --- | --- | --- | --- | --- |\n",

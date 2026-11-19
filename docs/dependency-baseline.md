@@ -141,10 +141,15 @@ libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev`
 
 Web panes on the desktop ([desktop.md](desktop.md#web-panes)) embed
 Chromium through the Chromium Embedded Framework (CEF). Only `dreamer`
-built with its `web` feature links it; the default build, the Linux CI
-build, and the release package do not, and `cargo xtask headless --check`
-fails if `dreamerd`, `dream`, `dreamer-termapp`, or any library of theirs
-could depend on `cef`, `cef-dll-sys`, `cef-sys`, or `web-engine`.
+built with its `web` feature uses it, and it links only CEF's C++ wrapper:
+the framework itself is loaded at run time from the Dreamer Web component
+([packaging.md](packaging.md#dreamer-web)), which ships apart from the
+app. The macOS release package builds `dreamer` with the feature; the
+default build and the Linux CI build do not. `cargo xtask headless
+--check` fails if `dreamerd`, `dream`, `dreamer-termapp`, or any library
+of theirs could depend on `cef`, `cef-dll-sys`, `cef-sys`, or
+`web-engine`. (`web-component`, which describes the component for `dream
+web install` and the desktop, holds no Chromium and is headless.)
 
 | Item | Pin |
 | --- | --- |
@@ -165,6 +170,42 @@ otherwise download CEF from a changing index: `.cargo/config.toml` points
 `CEF_DOWNLOAD_URL` at an address that cannot resolve, so a missing or
 wrong `CEF_PATH` fails the build instead. The archive is 144 MB and the
 unpacked distribution 351 MB, most of it the framework.
+
+### Chromium updates
+
+Chrome's stable channel gets a new major version every four weeks, and
+security fixes between them, often weekly; CEF publishes a release for
+each. Web panes show arbitrary sites, so the pin follows:
+
+- **Each new Chromium stable major:** move to the newest CEF release for
+  it, within its first two weeks.
+- **A Chromium security fix rated High or Critical** in a stable update
+  the pin does not have yet: move to the CEF release that carries it,
+  within a week.
+
+Moving the pin is one change:
+
+1. The `[cef]` section of `deps/baseline.toml` (version, Chromium version,
+   URL, name, SHA-256, and the CDN's SHA-1) and this section's table.
+2. The `cef` crate in `crates/cef-sys/Cargo.toml`: cef-rs publishes one
+   release per CEF release, its build metadata naming it
+   (`=156.6.0` is `156.6.0+156.0.30`).
+3. `web_component::CEF_VERSION` in `crates/web-component/src/lib.rs`. The
+   engine does not compile while it differs from the version string of
+   the `cef` crate's bindings, and `cargo xtask package` refuses a
+   component whose version is not the one `deps/baseline.toml` pins.
+4. `cargo xtask deps web`, then the macOS gate. Its `web` stage is the
+   gate stage for Chromium: clippy with the `web` feature; the app
+   bundled without Chromium and the component built beside it (manifest,
+   signatures, a helper loading the framework); the component added with
+   `dream web install` to an empty data directory; and pages drawn with
+   it in a real window. Its `package` stage builds the release's two zips
+   and adds the component from its zip away from the tree.
+
+A Dreamer release ships its app and its Dreamer Web together, at the
+same version, and Dreamer Web is only usable with the Dreamer of that
+version. Users of a release with a new pin run `dream web install` once
+after updating.
 
 ## Bindings
 

@@ -48,10 +48,12 @@
 //! address as the host means it. The forward is held while the pane's
 //! page is, and closes when no web pane uses it.
 //!
-//! Chromium starts with the first web pane, not with the app. A build
-//! without the `web` feature, or one not running from a bundle with the
-//! framework and its helper apps, shows the page's address and why it
-//! cannot draw it.
+//! Chromium starts with the first web pane, not with the app, loaded from
+//! Dreamer Web, the component installed apart from the app (`dream web
+//! install`). A build without the `web` feature, or one without the
+//! component (or with another version's), shows the page's address and
+//! why it cannot draw it, which says how to add the component; a pane
+//! opened after it is added draws the page, with no restart.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

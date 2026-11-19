@@ -13,7 +13,8 @@ path = "src/main.rs"
 
 [features]
 # Web panes drawn by Chromium (CEF). macOS only so far; needs `cargo xtask
-# deps web`, and the app runs from a bundle made by `cargo xtask web bundle`.
+# deps web` to build. Chromium itself is the Dreamer Web component, loaded
+# from where `dream web install` puts it (see crates/web-component).
 web = ["web-engine/engine", "dep:futures-lite"]
 
 [dependencies]

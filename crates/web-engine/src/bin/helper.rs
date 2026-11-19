@@ -1,7 +1,7 @@
 //! The helper executable CEF starts for Chromium's renderer, GPU, and
-//! utility processes. An app bundle holds five copies of it, one per
-//! helper app (`dreamer Helper.app`, `dreamer Helper (GPU).app`, ...), each
-//! loading the framework from the bundle's `Contents/Frameworks`.
+//! utility processes. The Dreamer Web component holds five copies of it,
+//! one per helper app (`dreamer Helper.app`, `dreamer Helper (GPU).app`,
+//! ...), each loading the framework that sits beside the helper apps.
 
 fn main() {
     #[cfg(target_os = "macos")]
