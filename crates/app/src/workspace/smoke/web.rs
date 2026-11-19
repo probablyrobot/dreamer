@@ -2216,8 +2216,11 @@ const TOLERANCE: u8 = 30;
 /// tolerance, and on a wide-gamut display the live page is out of sRGB's
 /// range: not sRGB's red as the screen shows it. On a display that is not
 /// wide-gamut that check is not run (a line says so). With `srgb`: the
-/// live page is sRGB's red as the screen shows it (clamped), and how the
-/// snapshot compares is reported, not judged (nothing changed there).
+/// live page is drawn as the window draws the same sRGB color, the
+/// snapshot under the palette (Chromium's sRGB capture, clamped). GPUI's
+/// layer is not color matched, so that is the screen's own full red on a
+/// wide-gamut display, not sRGB's red as a color-managed view shows it;
+/// how the page compares with the latter is reported, not judged.
 /// Each passed check is a `smoke: web color:` line.
 pub(crate) async fn color(
     any: AnyWindowHandle,
@@ -2402,27 +2405,27 @@ pub(crate) async fn color(
             }
         }
         web_engine::Color::Srgb => {
-            if !near(live, clamped) {
+            if !near(live, snapshot) {
                 fail(&format!(
-                    "the live page ({}) is not sRGB's red ({}) within {TOLERANCE} per channel: not clamped to sRGB",
+                    "the live page ({}) is not drawn as the window draws its sRGB snapshot ({}) within {TOLERANCE} per channel",
                     hex(live),
-                    hex(clamped)
+                    hex(snapshot)
                 ));
             }
             println!(
-                "smoke: web color: srgb: Display P3's red is clamped to sRGB live ({}, sRGB's red {})",
+                "smoke: web color: srgb: the live page is drawn as the window draws the same sRGB color ({} and the snapshot {})",
                 hex(live),
-                hex(clamped)
+                hex(snapshot)
             );
             println!(
-                "smoke: web color srgb: the snapshot under the palette is {} the live page ({} and {})",
-                if near(live, snapshot) {
+                "smoke: web color srgb: the live page is {} sRGB's red as a color-managed view shows it ({} and {})",
+                if near(live, clamped) {
                     "within the tolerance of"
                 } else {
                     "not within the tolerance of"
                 },
-                hex(snapshot),
-                hex(live)
+                hex(live),
+                hex(clamped)
             );
         }
     }

@@ -431,8 +431,8 @@ const SENT_NAME: &str = "Ada Lovelace";
 const BROWSER_CHECKS: usize = 14;
 
 /// The color checks the web smoke reports (`smoke: web color:`), in its
-/// two `--smoke-web-color` runs: with `web.color: srgb`, Display P3's red
-/// is clamped to sRGB live; with `display`, the page's snapshot under the
+/// two `--smoke-web-color` runs: with `web.color: srgb`, the live page is
+/// drawn as the window draws its sRGB snapshot; with `display`, the page's snapshot under the
 /// palette matches the live page, and Display P3's red is out of sRGB's
 /// range live. That last one needs a wide-gamut display: without one it
 /// is a `smoke: web color not run:` line instead.
