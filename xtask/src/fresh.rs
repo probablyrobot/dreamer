@@ -68,28 +68,26 @@ pub fn build_in_container(arch: &str) -> Result<(), String> {
     let cargo = format!("dreamer-{arch}-cargo:/root/.cargo");
     let rustup = format!("dreamer-{arch}-rustup:/root/.rustup");
     let cache = format!("dreamer-{arch}-cache:/root/.cache");
-    docker(
-        &[
-            "run",
-            "--rm",
-            "--platform",
-            &platform,
-            "-v",
-            &src,
-            "-v",
-            &cargo,
-            "-v",
-            &rustup,
-            "-v",
-            &cache,
-            "-e",
-            "CARGO_TARGET_DIR=/root/.cache/dreamer-package-target",
-            "-w",
-            "/src",
-        ],
-        script,
-        "building the Linux archives",
-    )
+    let private = crate::private_git::docker_args(&root)?;
+    let mut args: Vec<&str> = vec!["run", "--rm"];
+    args.extend(private.iter().map(String::as_str));
+    args.extend([
+        "--platform",
+        &platform,
+        "-v",
+        &src,
+        "-v",
+        &cargo,
+        "-v",
+        &rustup,
+        "-v",
+        &cache,
+        "-e",
+        "CARGO_TARGET_DIR=/root/.cache/dreamer-package-target",
+        "-w",
+        "/src",
+    ]);
+    docker(&args, script, "building the Linux archives")
 }
 
 /// Check this architecture's archives on fresh containers.

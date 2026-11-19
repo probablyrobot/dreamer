@@ -11,6 +11,12 @@ publish = false
 name = "dreamerd"
 path = "src/main.rs"
 
+[features]
+# Kosmonaut embedded as the `kosmonaut` memory provider (docs/memory.md).
+# Off by default; without it `memory.provider: kosmonaut` is refused at
+# each memory call.
+kosmonaut = ["memory/kosmonaut"]
+
 [dependencies]
 api = { path = "../api" }
 client = { path = "../client" }

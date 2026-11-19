@@ -81,10 +81,12 @@ fn linux(root: &std::path::Path, workload: &str, rest: &[String]) -> Result<(), 
          cargo xtask bench {workload} {}",
         rest.join(" ")
     );
+    let private = crate::private_git::docker_args(root)?;
     let status = Command::new("docker")
         .args(["run", "--rm", "--platform", "linux/arm64"])
         .arg("-v")
         .arg(format!("{}:/src", root.display()))
+        .args(&private)
         .args([
             "-v",
             "dreamer-arm64-cargo:/root/.cargo",

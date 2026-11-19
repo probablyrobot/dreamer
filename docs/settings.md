@@ -68,7 +68,7 @@ drawer:
   side: bottom                           # bottom (default), right, or left
   size: 35                               # default; percent of the window, 10 to 90
 memory:
-  provider: files                        # default; the only provider so far
+  provider: files                        # default; or kosmonaut
 window:
   decorations: full                      # full (default) or none
 web:
@@ -359,12 +359,27 @@ web:
 `memory:` chooses what keeps durable memory: `provider: files` (the
 default) keeps one markdown file per memory and a `MEMORY.md` index, under
 `<config dir>/memory/` for the user and `.dreamer/memory/` in a project.
+`provider: kosmonaut` keeps every memory in one graph database for the
+user, embedded in the daemon (a build with the `kosmonaut` feature).
 A change applies to the next memory call. See [memory.md](memory.md).
 
 ```yaml
 memory:
-  provider: files
+  provider: kosmonaut
+  kosmonaut:
+    mode: embedded                       # default, and the only mode so far
+    path: ~/.local/share/dreamer/memory.kosmonaut   # default: <data dir>/memory.kosmonaut
+    embedder:                            # optional; without it, no vectors
+      kind: static                       # static or local
+      path: ~/models/words.vec           # static: word vectors, word2vec text format
+      # kind: local
+      # command: [my-embedder, --json]   # local: JSON texts in, JSON vectors out
+      # dimension: 384
+      # timeout: 30s                     # default
 ```
+
+`path` and `embedder.path` are absolute or start with `~/`. See
+[memory.md](memory.md#embedders) for what each embedder does.
 
 ## Agent providers
 

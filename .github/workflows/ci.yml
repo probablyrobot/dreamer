@@ -16,6 +16,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
+  # Git dependencies through git itself, so the URL rewrite below applies.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 # Linux only. macOS is verified by the local gate on the development Mac
 # (AGENTS.md). `cargo xtask policy` fails if any workflow uses a macOS runner.
@@ -33,6 +35,12 @@ jobs:
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Cargo fetches every git source in Cargo.lock, optional ones too, so
+      # every job needs the private Kosmonaut repository (read-only token).
+      - name: Access to the private Kosmonaut repository
+        env:
+          KOSMONAUT_TOKEN: ${{ secrets.KOSMONAUT_TOKEN }}
+        run: git config --global url."https://x-access-token:${KOSMONAUT_TOKEN}@github.com/DeytaHQ/".insteadOf "https://github.com/DeytaHQ/"
       - name: Free runner disk
         # The workspace's debug target fills the runner; drop toolchains this job never uses.
         run: |
@@ -66,6 +74,9 @@ jobs:
       - run: cargo xtask schemes --check
       - run: cargo xtask icons --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The embedded Kosmonaut memory provider is behind a feature; the
+      # line above checks the build without it.
+      - run: cargo clippy -p memory -p dreamer-server --features dreamer-server/kosmonaut --all-targets --locked -- -D warnings
       - name: Build the pinned tmux baseline
         run: echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
       - run: cargo build --workspace --all-targets --locked
@@ -79,3 +90,7 @@ jobs:
           path: target/snapshot-fixtures/
           if-no-files-found: ignore
       - run: cargo test --workspace --locked
+      - name: Test the Kosmonaut memory provider
+        run: |
+          cargo test --locked -p memory --features kosmonaut
+          cargo test --locked -p dreamer-server --features kosmonaut --test memory

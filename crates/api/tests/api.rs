@@ -346,6 +346,18 @@ impl Service for Fixed {
     async fn memory_forget(&self, _: api::MemoryRef) -> Result<api::MemoryItem, RpcError> {
         Ok(api::MemoryItem::default())
     }
+    async fn memory_import(
+        &self,
+        _: api::MemoryTransfer,
+    ) -> Result<api::MemoryTransferred, RpcError> {
+        Ok(api::MemoryTransferred::default())
+    }
+    async fn memory_export(
+        &self,
+        _: api::MemoryTransfer,
+    ) -> Result<api::MemoryTransferred, RpcError> {
+        Ok(api::MemoryTransferred::default())
+    }
     async fn collect_list(&self, _: Empty) -> Result<api::CollectList, RpcError> {
         Ok(api::CollectList::default())
     }

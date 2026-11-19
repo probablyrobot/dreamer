@@ -18,6 +18,7 @@ mod manifest;
 mod package;
 mod policy;
 mod preview;
+mod private_git;
 mod release;
 mod render;
 mod scenes;

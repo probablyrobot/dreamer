@@ -4,22 +4,30 @@
 //! session) and finds them again by words. The daemon serves the
 //! `memory.*` API through whichever provider the settings name; this
 //! crate holds the interface, the deterministic full-text ranking every
-//! provider can share ([`search`]), and the first provider, [`Files`]:
-//! one markdown file per memory plus a `MEMORY.md` index, the layout
-//! Claude Code's memory uses. See `docs/memory.md`.
+//! provider can share ([`search`]), and the providers: [`Files`], one
+//! markdown file per memory plus a `MEMORY.md` index, the layout Claude
+//! Code's memory uses; and, with the `kosmonaut` feature, `Kosmonaut`, a
+//! graph database embedded in the daemon. [`transfer`] copies memories
+//! from one provider to another. See `docs/memory.md`.
 //!
-//! Headless: no GUI, async runtime, or model. Calls do blocking file I/O;
-//! the daemon runs them off its event loop.
+//! Headless: no GUI or async runtime, and no model unless an [`embed`]
+//! embedder is configured. Calls do blocking I/O; the daemon runs them off
+//! its event loop.
 
+pub mod embed;
 mod files;
 mod index;
+#[cfg(feature = "kosmonaut")]
+mod kosmonaut;
 pub mod search;
 mod time;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use files::Files;
 pub use index::{INDEX_BYTES, INDEX_HEAD, INDEX_LINES, index};
+#[cfg(feature = "kosmonaut")]
+pub use kosmonaut::{CollectorRow, Kosmonaut, Summary};
 
 /// Where a memory applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -177,7 +185,7 @@ pub const MAX_LIMIT: usize = 100;
 /// from `cx`; `scope: None` means every scope `cx` reaches. Providers
 /// keep no cache that could go stale against their store.
 pub trait Provider: Send + Sync + std::fmt::Debug {
-    /// The settings name: `files`.
+    /// The settings name: `files` or `kosmonaut`.
     fn name(&self) -> &'static str;
 
     fn remember(&self, cx: &Context, new: New) -> Result<Memory, Error>;
@@ -191,6 +199,11 @@ pub trait Provider: Send + Sync + std::fmt::Debug {
 
     /// Remove a memory; returns what was removed.
     fn forget(&self, cx: &Context, id: &str) -> Result<Memory, Error>;
+
+    /// Keep `m` as it is, under its id and with its times, replacing a
+    /// memory with the same id: how memories move between providers
+    /// ([`transfer`]). `m.path` and `m.score` are ignored.
+    fn put(&self, cx: &Context, m: &Memory) -> Result<Memory, Error>;
 
     /// Memories matching `query`, best first; at most `limit`
     /// ([`DEFAULT_LIMIT`] when `None`, never more than [`MAX_LIMIT`]).
@@ -219,4 +232,94 @@ pub fn reach(cx: &Context) -> Vec<Scope> {
             _ => true,
         })
         .collect()
+}
+
+/// The project a working directory belongs to: the nearest directory at
+/// or above it that holds `.dreamer/memory` or `.git`, else the directory
+/// itself.
+pub fn project_root(cwd: &Path) -> PathBuf {
+    cwd.ancestors()
+        .find(|a| a.join(".dreamer").join("memory").is_dir() || a.join(".git").exists())
+        .unwrap_or(cwd)
+        .to_path_buf()
+}
+
+/// The project `cx` names, checked.
+pub(crate) fn project_of(cx: &Context) -> Result<PathBuf, Error> {
+    let cwd = cx
+        .cwd
+        .as_deref()
+        .ok_or_else(|| Error::Invalid("the project scope needs a working directory".into()))?;
+    if !cwd.is_absolute() {
+        return Err(Error::Invalid(format!(
+            "the working directory `{}` is not absolute",
+            cwd.display()
+        )));
+    }
+    Ok(project_root(cwd))
+}
+
+/// The session `cx` names, checked: letters, digits, `.`, `_`, `-`.
+pub(crate) fn session_of(cx: &Context) -> Result<&str, Error> {
+    let id = cx
+        .session
+        .as_deref()
+        .ok_or_else(|| Error::Invalid("the session scope needs a session id".into()))?;
+    let ok = !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with('.')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+    if !ok {
+        return Err(Error::Invalid(format!("`{id}` is not a session id")));
+    }
+    Ok(id)
+}
+
+/// `user/prefers-tabs` to its scope and name.
+pub(crate) fn split_id(id: &str) -> Result<(Scope, &str), Error> {
+    let bad = || Error::Invalid(format!("`{id}` is not a memory id (scope/name)"));
+    let (scope, name) = id.split_once('/').ok_or_else(bad)?;
+    let scope = Scope::from_name(scope).ok_or_else(bad)?;
+    let ok = !name.is_empty()
+        && name.len() <= 200
+        && !name.starts_with('.')
+        && name != "MEMORY"
+        && !name.contains(['/', '\\', '\0']);
+    if !ok {
+        return Err(bad());
+    }
+    Ok((scope, name))
+}
+
+/// What [`transfer`] copied, and what it could not read on the way.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Moved {
+    /// The ids copied, newest first.
+    pub ids: Vec<String>,
+    pub problems: Vec<Problem>,
+}
+
+/// Copy every memory `from` holds in `scope` (every scope `cx` reaches
+/// when `None`) into `to`, keeping ids, kinds, text, links, and times.
+/// A memory `to` already holds under the same id is replaced; nothing is
+/// removed from either side. Import from `files` and export back to it are
+/// this, with the providers swapped.
+pub fn transfer(
+    from: &dyn Provider,
+    to: &dyn Provider,
+    cx: &Context,
+    scope: Option<Scope>,
+) -> Result<Moved, Error> {
+    let found = from.list(cx, scope, None)?;
+    let mut moved = Moved {
+        ids: Vec::with_capacity(found.items.len()),
+        problems: found.problems,
+    };
+    for m in &found.items {
+        to.put(cx, m)?;
+        moved.ids.push(m.id.clone());
+    }
+    Ok(moved)
 }

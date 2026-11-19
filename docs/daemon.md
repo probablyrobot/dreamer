@@ -38,6 +38,7 @@ after the link drops.
 | Action ledger `actions.jsonl` | state directory | See [actions.md](actions.md) |
 | Extension logs `extensions/<name>.log` | state directory | Each extension's standard error, appended; mode 0600. See [extensions.md](extensions.md) |
 | Host and session memory `memory/host/`, `memory/sessions/<id>/` | state directory | Markdown files and a `MEMORY.md` index. See [memory.md](memory.md) |
+| Memory database `memory.kosmonaut/` | data directory | Only with `memory.provider: kosmonaut`, in a build with the `kosmonaut` feature. See [memory.md](memory.md#kosmonaut) |
 
 The **runtime directory** is the first of these that is set:
 
