@@ -33,6 +33,8 @@ pub(crate) enum Command {
     OpenPanel,
     ClosePanel,
     OpenWebPage,
+    /// Add Dreamer Web, the Chromium component web panes need.
+    AddWeb,
     Theme,
     /// Another OS window, on a new tmux session.
     NewOsWindow,
@@ -54,7 +56,7 @@ pub(crate) enum Command {
     Contributed(u16),
 }
 
-pub(crate) const ALL: [Command; 41] = [
+pub(crate) const ALL: [Command; 42] = [
     Command::SplitRight,
     Command::SplitDown,
     Command::NewWindow,
@@ -81,6 +83,7 @@ pub(crate) const ALL: [Command; 41] = [
     Command::OpenPanel,
     Command::ClosePanel,
     Command::OpenWebPage,
+    Command::AddWeb,
     Command::Theme,
     Command::NewOsWindow,
     Command::Settings,
@@ -127,6 +130,7 @@ impl Command {
             Command::OpenPanel => "Open an app package as a panel… (its manifest's path)",
             Command::ClosePanel => "Close the app panel",
             Command::OpenWebPage => "Open a web page… (its URL, in a pane beside this one)",
+            Command::AddWeb => "Add Dreamer Web (Chromium for web panes, about 150 MB)",
             Command::Theme => "Theme… (colors of the terminals and the window)",
             Command::NewOsWindow => "New Dreamer window (on a new session)",
             Command::Settings => "Settings… (open dreamer.yaml)",
@@ -364,6 +368,8 @@ impl Palette {
             .map(Command::Contributed);
         ALL.into_iter()
             .chain(contributed)
+            // Only a build with a web engine can add its component.
+            .filter(|c| *c != Command::AddWeb || crate::webcomp::can_add())
             .filter(|c| matches(&self.filter, &self.label_of(*c)))
             .collect()
     }

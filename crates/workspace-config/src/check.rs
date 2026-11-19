@@ -299,6 +299,22 @@ pub const SCHEMA: &[Key] = &[
         example: "files",
         live: true,
     },
+    Key {
+        path: "web.component",
+        kind: "ask | auto | never",
+        default: "ask",
+        doc: "Dreamer Web, the Chromium component web panes need (about 150 MB): ask offers it once at the first start and in each web pane that needs it, and downloads nothing without a yes; auto adds it without asking when something needs it; never offers nothing, and web panes say it is turned off. A copy already on the system is used in place before anything is downloaded.",
+        example: "auto",
+        live: true,
+    },
+    Key {
+        path: "web.url",
+        kind: "address",
+        default: "the release",
+        doc: "Where to download Dreamer Web from instead of the release: the archive's https, http, or file address, or a directory's that holds it (with its .sha256 beside it). DREAMER_WEB_URL, when set, comes first.",
+        example: "https://downloads.example.com/dreamer-web/",
+        live: true,
+    },
 ];
 
 /// What the live configuration files look like now: `dreamer.yaml` and

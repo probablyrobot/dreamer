@@ -1751,6 +1751,7 @@ dependencies = [
  "terminal-render",
  "tokio",
  "view-tree",
+ "web-component",
  "web-engine",
  "workspace-config",
 ]
@@ -1769,7 +1770,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
- "sha2 0.10.9",
  "swc_common",
  "swc_ecma_ast",
  "swc_ecma_parser",
@@ -7456,6 +7456,7 @@ version = "0.6.0"
 dependencies = [
  "platform",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

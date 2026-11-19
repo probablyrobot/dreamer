@@ -187,21 +187,30 @@ macOS on Apple Silicon only so far.
 
 | Command | Does |
 | --- | --- |
-| `dream web install` | Downloads the Dreamer Web zip of this Dreamer's version from its GitHub release, checks it against the `.sha256` published beside it, and installs it |
+| `dream web install` | Uses a copy already on this machine in place, if there is one ([desktop.md](desktop.md#dreamer-web)); otherwise downloads the Dreamer Web zip of this Dreamer's version, checks it against the `.sha256` published beside it, and installs it. It downloads from `DREAMER_WEB_URL` if set, else `web.url` in `dreamer.yaml`, else the GitHub release |
+| `dream web install URL` | Downloads from `URL` (`https://`, `http://`, or `file://`): the zip's address, or a directory's that holds it; its `.sha256` must be beside it. Does not look for a copy on this machine |
 | `dream web install FILE.zip` | Installs from a zip you already have (a release asset, or one `cargo xtask package` built). Checked against `FILE.zip.sha256` if that file exists |
 | `dream web install DIR` | Installs from an unpacked component directory (`cargo xtask web bundle` builds one) |
-| `dream web status` | Says which Dreamer Web is installed and where; fails, saying why and how to add it, when it is missing or is another version's |
-| `dream web remove` | Removes it. Web panes then say how to add it again |
+| `dream web status` | Says which Dreamer Web is installed and where, and, for a copy used in place, where that copy is; fails, saying why and how to add it, when it is missing or is another version's |
+| `dream web remove` | Removes it (for a copy used in place, only the link to it). Web panes then offer to add it again |
 
-Before installing, `dream web install` checks that the component is the
-one this Dreamer needs (its `component.json` names the same Dreamer
-version and CEF release), that the framework and each helper app pass
-`codesign --verify --strict`, and that a helper loads the framework. It
-unpacks next to the installed copy and swaps it in only when all of that
-passed. It goes in `web/` of Dreamer's data directory (`DREAMER_DATA_DIR`,
-then `$XDG_DATA_HOME/dreamer`, then `~/.local/share/dreamer`). Web panes
-opened after it is installed draw their pages; there is no need to
-restart Dreamer.
+The desktop adds the component with the same installer, from a web
+pane, the first-start offer, or the palette. Before installing, it checks
+that the component is the one this Dreamer needs (its `component.json`
+names the same Dreamer version and CEF release), that the framework and
+each helper app pass `codesign --verify --strict`, and that a helper
+loads the framework. It unpacks next to the installed copy and swaps it
+in only when all of that passed; on any failure the installed copy stays
+as it was. One install runs at a time per data directory; a second one
+says so and stops. It goes in `web/` of Dreamer's data directory
+(`DREAMER_DATA_DIR`, then `$XDG_DATA_HOME/dreamer`, then
+`~/.local/share/dreamer`). Web panes waiting for it draw their pages once
+it is installed; there is no need to restart Dreamer.
+
+On a terminal, the download's progress counts up on one line. A
+download that fails says from where, why (curl's message), and how to
+point Dreamer at another place: `DREAMER_WEB_URL`, `web.url`, or a zip
+you have.
 
 ## Approvals
 

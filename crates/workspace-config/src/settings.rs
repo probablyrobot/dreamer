@@ -30,6 +30,41 @@ pub struct Settings {
     pub drawer: DrawerSettings,
     pub memory: MemorySettings,
     pub window: WindowSettings,
+    pub web: WebSettings,
+}
+
+/// Dreamer Web, the Chromium component web panes need (`docs/desktop.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WebSettings {
+    pub component: WebComponent,
+    /// Where to download the component from instead of the release: the
+    /// archive's address, or a directory's that holds it. The
+    /// `DREAMER_WEB_URL` variable, when set, comes first.
+    pub url: Option<String>,
+}
+
+/// Whether Dreamer offers to add Dreamer Web when it is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebComponent {
+    /// Offer it once at the first start, and in each web pane that needs
+    /// it; nothing downloads without a yes.
+    #[default]
+    Ask,
+    /// Add it without asking when something needs it (managed setups).
+    Auto,
+    /// Never offer it; web panes say it is turned off.
+    Never,
+}
+
+impl WebComponent {
+    pub fn name(self) -> &'static str {
+        match self {
+            WebComponent::Ask => "ask",
+            WebComponent::Auto => "auto",
+            WebComponent::Never => "never",
+        }
+    }
 }
 
 /// The desktop's windows.
@@ -380,6 +415,7 @@ impl Default for Settings {
             drawer: DrawerSettings::default(),
             memory: MemorySettings::default(),
             window: WindowSettings::default(),
+            web: WebSettings::default(),
         }
     }
 }
@@ -409,6 +445,15 @@ struct File {
     memory: MemoryFile,
     #[serde(default)]
     window: WindowFile,
+    #[serde(default)]
+    web: WebFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WebFile {
+    component: Option<WebComponent>,
+    url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -827,6 +872,23 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(d) = file.window.decorations {
         s.window.decorations = d;
     }
+    if let Some(c) = file.web.component {
+        s.web.component = c;
+    }
+    if let Some(u) = file.web.url {
+        let u = u.trim();
+        if !["https://", "http://", "file://"]
+            .iter()
+            .any(|p| u.starts_with(p) && u.len() > p.len())
+        {
+            return Err(error(
+                origin,
+                "web.url",
+                format!("`{u}` is not an https, http, or file address"),
+            ));
+        }
+        s.web.url = Some(u.to_owned());
+    }
     Ok(s)
 }
 
@@ -1046,6 +1108,33 @@ mod tests {
         let s = parse_settings("appearance: light", None).expect("light");
         assert_eq!(s.appearance, Appearance::Light);
         assert!(parse_settings("appearance: sepia", None).is_err());
+    }
+
+    #[test]
+    fn dreamer_web_is_asked_for_unless_the_settings_say_auto_or_never() {
+        let s = Settings::default();
+        assert_eq!(s.web.component, WebComponent::Ask);
+        assert_eq!(s.web.url, None);
+        for (text, want) in [
+            ("ask", WebComponent::Ask),
+            ("auto", WebComponent::Auto),
+            ("never", WebComponent::Never),
+        ] {
+            let s = parse_settings(&format!("web:\n  component: {text}\n"), None).expect(text);
+            assert_eq!(s.web.component, want);
+            assert_eq!(want.name(), text);
+        }
+        let e = parse_settings("web:\n  component: always\n", None).expect_err("bad");
+        assert!(e.to_string().contains("always"), "{e}");
+        let s =
+            parse_settings("web:\n  url: https://example.com/dreamer-web/\n", None).expect("url");
+        assert_eq!(
+            s.web.url.as_deref(),
+            Some("https://example.com/dreamer-web/")
+        );
+        let e = parse_settings("web:\n  url: example.com\n", None).expect_err("no scheme");
+        assert_eq!(e.at, "web.url");
+        assert!(parse_settings("web:\n  urls: x\n", None).is_err());
     }
 
     #[test]

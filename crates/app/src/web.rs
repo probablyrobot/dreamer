@@ -49,11 +49,12 @@
 //! page is, and closes when no web pane uses it.
 //!
 //! Chromium starts with the first web pane, not with the app, loaded from
-//! Dreamer Web, the component installed apart from the app (`dream web
-//! install`). A build without the `web` feature, or one without the
-//! component (or with another version's), shows the page's address and
-//! why it cannot draw it, which says how to add the component; a pane
-//! opened after it is added draws the page, with no restart.
+//! Dreamer Web, the component installed apart from the app. A build
+//! without the `web` feature shows the page's address and why it cannot
+//! draw it. One without the component (or with another version's) shows
+//! the address and a button that adds it, with its progress, and loads the
+//! page once it is there, with no restart ([`crate::webcomp`]); with
+//! `web.component: auto` it is added without the click.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -270,6 +271,9 @@ pub(crate) struct WebPane {
     kept: (String, i32, i32),
     /// Why the page is not drawn.
     pub(crate) problem: Option<String>,
+    /// Waiting for Dreamer Web to be added: the pane offers it, and opens
+    /// the page once it is there.
+    wants_component: bool,
     /// The app whose page this is, for a `web` node of an app pane.
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     app: Option<web_engine::AppPage>,
@@ -303,11 +307,22 @@ impl WebPane {
         // Chromium starts with the first web pane, here rather than while
         // the pane paints.
         #[cfg(feature = "web")]
-        let problem = engine::ensure(cx).err();
+        let (problem, wants_component) = if crate::webcomp::look_now() {
+            (engine::ensure(cx).err(), false)
+        } else {
+            // An agent's or an app's page waits for it as a click would.
+            if crate::webcomp::mode() == workspace_config::WebComponent::Auto {
+                crate::webcomp::add(cx);
+            }
+            (None, true)
+        };
         #[cfg(not(feature = "web"))]
-        let problem = Some(
-            "This build of Dreamer has no web engine (web panes are built on macOS with the `web` feature)."
-                .to_owned(),
+        let (problem, wants_component) = (
+            Some(
+                "This build of Dreamer has no web engine (web panes are built on macOS with the `web` feature)."
+                    .to_owned(),
+            ),
+            false,
         );
         // Whatever takes Dreamer's focus from the pane (another pane, the
         // palette, the find bar) takes the keys from the page too.
@@ -326,6 +341,7 @@ impl WebPane {
             snapshot: Snapshot::None,
             kept,
             problem,
+            wants_component,
             app,
             bar: Bar::default(),
             forward: None,
@@ -414,6 +430,21 @@ impl WebPane {
             }
             _ => url.to_owned(),
         }
+    }
+
+    /// Why the page is not drawn, if it cannot be now: a problem, or
+    /// Dreamer Web not added yet (for agents and smoke runs, which cannot
+    /// click the pane's button).
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    pub(crate) fn not_drawn(&self) -> Option<String> {
+        self.problem.clone().or_else(|| {
+            self.wants_component.then(|| {
+                let dir = web_component::installed_dir();
+                web_component::check(&dir)
+                    .problem(&dir)
+                    .unwrap_or_else(|| "Dreamer Web is being added".into())
+            })
+        })
     }
 
     /// Whether this is the browser: a plain web pane, not an app's page.
@@ -871,7 +902,7 @@ impl WebPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.problem.is_some() {
+        if self.problem.is_some() || self.wants_component {
             return;
         }
         let rect = web_engine::Rect {
@@ -1062,6 +1093,16 @@ impl Render for WebPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::keymap as k;
         let t = crate::theme::for_window(window);
+        // Dreamer Web was added: Chromium starts, and the page opens as
+        // the pane paints.
+        #[cfg(feature = "web")]
+        if self.wants_component && crate::webcomp::status() == crate::webcomp::Status::Ready {
+            self.wants_component = false;
+            cx.defer_in(window, |w, _, cx| {
+                w.problem = engine::ensure(cx).err();
+                cx.notify();
+            });
+        }
         // What shows where the page is not drawn: under the page for a
         // moment as it starts, or instead of it.
         let notice = div()
@@ -1079,7 +1120,10 @@ impl Render for WebPane {
                 self.problem
                     .clone()
                     .map(|p| div().text_color(c(t.warning)).child(p)),
-            );
+            )
+            .when(self.wants_component, |d| {
+                d.child(crate::webcomp::in_pane(&t))
+            });
         // Under an overlay, the page as it was when the overlay opened.
         let snapshot = match &self.snapshot {
             Snapshot::Taken(Some(image)) if !self.live => Some(

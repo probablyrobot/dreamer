@@ -106,8 +106,8 @@ fn web_pane(w: &Workspace, cx: &gpui::App) -> Option<Result<Seen, String>> {
     w.panes.iter().find_map(|(id, v)| match v {
         PaneView::Web { view, .. } => {
             let p = view.read(cx);
-            if let Some(problem) = &p.problem {
-                return Some(Err(problem.clone()));
+            if let Some(problem) = p.not_drawn() {
+                return Some(Err(problem));
             }
             let v = p.view.as_ref()?;
             v.load_status()?;

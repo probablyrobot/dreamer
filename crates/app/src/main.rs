@@ -35,6 +35,7 @@ mod theme;
 mod theme_pick;
 mod tmux_keys;
 mod web;
+mod webcomp;
 
 use theme::{c, ca};
 mod bench_gui;
@@ -1922,6 +1923,11 @@ fn main() -> ExitCode {
         cx.background_spawn(async { live::set_themes(live::themes()) })
             .detach();
         live::watch(cx);
+        // Dreamer Web: found, used in place, or offered once (not in smoke
+        // runs, which bring their own).
+        if workspace_mode && !args.smoke {
+            webcomp::startup(cx);
+        }
 
         if workspace_mode {
             let launch = client::Launch::new(args.daemon.clone());

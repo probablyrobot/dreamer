@@ -9,12 +9,18 @@
 //! `web/` in its data directory ([`installed_dir`]). Packed, it is
 //! [`archive_name`], a zip whose one top directory is [`TOP`].
 //!
-//! The packager (`cargo xtask package`), the installer (`dream web
-//! install`), and the desktop's engine all read the layout from here. The
-//! Linux component (an optional `dreamer-web` archive) is not built yet:
-//! [`TARGET`] is `None` there.
+//! The packager (`cargo xtask package`), the installer ([`install`],
+//! which `dream web install` and the desktop share), and the desktop's
+//! engine all read the layout from here. The Linux component (an optional
+//! `dreamer-web` archive) is not built yet: [`TARGET`] is `None` there.
+//!
+//! A copy already on the system can be used in place of a download
+//! ([`system_dirs`]): `web/` is then a link to it, made only after the copy
+//! passed the same checks as an install.
 
 use std::path::{Path, PathBuf};
+
+pub mod install;
 
 /// The component's name, as people see it.
 pub const NAME: &str = "Dreamer Web";
@@ -63,7 +69,16 @@ pub const HELPERS: [(&str, &str); 5] = [
 ];
 
 /// How to add the component, for messages.
-pub const HOW_TO_ADD: &str = "Add it with `dream web install`.";
+pub const HOW_TO_ADD: &str = "Add it from the web pane, with \"Add Dreamer Web\" in the palette, or with `dream web install`.";
+
+/// About how much the component's archive is to download, and how much it
+/// takes installed, in megabytes (decimal), for what people are asked.
+pub const DOWNLOAD_MB: u32 = 150;
+pub const INSTALLED_MB: u32 = 334;
+
+/// The variable that says where to download the component from instead
+/// of the release ([`download_url`]).
+pub const URL_ENV: &str = "DREAMER_WEB_URL";
 
 /// The name of a helper app's executable: `dreamer Helper (GPU)`.
 pub fn helper_name(suffix: &str) -> String {
@@ -85,9 +100,58 @@ pub fn helper_executable(dir: &Path, suffix: &str) -> PathBuf {
 
 /// Where Dreamer installs the component: `web/` in its data directory
 /// (`DREAMER_DATA_DIR`, else `$XDG_DATA_HOME/dreamer`, else
-/// `~/.local/share/dreamer`).
+/// `~/.local/share/dreamer`). It may be a link to a copy used in place
+/// ([`linked_to`]).
 pub fn installed_dir() -> PathBuf {
     platform::data_dir().join("web")
+}
+
+/// Where `dir` links to, when it is a link to a copy used in place rather
+/// than a component installed there.
+pub fn linked_to(dir: &Path) -> Option<PathBuf> {
+    std::fs::symlink_metadata(dir)
+        .ok()
+        .filter(|m| m.file_type().is_symlink())
+        .and_then(|_| std::fs::read_link(dir).ok())
+}
+
+/// Where a copy of the component may already be on this machine, to use in
+/// place of a download, in the order they are tried. Each is used only if
+/// it is exactly this build's component and passes an install's checks.
+///
+/// - The system-wide location, for every user of the machine: on macOS
+///   `/Library/Application Support/Dreamer/web` (an administrator puts it
+///   there); on Linux a distribution's `dreamer-web` package
+///   (`/usr/lib/dreamer-web`), or CEF of exactly the pinned release laid
+///   out as the component (`/usr/lib/cef`, `/opt/cef`).
+/// - Another Dreamer data directory of this user's: the default one
+///   (`$XDG_DATA_HOME/dreamer/web`, `~/.local/share/dreamer/web`) when
+///   `DREAMER_DATA_DIR` points elsewhere.
+///
+/// A system Chrome or Chromium browser is not CEF, and is never used.
+pub fn system_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = if cfg!(target_os = "macos") {
+        vec![PathBuf::from("/Library/Application Support/Dreamer/web")]
+    } else {
+        ["/usr/lib/dreamer-web", "/usr/lib/cef", "/opt/cef"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect()
+    };
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(|h| PathBuf::from(h).join(".local/share/dreamer/web"));
+    let xdg = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join("dreamer/web"));
+    let here = installed_dir();
+    for d in [xdg, home].into_iter().flatten() {
+        if d != here && !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    dirs
 }
 
 /// The archive of the component for Dreamer `version` on `target`.
@@ -103,6 +167,37 @@ pub fn release_url(version: &str, target: &str) -> String {
         env!("CARGO_PKG_REPOSITORY"),
         archive_name(version, target)
     )
+}
+
+/// The archive's address given `base`: `base` itself when it names a
+/// `.zip`, else this version's archive in the directory `base` names.
+pub fn archive_url(base: &str, target: &str) -> String {
+    let base = base.trim();
+    if base.ends_with(".zip") {
+        base.to_owned()
+    } else {
+        format!(
+            "{}/{}",
+            base.trim_end_matches('/'),
+            archive_name(VERSION, target)
+        )
+    }
+}
+
+/// Where to download this build's component from: [`URL_ENV`] if it is
+/// set, else `setting` (`web.url` in `dreamer.yaml`), else the release
+/// ([`release_url`]). Either may name the archive or a directory holding
+/// it ([`archive_url`]).
+pub fn download_url(setting: Option<&str>, target: &str) -> String {
+    let env = std::env::var(URL_ENV).ok();
+    match env
+        .as_deref()
+        .filter(|u| !u.trim().is_empty())
+        .or(setting.filter(|u| !u.trim().is_empty()))
+    {
+        Some(base) => archive_url(base, target),
+        None => release_url(VERSION, target),
+    }
 }
 
 /// What [`MANIFEST`] says: the Dreamer version whose helpers the component
@@ -177,6 +272,12 @@ pub enum State {
 
 /// Whether `dir` holds the component this build needs.
 pub fn check(dir: &Path) -> State {
+    check_for(dir, Manifest::this_build().as_ref())
+}
+
+/// Whether `dir` holds a complete component with manifest `want` (`None`:
+/// no component can be this build's, on a platform without one).
+pub fn check_for(dir: &Path, want: Option<&Manifest>) -> State {
     let text = match std::fs::read_to_string(dir.join(MANIFEST)) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && !dir.exists() => {
@@ -188,7 +289,7 @@ pub fn check(dir: &Path) -> State {
         Ok(m) => m,
         Err(e) => return State::Broken(e),
     };
-    if Manifest::this_build().as_ref() != Some(&found) {
+    if want != Some(&found) {
         return State::Other(found);
     }
     if !dir.join(FRAMEWORK_BINARY).is_file() {
@@ -215,7 +316,7 @@ impl State {
             )),
             State::Other(m) => Some(format!(
                 "{NAME} in {dir} is for Dreamer {} (CEF {}), not for this Dreamer {VERSION} \
-                 (CEF {CEF_VERSION}). Install this Dreamer's with `dream web install`.",
+                 (CEF {CEF_VERSION}). {HOW_TO_ADD}",
                 m.version, m.cef
             )),
             State::Broken(why) => Some(format!(
@@ -258,7 +359,7 @@ mod tests {
             State::Missing
                 .problem(&dir)
                 .expect("a problem")
-                .contains("dream web install")
+                .contains("Add Dreamer Web")
         );
         lay_out(&dir, &this);
         assert_eq!(check(&dir), State::Ready(this.clone()));
@@ -288,5 +389,29 @@ mod tests {
         assert_eq!(Manifest::parse(&m.to_json()), Ok(m.clone()));
         assert_eq!(m.chromium(), "156.0.8078.96");
         assert!(Manifest::parse("{\"component\":\"other\"}").is_err());
+    }
+
+    #[test]
+    fn a_download_address_names_the_archive_or_its_directory() {
+        let t = "aarch64-apple-darwin";
+        let zip = archive_name(VERSION, t);
+        assert_eq!(
+            archive_url("https://example.com/web/", t),
+            format!("https://example.com/web/{zip}")
+        );
+        assert_eq!(
+            archive_url("https://example.com/x.zip", t),
+            "https://example.com/x.zip"
+        );
+        assert_eq!(
+            archive_url("file:///tmp/d", t),
+            format!("file:///tmp/d/{zip}")
+        );
+        // Without the variable: the setting, then the release.
+        if std::env::var_os(URL_ENV).is_none() {
+            assert_eq!(download_url(None, t), release_url(VERSION, t));
+            assert_eq!(download_url(Some(" "), t), release_url(VERSION, t));
+            assert_eq!(download_url(Some("https://h/a.zip"), t), "https://h/a.zip");
+        }
     }
 }

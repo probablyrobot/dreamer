@@ -1023,6 +1023,10 @@ impl Workspace {
                 }
                 None
             }
+            C::AddWeb => {
+                crate::webcomp::add(cx);
+                None
+            }
             // Chosen in the palette's own list.
             C::Theme => None,
             // The app's own commands, dispatched above.
@@ -2267,6 +2271,8 @@ impl Render for Workspace {
                     .text_color(c(t.warning))
                     .child(s)
             }))
+            // Dreamer Web, offered once at the first start.
+            .children(crate::webcomp::offer(&t))
             // A configuration change that was not applied, and why: the
             // settings in force stay until the file reads again.
             .children(

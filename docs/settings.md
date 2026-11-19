@@ -15,7 +15,7 @@ The file is the one place to configure Dreamer, and changes apply live.
   - the terminal theme and cursor reach every running pane, in every
     window, including on other machines;
   - the font, chrome, appearance, window decorations, links, clipboard,
-    and fallback apply in every window;
+    fallback, and Dreamer Web settings apply in every window;
   - the tier budgets apply to the daemon's panes;
   - the memory provider applies to the next memory call.
 - **Refusing.** A file that does not read changes nothing. Dreamer keeps
@@ -70,6 +70,9 @@ memory:
   provider: files                        # default; the only provider so far
 window:
   decorations: full                      # full (default) or none
+web:
+  component: ask                         # ask (default), auto, or never
+  url: https://example.com/dreamer-web/  # optional; default: the release
 ```
 
 ## Font
@@ -300,6 +303,34 @@ title bar and its close, zoom, and minimize buttons:
 ```yaml
 window:
   decorations: none
+```
+
+## Dreamer Web
+
+`web:` says how Dreamer adds Dreamer Web, the Chromium component web
+panes need, when it is missing ([desktop.md](desktop.md#dreamer-web)).
+
+- `component: ask` (the default) offers it once at the first start, in
+  the tab strip, and in each web pane that needs it. Nothing downloads
+  until you click.
+- `component: auto` adds it without asking: at the start, and whenever a
+  web pane (yours, an agent's, or an app's) needs it. For managed setups.
+- `component: never` offers nothing; web panes say it is turned off.
+  "Add Dreamer Web" in the palette and `dream web install` still add it.
+- `url` is where to download it from instead of the release: the zip's
+  address, or a directory's that holds `dreamer-web-<version>-<target>.zip`
+  and its `.sha256`, over `https`, `http`, or `file`. `DREAMER_WEB_URL`,
+  when set, comes first.
+
+A copy already on the machine is used in place before anything is
+downloaded, whatever the setting. A change applies to the next web pane
+and the next install; the first-start offer is decided when the desktop
+starts.
+
+```yaml
+web:
+  component: auto
+  url: https://downloads.example.com/dreamer-web/
 ```
 
 ## Memory

@@ -797,10 +797,13 @@ pub fn start(cache_dir: &Path, wake: impl Fn(i64) + Send + Sync + 'static) -> Re
     if let Some(done) = STARTED.with(|s| s.borrow().clone()) {
         return done;
     }
-    let component = web_component::installed_dir();
-    if let Some(problem) = web_component::check(&component).problem(&component) {
-        return Err(format!("{problem} Then open the page again."));
+    let installed = web_component::installed_dir();
+    if let Some(problem) = web_component::check(&installed).problem(&installed) {
+        return Err(problem);
     }
+    // A copy used in place is linked to: Chromium is told where it really
+    // is, so the helpers find the framework beside themselves.
+    let component = installed.canonicalize().unwrap_or(installed);
     let result = (|| {
         load_framework(&component.join(web_component::FRAMEWORK_BINARY))?;
         // SAFETY: main thread, framework loaded, NSApp exists (inside the
