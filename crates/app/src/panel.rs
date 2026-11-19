@@ -405,6 +405,7 @@ impl AppPanel {
                 origin: p.origin.clone(),
                 dir: (!p.dir.is_empty()).then(|| PathBuf::from(&p.dir)),
                 allow: p.allow.clone(),
+                download: p.download,
                 bridge: Arc::new(move |call: web_engine::BridgeCall| {
                     if let Err(e) = tx.send(call) {
                         let why = "the app pane has closed".to_owned();

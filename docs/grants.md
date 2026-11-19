@@ -317,6 +317,33 @@ declares `net.fetch` gets it into the grant `dream app run` and the
 desktop ask for; a launch granted less refuses `fetch`. Until the host
 knows its grant, `fetch` is refused.
 
+### Saving downloads
+
+A download in a page writes a file to the user's disk, so an app's page
+may start one only under one grant entry, `web.download`:
+
+- **Not a method.** It allows no API method; it is what the desktop
+  reads before an app's page may ask to save a download. `web.*` holds
+  it too.
+- **The browser has it.** A web pane is the user's own browser, so its
+  downloads always ask, whoever opened the pane. A page an agent opened
+  or drives (under `web.inspect`) can start a download, but only the
+  user's Save in the pane writes it: no API method answers the prompt.
+- **Apps.** An app's page asks only when the app's manifest lists
+  `web.download` in `capabilities`; without it the download is refused,
+  with a line over the page, and nothing is written. An agent can launch
+  an app with it only when the agent's own grant holds it (an app's
+  grant is within its launcher's).
+- **Always a prompt.** Even with it, nothing is written until the user
+  chooses Save, and the file goes only to the downloads folder
+  ([settings.md](settings.md#downloads)), under a name that never
+  replaces a file.
+
+`crates/app-model/src/manifest.rs` checks that a package's pages may
+save downloads only with `web.download` (or `web.*`), and the web smoke
+([desktop.md](desktop.md#web-pane-check)) that the example web app, without
+it, is refused, while the browser asks and saves.
+
 ### What this does and does not protect
 
 The socket is owner-only, so any process of the same user can still

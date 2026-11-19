@@ -1,8 +1,8 @@
 //! The settings in force in this desktop, replaced live when the
 //! configuration changes (`dreamer.yaml`, or a theme file beside it): the
 //! terminal font, the chrome's theme, which links open, clipboard writes,
-//! the fallback terminal, the windows' decorations, and how Dreamer Web is
-//! offered. Every window
+//! the fallback terminal, the windows' decorations, how Dreamer Web is
+//! offered, and where web panes save downloads. Every window
 //! repaints with the new ones. A file that does not read changes nothing;
 //! its error is kept here for the tab strip to show until a valid file
 //! replaces it.
@@ -40,6 +40,8 @@ pub(crate) struct Live {
     pub decorations: workspace_config::Decorations,
     /// Dreamer Web: whether it is offered, and where it downloads from.
     pub web: workspace_config::WebSettings,
+    /// `web.downloads.folder` as written, if set.
+    pub downloads: Option<String>,
     /// The scheme in force, and every theme there is to choose from.
     pub scheme: &'static Scheme,
     pub themes: Vec<&'static Scheme>,
@@ -115,6 +117,7 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
         fallback: settings.fallback.launch.clone(),
         decorations,
         web: settings.web.clone(),
+        downloads: settings.web.downloads.folder.clone(),
         scheme: settings.scheme(),
         themes,
         preview: None,

@@ -41,6 +41,7 @@ pub struct WebSettings {
     /// archive's address, or a directory's that holds it. The
     /// `DREAMER_WEB_URL` variable, when set, comes first.
     pub url: Option<String>,
+    pub downloads: DownloadSettings,
 }
 
 /// Whether Dreamer offers to add Dreamer Web when it is missing.
@@ -65,6 +66,14 @@ impl WebComponent {
             WebComponent::Never => "never",
         }
     }
+}
+
+/// Downloads in web panes (see [`crate::downloads`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DownloadSettings {
+    /// The folder they are saved to, as written (`~` for the home
+    /// directory, else absolute). `None`: the platform's download folder.
+    pub folder: Option<String>,
 }
 
 /// The desktop's windows.
@@ -454,6 +463,14 @@ struct File {
 struct WebFile {
     component: Option<WebComponent>,
     url: Option<String>,
+    #[serde(default)]
+    downloads: DownloadsFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DownloadsFile {
+    folder: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -889,6 +906,17 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
         }
         s.web.url = Some(u.to_owned());
     }
+    if let Some(folder) = file.web.downloads.folder {
+        let f = folder.trim();
+        if !(f == "~" || f.starts_with("~/") || Path::new(f).is_absolute()) {
+            return Err(error(
+                origin,
+                "web.downloads.folder",
+                format!("{folder:?} is not a folder: write an absolute path, or one from `~/`"),
+            ));
+        }
+        s.web.downloads.folder = Some(f.to_owned());
+    }
     Ok(s)
 }
 
@@ -1145,6 +1173,22 @@ mod tests {
         let e = parse_settings("window:\n  decorations: minimal\n", None).expect_err("bad");
         assert_eq!(e.line, Some(2), "{e}");
         assert!(e.message.contains("full"), "{e}");
+    }
+
+    #[test]
+    fn the_downloads_folder_is_absolute_or_under_home() {
+        assert_eq!(Settings::default().web.downloads.folder, None);
+        for ok in ["~", "~/Inbox", "/tmp/dl"] {
+            let s = parse_settings(&format!("web:\n  downloads:\n    folder: {ok:?}\n"), None)
+                .expect(ok);
+            assert_eq!(s.web.downloads.folder.as_deref(), Some(ok));
+        }
+        for bad in ["Downloads", "~ada/x", "''"] {
+            let e = parse_settings(&format!("web: {{ downloads: {{ folder: {bad} }} }}"), None)
+                .expect_err(bad);
+            assert_eq!(e.at, "web.downloads.folder", "{bad}: {e}");
+        }
+        assert!(parse_settings("web: { downloads: { dir: /x } }", None).is_err());
     }
 
     #[test]

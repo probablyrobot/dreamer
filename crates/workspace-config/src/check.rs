@@ -315,6 +315,14 @@ pub const SCHEMA: &[Key] = &[
         example: "https://downloads.example.com/dreamer-web/",
         live: true,
     },
+    Key {
+        path: "web.downloads.folder",
+        kind: "absolute path, or one from ~/",
+        default: "~/Downloads (Linux: the XDG download directory)",
+        doc: "Where a download in a web pane is saved, once you choose Save in the pane. Without it: ~/Downloads on macOS; on Linux XDG_DOWNLOAD_DIR from user-dirs.dirs, else ~/Downloads. Made if it is not there.",
+        example: "~/Downloads/web",
+        live: true,
+    },
 ];
 
 /// What the live configuration files look like now: `dreamer.yaml` and

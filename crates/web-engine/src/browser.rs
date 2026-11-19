@@ -11,35 +11,35 @@
 //!   desktop's.
 //! - **One page per pane:** a link that wants a new window opens in the
 //!   same pane.
-//! - **Downloads are refused,** with a line in the pane's status
-//!   ([`download_refused`]). Saving them is planned behind the
-//!   [`DOWNLOAD_CAPABILITY`]; until then the handler only refuses.
+//! - **Downloads ask first.** A download a page starts waits for the
+//!   pane's prompt ([`crate::Event::DownloadAsked`]): the caller saves it
+//!   to a path it chooses (`WebView::save_download`) or cancels
+//!   it, and hears its progress and its end. The browser may always ask;
+//!   an app's page only with the [`DOWNLOAD_CAPABILITY`]
+//!   ([`downloads_allowed`]). Any other download is refused, with a line
+//!   in the pane's status ([`download_refused`]).
 
 /// The browser's profile, a directory of Chromium's.
 pub const PROFILE: &str = "browser";
 
-/// The capability that will let a page save downloads (to a configured
-/// folder, after a prompt). Not granted to anything yet: every download
-/// is refused.
+/// The capability that lets an app's page save downloads (each after the
+/// user's Save in the pane). The browser does not need it: it is the
+/// user's own.
 pub const DOWNLOAD_CAPABILITY: &str = "web.download";
 
-/// What the browser does with a download a page starts: refuse it, for
-/// now. Planned: ask, then save it, behind [`DOWNLOAD_CAPABILITY`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Downloads {
-    Refused,
+/// Whether a page may ask to save a download: the browser's may; an app's
+/// only when the app holds [`DOWNLOAD_CAPABILITY`].
+pub fn downloads_allowed(app: Option<&crate::AppPage>) -> bool {
+    app.is_none_or(|a| a.download)
 }
 
-/// The download policy in force.
-pub const DOWNLOADS: Downloads = Downloads::Refused;
-
 /// The pane's status line for a download of `url` (or a suggested file
-/// name) that was refused.
+/// name) that was refused: the page may not save downloads.
 pub fn download_refused(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let name = path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(url);
     let name: String = name.chars().filter(|c| !c.is_control()).take(80).collect();
-    format!("Download refused: {name}. Downloads are off for now.")
+    format!("Download refused: {name}. This page may not save files ({DOWNLOAD_CAPABILITY}).")
 }
 
 /// The isolated world the browser's own script runs in.
@@ -87,17 +87,33 @@ pub const NAVIGATION_SCRIPT: &str = r#"(() => {
 
 #[cfg(test)]
 mod tests {
-    use super::{NAVIGATION_SCRIPT, download_refused};
+    use super::{NAVIGATION_SCRIPT, download_refused, downloads_allowed};
+
+    #[test]
+    fn the_browser_may_ask_to_save_a_download_and_an_app_only_with_the_capability() {
+        assert!(downloads_allowed(None));
+        let mut page = crate::AppPage {
+            app: "test.web".into(),
+            origin: "dreamer-app://test.web".into(),
+            dir: None,
+            allow: Vec::new(),
+            download: false,
+            bridge: std::sync::Arc::new(|_| {}),
+        };
+        assert!(!downloads_allowed(Some(&page)));
+        page.download = true;
+        assert!(downloads_allowed(Some(&page)));
+    }
 
     #[test]
     fn a_refused_download_is_named_in_the_status() {
         assert_eq!(
             download_refused("https://a.test/files/report.pdf?x=1#y"),
-            "Download refused: report.pdf. Downloads are off for now."
+            "Download refused: report.pdf. This page may not save files (web.download)."
         );
         assert_eq!(
             download_refused("https://a.test/"),
-            "Download refused: a.test. Downloads are off for now."
+            "Download refused: a.test. This page may not save files (web.download)."
         );
         assert!(!download_refused("http://a.test/x\u{1b}[2J").contains('\u{1b}'));
     }

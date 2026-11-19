@@ -57,12 +57,14 @@ pub struct Embeds {
 }
 
 /// What `web` nodes need of the manifest: the app's id, its declared
-/// local `url`, and the origins its pages may navigate to.
+/// local `url`, the origins its pages may navigate to, and whether they
+/// may save downloads (`web.download` in its capabilities).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Site {
     pub app: String,
     pub url: Option<String>,
     pub allow: Vec<String>,
+    pub download: bool,
 }
 
 impl Site {
@@ -76,6 +78,7 @@ impl Site {
                 .iter()
                 .filter_map(|a| view_tree::web::origin(a))
                 .collect(),
+            download: m.downloads(),
         }
     }
 }
@@ -242,6 +245,7 @@ impl Embeds {
                             app: site.app.clone(),
                             dir: root.map(|r| r.display().to_string()).unwrap_or_default(),
                             allow: site.allow.clone(),
+                            download: site.download,
                         };
                         refused.clear();
                     }
@@ -427,6 +431,7 @@ mod tests {
             app: "local.web".into(),
             url: None,
             allow: vec!["https://docs.example".into()],
+            download: false,
         };
         let p = web_page(&site, "").expect("the entry");
         assert_eq!(p.url, "dreamer-app://local.web/index.html");

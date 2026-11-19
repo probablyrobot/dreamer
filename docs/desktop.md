@@ -615,9 +615,32 @@ something to show.
   apart from your own browser's, and keeps session cookies in it, so you
   stay logged in across restarts. `dream browser clear`
   ([cli.md](cli.md#web-panes)) empties it.
-- **Downloads** are refused for now, with a line in the strip naming the
-  file. Saving them is planned, behind a `web.download` capability a
-  package cannot ask for yet.
+- **Downloads** ask first. A download the page starts shows a row over
+  the page with the file's name and size, if the site gives it, and
+  **Save** and **Cancel**. Nothing is written before Save, and there is
+  no system save dialog: the terminal and the rest of the window keep
+  working while the row waits.
+  - **Where.** Save writes to the downloads folder: `web.downloads.folder`
+    ([settings.md](settings.md#downloads)), else `~/Downloads` on macOS
+    and the XDG download folder on Linux. The folder is made if it is not
+    there.
+  - **Names.** The file has the name the site suggests, made safe (no
+    folders, no leading dot), and never replaces a file: when the name is
+    taken it becomes `report (1).bin`, `report (2).bin`, and so on.
+  - **Progress.** While it downloads, the file is `NAME.part` and the row
+    shows how much has come (and the percentage, when the size is known),
+    with Cancel. Once complete it is renamed to its name, and the strip
+    says where it was saved.
+  - **Cancel** at the prompt writes nothing; Cancel while it downloads
+    stops it and removes the partial file. A download that fails is
+    removed the same way, with the reason in the strip. Closing the pane
+    (or the desktop) cancels its downloads.
+  - **Who may.** The browser is yours, so its downloads always ask. A
+    page an agent opened or drives asks you the same way: only you can
+    choose Save. An [app's page](#app-pages) asks only if the app holds
+    `web.download` ([grants.md](grants.md#saving-downloads)); otherwise
+    the download is refused with a line in the strip, and nothing is
+    written.
 - **No Dreamer API.** A site in the browser never gets `window.dreamer`.
   The script that turns the mouse's side buttons and the swipe into back
   and forward runs in a world of its own, which the page cannot see.
@@ -647,6 +670,9 @@ covered like a web pane's. What is different:
 - **Keys.** A web app's page takes the keys while its pane has the
   focus. In an app with other nodes, a click in the page gives it the
   keys, and a click on the rest of the app takes them back.
+- **Downloads** ask first, as in the browser, only when the app's
+  manifest lists `web.download` in `capabilities`; otherwise they are
+  refused with a line over the page.
 - Its title and scroll position are not kept in tmux.
 
 Not yet: a page's own clipboard writes following `clipboard.write`, the
@@ -1045,8 +1071,10 @@ configuration directories:
   inside it (another origin) has no `window.dreamer` and cannot reach
   the bridge, nor does the plain web pane have one; and a navigation to
   `https://example.invalid/`, outside its allow-list, is refused and the
-  page stays on its origin. Each passed check is a `smoke: web app:`
-  line, and the gate wants all seven;
+  page stays on its origin; a download its page starts is refused (the
+  app has no `web.download`) with a line over the page, and nothing is
+  written. Each passed check is a `smoke: web app:` line, and the gate
+  wants all eight;
 - then the [browser](#the-browser), in the plain web pane, against a
   test site the gate serves on `127.0.0.1` (nothing from the internet):
   `web.navigate` loads its login, which sets a session cookie; Cmd+L,
@@ -1054,13 +1082,19 @@ configuration directories:
   link is followed; Cmd+[ and Cmd+] go back and forward, and so do mouse
   buttons 4 and 5; Cmd+R loads the page again (the site counts its
   loads); Cmd+F and a word typed get matches from Chromium's find, and
-  Esc ends it; Cmd+= zooms the page and Cmd+0 back; a download is
-  refused with its status line; and a link that wants a new window
-  opens in the same pane. Then the gate starts the desktop again on the
-  same profile (`dreamer --smoke-web-restart`), and a page of the site
-  must still get the login's session cookie. Each passed check is a
-  `smoke: web browser:` line, and the gate wants all eleven. The swipe is
-  not checked;
+  Esc ends it; Cmd+= zooms the page and Cmd+0 back; a download asks
+  first and writes nothing until Save; Save writes it, with the site's
+  contents, into the downloads folder; Cancel at the prompt writes
+  nothing; Cancel while a slow download is written leaves no partial
+  file; and a link that wants a new window opens in the same pane. The
+  downloads folder is the gate's own (`web.downloads.folder` in its
+  private configuration, under `/tmp`): the smoke refuses a folder in the
+  home directory, so it never writes to your Downloads. Then the gate
+  starts the desktop again on the same profile (`dreamer
+  --smoke-web-restart`), and a page of the site must still get the
+  login's session cookie. Each passed check is a `smoke: web browser:`
+  line, and the gate wants all fourteen. The swipe and the row's buttons
+  (the smoke answers through the same call they make) are not clicked;
 - then [an agent and a page](#agents-and-pages), through the daemon on
   connections narrowed to an agent's grant at `own`: the agent opens the
   test site's form in a window of its own; without `web.inspect`,

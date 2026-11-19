@@ -40,6 +40,20 @@ pub const INSPECT_WEB: &str = "web.inspect";
 /// `docs/grants.md`.
 pub const FORWARD_WEB: &str = "web.forward";
 
+/// Not a method: the grant entry that lets an app's pages save downloads,
+/// each after the user chooses Save in the pane, to the configured
+/// folder. The user's own web panes (the browser) have it; an app has it
+/// only when its manifest's `capabilities` list it, and an agent can give
+/// it to an app it launches only when its own grant holds it. See
+/// `docs/grants.md`.
+pub const DOWNLOAD_WEB: &str = "web.download";
+
+/// Whether a grant's `methods` hold [`DOWNLOAD_WEB`]: by name, or as
+/// `web.*`.
+pub fn allows_downloads(methods: &[String]) -> bool {
+    methods.iter().any(|m| m == DOWNLOAD_WEB || m == "web.*")
+}
+
 /// The methods [`INSPECT_WEB`] allows; a grant listing one of them by name
 /// does not.
 pub const INSPECT_METHODS: [&str; 4] = [

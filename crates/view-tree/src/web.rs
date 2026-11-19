@@ -10,8 +10,9 @@
 use serde::{Deserialize, Serialize};
 
 /// A `web` node's page as the app host resolved it: its address, the
-/// app's origin and id, the package's `web/` directory, and the origins
-/// it may navigate to besides its own. Empty until resolved.
+/// app's origin and id, the package's `web/` directory, the origins it
+/// may navigate to besides its own, and whether it may save downloads
+/// (the app's manifest holds `web.download`). Empty until resolved.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resolved {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -24,6 +25,8 @@ pub struct Resolved {
     pub dir: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub download: bool,
 }
 
 /// The scheme the desktop serves an app package's `web/` directory on.

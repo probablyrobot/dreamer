@@ -14,6 +14,7 @@ pub mod browser;
 pub mod check;
 pub mod desktop_state;
 mod dirs;
+pub mod downloads;
 pub mod edit;
 pub mod extensions;
 pub mod hosts;
@@ -26,10 +27,10 @@ pub use dirs::{config_dir, workspace_dir, workspace_path};
 pub use plan::{Arrange, PanePlan, PaneRef, Plan, SizeArg, SplitStep, Start, WindowPlan};
 pub use schema::{Direction, NodeSpec, Size, WindowSpec, WorkspaceFile};
 pub use settings::{
-    Appearance, ClipboardSettings, ClipboardTmux, ClipboardWrite, Decorations, DrawerSettings,
-    DrawerSide, FallbackSettings, FontSettings, LinkSettings, MemoryProvider, MemorySettings,
-    MiddleClick, STARTER_SETTINGS, Settings, TierSettings, WebComponent, WebSettings,
-    WindowSettings, ensure_settings_file, load_settings, settings_path,
+    Appearance, ClipboardSettings, ClipboardTmux, ClipboardWrite, Decorations, DownloadSettings,
+    DrawerSettings, DrawerSide, FallbackSettings, FontSettings, LinkSettings, MemoryProvider,
+    MemorySettings, MiddleClick, STARTER_SETTINGS, Settings, TierSettings, WebComponent,
+    WebSettings, WindowSettings, ensure_settings_file, load_settings, settings_path,
 };
 
 use std::path::{Path, PathBuf};
