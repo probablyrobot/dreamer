@@ -1194,6 +1194,7 @@ dependencies = [
  "api",
  "platform",
  "prost",
+ "rustix",
  "tokio",
  "wire",
 ]
@@ -6226,6 +6227,7 @@ version = "0.6.0"
 dependencies = [
  "api",
  "mlua",
+ "rustix",
  "serde_json",
  "tokio",
 ]

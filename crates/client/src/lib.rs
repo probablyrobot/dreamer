@@ -439,11 +439,7 @@ fn exited(child: &mut std::process::Child) -> Result<(), ClientError> {
     if status.success() || status.code() == Some(3) {
         return Ok(());
     }
-    let mut err = String::new();
-    if let Some(mut e) = child.stderr.take() {
-        use std::io::Read;
-        let _ = e.read_to_string(&mut err);
-    }
+    let err = child.stderr.take().map(written).unwrap_or_default();
     let why = err
         .lines()
         .rev()
@@ -451,6 +447,22 @@ fn exited(child: &mut std::process::Child) -> Result<(), ClientError> {
         .or_else(|| err.lines().rev().find(|l| !l.trim().is_empty()))
         .map_or_else(|| format!("it exited with {status}"), str::to_owned);
     Err(ClientError::Spawn(why))
+}
+
+/// What an exited daemon wrote to its standard error. All of it is in the
+/// pipe already, so only that is read, without waiting for the end: a
+/// process another thread spawned while the pipe was being made can hold a
+/// copy of its writing end (on macOS it is marked close-on-exec only after
+/// it is made), and the end would come only when that process exits.
+fn written(stderr: std::process::ChildStderr) -> String {
+    use std::io::Read;
+    let mut pipe = std::fs::File::from(std::os::fd::OwnedFd::from(stderr));
+    let mut bytes = Vec::new();
+    if rustix::io::ioctl_fionbio(&pipe, true).is_ok() {
+        // Stops at the end or where the pipe is empty; keeps what it read.
+        let _ = pipe.read_to_end(&mut bytes);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn start_timeout() -> ClientError {
