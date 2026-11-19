@@ -35,7 +35,10 @@ by `agents:` in `dreamer.yaml`; see [agents.md](agents.md).
   (`--tools ""`): it cannot run shell commands or edit files on its own.
   A delegated task ([agents.md](agents.md#delegation-to-claude-code-and-codex))
   also gets the read-only `Read`, `Grep`, and `Glob`. Codex runs with
-  `--sandbox read-only`.
+  `--sandbox read-only`. Its Dreamer tools are approved in advance
+  (`default_tools_approval_mode`), since the grant already narrows them,
+  and `dream mcp` gets the run's `DREAMER_*` variables, because Codex
+  passes an MCP server only a few of its own.
 - **One contract.** Every provider streams the same events: started, text,
   tool call, tool result, limit, usage, and then exactly one of done or
   failed. Each can be cancelled. Cancelling, or a timeout, ends the CLI's
@@ -92,11 +95,12 @@ logged in) and each configured API adapter (its key can be read). `ask` runs one
 | CLI | Tested | Adapter reads |
 | --- | --- | --- |
 | Claude Code | 2.1.325 | major version 2: `-p`, `stream-json` with `--verbose` and `--include-partial-messages`, `--tools`, `--strict-mcp-config`, `--mcp-config`, `--allowedTools`, `--max-turns`, `auth status --json` |
-| Codex | not run | `exec --json` events (`thread.started`, `item.*` with `agent_message` and `mcp_tool_call`, `turn.completed`, `turn.failed`, `error`), `-c mcp_servers.*`, `--sandbox`, `login status` |
+| Codex | 0.170.0 | `exec --json` events (`thread.started`, `item.*` with `agent_message` and `mcp_tool_call`, `turn.completed`, `turn.failed`, `error`), `-c mcp_servers.*` (with `default_tools_approval_mode` and `env`), `--sandbox`, `login status` |
 
 A Claude Code with another major version shows as `incompatible`. The
-Codex adapter follows Codex's documented `exec --json` format and is
-tested against a stand-in only; no real Codex has been run with it yet.
+Codex adapter was run against Codex 0.170.0 on a ChatGPT login: a
+streamed answer, a Dreamer tool call through the grant, cancel, and the
+logged-out state.
 
 Dreamer runs your own, unmodified CLI on your own login, for requests you
 make, and never handles its credentials. Every run says who is billed

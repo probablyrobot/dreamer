@@ -34,6 +34,35 @@ fn toml_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_default()
 }
 
+/// Pre-approve the Dreamer MCP server's tools (Codex 0.170 and later).
+pub(crate) const APPROVE_DREAMER_TOOLS: &str =
+    r#"mcp_servers.dreamer.default_tools_approval_mode="approve""#;
+
+/// `mcp_servers.dreamer.env`: the `DREAMER_*` variables of this process.
+fn mcp_env(vars: impl Iterator<Item = (String, String)>) -> String {
+    let mut env: Vec<String> = vars
+        .filter(|(k, _)| {
+            k.starts_with("DREAMER_") && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .map(|(k, v)| format!("{k}={}", toml_string(&v)))
+        .collect();
+    env.sort();
+    format!("mcp_servers.dreamer.env={{{}}}", env.join(","))
+}
+
+/// The text parts of an MCP tool result, or the whole result.
+fn tool_text(result: &serde_json::Value) -> String {
+    let parts: Vec<&str> = result["content"]
+        .as_array()
+        .map(|c| c.iter().filter_map(|p| p["text"].as_str()).collect())
+        .unwrap_or_default();
+    if parts.is_empty() {
+        result.to_string()
+    } else {
+        parts.join("\n")
+    }
+}
+
 pub(crate) fn arguments(req: &Request) -> Vec<String> {
     let mut a: Vec<String> = [
         "exec",
@@ -54,6 +83,16 @@ pub(crate) fn arguments(req: &Request) -> Vec<String> {
         let args: Vec<String> = t.args.iter().map(|x| toml_string(x)).collect();
         a.push("-c".into());
         a.push(format!("mcp_servers.dreamer.args=[{}]", args.join(",")));
+        // Codex asks before each MCP tool call, and `exec` has no one to
+        // ask, so the call fails. Dreamer's server is already narrowed to
+        // the grant: its tools need no second approval.
+        a.push("-c".into());
+        a.push(APPROVE_DREAMER_TOOLS.into());
+        // Codex gives an MCP server only a few variables (HOME, PATH, ...),
+        // so `dream mcp` would miss the daemon this run belongs to and
+        // reach the default one instead.
+        a.push("-c".into());
+        a.push(mcp_env(std::env::vars()));
     }
     if let Some(m) = &req.model {
         a.extend(["--model".into(), m.clone()]);
@@ -97,10 +136,13 @@ impl Parser for Stream {
                 let ok = item["status"] == "completed" && item["error"].is_null();
                 let text = if ok {
                     item["result"].to_string()
+                } else if let Some(m) = item["error"]["message"].as_str() {
+                    m.to_owned()
+                } else if item["error"].is_null() {
+                    // A tool that answered with an error: its own text.
+                    tool_text(&item["result"])
                 } else {
-                    item["error"]["message"]
-                        .as_str()
-                        .map_or_else(|| item["error"].to_string(), str::to_owned)
+                    item["error"].to_string()
                 };
                 vec![Event::ToolResult {
                     id: item["id"].as_str().unwrap_or_default().to_owned(),
@@ -159,6 +201,18 @@ impl Stream {
 mod tests {
     use super::*;
     use crate::Failure;
+
+    #[test]
+    fn a_tool_that_refuses_shows_its_own_reason() {
+        // As Codex 0.170 reports it: failed, no error, the reason in content.
+        let e = Stream::all(&[
+            r#"{"type":"item.completed","item":{"id":"i1","type":"mcp_tool_call","server":"dreamer","tool":"read_pane","arguments":{"pane":0},"result":{"content":[{"type":"text","text":"`terminal.read` is not in this connection's grant (code -32005)"}],"structured_content":null},"error":null,"status":"failed"}}"#,
+        ]);
+        assert!(
+            matches!(&e[0], Event::ToolResult { ok: false, text, .. } if text.starts_with("`terminal.read` is not in")),
+            "{e:?}"
+        );
+    }
 
     #[test]
     fn a_run_reports_tool_calls_messages_and_usage() {
@@ -223,6 +277,23 @@ mod tests {
         assert!(
             a.contains(&r#"mcp_servers.dreamer.args=["mcp"]"#.to_owned()),
             "{a:?}"
+        );
+        // Without it a real Codex fails every Dreamer tool call in `exec`.
+        assert!(a.contains(&APPROVE_DREAMER_TOOLS.to_owned()), "{a:?}");
+        // `dream mcp` reaches the same daemon as the run: Codex passes an
+        // MCP server only the variables it is configured with.
+        let env = mcp_env(
+            [
+                ("DREAMER_RUNTIME_DIR", "/tmp/r"),
+                ("HOME", "/home/u"),
+                ("DREAMER_FORBID_DEFAULT_TMUX", "1"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned())),
+        );
+        assert_eq!(
+            env,
+            r#"mcp_servers.dreamer.env={DREAMER_FORBID_DEFAULT_TMUX="1",DREAMER_RUNTIME_DIR="/tmp/r"}"#
         );
         assert_eq!(a.last().map(String::as_str), Some("Be brief.\n\nhi"));
     }
