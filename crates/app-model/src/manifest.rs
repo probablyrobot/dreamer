@@ -178,10 +178,10 @@ pub const WEB_PAGE: &str = "page";
 /// The capability a package needs to run a program of its own.
 pub const PROCESS: &str = "process";
 
-/// The capability that will let a package's pages save downloads (see
-/// `web_engine::browser`). Planned: every download is refused for now, so
-/// a package that asks for it is told so rather than granted nothing.
-pub const WEB_DOWNLOAD: &str = "web.download";
+/// The capability that lets a package's pages save downloads, each after
+/// the user chooses Save in the pane (see `docs/grants.md`). Without it a
+/// download in its page is refused.
+pub const WEB_DOWNLOAD: &str = api::DOWNLOAD_WEB;
 
 /// A process app's program.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -1007,6 +1007,12 @@ impl Manifest {
     }
 
     /// A process app: its program draws its view.
+    /// Whether its pages may save downloads: its capabilities hold
+    /// [`WEB_DOWNLOAD`] (or `web.*`).
+    pub fn downloads(&self) -> bool {
+        api::allows_downloads(&self.capabilities)
+    }
+
     pub fn is_process(&self) -> bool {
         self.process.is_some()
     }
@@ -1149,12 +1155,6 @@ impl Manifest {
             errors.push(format!("id: `{}` is not dotted lowercase", self.id));
         }
         for c in &self.capabilities {
-            if c == WEB_DOWNLOAD {
-                errors.push(format!(
-                    "capabilities: `{c}` is not available yet: downloads in web pages are refused"
-                ));
-                continue;
-            }
             let service = c.strip_suffix(".*");
             let known = match service {
                 Some(s) => api::METHODS
@@ -1165,6 +1165,7 @@ impl Manifest {
                         || c == api::MANAGE_FILTERS
                         || c == api::INSPECT_WEB
                         || c == api::FORWARD_WEB
+                        || c == WEB_DOWNLOAD
                         || c == PROCESS
                         || c == NET_FETCH
                 }
@@ -2168,15 +2169,12 @@ hosts = ["api.example.com", "localhost:8080", "[::1]:3000"]
     }
 
     #[test]
-    fn downloads_are_not_a_capability_yet() {
+    fn a_package_saves_downloads_only_when_it_asks_for_them() {
+        assert!(!Manifest::parse(PROCESS_APP).expect("valid").downloads());
         let m = PROCESS_APP.replace("\"process\", ", "\"process\", \"web.download\", ");
-        let errors = Manifest::parse(&m).expect_err("refused");
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("`web.download` is not available yet")),
-            "{errors:?}"
-        );
+        assert!(Manifest::parse(&m).expect("valid").downloads());
+        let m = PROCESS_APP.replace("\"process\", ", "\"process\", \"web.*\", ");
+        assert!(Manifest::parse(&m).expect("valid").downloads());
     }
 
     #[test]

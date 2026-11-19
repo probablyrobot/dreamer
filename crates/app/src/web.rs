@@ -27,6 +27,17 @@
 //! ([`web_engine::browser`]). There are no tabs, bookmarks, or history to
 //! show: the back stack is the page's own.
 //!
+//! A download the page starts shows a row over the page ([`Download`]):
+//! its file name and size, with Save and Cancel. Nothing is written until
+//! Save: then the file is reserved in the downloads folder
+//! (`web.downloads.folder`, else the platform's; see
+//! [`workspace_config::downloads`]) under a unique name, written as
+//! `NAME.part` with its progress in the row (Cancel still there), and
+//! renamed once complete. A canceled or failed download leaves nothing.
+//! The browser always asks; an app's page asks only if the app holds
+//! `web.download`, and is otherwise refused with a status line. The files
+//! are reserved, renamed, and removed off the UI thread.
+//!
 //! The page's title, scroll position, and (in the browser) its address are
 //! kept in the placeholder (`web.state`), so a page opened again (after the
 //! desktop restarts, or once its view was let go) is where it was. The
@@ -56,13 +67,14 @@
 //! page once it is there, with no restart ([`crate::webcomp`]); with
 //! `web.component: auto` it is added without the click.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
     Context, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    RenderImage, Styled, StyledImage as _, Subscription, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px,
+    RenderImage, StatefulInteractiveElement as _, Styled, StyledImage as _, Subscription,
+    WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use web_engine::Edit;
 
@@ -123,6 +135,91 @@ pub(crate) struct Bar {
     pub(crate) keys: bool,
     /// A passing line, and when it came.
     pub(crate) status: Option<(String, Instant)>,
+    /// Downloads the page started that are not over, oldest first.
+    pub(crate) downloads: Vec<Download>,
+}
+
+/// A download a page started, as its pane shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Download {
+    pub(crate) id: u32,
+    /// The file name it is saved under: the one the site suggests, made
+    /// safe.
+    pub(crate) name: String,
+    pub(crate) size: Option<u64>,
+    pub(crate) state: Saving,
+}
+
+/// Where a download is.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Saving {
+    /// Waiting for Save or Cancel; nothing is written.
+    Asked,
+    /// Save chosen: its name in the folder is being reserved.
+    Reserving,
+    /// Being written to `part`, to be renamed `file` once complete.
+    Writing {
+        file: PathBuf,
+        part: PathBuf,
+        received: u64,
+    },
+    /// Canceled while written: Chromium is stopping it.
+    Canceling { part: PathBuf },
+}
+
+/// How long a canceled download waits for Chromium to say it ended
+/// before its partial file is removed anyway.
+const CANCEL_WAIT: Duration = Duration::from_secs(5);
+
+/// A number of bytes as people read it: `12 B`, `3.4 MB`.
+fn size_text(n: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if n < 1000 {
+        return format!("{n} B");
+    }
+    let mut v = n as f64 / 1000.0;
+    let mut unit = UNITS[0];
+    for u in &UNITS[1..] {
+        if v < 1000.0 {
+            break;
+        }
+        v /= 1000.0;
+        unit = u;
+    }
+    format!("{v:.1} {unit}")
+}
+
+/// What a download's row says.
+fn download_text(d: &Download, folder: &str) -> String {
+    let size = d
+        .size
+        .map(|n| format!(" ({})", size_text(n)))
+        .unwrap_or_default();
+    match &d.state {
+        Saving::Asked => format!("Save {}{size} to {folder}?", d.name),
+        Saving::Reserving => format!("Saving {}…", d.name),
+        Saving::Writing { received, .. } => match d.size {
+            Some(total) if total > 0 => format!(
+                "Saving {}: {} of {} ({}%)",
+                d.name,
+                size_text(*received),
+                size_text(total),
+                (received.saturating_mul(100) / total).min(100)
+            ),
+            _ => format!("Saving {}: {}", d.name, size_text(*received)),
+        },
+        Saving::Canceling { .. } => format!("Canceling {}…", d.name),
+    }
+}
+
+/// A path with the home directory written `~`.
+fn tilde(path: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 /// What a key typed into the bar asks for.
@@ -730,19 +827,32 @@ impl WebPane {
                 }
             }
             web_engine::Event::LoadFailed { .. } => {}
-            web_engine::Event::Status(line) => {
-                let at = Instant::now();
-                self.bar.status = Some((line, at));
-                cx.spawn(async move |this, cx| {
-                    cx.background_executor().timer(STATUS_FOR).await;
-                    let _ = this.update(cx, |w, cx| {
-                        if w.bar.status.as_ref().is_some_and(|(_, t)| *t == at) {
-                            w.bar.status = None;
-                            cx.notify();
-                        }
-                    });
-                })
-                .detach();
+            web_engine::Event::Status(line) => self.status(line, cx),
+            web_engine::Event::DownloadAsked { id, name, size } => {
+                self.bar.downloads.push(Download {
+                    id,
+                    name: workspace_config::downloads::file_name(&name),
+                    size,
+                    state: Saving::Asked,
+                });
+            }
+            web_engine::Event::DownloadProgress {
+                id,
+                received: now,
+                total,
+            } => {
+                if let Some(d) = self.bar.downloads.iter_mut().find(|d| d.id == id) {
+                    if let Saving::Writing { received, .. } = &mut d.state {
+                        *received = now;
+                    }
+                    if total.is_some() {
+                        d.size = total;
+                    }
+                }
+            }
+            web_engine::Event::DownloadDone { id, path } => self.download_done(id, path, cx),
+            web_engine::Event::DownloadEnded { id, error, partial } => {
+                self.download_ended(id, error, partial, cx);
             }
             web_engine::Event::Found { count, current, .. } => {
                 if let Some((_, found)) = &mut self.bar.find {
@@ -751,6 +861,222 @@ impl WebPane {
             }
         }
         cx.notify();
+    }
+
+    /// Show `line` in the pane's status for a few seconds.
+    fn status(&mut self, line: String, cx: &mut Context<Self>) {
+        let at = Instant::now();
+        self.bar.status = Some((line, at));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(STATUS_FOR).await;
+            let _ = this.update(cx, |w, cx| {
+                if w.bar.status.as_ref().is_some_and(|(_, t)| *t == at) {
+                    w.bar.status = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Save (`save`) or Cancel for download `id`: the row's buttons (and
+    /// the smoke). Save reserves the file in the downloads folder, off
+    /// this thread, and then lets Chromium write it; Cancel stops it, and
+    /// what it wrote is removed.
+    pub(crate) fn answer_download(&mut self, id: u32, save: bool, cx: &mut Context<Self>) {
+        let Some(at) = self.bar.downloads.iter().position(|d| d.id == id) else {
+            return;
+        };
+        if !save {
+            #[cfg(feature = "web")]
+            if let Some(v) = &self.view {
+                v.cancel_download(id);
+            }
+            let d = &mut self.bar.downloads[at];
+            match &d.state {
+                Saving::Writing { part, .. } | Saving::Canceling { part } => {
+                    d.state = Saving::Canceling { part: part.clone() };
+                    // Chromium reports the end; if it does not, the
+                    // partial file goes anyway.
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(CANCEL_WAIT).await;
+                        let _ = this.update(cx, |w, cx| w.download_ended(id, None, None, cx));
+                    })
+                    .detach();
+                }
+                // Nothing written yet (a reservation still coming is
+                // removed when it comes).
+                Saving::Asked | Saving::Reserving => {
+                    let name = self.bar.downloads.remove(at).name;
+                    self.status(format!("Download canceled: {name}"), cx);
+                }
+            }
+            cx.notify();
+            return;
+        }
+        let d = &mut self.bar.downloads[at];
+        if d.state != Saving::Asked {
+            return;
+        }
+        d.state = Saving::Reserving;
+        let name = d.name.clone();
+        let configured = crate::live::with(|l| l.downloads.clone()).flatten();
+        cx.spawn(async move |this, cx| {
+            let reserved = cx
+                .background_executor()
+                .spawn(async move {
+                    let folder = workspace_config::downloads::folder(configured.as_deref())
+                        .ok_or_else(|| "no home directory to save it in".to_owned())?;
+                    workspace_config::downloads::reserve(&folder, &name)
+                        .map_err(|e| format!("{}: {e}", tilde(&folder)))
+                })
+                .await;
+            let part = reserved.as_ref().ok().map(|(_, p)| p.clone());
+            // The pane closed meanwhile: its reservation goes.
+            if this
+                .update(cx, |w, cx| w.reserved(id, reserved, cx))
+                .is_err()
+                && let Some(part) = part
+            {
+                cx.background_executor()
+                    .spawn(async move {
+                        let _ = std::fs::remove_file(part);
+                    })
+                    .detach();
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Download `id`'s file was reserved (its path and its `.part`'s), or
+    /// could not be: Chromium writes it now, unless it was canceled
+    /// meanwhile.
+    fn reserved(
+        &mut self,
+        id: u32,
+        reserved: Result<(PathBuf, PathBuf), String>,
+        cx: &mut Context<Self>,
+    ) {
+        let at = self
+            .bar
+            .downloads
+            .iter()
+            .position(|d| d.id == id && d.state == Saving::Reserving);
+        let (at, (file, part)) = match (at, reserved) {
+            (Some(at), Ok(r)) => (at, r),
+            (Some(at), Err(e)) => {
+                #[cfg(feature = "web")]
+                if let Some(v) = &self.view {
+                    v.cancel_download(id);
+                }
+                let name = self.bar.downloads.remove(at).name;
+                self.status(format!("Download not saved: {name}: {e}"), cx);
+                return;
+            }
+            // Canceled while it was reserved.
+            (None, Ok((_, part))) => {
+                discard(part, None, cx);
+                return;
+            }
+            (None, Err(_)) => return,
+        };
+        #[cfg(feature = "web")]
+        let started = match &self.view {
+            Some(v) => v.save_download(id, &part),
+            None => Err("the page has closed".to_owned()),
+        };
+        #[cfg(not(feature = "web"))]
+        let started: Result<(), String> = Err("no web engine".to_owned());
+        match started {
+            Ok(()) => {
+                self.bar.downloads[at].state = Saving::Writing {
+                    file,
+                    part,
+                    received: 0,
+                };
+                cx.notify();
+            }
+            Err(e) => {
+                let name = self.bar.downloads.remove(at).name;
+                discard(part, None, cx);
+                self.status(format!("Download not saved: {name}: {e}"), cx);
+            }
+        }
+    }
+
+    /// Download `id` is complete at `path`: rename it to its file, off
+    /// this thread, and say where it is.
+    fn download_done(&mut self, id: u32, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(at) = self.bar.downloads.iter().position(|d| d.id == id) else {
+            return;
+        };
+        let d = self.bar.downloads.remove(at);
+        let (file, part) = match d.state {
+            Saving::Writing { file, part, .. } => (file, part),
+            // Completed as it was canceled: the user said no.
+            Saving::Canceling { part } => {
+                discard(part, Some(path), cx);
+                self.status(format!("Download canceled: {}", d.name), cx);
+                return;
+            }
+            Saving::Asked | Saving::Reserving => return,
+        };
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(async move {
+                    // Chromium wrote where it was told; if it chose another
+                    // name, the reservation goes.
+                    let from = if path.as_os_str().is_empty() {
+                        part.clone()
+                    } else {
+                        path
+                    };
+                    if from != part {
+                        let _ = std::fs::remove_file(&part);
+                    }
+                    workspace_config::downloads::finish(&from, &file)
+                })
+                .await;
+            let line = match done {
+                Ok(f) => format!(
+                    "Saved {} to {}",
+                    f.file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default(),
+                    f.parent().map(tilde).unwrap_or_default()
+                ),
+                Err(e) => format!("Download not saved: {}: {e}", d.name),
+            };
+            let _ = this.update(cx, |w, cx| w.status(line, cx));
+        })
+        .detach();
+    }
+
+    /// Download `id` ended unfinished (canceled, or failed with `error`):
+    /// what it wrote is removed, off this thread.
+    fn download_ended(
+        &mut self,
+        id: u32,
+        error: Option<String>,
+        partial: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(at) = self.bar.downloads.iter().position(|d| d.id == id) else {
+            return;
+        };
+        let d = self.bar.downloads.remove(at);
+        if let Saving::Writing { part, .. } | Saving::Canceling { part } = d.state {
+            discard(part, partial, cx);
+        }
+        let line = match error {
+            Some(e) => format!("Download failed: {}: {e}", d.name),
+            None => format!("Download canceled: {}", d.name),
+        };
+        self.status(line, cx);
     }
 
     /// Whether this pane is the workspace's focused pane.
@@ -992,7 +1318,7 @@ impl WebPane {
     /// The browser's strip: the address bar or the find field, and the
     /// status line.
     fn strip(&self, window: &Window) -> Option<gpui::Div> {
-        if !self.browser() || !self.bar.shown() {
+        if !self.bar.shown() {
             return None;
         }
         let t = crate::theme::for_window(window);
@@ -1057,6 +1383,78 @@ impl WebPane {
                         .text_color(c(color))
                         .child(s)
                 })),
+        )
+    }
+}
+
+/// Remove what an unfinished download wrote (its `.part`, and Chromium's
+/// own partial file beside it), off the UI thread.
+fn discard(part: PathBuf, partial: Option<PathBuf>, cx: &mut Context<WebPane>) {
+    gpui::AppContext::background_spawn(cx, async move {
+        workspace_config::downloads::discard(&part, partial.as_deref());
+    })
+    .detach();
+}
+
+impl WebPane {
+    /// The oldest download's row, under the strip: what it is, and Save
+    /// and Cancel (Cancel only, once saving).
+    fn download_row(&self, window: &Window, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let d = self.bar.downloads.first()?;
+        let t = crate::theme::for_window(window);
+        let folder = crate::live::with(|l| l.downloads.clone())
+            .flatten()
+            .unwrap_or_else(|| "Downloads".to_owned());
+        let id = d.id;
+        let button = |label: &'static str, key: &'static str, primary: bool| {
+            div()
+                .id((key, id as usize))
+                .flex_none()
+                .px_2()
+                .py(px(1.0))
+                .rounded_md()
+                .cursor_pointer()
+                .bg(c(if primary { t.accent } else { t.selected }))
+                .text_color(c(if primary { t.background } else { t.text }))
+                .child(label)
+        };
+        let save = (d.state == Saving::Asked).then(|| {
+            button("Save", "download-save", true)
+                .on_click(cx.listener(move |w, _, _, cx| w.answer_download(id, true, cx)))
+        });
+        let cancel = (!matches!(d.state, Saving::Canceling { .. })).then(|| {
+            button("Cancel", "download-cancel", false)
+                .on_click(cx.listener(move |w, _, _, cx| w.answer_download(id, false, cx)))
+        });
+        let more = self.bar.downloads.len() - 1;
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_2()
+                .h(px(STRIP))
+                .px_2()
+                .bg(c(t.raised))
+                .border_b_1()
+                .border_color(c(t.divider))
+                .text_size(px(12.0))
+                .text_color(c(t.text))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .child(download_text(d, &folder)),
+                )
+                .children((more > 0).then(|| {
+                    div()
+                        .flex_none()
+                        .text_color(c(t.muted))
+                        .child(format!("+{more}"))
+                }))
+                .children(save)
+                .children(cancel),
         )
     }
 }
@@ -1192,7 +1590,9 @@ impl Render for WebPane {
         } else {
             base
         };
-        base.children(self.strip(window)).child(page)
+        base.children(self.strip(window))
+            .children(self.download_row(window, cx))
+            .child(page)
     }
 }
 
@@ -1206,7 +1606,7 @@ fn shorten(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bar, Place, Typed, decide, found_text};
+    use super::{Bar, Download, Place, Saving, Typed, decide, download_text, found_text};
 
     #[test]
     fn a_page_shows_only_where_its_pane_is_drawn_and_uncovered() {
@@ -1268,6 +1668,41 @@ mod tests {
         // Closed, then opened again: the last query is gone with it.
         assert_eq!(bar.key("escape", false), Typed::Close);
         assert!(bar.find.is_none() && !bar.keys);
+    }
+
+    #[test]
+    fn a_download_row_names_the_file_its_size_and_its_progress() {
+        let mut d = Download {
+            id: 1,
+            name: "report.bin".into(),
+            size: Some(2_500_000),
+            state: Saving::Asked,
+        };
+        assert_eq!(
+            download_text(&d, "~/Downloads"),
+            "Save report.bin (2.5 MB) to ~/Downloads?"
+        );
+        d.state = Saving::Writing {
+            file: "/d/report.bin".into(),
+            part: "/d/report.bin.part".into(),
+            received: 1_000_000,
+        };
+        assert_eq!(
+            download_text(&d, "~/Downloads"),
+            "Saving report.bin: 1.0 MB of 2.5 MB (40%)"
+        );
+        d.size = None;
+        d.state = Saving::Writing {
+            file: "/d/report.bin".into(),
+            part: "/d/report.bin.part".into(),
+            received: 12,
+        };
+        assert_eq!(download_text(&d, "x"), "Saving report.bin: 12 B");
+    }
+
+    #[test]
+    fn web_download_is_the_grant_entry_and_the_manifest_capability() {
+        assert_eq!(web_engine::browser::DOWNLOAD_CAPABILITY, api::DOWNLOAD_WEB);
     }
 
     #[test]

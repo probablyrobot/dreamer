@@ -28,8 +28,9 @@
 //! a call outside its grant is refused; a frame of another origin (a
 //! sandboxed frame in it) has no `window.dreamer` and cannot reach the
 //! bridge; a navigation to an origin outside its allow-list is refused;
-//! and the plain web page has no `window.dreamer` either. Each passed check
-//! is a `smoke: web app:` line.
+//! the plain web page has no `window.dreamer` either; and a download its
+//! page starts is refused (it lacks `web.download`), with a status line
+//! and no file. Each passed check is a `smoke: web app:` line.
 //!
 //! Then the browser, in the plain web pane, against a test site this
 //! the gate serves on 127.0.0.1: `web.navigate` loads its login (a session
@@ -38,9 +39,13 @@
 //! Cmd+[ and Cmd+] go back and forward, and so do the mouse's side
 //! buttons; Cmd+R loads the page again; Cmd+F finds words in it
 //! (Chromium reports the matches) and Esc ends that; Cmd+= and Cmd+0
-//! zoom; a download is refused with a status line; and a link that wants
-//! a new window opens in the same pane. Each passed check is a `smoke: web
-//! browser:` line. `--smoke-web-restart` then runs in a new process with
+//! zoom; a download asks first, in a row over the page; Save writes the
+//! file, its contents the site's, into the downloads folder (the gate's
+//! `web.downloads.folder`, a private temporary directory: the smoke
+//! refuses to run with a folder in the home directory); Cancel at the
+//! prompt writes nothing; Cancel while a slow download is written leaves
+//! no partial file; and a link that wants a new window opens in the same
+//! pane. Each passed check is a `smoke: web browser:` line. `--smoke-web-restart` then runs in a new process with
 //! the same profile, and checks that the login's session cookie is still
 //! sent ([`restart`]).
 //!
@@ -1053,8 +1058,191 @@ async fn app_page(
         fail(&format!("the page left its origin: {e}"));
     }
     println!("smoke: web app: a navigation to {blocked}, outside its allow-list, is refused");
+
+    // A download in its page is refused: the app does not hold
+    // web.download. Nothing asks, and nothing is written.
+    let folder = downloads_folder();
+    let before = listing(cx, &folder).await;
+    let _ = eval(
+        any,
+        ws,
+        cx,
+        pane,
+        "(() => { const a = document.createElement('a'); \
+         a.href = URL.createObjectURL(new Blob(['app'])); a.download = 'app-report.bin'; \
+         document.body.appendChild(a); a.click(); return 'clicked'; })()",
+    )
+    .await;
+    let deadline = Instant::now() + TEN;
+    let status = loop {
+        let seen = page_bar(any, ws, cx, pane, |b| {
+            (b.status.as_ref().map(|s| s.0.clone()), b.downloads.len())
+        });
+        if let Some((_, asked)) = &seen
+            && *asked > 0
+        {
+            fail("a download in the web app's page, without web.download, asked to be saved");
+        }
+        if let Some((Some(s), _)) = seen
+            && s.contains("Download refused")
+        {
+            break s;
+        }
+        if Instant::now() > deadline {
+            fail("a download in the web app's page was not refused with a status line");
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    };
+    if listing(cx, &folder).await != before {
+        fail("the web app's refused download wrote to the downloads folder");
+    }
+    println!("smoke: web app: a download in its page, without web.download, is refused: {status}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The downloads folder the smoke saves to: the gate's private
+/// `web.downloads.folder`. Never one in the home directory: the smoke
+/// fails rather than write to the user's own Downloads.
+fn downloads_folder() -> PathBuf {
+    let configured = crate::live::with(|l| l.downloads.clone())
+        .flatten()
+        .unwrap_or_else(|| fail("no web.downloads.folder set for the smoke's downloads"));
+    let folder = workspace_config::downloads::folder(Some(&configured)).unwrap_or_else(|| {
+        fail(&format!(
+            "web.downloads.folder {configured:?} is not a folder"
+        ))
+    });
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if home.is_some_and(|h| folder.starts_with(h)) {
+        fail(&format!(
+            "the smoke saves downloads only to a private temporary folder, not {}",
+            folder.display()
+        ));
+    }
+    folder
+}
+
+/// The names in `dir`, sorted (none when it is not there), read off the UI
+/// thread.
+async fn listing(cx: &mut AsyncApp, dir: &Path) -> Vec<String> {
+    let dir = dir.to_path_buf();
+    cx.background_executor()
+        .spawn(async move {
+            let mut names: Vec<String> = std::fs::read_dir(&dir)
+                .map(|r| {
+                    r.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        })
+        .await
+}
+
+/// The bar of pane `pane`'s (first) page: a web pane's, or an app's.
+fn page_bar<T>(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    f: impl FnOnce(&crate::web::Bar) -> T,
+) -> Option<T> {
+    read(any, ws, cx, |w, cx| {
+        let page = w.panes.get(&pane)?.pages(cx).into_iter().next()?;
+        Some(f(&page.read(cx).bar))
+    })
+    .flatten()
+}
+
+/// Wait until pane `pane`'s page asks to save a download named `name`;
+/// its id and the row's text.
+async fn wait_asked(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    name: &str,
+) -> u32 {
+    let deadline = Instant::now() + TEN;
+    loop {
+        let asked = page_bar(any, ws, cx, pane, |b| {
+            b.downloads
+                .iter()
+                .find(|d| d.name == name && d.state == crate::web::Saving::Asked)
+                .map(|d| d.id)
+        })
+        .flatten();
+        if let Some(id) = asked {
+            return id;
+        }
+        if Instant::now() > deadline {
+            let shown = page_bar(any, ws, cx, pane, |b| format!("{:?}", b.downloads));
+            fail(&format!("no prompt to save {name}: {shown:?}"));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+}
+
+/// Answer download `id` in pane `pane`'s page as its row's Save or Cancel
+/// would.
+fn answer(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    id: u32,
+    save: bool,
+) {
+    let _ = cx.update_window(any, |_, _, cx| {
+        let _ = ws.update(cx, |w, cx| {
+            if let Some(p) = w
+                .panes
+                .get(&pane)
+                .and_then(|v| v.pages(cx).into_iter().next())
+            {
+                p.update(cx, |p, cx| p.answer_download(id, save, cx));
+            }
+        });
+    });
+}
+
+/// Wait until pane `pane`'s page has no download left, and the downloads
+/// folder holds exactly `names`.
+async fn wait_settled(
+    any: AnyWindowHandle,
+    ws: &WeakEntity<Workspace>,
+    cx: &mut AsyncApp,
+    pane: u32,
+    folder: &Path,
+    names: &[&str],
+    what: &str,
+) {
+    let deadline = Instant::now() + TEN;
+    loop {
+        let pending = page_bar(any, ws, cx, pane, |b| b.downloads.len()).unwrap_or(0);
+        let now = listing(cx, folder).await;
+        if pending == 0 && now == names {
+            return;
+        }
+        if Instant::now() > deadline {
+            fail(&format!(
+                "{what}: {pending} download(s) left, and the folder holds {now:?}, not {names:?}"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    }
+}
+
+/// What the test site's download holds (`xtask/src/web.rs` serves it).
+pub(crate) const DOWNLOAD_BODY: &str = "dreamer web smoke: a saved download\n";
 
 /// The browser's test site (`cargo xtask` serves it on 127.0.0.1 for the
 /// smoke and names it in `DREAMER_SMOKE_WEB_SITE`): its host and port.
@@ -1587,24 +1775,125 @@ async fn browser(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut Asyn
     }
     println!("smoke: web browser: Cmd+= zoomed the page in and Cmd+0 back");
 
-    // A download is refused, with a status line.
+    // A download asks first, in a row over the page; nothing is written
+    // until Save.
+    let folder = downloads_folder();
+    if !listing(cx, &folder).await.is_empty() {
+        fail(&format!(
+            "the downloads folder {} is not empty",
+            folder.display()
+        ));
+    }
     click_element(any, ws, cx, pane, "dl").await;
+    let id = wait_asked(any, ws, cx, pane, "report.bin").await;
+    let asked =
+        page_bar(any, ws, cx, pane, |b| format!("{:?}", b.downloads.first())).unwrap_or_default();
+    if !listing(cx, &folder).await.is_empty() {
+        fail("a download wrote to the folder before Save");
+    }
+    println!("smoke: web browser: a download asked first, and wrote nothing: {asked}");
+
+    // Save: the file, with the site's contents, in the folder.
+    answer(any, ws, cx, pane, id, true);
+    wait_settled(any, ws, cx, pane, &folder, &["report.bin"], "Save").await;
+    let saved = folder.join("report.bin");
+    let got = cx
+        .background_executor()
+        .spawn(async move { std::fs::read(saved) })
+        .await
+        .unwrap_or_else(|e| fail(&format!("the saved download: {e}")));
+    if got != DOWNLOAD_BODY.as_bytes() {
+        fail(&format!(
+            "the saved download holds {:?}",
+            String::from_utf8_lossy(&got)
+        ));
+    }
+    println!(
+        "smoke: web browser: Save wrote report.bin ({} bytes, the site's) to {}",
+        got.len(),
+        folder.display()
+    );
+
+    // Cancel at the prompt: nothing more in the folder.
+    click_element(any, ws, cx, pane, "dl").await;
+    let id = wait_asked(any, ws, cx, pane, "report.bin").await;
+    answer(any, ws, cx, pane, id, false);
+    wait_settled(
+        any,
+        ws,
+        cx,
+        pane,
+        &folder,
+        &["report.bin"],
+        "Cancel at the prompt",
+    )
+    .await;
+    // Long enough for a file to appear if one were coming.
+    cx.background_executor()
+        .timer(Duration::from_millis(500))
+        .await;
+    wait_settled(
+        any,
+        ws,
+        cx,
+        pane,
+        &folder,
+        &["report.bin"],
+        "Cancel at the prompt",
+    )
+    .await;
+    println!("smoke: web browser: Cancel at the prompt wrote nothing");
+
+    // Cancel while a slow download is written: no partial file is left.
+    click_element(any, ws, cx, pane, "slow").await;
+    let id = wait_asked(any, ws, cx, pane, "slow.bin").await;
+    answer(any, ws, cx, pane, id, true);
     let deadline = Instant::now() + TEN;
-    let status = loop {
-        if let Some(Some(s)) = bar(any, ws, cx, pane, |b| {
-            b.status.as_ref().map(|s| s.0.clone())
-        }) && s.contains("report.bin")
-        {
-            break s;
+    let partial = loop {
+        let writing = page_bar(any, ws, cx, pane, |b| {
+            b.downloads
+                .iter()
+                .find(|d| d.id == id)
+                .and_then(|d| match &d.state {
+                    crate::web::Saving::Writing { received, part, .. } if *received > 0 => {
+                        Some((*received, part.clone()))
+                    }
+                    _ => None,
+                })
+        })
+        .flatten();
+        if let Some(w) = writing {
+            break w;
         }
         if Instant::now() > deadline {
-            fail("the download was not refused with a status line");
+            fail("the slow download never made progress");
         }
         cx.background_executor()
             .timer(Duration::from_millis(50))
             .await;
     };
-    println!("smoke: web browser: a download was refused: {status}");
+    let during = listing(cx, &folder).await;
+    if !during.iter().any(|n| n.starts_with("slow.bin")) {
+        fail(&format!(
+            "no partial file while slow.bin downloads: {during:?}"
+        ));
+    }
+    answer(any, ws, cx, pane, id, false);
+    wait_settled(
+        any,
+        ws,
+        cx,
+        pane,
+        &folder,
+        &["report.bin"],
+        "Cancel while saving",
+    )
+    .await;
+    println!(
+        "smoke: web browser: Cancel after {} bytes of slow.bin removed its partial file ({}; the folder held {during:?})",
+        partial.0,
+        partial.1.display()
+    );
 
     // A link that wants a new window opens in the same pane.
     let panes = read(any, ws, cx, |w, _| {

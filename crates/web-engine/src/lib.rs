@@ -16,11 +16,13 @@
 //! [`do_work`] called on the main thread.
 //!
 //! A plain page's view is the browser ([`browser`]): its own profile, no
-//! Dreamer API, back and forward by mouse and swipe, and downloads
-//! refused. A view can instead show a page of an app's own ([`AppPage`],
-//! see [`site`]): it then has a browser profile of the app's, may navigate
-//! only to the app's origin and the origins it allows, and pages on the
-//! app's origin get `window.dreamer.call`, passed on to the caller.
+//! Dreamer API, back and forward by mouse and swipe, and downloads saved
+//! only after the pane's prompt. A view can instead show a page of an
+//! app's own ([`AppPage`], see [`site`]): it then has a browser profile of
+//! the app's, may navigate only to the app's origin and the origins it
+//! allows, its downloads are refused unless the app may save them, and
+//! pages on the app's origin get `window.dreamer.call`, passed on to the
+//! caller.
 //!
 //! Everything here is main-thread only. Without the `engine` feature (and
 //! on platforms not supported yet) the crate has no engine and
@@ -59,6 +61,30 @@ pub enum Event {
     LoadFailed { url: String, error: String },
     /// A line for the pane's status (a refused download).
     Status(String),
+    /// The page started download `id` of a file it names `name` (as the
+    /// site suggests it; not yet safe as a file name), `size` bytes if
+    /// known. It waits for the caller: `WebView::save_download` or
+    /// `WebView::cancel_download`.
+    DownloadAsked {
+        id: u32,
+        name: String,
+        size: Option<u64>,
+    },
+    /// Download `id`, being saved, has `received` bytes of `total`.
+    DownloadProgress {
+        id: u32,
+        received: u64,
+        total: Option<u64>,
+    },
+    /// Download `id` is complete, at `path` (the path it was saved to).
+    DownloadDone { id: u32, path: std::path::PathBuf },
+    /// Download `id` ended unfinished: canceled, or failed (`error`).
+    /// `partial` is the file Chromium was writing, if it named one.
+    DownloadEnded {
+        id: u32,
+        error: Option<String>,
+        partial: Option<std::path::PathBuf>,
+    },
     /// Find in page: how many matches, which is current (from 1, or 0),
     /// and whether this is the last report for the search.
     Found {

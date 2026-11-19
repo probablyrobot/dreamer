@@ -403,6 +403,9 @@ resolves to the result, or rejects with an error that has the API's
 - Reading and driving pages (`web.read`, `web.click`, `web.type`,
   `web.screenshot`) needs `web.inspect` in `capabilities`
   ([grants.md](grants.md#reading-and-driving-pages)).
+- A download the page starts asks the user (Save or Cancel, in the pane)
+  only with `web.download` in `capabilities`; without it, it is refused
+  ([grants.md](grants.md#saving-downloads)).
 - A page on any other origin, an allowed one or a frame inside the app's
   page, has no `window.dreamer`, and its requests to the bridge are
   refused.

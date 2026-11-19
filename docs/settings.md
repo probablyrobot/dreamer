@@ -18,6 +18,7 @@ The file is the one place to configure Dreamer, and changes apply live.
     fallback, and Dreamer Web settings apply in every window;
   - the tier budgets apply to the daemon's panes;
   - the memory provider applies to the next memory call.
+  - the downloads folder applies to the next download in a web pane.
 - **Refusing.** A file that does not read changes nothing. Dreamer keeps
   the settings in force, and the window's tab strip says
   `dreamer.yaml not applied: …` with the reason until the file reads
@@ -73,6 +74,8 @@ window:
 web:
   component: ask                         # ask (default), auto, or never
   url: https://example.com/dreamer-web/  # optional; default: the release
+  downloads:
+    folder: ~/Downloads                  # optional; default ~/Downloads (Linux: the XDG download folder)
 ```
 
 ## Font
@@ -331,6 +334,24 @@ starts.
 web:
   component: auto
   url: https://downloads.example.com/dreamer-web/
+```
+
+## Downloads
+
+`web.downloads.folder` is where a download in a web pane is saved, once
+you choose Save in the pane ([desktop.md](desktop.md#the-browser)). It
+is an absolute path, or one from `~/` (your home directory). Without it:
+- macOS: `~/Downloads`;
+- Linux: `XDG_DOWNLOAD_DIR` from `user-dirs.dirs` (in `$XDG_CONFIG_HOME`,
+  or `~/.config`), else `~/Downloads`.
+
+The folder is made if it is not there. A change applies to the next
+download.
+
+```yaml
+web:
+  downloads:
+    folder: ~/Downloads/web
 ```
 
 ## Memory

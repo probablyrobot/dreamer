@@ -168,8 +168,10 @@ mod handlers {
         }
     }
 
-    // Downloads are refused, for now, with a line in the pane's status
-    // (see `crate::browser`).
+    // Downloads (see `crate::browser`): a page that may not save them is
+    // refused, with a line in the pane's status; any other download waits
+    // for the pane's answer (`WebView::save_download`), its callback kept
+    // until then.
     wrap_download_handler! {
         pub struct DreamerDownloads {
             shared: Arc<Shared>,
@@ -181,32 +183,97 @@ mod handlers {
                 url: Option<&CefString>,
                 _request_method: Option<&CefString>,
             ) -> i32 {
-                let url = url.map(|u| u.to_string()).unwrap_or_default();
-                match crate::browser::DOWNLOADS {
-                    crate::browser::Downloads::Refused => {
-                        self.shared
-                            .event(crate::Event::Status(crate::browser::download_refused(&url)));
-                        0
-                    }
+                if self.shared.may_download {
+                    return 1;
                 }
+                let url = url.map(|u| u.to_string()).unwrap_or_default();
+                self.shared
+                    .event(crate::Event::Status(crate::browser::download_refused(&url)));
+                0
             }
-            // A download that did not ask first: left to CEF, which cancels
-            // it for this kind of browser.
             fn on_before_download(
                 &self,
                 _browser: Option<&mut Browser>,
                 download_item: Option<&mut DownloadItem>,
                 suggested_name: Option<&CefString>,
-                _callback: Option<&mut BeforeDownloadCallback>,
+                callback: Option<&mut BeforeDownloadCallback>,
             ) -> i32 {
                 let name = suggested_name
                     .map(|n| n.to_string())
                     .filter(|n| !n.is_empty())
-                    .or_else(|| download_item.map(|d| CefString::from(&d.url()).to_string()))
+                    .or_else(|| {
+                        download_item
+                            .as_ref()
+                            .map(|d| CefString::from(&d.url()).to_string())
+                    })
                     .unwrap_or_default();
+                // Returning 0 cancels it (CEF's default for this kind of
+                // browser).
+                let (true, Some(item), Some(callback)) =
+                    (self.shared.may_download, download_item, callback)
+                else {
+                    self.shared
+                        .event(crate::Event::Status(crate::browser::download_refused(&name)));
+                    return 0;
+                };
+                let id = item.id();
+                let size = u64::try_from(item.total_bytes()).ok().filter(|n| *n > 0);
+                if let Ok(mut d) = self.shared.downloads.lock() {
+                    d.entry(id).or_default().asked = Some(callback.clone());
+                }
                 self.shared
-                    .event(crate::Event::Status(crate::browser::download_refused(&name)));
-                0
+                    .event(crate::Event::DownloadAsked { id, name, size });
+                1
+            }
+            fn on_download_updated(
+                &self,
+                _browser: Option<&mut Browser>,
+                download_item: Option<&mut DownloadItem>,
+                callback: Option<&mut DownloadItemCallback>,
+            ) {
+                let Some(item) = download_item else { return };
+                let id = item.id();
+                let path = || {
+                    let p = CefString::from(&item.full_path()).to_string();
+                    (!p.is_empty()).then(|| PathBuf::from(p))
+                };
+                let event = {
+                    let Ok(mut downloads) = self.shared.downloads.lock() else {
+                        return;
+                    };
+                    let d = downloads.entry(id).or_default();
+                    if let Some(cb) = callback {
+                        d.item = Some(cb.clone());
+                    }
+                    let saving = d.saving_to.is_some();
+                    if item.is_complete() == 1 {
+                        downloads.remove(&id);
+                        saving.then(|| crate::Event::DownloadDone {
+                            id,
+                            path: path().unwrap_or_default(),
+                        })
+                    } else if item.is_canceled() == 1 || item.is_interrupted() == 1 {
+                        downloads.remove(&id);
+                        let error = (item.is_interrupted() == 1)
+                            .then(|| interrupted(item.interrupt_reason().get_raw()));
+                        Some(crate::Event::DownloadEnded {
+                            id,
+                            error,
+                            partial: path(),
+                        })
+                    } else if saving {
+                        Some(crate::Event::DownloadProgress {
+                            id,
+                            received: u64::try_from(item.received_bytes()).unwrap_or(0),
+                            total: u64::try_from(item.total_bytes()).ok().filter(|n| *n > 0),
+                        })
+                    } else {
+                        None
+                    }
+                };
+                if let Some(e) = event {
+                    self.shared.event(e);
+                }
             }
         }
     }
@@ -695,6 +762,21 @@ struct Shared {
     app: Option<crate::AppPage>,
     /// Navigations refused (an app's page, outside its origins), in order.
     blocked: Mutex<Vec<String>>,
+    /// Whether the page may ask to save downloads.
+    may_download: bool,
+    /// Downloads the page started and Chromium still has, by id.
+    downloads: Mutex<HashMap<u32, Download>>,
+}
+
+/// A download Chromium has: its callbacks, and whether it is being saved.
+#[derive(Default)]
+struct Download {
+    /// Until the pane answers: save (continue) it, or drop it (cancel).
+    asked: Option<BeforeDownloadCallback>,
+    /// Cancels it once it runs.
+    item: Option<DownloadItemCallback>,
+    /// Where it is being saved, once the pane said where.
+    saving_to: Option<PathBuf>,
 }
 
 impl Shared {
@@ -727,6 +809,19 @@ struct Body {
     mime: &'static str,
     bytes: Vec<u8>,
     at: usize,
+}
+
+/// Why a download stopped, from Chromium's interrupt reason (its ranges:
+/// file 1 to 19, network 20 to 29, server 30 to 39, the user 40 on).
+fn interrupted(reason: u32) -> String {
+    match reason {
+        3 => "the disk is full".into(),
+        2 => "the folder cannot be written".into(),
+        1..=19 => format!("the file could not be written (reason {reason})"),
+        20..=29 => "the network failed".into(),
+        30..=39 => "the server failed".into(),
+        _ => format!("interrupted (reason {reason})"),
+    }
 }
 
 /// The bytes a request posts.
@@ -1116,6 +1211,7 @@ impl WebView {
         let shared = Arc::new(Shared {
             loaded: AtomicI32::new(-1),
             on_event: Mutex::new(Some(Box::new(on_event))),
+            may_download: crate::browser::downloads_allowed(app.as_ref()),
             app,
             ..Shared::default()
         });
@@ -1200,6 +1296,42 @@ impl WebView {
 
     fn host(&self) -> Option<BrowserHost> {
         self.browser.host()
+    }
+
+    /// Save download `id`, which the page asked for
+    /// ([`crate::Event::DownloadAsked`]), to `path`: a file that need not
+    /// exist (an existing one is replaced when the download completes).
+    /// Its progress and end come as events. An error when it is no longer
+    /// waiting (canceled meanwhile).
+    pub fn save_download(&self, id: u32, path: &Path) -> Result<(), String> {
+        let asked = self.shared.downloads.lock().ok().and_then(|mut d| {
+            let d = d.get_mut(&id)?;
+            let asked = d.asked.take()?;
+            d.saving_to = Some(path.to_path_buf());
+            Some(asked)
+        });
+        let asked = asked.ok_or("the download is no longer waiting")?;
+        // Outside the lock: Chromium may report on the download at once.
+        asked.cont(Some(&CefString::from(path.to_string_lossy().as_ref())), 0);
+        Ok(())
+    }
+
+    /// Cancel download `id`: one waiting for an answer, or one being saved
+    /// (Chromium removes its partial file, and reports the end).
+    pub fn cancel_download(&self, id: u32) {
+        let (asked, item) = match self.shared.downloads.lock() {
+            Ok(mut d) => match d.get_mut(&id) {
+                Some(d) => (d.asked.take(), d.item.clone()),
+                None => (None, None),
+            },
+            Err(_) => (None, None),
+        };
+        // Outside the lock: a callback dropped unanswered cancels the
+        // download, and Chromium may report that at once.
+        drop(asked);
+        if let Some(item) = item {
+            item.cancel();
+        }
     }
 
     /// The navigations refused so far (an app's page, to an origin it may
@@ -1569,6 +1701,29 @@ impl Drop for WebView {
     fn drop(&mut self) {
         if let Ok(mut f) = self.shared.on_event.lock() {
             *f = None;
+        }
+        // Its downloads end with the page: canceled, and the file each was
+        // being saved to (reserved by the caller, empty until complete)
+        // removed, off this thread.
+        let downloads: Vec<Download> = self
+            .shared
+            .downloads
+            .lock()
+            .map(|mut d| d.drain().map(|(_, d)| d).collect())
+            .unwrap_or_default();
+        let mut leftover = Vec::new();
+        for d in downloads {
+            if let Some(item) = &d.item {
+                item.cancel();
+            }
+            leftover.extend(d.saving_to);
+        }
+        if !leftover.is_empty() {
+            std::thread::spawn(move || {
+                for p in leftover {
+                    let _ = std::fs::remove_file(p);
+                }
+            });
         }
         if let Ok(mut r) = self.shared.replies.lock() {
             r.clear();

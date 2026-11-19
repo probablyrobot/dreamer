@@ -400,9 +400,9 @@ const INPUT_CHECKS: usize = 5;
 /// the example app's page lists the panes through its bridge, a call
 /// through it lists them, a call outside its grant is refused, so is
 /// `web.read` without `web.inspect`, `apps.capture` of its pane is its
-/// page's image, another origin has no bridge, and a navigation outside
-/// its allow-list is refused.
-const APP_CHECKS: usize = 7;
+/// page's image, another origin has no bridge, a navigation outside its
+/// allow-list is refused, and so is a download (it lacks `web.download`).
+const APP_CHECKS: usize = 8;
 
 /// The agent checks the web smoke reports passing (`smoke: web inspect:`):
 /// `web.read` refused without `web.inspect`; with it, `web.read` finds the
@@ -424,9 +424,11 @@ const SENT_NAME: &str = "Ada Lovelace";
 /// browser:`): `web.navigate` loads a page in the pane; Cmd+L, a typed
 /// address, and Enter load it; a link is followed; back and forward by
 /// key, and by the mouse's side buttons; reload; find in the page; zoom; a
-/// refused download's status line; a new window's link in the same pane;
-/// and, in the second run, the login's session cookie after a restart.
-const BROWSER_CHECKS: usize = 11;
+/// download asks first; Save writes it to the downloads folder; Cancel at
+/// the prompt writes nothing; Cancel while saving leaves no partial file;
+/// a new window's link in the same pane; and, in the second run, the
+/// login's session cookie after a restart.
+const BROWSER_CHECKS: usize = 14;
 
 /// Run the bundle's `dreamer --smoke-web` against an isolated tmux server
 /// with private daemon, desktop, and configuration directories, then check
@@ -463,10 +465,16 @@ pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> 
     }
     // The drawer Cmd+J shows from inside the page runs a plain shell: the
     // check is about the shortcut, not about any agent. Dreamer Web is
-    // offered, as by default.
+    // offered, as by default. Downloads go to a folder of the smoke's own,
+    // never the user's.
+    let downloads = root.join("downloads");
     std::fs::write(
         root.join("config/dreamer.yaml"),
-        "agents:\n  pi:\n    command: [env, 'PS1=$ ', /bin/sh]\nweb:\n  component: ask\n",
+        format!(
+            "agents:\n  pi:\n    command: [env, 'PS1=$ ', /bin/sh]\n\
+             web:\n  component: ask\n  downloads:\n    folder: {:?}\n",
+            downloads.display().to_string()
+        ),
     )
     .map_err(|e| e.to_string())?;
     let started = Command::new(&tmux)
@@ -689,9 +697,9 @@ fn png_size(path: &Path) -> Result<(u32, u32), String> {
 
 /// The browser's test site, served on 127.0.0.1 for the web smoke only: a
 /// page that counts its loads and has a link, a link that wants a new
-/// window, a download, and words to find; a second page; a login that
-/// sets a session cookie; a page that says whether the cookie came; and a
-/// form that records the names it is sent ([`site::sent`]).
+/// window, a download, a slow download, and words to find; a second page;
+/// a login that sets a session cookie; a page that says whether the cookie
+/// came; and a form that records the names it is sent ([`site::sent`]).
 pub mod site {
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
@@ -705,6 +713,36 @@ pub mod site {
 
     /// The form page's background.
     pub const FORM: u32 = 0x3f_a3_4d;
+
+    /// What `/report.bin` holds; the smoke checks the file it saved
+    /// (`DOWNLOAD_BODY` in `crates/app/src/workspace/smoke/web.rs`).
+    const DOWNLOAD_BODY: &str = "dreamer web smoke: a saved download\n";
+
+    /// `/slow.bin`'s length, which it never finishes sending: 64 KiB at
+    /// once, then a little at a time for a minute, until the client goes.
+    const SLOW_LENGTH: usize = 4 << 20;
+
+    fn slow(stream: &TcpStream) {
+        let mut out = stream;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+             Content-Disposition: attachment; filename=\"slow.bin\"\r\n\
+             Content-Length: {SLOW_LENGTH}\r\nConnection: close\r\n\r\n"
+        );
+        if out.write_all(head.as_bytes()).is_err() || out.write_all(&[b's'; 64 << 10]).is_err() {
+            return;
+        }
+        for _ in 0..600 {
+            std::thread::sleep(Duration::from_millis(100));
+            if out
+                .write_all(&[b's'; 1024])
+                .and_then(|()| out.flush())
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
 
     /// The names the form was sent with so far.
     pub fn sent() -> Vec<String> {
@@ -779,6 +817,7 @@ pub mod site {
                     link("next", "/b", "", "next"),
                     link("pop", "/c", "target=_blank", "new window"),
                     link("dl", "/report.bin", "", "download"),
+                    link("slow", "/slow.bin", "", "slow download"),
                     "<p>a needle, and another needle</p>".to_owned(),
                 ]
                 .concat();
@@ -795,8 +834,9 @@ pub mod site {
                 "Content-Type: application/octet-stream\r\n\
                  Content-Disposition: attachment; filename=\"report.bin\"\r\n"
                     .to_owned(),
-                "not saved".to_owned(),
+                DOWNLOAD_BODY.to_owned(),
             ),
+            "/slow.bin" => return slow(&stream),
             // A session cookie: no expiry, so it survives a restart only
             // because the browser's profile keeps session cookies.
             "/login" => (

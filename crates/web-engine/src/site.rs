@@ -47,6 +47,9 @@ pub struct AppPage {
     pub dir: Option<PathBuf>,
     /// Origins the page may also navigate to.
     pub allow: Vec<String>,
+    /// Whether the page may save downloads, after the pane's prompt (the
+    /// app holds `web.download`).
+    pub download: bool,
     /// Passes each bridge call on; called on one of Chromium's threads.
     pub bridge: Arc<dyn Fn(BridgeCall) + Send + Sync>,
 }
@@ -58,6 +61,7 @@ impl std::fmt::Debug for AppPage {
             .field("origin", &self.origin)
             .field("dir", &self.dir)
             .field("allow", &self.allow)
+            .field("download", &self.download)
             .finish_non_exhaustive()
     }
 }
@@ -232,6 +236,7 @@ mod tests {
             origin: "dreamer-app://test.web".into(),
             dir,
             allow: vec!["https://example.com".into()],
+            download: false,
             bridge: Arc::new(|_| {}),
         }
     }
