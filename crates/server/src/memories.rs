@@ -20,6 +20,9 @@ use workspace_config::{KosmonautSettings, MemoryProvider, MemorySettings};
 
 use crate::log;
 
+#[cfg(feature = "kosmonaut")]
+mod openai;
+
 #[derive(Debug)]
 pub struct Memory {
     files: Arc<memory::Files>,
@@ -57,6 +60,21 @@ fn kosmonaut(k: &KosmonautSettings) -> Arc<dyn memory::Provider> {
                 None
             }
         },
+        Some(EmbedderSettings::OpenAi {
+            model,
+            key_env,
+            url,
+            dimension,
+            timeout,
+        }) => {
+            match openai::OpenAi::new(model.clone(), key_env.clone(), url, *dimension, *timeout) {
+                Ok(o) => Some(Arc::new(o)),
+                Err(e) => {
+                    log::warn(format!("memory embedder: {e}; recall runs without vectors"));
+                    None
+                }
+            }
+        }
     };
     Arc::new(memory::Kosmonaut::new(path, embedder))
 }

@@ -3,7 +3,8 @@
 //! directory, a project's in the project; hand edits seen at once; a bad
 //! file reported; agent grants that may remember but not forget below
 //! `own`; switching to the `kosmonaut` provider, with import from and
-//! export to the files.
+//! export to the files; and its `openai` embedder against a stand-in for
+//! the API on the loopback (no request leaves the machine).
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -24,6 +25,12 @@ struct Setup {
 
 impl Setup {
     fn new() -> Setup {
+        Setup::start(None, &[])
+    }
+
+    /// A daemon started with `settings` as its `dreamer.yaml` and `env`
+    /// added to its environment.
+    fn start(settings: Option<&str>, env: &[(&str, &str)]) -> Setup {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let root = PathBuf::from(format!(
             "/tmp/drm-mem-{}-{}",
@@ -34,8 +41,12 @@ impl Setup {
         std::fs::create_dir_all(root.join("config")).expect("config");
         std::fs::create_dir_all(root.join("work/app/.git")).expect("project");
         std::fs::create_dir_all(root.join("work/app/src")).expect("src");
+        if let Some(text) = settings {
+            std::fs::write(root.join("config/dreamer.yaml"), text).expect("settings");
+        }
         let tmux = TmuxServer::start(80, 24, "/bin/sh").expect("tmux");
         let daemon = Command::new(EXE)
+            .envs(env.iter().copied())
             .args(["--tmux-socket", tmux.socket(), "--tmux"])
             .arg(tmux_program())
             .env("DREAMER_RUNTIME_DIR", root.join("rt"))
@@ -394,4 +405,226 @@ async fn kosmonaut_takes_over_live_and_the_files_move_in_and_out() {
     assert!(text.ends_with("Releases ship on Tuesdays\n"), "{text}");
     let index = std::fs::read_to_string(dir.join("MEMORY.md")).expect("index");
     assert!(index.contains("(releases-ship-on-tuesdays.md)"), "{index}");
+}
+
+/// A stand-in for OpenAI's embeddings API on the loopback. Each text gets
+/// a vector by its words: rolling out (deploy, staging, release, ship,
+/// roll, builds) on the first axis, formatting (indent, tabs, spaces) on
+/// the second. With `refuse` set it answers 401. Every request's
+/// `Authorization` header and body are kept.
+#[cfg(feature = "kosmonaut")]
+struct StandIn {
+    port: u16,
+    refuse: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
+}
+
+#[cfg(feature = "kosmonaut")]
+fn stand_in() -> StandIn {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::atomic::Ordering;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let api = StandIn {
+        port,
+        refuse: Default::default(),
+        seen: Default::default(),
+    };
+    let (refuse, seen) = (api.refuse.clone(), api.seen.clone());
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { return };
+            let mut reader = BufReader::new(conn.try_clone().expect("clone"));
+            let (mut auth, mut length, mut start) = (String::new(), 0, String::new());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let line = line.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                if start.is_empty() {
+                    start = line.to_owned();
+                } else if let Some((n, v)) = line.split_once(':') {
+                    match n.to_ascii_lowercase().as_str() {
+                        "authorization" => auth = v.trim().to_owned(),
+                        "content-length" => length = v.trim().parse().unwrap_or(0),
+                        _ => {}
+                    }
+                }
+            }
+            let mut body = vec![0; length];
+            let _ = reader.read_exact(&mut body);
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let (status, answer) = if refuse.load(Ordering::SeqCst) {
+                (
+                    401,
+                    serde_json::json!({"error": {"message": "Incorrect API key"}}),
+                )
+            } else if !start.starts_with("POST /v1/embeddings ") {
+                (404, serde_json::json!({"error": {"message": start}}))
+            } else {
+                let has = |t: &str, words: &[&str]| -> f32 {
+                    let t = t.to_lowercase();
+                    if words.iter().any(|w| t.contains(w)) {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                };
+                let roll = ["deploy", "staging", "release", "ship", "roll", "builds"];
+                let format = ["indent", "tabs", "spaces"];
+                let data: Vec<serde_json::Value> = body["input"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let t = t.as_str().unwrap_or_default();
+                        serde_json::json!({
+                            "index": i,
+                            "embedding": [has(t, &roll), has(t, &format), 0.01],
+                        })
+                    })
+                    .collect();
+                (200, serde_json::json!({"object": "list", "data": data}))
+            };
+            seen.lock().expect("seen").push((auth, body));
+            let text = answer.to_string();
+            let _ = write!(
+                conn,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                text.len()
+            );
+        }
+    });
+    api
+}
+
+#[cfg(feature = "kosmonaut")]
+fn openai_settings(key_env: &str, port: u16) -> String {
+    format!(
+        "memory:\n  provider: kosmonaut\n  kosmonaut:\n    embedder:\n      kind: openai\n      \
+         model: test-embedding\n      key_env: {key_env}\n      url: http://127.0.0.1:{port}/v1\n      \
+         dimension: 3\n      timeout: 5s\n"
+    )
+}
+
+/// Recall `query` until a problem says `why` (a settings change applies
+/// within the watcher's period), and return that answer.
+#[cfg(feature = "kosmonaut")]
+async fn recall_until_problem(c: &Client, s: &Setup, query: &str, why: &str) -> api::MemoryItems {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let r = recall(c, s, query, api::MemoryScope::Unspecified).await;
+        if r.problems.iter().any(|p| p.message.contains(why)) {
+            return r;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "never a problem with {why}: {r:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The `openai` embedder against a stand-in for the API: memories get
+/// vectors, and recall finds one by meaning that shares no word with the
+/// query. A refused key, an unreachable API, or a key missing from the
+/// environment each leave a clear problem, and recall still answers by
+/// words.
+#[cfg(feature = "kosmonaut")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_openai_embedder_gives_memories_vectors_and_recall_uses_them() {
+    use api::MemoryScope as S;
+    use std::sync::atomic::Ordering;
+    let api = stand_in();
+    let key_env = "DREAMER_TEST_EMBED_KEY";
+    let s = Setup::start(
+        Some(&openai_settings(key_env, api.port)),
+        &[(key_env, "sk-stand-in")],
+    );
+    let c = s.client().await;
+    let deploys = remember(&c, &s, "Deploys go through staging first", S::Project).await;
+    let tabs = remember(&c, &s, "Indent with tabs, not spaces", S::Project).await;
+    {
+        let seen = api.seen.lock().expect("seen");
+        let sent: Vec<String> = seen
+            .iter()
+            .flat_map(|(_, b)| b["input"].as_array().cloned().unwrap_or_default())
+            .filter_map(|t| t.as_str().map(str::to_owned))
+            .collect();
+        assert!(
+            sent.iter()
+                .any(|t| t.contains("Deploys go through staging")),
+            "{sent:?}"
+        );
+        assert!(
+            sent.iter().any(|t| t.contains("Indent with tabs")),
+            "{sent:?}"
+        );
+        for (auth, body) in seen.iter() {
+            assert_eq!(auth, "Bearer sk-stand-in");
+            assert_eq!(body["model"], "test-embedding");
+            assert_eq!(body["dimensions"], 3);
+        }
+    }
+    // No word in common with either memory: only the vectors find it.
+    let found = recall(&c, &s, "how do we roll out builds", S::Unspecified).await;
+    assert_eq!(found.provider, "kosmonaut");
+    assert!(found.problems.is_empty(), "{found:?}");
+    let ids: Vec<&str> = found.items.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, vec![deploys.id.as_str()], "{found:?}");
+
+    // The API refuses the key: the words still answer.
+    api.refuse.store(true, Ordering::SeqCst);
+    let r = recall_until_problem(&c, &s, "tabs", "refused the key in DREAMER_TEST_EMBED_KEY").await;
+    assert_eq!(
+        r.items.first().map(|m| m.id.as_str()),
+        Some(tabs.id.as_str())
+    );
+    assert!(
+        r.problems
+            .iter()
+            .all(|p| !p.message.contains("sk-stand-in")),
+        "{r:?}"
+    );
+    api.refuse.store(false, Ordering::SeqCst);
+
+    // The API cannot be reached.
+    let dead = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .expect("port")
+        .port();
+    std::fs::write(
+        s.root.join("config/dreamer.yaml"),
+        openai_settings(key_env, dead),
+    )
+    .expect("settings");
+    let r = recall_until_problem(&c, &s, "staging", "cannot reach the API").await;
+    assert_eq!(
+        r.items.first().map(|m| m.id.as_str()),
+        Some(deploys.id.as_str())
+    );
+
+    // The key's variable is not in dreamerd's environment: nothing is sent.
+    std::fs::write(
+        s.root.join("config/dreamer.yaml"),
+        openai_settings("DREAMER_TEST_NO_SUCH_KEY", api.port),
+    )
+    .expect("settings");
+    let before = api.seen.lock().expect("seen").len();
+    let r = recall_until_problem(&c, &s, "staging", "DREAMER_TEST_NO_SUCH_KEY").await;
+    assert!(
+        r.problems.iter().any(|p| p.message.contains("not set")),
+        "{r:?}"
+    );
+    assert_eq!(
+        r.items.first().map(|m| m.id.as_str()),
+        Some(deploys.id.as_str())
+    );
+    assert_eq!(api.seen.lock().expect("seen").len(), before);
 }

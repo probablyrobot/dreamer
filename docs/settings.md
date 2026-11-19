@@ -393,16 +393,24 @@ memory:
     mode: embedded                       # default, and the only mode so far
     path: ~/.local/share/dreamer/memory.kosmonaut   # default: <data dir>/memory.kosmonaut
     embedder:                            # optional; without it, no vectors
-      kind: static                       # static or local
+      kind: static                       # static, local, or openai
       path: ~/models/words.vec           # static: word vectors, word2vec text format
       # kind: local
       # command: [my-embedder, --json]   # local: JSON texts in, JSON vectors out
       # dimension: 384
       # timeout: 30s                     # default
+      # kind: openai
+      # model: text-embedding-3-small    # openai: OpenAI's embeddings API
+      # key_env: OPENAI_API_KEY          # the variable holding the key, in dreamerd's environment
+      # url: https://api.openai.com/v1   # default; https, or http to localhost only
+      # dimension: 512                   # optional; the model's own length by default
+      # timeout: 30s                     # default; each request
 ```
 
-`path` and `embedder.path` are absolute or start with `~/`. See
-[memory.md](memory.md#embedders) for what each embedder does.
+`path` and `embedder.path` are absolute or start with `~/`. The `openai`
+key is read only from the environment variable `key_env` names, never
+from a file or keychain. See [memory.md](memory.md#embedders) for what
+each embedder does.
 
 ## Agent providers
 

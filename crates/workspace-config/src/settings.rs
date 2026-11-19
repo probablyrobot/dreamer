@@ -164,9 +164,25 @@ pub enum EmbedderSettings {
         dimension: usize,
         timeout: std::time::Duration,
     },
+    /// OpenAI's embeddings API (`POST <url>/embeddings`), with the key
+    /// read from the environment variable `key_env` at each call.
+    OpenAi {
+        model: String,
+        key_env: String,
+        /// The API base, [`OPENAI_URL`] unless set. Plain `http` only to
+        /// this machine (a stand-in for tests).
+        url: String,
+        /// Sent as `dimensions` when set; otherwise the model's own.
+        dimension: Option<usize>,
+        timeout: std::time::Duration,
+    },
 }
 
-/// The longest a local embedder may take for one call, by default.
+/// The API base an `openai` embedder uses unless `url` names another.
+pub const OPENAI_URL: &str = "https://api.openai.com/v1";
+
+/// The longest an embedder may take for one call (a local program's run,
+/// or one request to an API), by default.
 pub const DEFAULT_EMBEDDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Where the harness drawer docks in a window, and how much of it it takes.
@@ -559,7 +575,8 @@ struct EmbedderFile {
     dimension: Option<usize>,
     timeout: Option<serde_norway::Value>,
     model: Option<String>,
-    api_key_env: Option<String>,
+    key_env: Option<String>,
+    url: Option<String>,
 }
 
 /// `~/x` under the home directory, or an absolute path.
@@ -623,7 +640,8 @@ fn parse_embedder(e: &EmbedderFile) -> Result<EmbedderSettings, (String, String)
                 ("dimension", e.dimension.is_some()),
                 ("timeout", e.timeout.is_some()),
                 ("model", e.model.is_some()),
-                ("api_key_env", e.api_key_env.is_some()),
+                ("key_env", e.key_env.is_some()),
+                ("url", e.url.is_some()),
             ])?;
             let p = e
                 .path
@@ -637,7 +655,8 @@ fn parse_embedder(e: &EmbedderFile) -> Result<EmbedderSettings, (String, String)
             unused(&[
                 ("path", e.path.is_some()),
                 ("model", e.model.is_some()),
-                ("api_key_env", e.api_key_env.is_some()),
+                ("key_env", e.key_env.is_some()),
+                ("url", e.url.is_some()),
             ])?;
             let command = e
                 .command
@@ -670,13 +689,86 @@ fn parse_embedder(e: &EmbedderFile) -> Result<EmbedderSettings, (String, String)
                 timeout,
             })
         }
-        "openai" => Err((
-            at("kind"),
-            "openai is not available yet: Dreamer opens no network connections of its own; \
-             use static, or local with a program that runs your model"
-                .into(),
+        "openai" => {
+            unused(&[("path", e.path.is_some()), ("command", e.command.is_some())])?;
+            let model = e
+                .model
+                .clone()
+                .filter(|m| !m.trim().is_empty())
+                .ok_or_else(|| {
+                    (
+                        at("model"),
+                        "the model is required (text-embedding-3-small)".into(),
+                    )
+                })?;
+            let key_env = e
+                .key_env
+                .clone()
+                .filter(|k| {
+                    !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                })
+                .ok_or_else(|| {
+                    (
+                        at("key_env"),
+                        "the name of the environment variable that holds the key is required \
+                         (OPENAI_API_KEY)"
+                            .into(),
+                    )
+                })?;
+            let url = match e.url.as_deref() {
+                None => OPENAI_URL.to_owned(),
+                Some(u) => api_base(u).map_err(|m| (at("url"), m))?,
+            };
+            let dimension = match e.dimension {
+                None => None,
+                Some(d) if (1..=65_536).contains(&d) => Some(d),
+                Some(_) => {
+                    return Err((at("dimension"), "the vector length is 1 to 65536".into()));
+                }
+            };
+            let timeout = match &e.timeout {
+                None => DEFAULT_EMBEDDER_TIMEOUT,
+                Some(v) => parse_wait(v)
+                    .map_err(|m| (at("timeout"), m))?
+                    .ok_or_else(|| (at("timeout"), "an openai embedder needs a timeout".into()))?,
+            };
+            Ok(EmbedderSettings::OpenAi {
+                model,
+                key_env,
+                url,
+                dimension,
+                timeout,
+            })
+        }
+        k => Err((at("kind"), format!("`{k}` is not static, local, or openai"))),
+    }
+}
+
+/// An API base URL: `https`, or plain `http` to this machine only, so a
+/// key never crosses the network in the clear. Without a trailing `/`.
+fn api_base(u: &str) -> Result<String, String> {
+    let u = u.trim().trim_end_matches('/');
+    let (scheme, rest) = u
+        .split_once("://")
+        .ok_or_else(|| format!("`{u}` is not an http or https URL"))?;
+    let host = rest.split('/').next().unwrap_or_default();
+    if host.is_empty() || host.contains('@') || rest.contains(['?', '#']) {
+        return Err(format!(
+            "`{u}` is not an API base URL (a host, and a path at most)"
+        ));
+    }
+    // The host without its port; an IPv6 literal without its brackets.
+    let name = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => host.split(':').next().unwrap_or_default(),
+    };
+    match scheme {
+        "https" => Ok(u.to_owned()),
+        "http" if matches!(name, "localhost" | "127.0.0.1" | "::1") => Ok(u.to_owned()),
+        "http" => Err(format!(
+            "`{u}`: plain http only to this machine (localhost); use https"
         )),
-        k => Err((at("kind"), format!("`{k}` is not static or local"))),
+        _ => Err(format!("`{u}` is not an http or https URL")),
     }
 }
 
@@ -1208,12 +1300,64 @@ mod tests {
                 path: PathBuf::from("/v/words.vec")
             })
         );
+        let s = parse_settings(
+            "memory:\n  kosmonaut:\n    embedder:\n      kind: openai\n      model: text-embedding-3-small\n      \
+             key_env: OPENAI_API_KEY\n",
+            None,
+        )
+        .expect("openai");
+        assert_eq!(
+            s.memory.kosmonaut.embedder,
+            Some(EmbedderSettings::OpenAi {
+                model: "text-embedding-3-small".into(),
+                key_env: "OPENAI_API_KEY".into(),
+                url: OPENAI_URL.into(),
+                dimension: None,
+                timeout: DEFAULT_EMBEDDER_TIMEOUT,
+            })
+        );
+        let s = parse_settings(
+            "memory:\n  kosmonaut:\n    embedder:\n      kind: openai\n      model: m\n      key_env: K\n      \
+             url: http://127.0.0.1:8080/v1/\n      dimension: 256\n      timeout: 5s\n",
+            None,
+        )
+        .expect("openai stand-in");
+        assert_eq!(
+            s.memory.kosmonaut.embedder,
+            Some(EmbedderSettings::OpenAi {
+                model: "m".into(),
+                key_env: "K".into(),
+                url: "http://127.0.0.1:8080/v1".into(),
+                dimension: Some(256),
+                timeout: std::time::Duration::from_secs(5),
+            })
+        );
         for (bad, why) in [
             ("    mode: server\n", "not available yet"),
             ("    path: relative\n", "absolute"),
             (
-                "    embedder:\n      kind: openai\n      api_key_env: OPENAI_API_KEY\n",
-                "network",
+                "    embedder:\n      kind: openai\n      key_env: OPENAI_API_KEY\n",
+                "model is required",
+            ),
+            (
+                "    embedder:\n      kind: openai\n      model: m\n",
+                "environment variable",
+            ),
+            (
+                "    embedder:\n      kind: openai\n      model: m\n      key_env: \"sk-a b\"\n",
+                "environment variable",
+            ),
+            (
+                "    embedder:\n      kind: openai\n      model: m\n      key_env: K\n      url: http://api.example.com/v1\n",
+                "plain http",
+            ),
+            (
+                "    embedder:\n      kind: openai\n      model: m\n      key_env: K\n      url: ftp://x/v1\n",
+                "not an http",
+            ),
+            (
+                "    embedder:\n      kind: openai\n      model: m\n      key_env: K\n      command: [x]\n",
+                "not used",
             ),
             ("    embedder:\n      kind: static\n", "required"),
             (

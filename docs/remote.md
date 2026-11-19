@@ -12,7 +12,11 @@ keys. `cargo xtask policy` (the gate's first stage) fails if product code
 uses a TCP or UDP socket. The one exception is [forwards](#forwards):
 a listener on this machine's 127.0.0.1 and connections to a host's own
 loopback, both in `crates/server/src/forward.rs`, which the policy allows
-TCP only on the loopback.
+TCP only on the loopback. The HTTP client is allowed in two files only,
+neither of which reaches a Dreamer host: app `fetch`
+([dependency-baseline.md](dependency-baseline.md#http-client-fetch-in-script-apps)) and the
+`openai` memory embedder ([memory.md](memory.md#openai)), which runs only
+when configured.
 
 ## The coordinator
 

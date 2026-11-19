@@ -349,10 +349,10 @@ pub const SCHEMA: &[Key] = &[
     },
     Key {
         path: "memory.kosmonaut.embedder",
-        kind: "{kind: static, path} | {kind: local, command, dimension, timeout}",
+        kind: "{kind: static, path} | {kind: local, command, dimension, timeout} | {kind: openai, model, key_env, url, dimension, timeout}",
         default: "none (no vectors)",
-        doc: "Optional: what turns memories into vectors, so recall also finds memories near the query in meaning. static reads word vectors from a file (word2vec text format); local runs a program that reads a JSON array of texts and prints a JSON array of vectors. Without it, recall is by words and the graph.",
-        example: "{kind: static, path: /usr/share/dreamer/words.vec}",
+        doc: "Optional: what turns memories into vectors, so recall also finds memories near the query in meaning. static reads word vectors from a file (word2vec text format); local runs a program that reads a JSON array of texts and prints a JSON array of vectors; openai sends the texts to OpenAI's embeddings API with the key in the environment variable key_env (url, default https://api.openai.com/v1, must be https unless it is this machine; timeout per request, default 30s). Without it, recall is by words and the graph.",
+        example: "{kind: openai, model: text-embedding-3-small, key_env: OPENAI_API_KEY}",
         live: true,
     },
 ];
