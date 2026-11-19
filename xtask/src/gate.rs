@@ -1313,7 +1313,19 @@ fn ensure_arm64_image() -> Result<String, String> {
 /// headless crates' tests against the pinned tmux, and the remote
 /// acceptance cases through real OpenSSH (`cargo xtask remote-acceptance`,
 /// as root with a private sshd on a loopback port).
+///
+/// Only on an ARM64 host: elsewhere the container runs under qemu user
+/// emulation, which takes most of an hour and shows the emulator as each
+/// process's executable, so agent recognition fails for reasons that are
+/// not the product's. `full.yml` covers the ARM64 cross-build there.
 fn arm64_container(dir: &Path) -> Result<Done, String> {
+    if std::env::consts::ARCH != "aarch64" {
+        println!(
+            "gate: {} host; the ARM64 Linux suite runs only on an ARM64 host (recorded as not run)",
+            std::env::consts::ARCH
+        );
+        return Ok(Done::NotRun);
+    }
     // `docker info` exits 0 even when Docker Desktop failed to start, so
     // require an actual server version.
     let docker_up = Command::new("docker")
