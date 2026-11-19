@@ -520,11 +520,34 @@ pub fn capture_switch(root: &Path, theme: &str, before: &Path, after: &Path) -> 
             format!("appearance: dark\nterminal:\n  theme: {theme}\n"),
         )
         .map_err(|e| format!("config: {e}"))?;
-        capture_window(running.app.id(), after, 3.0)
+        // Once the switch is applied (the config is read every second),
+        // the wide pane prints a block in SWITCH_MARKER. An `after`
+        // capture without it comes from a window that stopped repainting,
+        // not from a switch that missed a pane.
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let _ = Command::new(&running.tmux)
+            .args(["-L", &running.socket, "send-keys", "-t", "main:0.0"])
+            .args(["printf '\\033[48;2;32;96;160m%16s\\033[0m\\n' ''", "Enter"])
+            .status();
+        // Capture again until the marker and the new scheme are both drawn,
+        // for up to 12 s; the checks then judge the last capture.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+        loop {
+            capture_window(running.app.id(), after, 1.0)?;
+            let marked = share_of(after, SWITCH_MARKER)? >= 0.000_2;
+            let switched = share_of(after, 0x14_16_1a)? <= 0.005;
+            if (marked && switched) || std::time::Instant::now() > deadline {
+                return Ok(());
+            }
+        }
     });
     running.finish();
     result
 }
+
+/// The block `capture_switch` prints after the theme switch: a blue no
+/// scheme in the check uses.
+pub const SWITCH_MARKER: u32 = 0x20_60_a0;
 
 /// The share of a capture's pixels within a few steps of `color` (12 per
 /// channel: the display profile moves saturated colors more than grays).
