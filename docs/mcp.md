@@ -85,6 +85,34 @@ components.
 | `app_install` | Check, preview, and install the package; the version it replaces is kept. Returns the installed `name` | `dream app install` |
 | `app_launch` | Open an installed app (`name`) with the grant it declares: beside the pane the server runs in (`TMUX_PANE`, the chat's pane), beside `beside`, or in a `new_window`. Returns the new `pane`, which this session owns | `apps.launch` |
 
+- **Directories.** `dir` is a package directory inside the apps
+  directory: `DREAMER_APPS_ROOT` when set, else the working directory the
+  server was started in (the harness's). A relative `dir` is taken from
+  there. A path with `..`, or one that leaves the directory through a
+  symbolic link, is refused; the tools read and write nothing outside it
+  except the installed copy in Dreamer's apps directory.
+- **Check problems.** `app_check` returns `ok`, `needs` (the grant the
+  manifest asks for), and `problems`, each with `file`, `line`, `column`,
+  and a `message` that names the fix where it can (``did you mean
+  `table`?``). A syntax error has no entry in `problems`; it is in
+  `error`, with its place. The check does not hold the methods `app.ts`
+  calls to the manifest's `capabilities`: a call outside them is refused
+  when the app runs.
+- **Text, then image.** The text preview needs no daemon and works
+  everywhere. The image preview needs a running Dreamer window: without
+  one it fails at once with `no Dreamer window is running; --png needs
+  one`, before opening anything. With one, it opens the preview in a new
+  window of its own, waits until the desktop has drawn it, takes the
+  image, and closes the window again.
+- **Grants.** Checking, previewing as text, and testing need no level.
+  Installing needs a grant that may launch apps (`apps.launch`, given
+  from `own` up); at `observe` it is refused. Launching is an
+  `apps.launch` call the daemon checks: the app's grant must be within
+  the server's, beside a pane the server did not create it asks the user
+  at `elsewhere` and is refused at `own`, and in a new window it only
+  creates ([grants.md](grants.md#agents-and-apps)). An image preview
+  launches and closes its own pane, so it needs `own` too.
+
 ## Browser tool
 
 | Tool | Does | Through |
@@ -118,27 +146,6 @@ allowed in the web panes the session opened, and at `elsewhere` asked
 for elsewhere. The clipboard is never used. With no Dreamer window
 running, or one that does not show the pane, the tool fails and says
 so.
-
-- **Directories.** `dir` is a package directory inside the apps
-  directory: `DREAMER_APPS_ROOT` when set, else the working directory the
-  server was started in (the harness's). A relative `dir` is taken from
-  there. A path with `..`, or one that leaves the directory through a
-  symbolic link, is refused; the tools read and write nothing outside it
-  except the installed copy in Dreamer's apps directory.
-- **Text, then image.** The text preview needs no daemon and works
-  everywhere. The image preview needs a running Dreamer window: without
-  one it fails at once with `no Dreamer window is running; --png needs
-  one`, before opening anything. With one, it opens the preview in a new
-  window of its own, waits until the desktop has drawn it, takes the
-  image, and closes the window again.
-- **Grants.** Checking, previewing as text, and testing need no level.
-  Installing needs a grant that may launch apps (`apps.launch`, given
-  from `own` up); at `observe` it is refused. Launching is an
-  `apps.launch` call the daemon checks: the app's grant must be within
-  the server's, beside a pane the server did not create it asks the user
-  at `elsewhere` and is refused at `own`, and in a new window it only
-  creates ([grants.md](grants.md#agents-and-apps)). An image preview
-  launches and closes its own pane, so it needs `own` too.
 
 ## Memory tools
 

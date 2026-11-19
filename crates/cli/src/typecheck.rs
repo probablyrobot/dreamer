@@ -1058,4 +1058,29 @@ mod tests {
             assert!(m.is_ok() && recovered.is_empty(), "{m:?} {recovered:?}");
         });
     }
+
+    /// Agents learn the components from the `dreamer-apps` skill, so it
+    /// names every builder and property the check accepts.
+    #[test]
+    fn the_apps_skill_names_every_builder_and_property() {
+        let skill = providers::pi_profile::shared_skills()
+            .into_iter()
+            .find(|(name, _)| *name == "dreamer-apps")
+            .map(|(_, text)| text)
+            .expect("the dreamer-apps skill");
+        let mut missing = Vec::new();
+        for (name, props) in &known().props {
+            if !skill.contains(&format!("`{name}`")) {
+                missing.push(format!("ui.{name}"));
+            }
+            for prop in props.keys() {
+                if !skill.contains(&format!("`{prop}`")) {
+                    missing.push(format!("ui.{name} {prop}"));
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(missing.is_empty(), "not in the skill: {missing:?}");
+    }
 }

@@ -1034,8 +1034,9 @@ lowercase letters, digits, and `-`; the app's id is `local.NAME`.
 | `form` | A select, an input, and a button that rename a window | `tmux.topology`, `actions.submit`, `all_panes` |
 | `chat` | A transcript (`log`) and a composer (`input`); each message gets an answer from a function in `app.ts` to replace | `daemon.version` |
 
-There is no `web` template: `--template web` is refused, because this
-version has no web panes.
+There is no `web` template: `--template web` is refused. For a page,
+start from another template and add a `web` node, or write a web app
+([web pages and web apps](#web-pages-and-web-apps)).
 
 The package has `app.toml`, `app.ts`, `fixtures/load.json`,
 `fixtures/events.jsonl`, `fixtures/calls.json` when the app calls a

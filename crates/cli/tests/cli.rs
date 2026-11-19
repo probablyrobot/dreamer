@@ -2077,11 +2077,96 @@ impl Cli {
     }
 }
 
+/// A 1x1 PNG, as a desktop writes one for `apps.capture`.
+const DOT_PNG: [u8; 68] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c,
+    0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64, 0x60, 0x00, 0x00,
+    0x00, 0x06, 0x00, 0x02, 0x30, 0x81, 0xd0, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+    0xae, 0x42, 0x60, 0x82,
+];
+
+/// A desktop as the daemon sees one, with no window: on a connection of
+/// its own it waits for capture requests, and answers the first by
+/// reading the pane's view tree and writing [`DOT_PNG`] where it was
+/// asked. Returns the request and the tree it read. The caller waits for
+/// [`desktop_present`] before asking for an image.
+fn fake_desktop(socket: PathBuf) -> std::thread::JoinHandle<(api::AppCaptureRequest, String)> {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let c = client::Client::connect(&socket, "desktop")
+                .await
+                .expect("connect");
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let asked = loop {
+                let r = match c
+                    .call(api::Request::AppsCaptureWait(api::AppCaptureWait {
+                        wait_ms: Some(1_000),
+                    }))
+                    .await
+                {
+                    Ok(api::Response::AppsCaptureWait(r)) => r,
+                    other => panic!("apps.capture_wait: {other:?}"),
+                };
+                if r.id != 0 {
+                    break r;
+                }
+                assert!(Instant::now() < deadline, "no capture was asked for");
+            };
+            let tree = match c
+                .call(api::Request::AppsTree(api::AppTreeQuery {
+                    pane: asked.pane,
+                    after: 0,
+                    seq: 0,
+                    wait_ms: Some(1_000),
+                }))
+                .await
+            {
+                Ok(api::Response::AppsTree(t)) => t.tree,
+                other => panic!("apps.tree: {other:?}"),
+            };
+            std::fs::write(&asked.path, DOT_PNG).expect("the image");
+            c.call(api::Request::AppsCaptureDone(api::AppCaptureDone {
+                id: asked.id,
+                width: 1,
+                height: 1,
+                ..api::AppCaptureDone::default()
+            }))
+            .await
+            .expect("apps.capture_done");
+            (asked, tree)
+        })
+    })
+}
+
+/// Waits until the daemon counts a desktop that answers captures.
+fn desktop_present(socket: &std::path::Path) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let c = rt
+        .block_on(client::Client::connect(socket, "test"))
+        .expect("connect");
+    wait_until("the desktop waits for captures", 10, || {
+        matches!(
+            rt.block_on(c.call(api::Request::DaemonStatus(api::Empty {}))),
+            Ok(api::Response::DaemonStatus(s)) if s.desktops > 0
+        )
+    });
+}
+
 /// The loop an agent follows to build an app, over MCP at the `own`
 /// level: a new package; an edit with a type error, which the check
 /// reports at its line and column; the fix; a text preview and the test;
-/// an image preview, refused with no desktop; the install; and the app
-/// opened beside a pane the agent created. A directory outside the apps
+/// an image preview, refused with no desktop, then made by a desktop (a
+/// stand-in that answers captures) from a preview pane of the agent's
+/// own that is closed again; the install; and the app opened beside a
+/// pane the agent created. A directory outside the apps
 /// directory, and a pane the agent did not create, are refused; at
 /// `observe` installing and launching are refused.
 #[test]
@@ -2139,6 +2224,42 @@ fn an_agent_builds_an_app_and_opens_it_over_mcp() {
     assert!(
         err(&image) && said(&image).contains("no Dreamer window is running"),
         "{image}"
+    );
+    // With a desktop: the PNG it wrote, drawn from the app's fixtures.
+    let socket = cli.root.join("rt/dreamerd.sock");
+    let desktop = fake_desktop(socket.clone());
+    desktop_present(&socket);
+    let image = m.call("app_preview", json!({ "dir": "hello", "mode": "image" }));
+    assert!(!err(&image), "{image}");
+    assert_eq!(image["content"][0]["type"], "image", "{image}");
+    assert_eq!(image["content"][0]["mimeType"], "image/png", "{image}");
+    assert_eq!(
+        image["content"][0]["data"],
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+        "{image}"
+    );
+    assert!(
+        image["content"][1]["text"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("1x1")),
+        "{image}"
+    );
+    let (asked, tree) = desktop.join().expect("the desktop");
+    assert!(asked.method.is_empty() && asked.seq > 0, "{asked:?}");
+    assert!(
+        tree.contains("Panes") && tree.contains("cargo"),
+        "the preview drew the fixtures: {tree}"
+    );
+    // The preview pane was only for the image, and the file is gone.
+    wait_until("the preview pane closes", 10, || {
+        !cli.topology()["panes"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|p| p["id"] == asked.pane))
+    });
+    assert!(
+        !std::path::Path::new(&asked.path).exists(),
+        "{}",
+        asked.path
     );
 
     let installed = m.call("app_install", json!({ "dir": "hello" }));
@@ -3015,7 +3136,7 @@ fn each_template_checks_previews_and_passes_its_test_straight_after_new() {
     assert!(dream(&["app", "test", &path, "--update"]).status.success());
     assert!(dream(&["app", "test", &path]).status.success());
 
-    // There are no web panes in this version: said, not faked.
+    // There is no web template yet: said, not faked.
     let web_dir = root.join("web");
     let web = dream(&[
         "app",
@@ -3026,7 +3147,7 @@ fn each_template_checks_previews_and_passes_its_test_straight_after_new() {
         "--dir",
         &web_dir.display().to_string(),
     ]);
-    assert!(!web.status.success() && said(&web).contains("web panes"));
+    assert!(!web.status.success() && said(&web).contains("no web template"));
     assert!(!web_dir.exists());
     let _ = std::fs::remove_dir_all(&root);
 }
