@@ -461,6 +461,39 @@ pub fn capture(root: &Path, scene: &str, skin: &str, path: &Path) -> Result<(), 
     result
 }
 
+/// Like [`capture`], then `check` the image; while it fails, capture the
+/// same window again, for up to 15 s more. A busy machine can take longer
+/// than the settle time to connect and draw the scene; a scene that never
+/// draws still fails, with the last check's error.
+pub fn capture_checked(
+    root: &Path,
+    scene: &str,
+    skin: &str,
+    path: &Path,
+    check: impl Fn(&Path) -> Result<String, String>,
+) -> Result<String, String> {
+    let scene = SCENES
+        .iter()
+        .find(|s| s.name == scene)
+        .ok_or_else(|| format!("no scene `{scene}`"))?;
+    build(root)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let running = launch(root, scene, skin, "")?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut result = capture_window(running.app.id(), path, 3.0).and_then(|()| check(path));
+    while result
+        .as_ref()
+        .is_err_and(|e| !e.contains("could not capture window"))
+        && std::time::Instant::now() < deadline
+    {
+        result = capture_window(running.app.id(), path, 1.0).and_then(|()| check(path));
+    }
+    running.finish();
+    result
+}
+
 /// The live theme switch (#265): `theme-switch` captured in Dreamer's dark
 /// scheme, then again after `terminal.theme` in its `dreamer.yaml` changes
 /// to `theme` (what the palette's Theme command writes), in the same

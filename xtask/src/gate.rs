@@ -794,8 +794,9 @@ fn screens(dir: &Path) -> Result<Done, String> {
         ("light", 0xf6_f6_f4, 0x1e_7a_3c),
     ] {
         let path = out.join(format!("single-pane-{skin}.png"));
-        match crate::scenes::capture(dir, "single-pane", skin, &path) {
-            Ok(()) => {}
+        let check = |p: &Path| crate::scenes::check_capture(p, background, green);
+        let summary = match crate::scenes::capture_checked(dir, "single-pane", skin, &path, check) {
+            Ok(summary) => summary,
             Err(e) if e.contains("could not capture window") => {
                 println!(
                     "gate: screen capture is not allowed for this terminal (System Settings > \
@@ -804,8 +805,7 @@ fn screens(dir: &Path) -> Result<Done, String> {
                 return Ok(Done::NotRun);
             }
             Err(e) => return Err(e),
-        }
-        let summary = crate::scenes::check_capture(&path, background, green)?;
+        };
         println!("gate:   screen: {} ({summary})", path.display());
     }
     if components_scene(dir, &out)? == Done::NotRun {
