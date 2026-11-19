@@ -27,6 +27,21 @@ only ever attaches to a server that is already running; it never starts
 one. It connects on the first request that needs tmux and reconnects
 after the link drops.
 
+### PATH
+
+tmux, harness CLIs (`claude`, `codex`), jobs, and extensions given by
+name are looked up on the daemon's `PATH`. A daemon started from Finder
+or the Dock inherits launchd's `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`),
+which has none of them. So when the inherited `PATH` holds nothing beyond
+those four directories, the daemon asks your login shell once at startup
+(`$SHELL -l -c`, with empty input and a 3-second limit) and takes only
+its `PATH`. If the shell fails or takes too long, it appends whichever of
+`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, and `~/.cargo/bin`
+exist. The daemon then restarts itself in place (same pid) with that
+`PATH`, so everything it starts inherits it. Any other inherited `PATH`
+is used as it is. `--tmux` and `DREAMER_TMUX` still name tmux exactly.
+The log records the `PATH` in force at startup.
+
 ## Files
 
 | File | Location | Notes |

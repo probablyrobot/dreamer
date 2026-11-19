@@ -41,6 +41,7 @@ mod sessions;
 mod taps;
 mod tiers;
 mod tools;
+mod user_path;
 mod web;
 
 use std::fs::{File, OpenOptions};
@@ -118,6 +119,7 @@ fn main() -> ExitCode {
         }
         _ => {}
     }
+    adopt_user_path();
     let args = match parse(&args) {
         Ok(a) => a,
         Err(e) => {
@@ -163,6 +165,36 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Restart this process with the user's `PATH` when it was started with
+/// only the system directories (as from Finder or the Dock), so tmux and
+/// every program a provider, job, or pane runs by name are found. The
+/// process is replaced (same pid, same open files) before it has started
+/// anything, and every child inherits the new `PATH` from then on.
+/// `--tmux` and `DREAMER_TMUX` still name tmux exactly.
+fn adopt_user_path() {
+    use std::os::unix::process::CommandExt as _;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let Some(path) = user_path::effective(
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("SHELL").as_deref(),
+        home.as_deref(),
+        user_path::SHELL_TIMEOUT,
+    ) else {
+        return;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut argv = std::env::args_os();
+    let mut cmd = std::process::Command::new(exe);
+    if let Some(arg0) = argv.next() {
+        cmd.arg0(arg0);
+    }
+    let e = cmd.args(argv).env("PATH", path).exec();
+    // Only reached when the restart failed: run on with the PATH we have.
+    eprintln!("dreamerd: cannot restart with the user's PATH: {e}");
 }
 
 /// The startup lock, held for the daemon's lifetime.
@@ -318,6 +350,12 @@ fn run(args: Args) -> Result<ExitCode, String> {
             state.instance,
             socket.display(),
             args.background
+        ));
+        log::info(format!(
+            "PATH {}",
+            std::env::var_os("PATH")
+                .unwrap_or_default()
+                .to_string_lossy()
         ));
         extensions::start_all(&state).await;
         collectors::start_all(&state).await;
