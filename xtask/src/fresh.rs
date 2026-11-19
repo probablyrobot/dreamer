@@ -13,6 +13,10 @@
 //!     only the runtime packages `docs/packaging.md` lists, then
 //!     `dreamer --smoke` on X11 (Xvfb, with Mesa's software Vulkan), which
 //!     must present a frame.
+//! - `cargo xtask package --fresh --platform macos` adds Dreamer Web the
+//!   way a user does, away from the tree ([`mac_check`]). There is no
+//!   fresh Mac to run it on: it uses a new directory and an empty data
+//!   directory on this one.
 
 use std::process::Command;
 
@@ -165,6 +169,85 @@ pub fn fresh_check(arch: &str) -> Result<(), String> {
         crate::util::sha256_file(&out.join(&desktop))?,
     );
     std::fs::write(out.join(format!("fresh-{arch}.json")), record).map_err(|e| e.to_string())
+}
+
+/// macOS: the release's Dreamer Web zip added the way a user adds it,
+/// away from the tree. The base zip is unpacked into a new temporary
+/// directory and, with an empty data directory, its `dream web status`
+/// says Dreamer Web is missing and how to add it; `dream web install`
+/// installs it from a copy of its zip (checksum, manifest, the framework's
+/// and helper apps' signatures, a helper loading the framework from where
+/// it sits); `dream web status` then says it is ready; and `dream web
+/// remove` takes it out. Writes `target/package/fresh-macos.json` for the
+/// build report. Opens no window. The lines it printed.
+pub fn mac_check(root: &std::path::Path) -> Result<Vec<String>, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("the macOS component check runs on a Mac".into());
+    }
+    let out = root.join("target/package");
+    let version = crate::package::version(root)?;
+    let base = out.join(format!("dreamer-{version}-aarch64-apple-darwin.zip"));
+    let name = web_component::archive_name(&version, "aarch64-apple-darwin");
+    let component = out.join(&name);
+    for f in [&base, &component] {
+        if !f.is_file() {
+            return Err(format!(
+                "{} is missing; build it first (cargo xtask package --platform macos)",
+                f.display()
+            ));
+        }
+    }
+    let away = std::env::temp_dir().join(format!("dreamer-fresh-macos-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&away);
+    std::fs::create_dir_all(&away).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let unzipped = Command::new("ditto")
+            .args(["-x", "-k"])
+            .arg(&base)
+            .arg(&away)
+            .status()
+            .map_err(|e| format!("ditto: {e}"))?;
+        if !unzipped.success() {
+            return Err(format!("unpacking {} failed", base.display()));
+        }
+        let app = away.join("Dreamer.app");
+        for f in [name.clone(), format!("{name}.sha256")] {
+            std::fs::copy(out.join(&f), away.join(&f)).map_err(|e| format!("{f}: {e}"))?;
+        }
+        let data = away.join("data");
+        let lines = crate::web::check_install(&app, &away.join(&name), &data)?;
+        crate::web::dream(
+            &app,
+            &["web", "remove"],
+            None,
+            &[("DREAMER_DATA_DIR", data.into_os_string())],
+        )?;
+        Ok(lines)
+    })();
+    let _ = std::fs::remove_dir_all(&away);
+    let lines = result?;
+    for l in &lines {
+        println!("fresh: {l}");
+    }
+    let record = serde_json::json!({
+        "arch": "arm64",
+        "image": "this Mac: a new directory and an empty data directory",
+        "unix_time": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+        "checked": [{
+            "artifact": name,
+            "sha256": crate::util::sha256_file(&component)?,
+            "check": "installed by the unpacked app's `dream web install` into an empty data directory: checksum, manifest, codesign --verify of the framework and helper apps, a helper loaded the framework; `dream web status` ready; `dream web remove`",
+        }],
+    });
+    std::fs::write(
+        out.join("fresh-macos.json"),
+        serde_json::to_string_pretty(&record).map_err(|e| e.to_string())? + "\n",
+    )
+    .map_err(|e| e.to_string())?;
+    println!("fresh: {name} added on this Mac, away from the tree");
+    Ok(lines)
 }
 
 /// The architecture docker runs natively here.

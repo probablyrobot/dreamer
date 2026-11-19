@@ -4,7 +4,16 @@
 //!   Mac) writes `target/package/Dreamer.app` with `dreamer`, `dreamerd`,
 //!   `dream`, and `dreamer-termapp`, plus `dreamer-<version>-aarch64-apple-darwin.zip` and its
 //!   `.sha256`. Bundles are ad hoc signed; Developer ID signing and
-//!   notarization are a separate release step (spec 3.2, 17.5).
+//!   notarization are a separate release step (spec 3.2, 17.5). The app is
+//!   built with web panes, but Chromium is not in it: beside it go
+//!   `target/package/dreamer-web/` and
+//!   `dreamer-web-<version>-aarch64-apple-darwin.zip` (with `.sha256` and
+//!   `.json`), the Dreamer Web component ([`crate::web`]), which users add
+//!   with `dream web install`. This needs `cargo xtask deps web`'s pins,
+//!   fetched (checksum-verified) when missing.
+//! - `cargo xtask package --fresh --platform macos` installs that component
+//!   from its zip with the unpacked app's `dream`, into an empty data
+//!   directory away from the tree ([`crate::fresh::mac_check`]).
 //! - `cargo xtask package --platform linux` (on Linux) writes
 //!   `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256`: a
 //!   self-contained release that `packaging/install.sh` installs into the
@@ -60,6 +69,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
     if fresh {
+        if platform == "macos" {
+            return crate::fresh::mac_check(&repo_root()).map(drop);
+        }
         return crate::fresh::fresh_check(&arch);
     }
     if container {
@@ -86,12 +98,78 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     let root = repo_root();
     let out = root.join("target").join("package");
-    let app = build_bundle(&root, profile, &out)?;
-    verify_bundle(&app)?;
-    let zip = zip_bundle(&app, &out)?;
-    println!("package: {}", app.display());
-    println!("package: {}", zip.display());
+    let web = crate::deps::ensure_web(&crate::manifest::Manifest::load()?)?;
+    let made = macos_packages(&root, profile, &out, &web)?;
+    println!("package: {}", made.app.display());
+    println!("package: {} ({})", made.zip.display(), size(&made.zip));
+    println!("package: {}", made.component.display());
+    println!(
+        "package: {} ({})",
+        made.component_zip.display(),
+        size(&made.component_zip)
+    );
     Ok(())
+}
+
+/// What [`macos_packages`] made.
+#[derive(Debug)]
+pub struct MacPackages {
+    /// The base app, without Chromium.
+    pub app: PathBuf,
+    /// Its zip.
+    pub zip: PathBuf,
+    /// The Dreamer Web component's directory.
+    pub component: PathBuf,
+    /// Its zip.
+    pub component_zip: PathBuf,
+}
+
+/// The macOS release artifacts in `out`: the base app (built with web
+/// panes, Chromium not in it) and its zip, and the Dreamer Web component
+/// and its zip, each verified.
+pub fn macos_packages(
+    root: &Path,
+    profile: Profile,
+    out: &Path,
+    web: &crate::deps::WebDeps,
+) -> Result<MacPackages, String> {
+    let app = build_bundle_with(root, profile, out, Some(web))?;
+    verify_bundle(&app)?;
+    let zip = zip_bundle(&app, out)?;
+    let version = version(root)?;
+    let component = crate::web::build_component(out, &bin_dir(root, profile), web, &version)?;
+    crate::web::verify_component(&component)?;
+    let component_zip = crate::web::zip_component(&component, out, &version)?;
+    Ok(MacPackages {
+        app,
+        zip,
+        component,
+        component_zip,
+    })
+}
+
+/// A file's size in MB, for messages.
+fn size(path: &Path) -> String {
+    let bytes = std::fs::metadata(path).map_or(0, |m| m.len());
+    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+}
+
+/// Where cargo puts `profile`'s executables for `root`.
+pub fn bin_dir(root: &Path, profile: Profile) -> PathBuf {
+    crate::util::cargo_target(root).join(match profile {
+        Profile::Release => "release",
+        Profile::Debug => "debug",
+    })
+}
+
+/// The commit `root` is at, or empty.
+pub fn commit(root: &Path) -> String {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default()
 }
 
 /// The Linux icons as a hicolor theme tree under `to`, named after the
@@ -562,7 +640,8 @@ pub fn build_bundle(root: &Path, profile: Profile, out: &Path) -> Result<PathBuf
 }
 
 /// [`build_bundle`], with `web`: the desktop built with web panes, and the
-/// CEF framework and its helper apps in `Contents/Frameworks`.
+/// helper executable built for the Dreamer Web component. Chromium itself
+/// is not put in the bundle: it is the component ([`crate::web`]).
 pub fn build_bundle_with(
     root: &Path,
     profile: Profile,
@@ -596,11 +675,7 @@ pub fn build_bundle_with(
     if !status.success() {
         return Err("cargo build of dreamer, dreamerd, dream, and dreamer-termapp failed".into());
     }
-    let bin_dir = crate::util::cargo_target(root).join(if profile == Profile::Release {
-        "release"
-    } else {
-        "debug"
-    });
+    let bin_dir = bin_dir(root, profile);
 
     let app = out.join("Dreamer.app");
     if app.exists() {
@@ -661,9 +736,6 @@ pub fn build_bundle_with(
 "#
     );
     std::fs::write(app.join("Contents").join("Info.plist"), plist).map_err(|e| e.to_string())?;
-    if let Some(web) = web {
-        crate::web::add_engine(&app, &bin_dir, web, &version)?;
-    }
     // Ad hoc signature: enough to run locally and to give the bundle a
     // stable code identity. Public builds are Developer ID signed later.
     // Helpers are signed before the bundle that seals them.
@@ -714,6 +786,19 @@ pub fn verify_bundle(app: &Path) -> Result<(), String> {
                 "{name}: deployment target {found}, expected {MIN_MACOS} (MACOSX_DEPLOYMENT_TARGET)"
             ));
         }
+    }
+    // Chromium is the Dreamer Web component, never part of the app.
+    let frameworks = app.join("Contents/Frameworks");
+    if frameworks.join(web_component::FRAMEWORK).exists()
+        || web_component::HELPERS
+            .iter()
+            .any(|(suffix, _)| frameworks.join(web_component::helper_app(suffix)).exists())
+    {
+        return Err(format!(
+            "{}: Chromium is in the bundle; it belongs in the {} component",
+            app.display(),
+            web_component::NAME
+        ));
     }
     if !app.join("Contents/Resources/Dreamer.icns").is_file() {
         return Err("the bundle has no Dreamer.icns".into());
@@ -863,7 +948,7 @@ pub fn zip_bundle(app: &Path, out: &Path) -> Result<PathBuf, String> {
 /// How the bundle is signed, from `codesign`: the kind (`adhoc`, or the
 /// first signing authority), the team, and whether a notarization ticket
 /// is stapled.
-fn signing_state(app: &Path) -> (String, String, bool) {
+pub fn signing_state(app: &Path) -> (String, String, bool) {
     let out = Command::new("codesign")
         .args(["-d", "--verbose=2"])
         .arg(app)
@@ -893,12 +978,7 @@ fn signing_state(app: &Path) -> (String, String, bool) {
 fn record_bundle(app: &Path, zip: &Path, sha256: &str) -> Result<(), String> {
     use crate::gate::json_escape as esc;
     let root = repo_root();
-    let commit = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(&root)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .unwrap_or_default();
+    let commit = commit(&root);
     let bytes = std::fs::metadata(zip).map_or(0, |m| m.len());
     let (kind, team, stapled) = signing_state(app);
     let exes: Vec<String> = EXECUTABLES.iter().map(|e| format!("\"{e}\"")).collect();

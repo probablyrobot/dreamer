@@ -6,7 +6,7 @@
 //! | --- | --- | --- |
 //! | runtime (socket, lock) | `$XDG_RUNTIME_DIR/dreamer`, else `$TMPDIR/dreamer-<uid>`, else `/tmp/dreamer-<uid>` | `DREAMER_RUNTIME_DIR` |
 //! | state (log, action ledger) | `$XDG_STATE_HOME/dreamer`, else `~/.local/state/dreamer` | `DREAMER_STATE_DIR` |
-//! | data (managed agent installs) | `$XDG_DATA_HOME/dreamer`, else `~/.local/share/dreamer` | `DREAMER_DATA_DIR` |
+//! | data (managed agent installs, Dreamer Web) | `$XDG_DATA_HOME/dreamer`, else `~/.local/share/dreamer` | `DREAMER_DATA_DIR` |
 
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -45,7 +45,7 @@ pub fn state_dir() -> PathBuf {
 }
 
 /// Data Dreamer installs and keeps for the user, such as managed agent
-/// harnesses. The same place on macOS and Linux.
+/// harnesses and the Dreamer Web component. The same place on macOS and Linux.
 pub fn data_dir() -> PathBuf {
     if let Some(d) = env_dir("DREAMER_DATA_DIR") {
         return d;

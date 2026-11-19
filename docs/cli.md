@@ -178,6 +178,31 @@ its cookies, logins, storage, and cache. While Dreamer's desktop has it
 open (after its first web pane), the profile is emptied when the desktop
 next starts its web panes, and the command says so.
 
+### Dreamer Web
+
+The desktop draws web pages with Chromium, which is not part of the
+Dreamer package: it is a separate component, Dreamer Web, about 150 MB to
+download and 330 MB installed ([desktop.md](desktop.md#dreamer-web)).
+macOS on Apple Silicon only so far.
+
+| Command | Does |
+| --- | --- |
+| `dream web install` | Downloads the Dreamer Web zip of this Dreamer's version from its GitHub release, checks it against the `.sha256` published beside it, and installs it |
+| `dream web install FILE.zip` | Installs from a zip you already have (a release asset, or one `cargo xtask package` built). Checked against `FILE.zip.sha256` if that file exists |
+| `dream web install DIR` | Installs from an unpacked component directory (`cargo xtask web bundle` builds one) |
+| `dream web status` | Says which Dreamer Web is installed and where; fails, saying why and how to add it, when it is missing or is another version's |
+| `dream web remove` | Removes it. Web panes then say how to add it again |
+
+Before installing, `dream web install` checks that the component is the
+one this Dreamer needs (its `component.json` names the same Dreamer
+version and CEF release), that the framework and each helper app pass
+`codesign --verify --strict`, and that a helper loads the framework. It
+unpacks next to the installed copy and swaps it in only when all of that
+passed. It goes in `web/` of Dreamer's data directory (`DREAMER_DATA_DIR`,
+then `$XDG_DATA_HOME/dreamer`, then `~/.local/share/dreamer`). Web panes
+opened after it is installed draw their pages; there is no need to
+restart Dreamer.
+
 ## Approvals
 
 `dream approvals [--json]` lists the actions agents are waiting to have

@@ -504,8 +504,9 @@ windows only.
 
 ## Web panes
 
-macOS only so far, and only in a build with web panes (below). A web pane
-shows one web page in a pane's rectangle, drawn by Chromium itself, and is
+macOS only so far, and only with [Dreamer Web](#dreamer-web) added. A
+web pane shows one web page in a pane's rectangle, drawn by Chromium
+itself, and is
 the [browser](#the-browser): its chrome shows only when asked for. In tmux
 it is an ordinary pane, so splits, resizes, zoom, moving it, and keeping
 it across desktop restarts all come from tmux.
@@ -549,9 +550,10 @@ it across desktop restarts all come from tmux.
   included, works as in Chrome. Cmd+X and Cmd+A are taken only in a page;
   elsewhere they still reach the program in the pane.
 - **Where pages run.** On this Mac, in the desktop's process and
-  Chromium's helper processes; Chromium's profiles are in `web/` in the
-  desktop's state directory. See [Pages of a remote host](#pages-of-a-remote-host)
-  for web panes in a host's window.
+  Chromium's helper processes, which run from Dreamer Web's helper apps;
+  Chromium's profiles are in `web/` in the desktop's state directory. See
+  [Pages of a remote host](#pages-of-a-remote-host) for web panes in a
+  host's window.
 - **Lifetime.** The page lives while a desktop window shows its pane (or
   kept it among its recently shown panes) and loads again when the pane
   is shown after that, after a desktop restart for example, scrolled back
@@ -687,23 +689,69 @@ MCP has these as `web_read`, `web_click`, `web_type`, and
 `web_screenshot` ([mcp.md](mcp.md#page-tools)), and so does Dreamer's pi
 extension ([agents.md](agents.md#dreamers-tools-inside-pi)).
 
-### A build with web panes
+### Dreamer Web
 
-Web panes need the Chromium Embedded Framework, which the default build
-and the release package leave out:
+Chromium is not in the Dreamer package. It is a separate component,
+Dreamer Web, so an install that only wants terminals stays small: the
+Dreamer zip is the same with or without it, and Dreamer Web is about
+150 MB to download and 330 MB installed. Add it once:
 
 ```sh
-cargo xtask deps web           # the pinned CEF, cmake, and Ninja, checksum-verified
-cargo xtask web bundle         # target/web-bundle/Dreamer.app (add --release for a release build)
+dream web install
 ```
 
-The bundle is the app built with its `web` feature, the framework in
-`Contents/Frameworks`, and the five helper apps (`dreamer Helper.app`,
-`dreamer Helper (GPU).app`, `(Renderer)`, `(Plugin)`, `(Alerts)`) that
-Chromium runs its renderer, GPU, and utility processes from, all signed
-ad hoc. Run `Dreamer.app/Contents/MacOS/dreamer` from it; a `dreamer`
-built with the feature but run from outside a bundle shows why it cannot
-draw the page in each web pane. See
+This downloads the Dreamer Web zip of your Dreamer's version from the
+release, checks its SHA-256, checks the component, and installs it in
+`web/` of Dreamer's data directory (`~/.local/share/dreamer/web` unless
+`DREAMER_DATA_DIR` or `XDG_DATA_HOME` says otherwise). With a zip you
+already have, give its path: `dream web install
+dreamer-web-<version>-aarch64-apple-darwin.zip`. See
+[cli.md](cli.md#dreamer-web) for `dream web status` and `dream web
+remove`.
+
+- **What it holds.** CEF's framework (`Chromium Embedded
+  Framework.framework`), the five helper apps Chromium runs its renderer,
+  GPU, and utility processes from (`dreamer Helper.app`, `dreamer Helper
+  (GPU).app`, `(Renderer)`, `(Plugin)`, `(Alerts)`), each signed, CEF's
+  license and Chromium's notices (`LICENSE.txt`, `CREDITS.html`), and
+  `component.json`, which names the Dreamer version and CEF release it
+  was built for.
+- **Loaded on first use.** Chromium starts with the first web pane, from
+  the installed component, not with the app.
+- **Without it,** a web pane shows its address and says that web pages
+  need Dreamer Web and to run `dream web install`; the rest of Dreamer
+  works as before. A pane opened after you add it draws its page; there
+  is no need to restart.
+- **One version.** The helper apps are built with Dreamer, so Dreamer Web
+  must be the one of the same Dreamer version (and CEF release). After
+  updating Dreamer, run `dream web install` again; until then web panes
+  say which version is installed and which is needed.
+- **Signing.** Like the app, the component is signed ad hoc, not with a
+  Developer ID or notarized. `dream web install` downloads with `curl`,
+  which does not mark the file as quarantined. A zip that a browser
+  downloaded is quarantined, the mark carries over to what is unpacked
+  from it, and Gatekeeper may then stop Chromium's helper apps from
+  starting. Install such a zip with `dream web install` and no file
+  instead, or remove the mark from the zip yourself (`xattr -d
+  com.apple.quarantine FILE`) if you trust where it came from.
+
+### A build with web panes
+
+To build Dreamer with web panes yourself:
+
+```sh
+cargo xtask deps web                  # the pinned CEF, cmake, and Ninja, checksum-verified
+cargo xtask web bundle [--install]    # in target/web-bundle (add --release for a release build)
+```
+
+`target/web-bundle` then holds `Dreamer.app`, the app built with its
+`web` feature (without Chromium), and `dreamer-web/`, the Dreamer Web
+component built from the same tree, its helper apps signed ad hoc.
+`--install` installs that component with the bundle's own `dream web
+install` (or run `dream web install target/web-bundle/dreamer-web`
+later); then run `Dreamer.app/Contents/MacOS/dreamer`. `cargo xtask
+package` makes the release's two zips the same way
+([packaging.md](packaging.md#dreamer-web)). See
 [dependency-baseline.md](dependency-baseline.md#web-engine) for the pins.
 
 ## Command palette

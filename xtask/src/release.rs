@@ -4,9 +4,10 @@
 //! Run on the development Mac, from a clean `main` at `origin/main` whose
 //! version is `X.Y.Z` and whose tree has passed the full macOS gate:
 //!
-//! 1. Build the macOS zip, and the ARM64 Linux desktop tarball and server
-//!    archive in an ARM64 container; run the ARM64 archives on fresh
-//!    containers.
+//! 1. Build the macOS zip and the Dreamer Web zip, and add Dreamer Web
+//!    from its zip away from the tree; build the ARM64 Linux desktop
+//!    tarball and server archive in an ARM64 container; run the ARM64
+//!    archives on fresh containers.
 //! 2. Create the tag on GitHub, which starts `release.yml`: it builds the
 //!    x86-64 archives, runs them on fresh containers, and drafts the
 //!    release with them.
@@ -106,6 +107,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let out = root.join("target/package");
     let _ = std::fs::remove_dir_all(&out);
     step(&root, &["package", "--platform", "macos"])?;
+    step(&root, &["package", "--fresh", "--platform", "macos"])?;
     step(
         &root,
         &[
@@ -208,9 +210,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         (
             out.clone(),
             &[
+                // The base zip and the Dreamer Web zip, each with its
+                // `.sha256` and `.json`.
                 "aarch64-apple-darwin.zip",
                 "build-report.",
                 "fresh-arm64.json",
+                "fresh-macos.json",
             ][..],
         ),
         (out.join("linux"), &["aarch64-unknown-linux-gnu.tar.gz"][..]),

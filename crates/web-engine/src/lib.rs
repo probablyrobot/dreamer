@@ -7,8 +7,11 @@
 //! overlay covers the pane, and can draw the page's capture instead.
 //!
 //! CEF's browser process is this process; its renderer, GPU, and utility
-//! processes run the helper executable (`dreamer-web-helper`) from the app
-//! bundle's helper apps. CEF's work is pumped from the caller's event loop:
+//! processes run the helper executable (`dreamer-web-helper`) from the
+//! helper apps of Dreamer Web, the component that holds Chromium apart from
+//! the app ([`web_component`]): the framework is loaded from there when the
+//! first page opens, and a missing component is an error saying how to add
+//! it. CEF's work is pumped from the caller's event loop:
 //! [`start`] takes a function CEF calls, from any thread, when it wants
 //! [`do_work`] called on the main thread.
 //!

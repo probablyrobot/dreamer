@@ -1,60 +1,71 @@
-//! `cargo xtask web bundle [--release]`: the desktop with web panes, as a
-//! development bundle (`<target>/web-bundle/Dreamer.app`): the app built
-//! with its `web` feature, the CEF framework, and the five helper apps CEF
-//! starts its renderer, GPU, and utility processes from. macOS only.
-//! `cargo xtask web smoke` builds it and runs the gate's web pane check
-//! ([`smoke`]) alone.
+//! Dreamer Web, the component that holds Chromium apart from the app, and
+//! the desktop with web panes for development.
 //!
-//! The pinned CEF distribution, cmake, and Ninja come from `cargo xtask
-//! deps web`. The release package does not include web panes yet.
+//! - `cargo xtask web bundle [--release] [--install]` writes, in
+//!   `<target>/web-bundle`, `Dreamer.app` (the app built with its `web`
+//!   feature, no Chromium inside) and `dreamer-web/`, the component built
+//!   beside it ([`build_component`]): CEF's framework and the five helper
+//!   apps CEF starts its renderer, GPU, and utility processes from, each
+//!   signed, with the manifest naming this Dreamer and CEF release.
+//!   `--install` then installs that component with the bundle's own `dream
+//!   web install`, into `web/` of your Dreamer data directory.
+//! - `cargo xtask web smoke` builds both and runs the gate's web pane
+//!   check ([`smoke`]) alone, with the component installed in a private
+//!   data directory.
+//!
+//! `cargo xtask package` makes the same two things for a release, as two
+//! artifacts: the base zip and [`zip_component`]'s. The pinned CEF
+//! distribution, cmake, and Ninja come from `cargo xtask deps web`. macOS
+//! only so far; the Linux component (#330's `dreamer-web` archive) is not
+//! built yet.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use web_component::{FRAMEWORK, HELPER_EXE, HELPERS, MANIFEST, State, TOP};
 
 use crate::deps::WebDeps;
 use crate::package::Profile;
 use crate::util::{cargo_target, repo_root};
 
-/// The framework's directory name, in the distribution and the bundle.
-const FRAMEWORK: &str = "Chromium Embedded Framework.framework";
-
-/// The helper apps CEF looks for beside the framework, named after the
-/// main executable (`dreamer`): `dreamer Helper.app`, `dreamer Helper
-/// (GPU).app`, and so on, each with the helper executable.
-const HELPERS: [(&str, &str); 5] = [
-    ("", "helper"),
-    (" (GPU)", "helper.gpu"),
-    (" (Renderer)", "helper.renderer"),
-    (" (Plugin)", "helper.plugin"),
-    (" (Alerts)", "helper.alerts"),
-];
-
-const HELPER_EXE: &str = "dreamer-web-helper";
+/// The platform the component is built for.
+const TARGET: &str = "aarch64-apple-darwin";
 
 pub fn run(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: cargo xtask web bundle [--release] [--install] | web smoke";
     let mut profile = Profile::Debug;
+    let mut install = false;
     let smoke_too = match args {
         [cmd, rest @ ..] if cmd == "bundle" => {
             for a in rest {
                 match a.as_str() {
                     "--release" => profile = Profile::Release,
-                    other => return Err(format!("unknown web bundle argument `{other}`")),
+                    "--install" => install = true,
+                    other => return Err(format!("unknown web bundle argument `{other}`\n{USAGE}")),
                 }
             }
             false
         }
         [cmd] if cmd == "smoke" => true,
-        _ => return Err("usage: cargo xtask web bundle [--release] | web smoke".into()),
+        _ => return Err(USAGE.into()),
     };
     let web = provisioned()?
         .ok_or("the web engine's dependencies are not provisioned: run `cargo xtask deps web`")?;
     let root = repo_root();
-    let app = bundle(&root, profile, &web)?;
+    let (app, component) = bundle(&root, profile, &web)?;
     println!("web: {}", app.display());
+    println!("web: {}", component.display());
+    if install {
+        print!(
+            "{}",
+            dream(&app, &["web", "install"], Some(&component), &[])?
+        );
+    }
     if smoke_too {
         // The gate's web pane check by itself, its captures in
         // `<target>/web-smoke`.
-        match smoke(&app, &cargo_target(&root).join("web-smoke"))? {
+        match smoke(&app, &component, &cargo_target(&root).join("web-smoke"))? {
             Smoke::Passed(lines) => println!("{}\nweb: smoke passed", lines.join("\n")),
             Smoke::NotRun(lines) => println!("{lines}\nweb: smoke not run: nothing was drawn"),
         }
@@ -71,19 +82,26 @@ pub fn provisioned() -> Result<Option<WebDeps>, String> {
     crate::deps::web_deps(&crate::manifest::Manifest::load()?)
 }
 
-/// Build and verify the development bundle in `root`'s target directory.
-pub fn bundle(root: &Path, profile: Profile, web: &WebDeps) -> Result<PathBuf, String> {
+/// Build and verify the development bundle, and the component beside it,
+/// in `root`'s target directory.
+pub fn bundle(root: &Path, profile: Profile, web: &WebDeps) -> Result<(PathBuf, PathBuf), String> {
     let out = cargo_target(root).join("web-bundle");
     let app = crate::package::build_bundle_with(root, profile, &out, Some(web))?;
     crate::package::verify_bundle(&app)?;
-    verify_engine(&app)?;
-    Ok(app)
+    let component = build_component(
+        &out,
+        &crate::package::bin_dir(root, profile),
+        web,
+        &crate::package::version(root)?,
+    )?;
+    verify_component(&component)?;
+    Ok((app, component))
 }
 
-fn run_checked(cmd: &mut Command, what: &str) -> Result<(), String> {
+fn run_checked(cmd: &mut Command, what: &str) -> Result<String, String> {
     let out = cmd.output().map_err(|e| format!("{what}: {e}"))?;
     if out.status.success() {
-        Ok(())
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         Err(format!(
             "{what} failed: {}",
@@ -99,17 +117,34 @@ fn sign(path: &Path) -> Result<(), String> {
             .arg(path),
         "codesign",
     )
+    .map(drop)
 }
 
-/// Put the framework and the helper apps into `app` (before the app
-/// itself is signed), each signed ad hoc.
-pub fn add_engine(app: &Path, bin_dir: &Path, web: &WebDeps, version: &str) -> Result<(), String> {
-    let frameworks = app.join("Contents").join("Frameworks");
-    std::fs::create_dir_all(&frameworks).map_err(|e| e.to_string())?;
-    let framework = frameworks.join(FRAMEWORK);
-    if framework.exists() {
-        std::fs::remove_dir_all(&framework).map_err(|e| e.to_string())?;
+/// Build the component as `out/dreamer-web`: the framework from the CEF
+/// distribution, the helper apps around the helper executable in
+/// `bin_dir`, each signed ad hoc, CEF's license and Chromium's notices,
+/// and the manifest naming Dreamer `version` and the CEF release.
+pub fn build_component(
+    out: &Path,
+    bin_dir: &Path,
+    web: &WebDeps,
+    version: &str,
+) -> Result<PathBuf, String> {
+    // The release the component claims is the one the build used.
+    let baseline = crate::manifest::Manifest::load()?;
+    let pinned = baseline.get("cef", "version")?;
+    if !web_component::CEF_VERSION.starts_with(&format!("{pinned}+")) {
+        return Err(format!(
+            "web_component::CEF_VERSION is {}, but deps/baseline.toml pins CEF {pinned}",
+            web_component::CEF_VERSION
+        ));
     }
+    let dir = out.join(TOP);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let framework = dir.join(FRAMEWORK);
     // ditto keeps the framework's links and permissions.
     run_checked(
         Command::new("ditto").arg(web.framework()).arg(&framework),
@@ -118,8 +153,9 @@ pub fn add_engine(app: &Path, bin_dir: &Path, web: &WebDeps, version: &str) -> R
     sign(&framework)?;
     let helper = bin_dir.join(HELPER_EXE);
     for (suffix, id) in HELPERS {
-        let name = format!("dreamer Helper{suffix}");
-        let contents = frameworks.join(format!("{name}.app")).join("Contents");
+        let name = web_component::helper_name(suffix);
+        let app = dir.join(web_component::helper_app(suffix));
+        let contents = app.join("Contents");
         let macos = contents.join("MacOS");
         std::fs::create_dir_all(&macos).map_err(|e| e.to_string())?;
         std::fs::copy(&helper, macos.join(&name)).map_err(|e| format!("copy {HELPER_EXE}: {e}"))?;
@@ -144,32 +180,53 @@ pub fn add_engine(app: &Path, bin_dir: &Path, web: &WebDeps, version: &str) -> R
 "#
         );
         std::fs::write(contents.join("Info.plist"), plist).map_err(|e| e.to_string())?;
-        sign(&contents.join("MacOS").join(&name))?;
-        sign(&frameworks.join(format!("{name}.app")))?;
+        sign(&macos.join(&name))?;
+        sign(&app)?;
     }
-    Ok(())
+    for notice in ["LICENSE.txt", "CREDITS.html"] {
+        std::fs::copy(web.cef_dir.join(notice), dir.join(notice))
+            .map_err(|e| format!("copy {notice}: {e}"))?;
+    }
+    let manifest = web_component::Manifest {
+        version: version.to_owned(),
+        cef: web_component::CEF_VERSION.to_owned(),
+        target: TARGET.to_owned(),
+    };
+    std::fs::write(dir.join(MANIFEST), manifest.to_json()).map_err(|e| e.to_string())?;
+    Ok(dir)
 }
 
-/// The framework and every helper app are in place, and a helper loads the
+/// The component is this build's and complete, the framework and every
+/// helper app pass a strict signature check, and a helper loads the
 /// framework from where it sits. Opens no window.
-pub fn verify_engine(app: &Path) -> Result<(), String> {
-    let frameworks = app.join("Contents/Frameworks");
-    let binary = frameworks
-        .join(FRAMEWORK)
-        .join("Chromium Embedded Framework");
-    if !binary.is_file() {
-        return Err(format!("{} is missing", binary.display()));
-    }
-    for (suffix, _) in HELPERS {
-        let name = format!("dreamer Helper{suffix}");
-        let exe = frameworks.join(format!("{name}.app/Contents/MacOS/{name}"));
-        if !exe.is_file() {
-            return Err(format!("{} is missing", exe.display()));
+pub fn verify_component(dir: &Path) -> Result<(), String> {
+    match web_component::check(dir) {
+        State::Ready(_) => {}
+        other => {
+            return Err(format!(
+                "{}: {}",
+                dir.display(),
+                other.problem(dir).unwrap_or_default()
+            ));
         }
+    }
+    let mut signed = vec![dir.join(FRAMEWORK)];
+    signed.extend(
+        HELPERS
+            .iter()
+            .map(|(suffix, _)| dir.join(web_component::helper_app(suffix))),
+    );
+    for path in &signed {
+        run_checked(
+            Command::new("codesign")
+                .args(["--verify", "--strict", "--deep", "--verbose=1"])
+                .arg(path),
+            "codesign --verify",
+        )?;
     }
     // Without a process type CEF's entry point returns at once (-1): this
     // checks only that the helper finds and loads the framework.
-    let exe = frameworks.join("dreamer Helper.app/Contents/MacOS/dreamer Helper");
+    let exe = web_component::helper_executable(dir, "");
     let out = Command::new(&exe)
         .output()
         .map_err(|e| format!("{}: {e}", exe.display()))?;
@@ -181,9 +238,20 @@ pub fn verify_engine(app: &Path) -> Result<(), String> {
             stderr.trim()
         ));
     }
-    let size = Command::new("du")
+    println!(
+        "web: {}: CEF framework and {} helper apps, each signed; a helper loads the framework; {}",
+        dir.display(),
+        HELPERS.len(),
+        du(dir)
+    );
+    Ok(())
+}
+
+/// `du -sh`'s size of `path`.
+pub fn du(path: &Path) -> String {
+    Command::new("du")
         .args(["-sh"])
-        .arg(app)
+        .arg(path)
         .output()
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
@@ -192,12 +260,112 @@ pub fn verify_engine(app: &Path) -> Result<(), String> {
                 .unwrap_or("")
                 .to_owned()
         })
-        .unwrap_or_default();
-    println!(
-        "web: CEF framework and {} helper apps in place, a helper loads the framework; bundle {size}",
-        HELPERS.len()
+        .unwrap_or_default()
+}
+
+/// Zip the component as the release's
+/// `dreamer-web-<version>-aarch64-apple-darwin.zip` in `out`, with its
+/// `.sha256` and its record (`.json`, as the base zip has).
+pub fn zip_component(dir: &Path, out: &Path, version: &str) -> Result<PathBuf, String> {
+    let name = web_component::archive_name(version, TARGET);
+    let zip = out.join(&name);
+    let _ = std::fs::remove_file(&zip);
+    run_checked(
+        Command::new("ditto")
+            .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
+            .arg(dir)
+            .arg(&zip),
+        "ditto",
+    )?;
+    let sha = crate::util::sha256_file(&zip)?;
+    std::fs::write(
+        out.join(format!("{name}.sha256")),
+        format!("{sha}  {name}\n"),
+    )
+    .map_err(|e| e.to_string())?;
+    let (kind, team, stapled) =
+        crate::package::signing_state(&web_component::helper_executable(dir, ""));
+    let mut contents = vec![FRAMEWORK.to_owned()];
+    contents.extend(HELPERS.iter().map(|(s, _)| web_component::helper_app(s)));
+    let record = serde_json::json!({
+        "artifact": name,
+        "bytes": std::fs::metadata(&zip).map_or(0, |m| m.len()),
+        "sha256": sha,
+        "target": TARGET,
+        "version": version,
+        "commit": crate::package::commit(&repo_root()),
+        "component": TOP,
+        "cef": web_component::CEF_VERSION,
+        "contents": contents,
+        "signing": { "kind": kind, "team": team, "notarized": stapled },
+    });
+    std::fs::write(
+        out.join(format!("{name}.json")),
+        serde_json::to_string_pretty(&record).map_err(|e| e.to_string())? + "\n",
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(zip)
+}
+
+/// Run the bundle's `dream` with `args` (then `extra`, a path) and `env`;
+/// its output, or why it failed.
+pub fn dream(
+    app: &Path,
+    args: &[&str],
+    extra: Option<&Path>,
+    env: &[(&str, OsString)],
+) -> Result<String, String> {
+    let mut cmd = Command::new(app.join("Contents/MacOS/dream"));
+    cmd.args(args);
+    if let Some(p) = extra {
+        cmd.arg(p);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().map_err(|e| format!("dream: {e}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
     );
-    Ok(())
+    if out.status.success() {
+        Ok(text)
+    } else {
+        Err(format!("dream {} failed: {}", args.join(" "), text.trim()))
+    }
+}
+
+/// Adding the component from `from` (an archive or a directory) with the
+/// bundle's `dream`, into the empty data directory `data`: before it, `dream
+/// web status` says it is missing and how to add it; `dream web install`
+/// checks and installs it; then `dream web status` says it is ready.
+/// Opens no window. The lines it printed.
+pub fn check_install(app: &Path, from: &Path, data: &Path) -> Result<Vec<String>, String> {
+    // Not there at all: `dream` makes it (private), as on a new machine.
+    let _ = std::fs::remove_dir_all(data);
+    let env = [("DREAMER_DATA_DIR", data.as_os_str().to_owned())];
+    let mut lines = Vec::new();
+    match dream(app, &["web", "status"], None, &env) {
+        Ok(text) => {
+            return Err(format!(
+                "with no component, `dream web status` said: {text}"
+            ));
+        }
+        Err(e) if e.contains("dream web install") => {
+            lines.push(format!("without it: {}", e.trim()));
+        }
+        Err(e) => return Err(format!("with no component: {e}")),
+    }
+    for line in dream(app, &["web", "install"], Some(from), &env)?.lines() {
+        lines.push(line.to_owned());
+    }
+    lines.push(
+        dream(app, &["web", "status"], None, &env)?
+            .trim()
+            .to_owned(),
+    );
+    Ok(lines)
 }
 
 /// What the web smoke saw, or why it could not judge.
@@ -262,7 +430,11 @@ const BROWSER_CHECKS: usize = 11;
 /// fail in the app itself; each one passed is a line of its output. Last,
 /// the agent's checks: the site got the form with the name it typed, and
 /// its screenshot of the form, and the web app's image, are those pages.
-pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
+///
+/// Chromium comes from `component`, installed first with the bundle's
+/// `dream web install` into the smoke's private data directory, as a user
+/// adds Dreamer Web.
+pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> {
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
     let pid = std::process::id();
     let socket = format!("dreamer-gate-web-{pid}");
@@ -270,6 +442,15 @@ pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(out);
     std::fs::create_dir_all(root.join("config")).map_err(|e| e.to_string())?;
+    if let Err(e) = dream(
+        app,
+        &["web", "install"],
+        Some(component),
+        &[("DREAMER_DATA_DIR", root.join("data").into_os_string())],
+    ) {
+        let _ = std::fs::remove_dir_all(&root);
+        return Err(e);
+    }
     // The drawer Cmd+J shows from inside the page runs a plain shell: the
     // check is about the shortcut, not about any agent.
     std::fs::write(
@@ -296,6 +477,7 @@ pub fn smoke(app: &Path, out: &Path) -> Result<Smoke, String> {
             .env("DREAMER_STATE_DIR", root.join("st"))
             .env("DREAMER_DESKTOP_STATE_DIR", root.join("desktop"))
             .env("DREAMER_CONFIG_DIR", root.join("config"))
+            .env("DREAMER_DATA_DIR", root.join("data"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1");
         c
     };

@@ -1103,12 +1103,16 @@ fn bundle_smoke(dir: &Path) -> Result<Done, String> {
     Ok(Done::Passed)
 }
 
-/// Web panes (macOS), when `cargo xtask deps web` has provisioned the
-/// pinned CEF: the desktop with its `web` feature passes clippy, bundles
-/// with the framework and its helper apps (a helper loads the framework),
-/// and, with a refreshing display, draws a page in a pane and scrolls it,
-/// checked in captures of the window. Without CEF, or without a display
-/// that refreshes, recorded as not run.
+/// Web panes and the Dreamer Web component (macOS), when `cargo xtask deps
+/// web` has provisioned the pinned CEF, so this is the stage a Chromium
+/// update passes: the desktop with its `web` feature passes clippy; it
+/// bundles without Chromium, and the component (the framework and its
+/// helper apps, each signed) is built beside it, and a helper loads the
+/// framework; the bundle's `dream web status` says, with an empty data
+/// directory, how to add the component, and `dream web install` adds it;
+/// and, with a refreshing display, the desktop draws pages with Chromium
+/// from the installed component, checked in captures of the window.
+/// Without CEF, or without a display that refreshes, recorded as not run.
 fn web_panes(dir: &Path) -> Result<Done, String> {
     let Some(web) = crate::web::provisioned()? else {
         println!(
@@ -1126,6 +1130,8 @@ fn web_panes(dir: &Path) -> Result<Done, String> {
             "web-engine",
             "--package",
             "cef-sys",
+            "--package",
+            "web-component",
             "--all-targets",
             "--features",
             "dreamer-app/web",
@@ -1140,11 +1146,17 @@ fn web_panes(dir: &Path) -> Result<Done, String> {
     if !clippy.success() {
         return Err("clippy with the web feature failed".into());
     }
-    let app = crate::web::bundle(dir, crate::package::Profile::Debug, &web)?;
+    let (app, component) = crate::web::bundle(dir, crate::package::Profile::Debug, &web)?;
+    let data = dir.join("target/gate/web-data");
+    let added = crate::web::check_install(&app, &component, &data);
+    let _ = std::fs::remove_dir_all(&data);
+    for line in added? {
+        println!("gate:   {line}");
+    }
     if !require_refreshing_display()? {
         return Ok(Done::NotRun);
     }
-    match crate::web::smoke(&app, &dir.join("target/gate/web"))? {
+    match crate::web::smoke(&app, &component, &dir.join("target/gate/web"))? {
         crate::web::Smoke::Passed(lines) => {
             for line in lines {
                 println!("gate:   {line}");
@@ -1161,18 +1173,24 @@ fn web_panes(dir: &Path) -> Result<Done, String> {
     }
 }
 
-/// Release bundle and zip, unpacked and launched outside the source tree.
+/// The release's two macOS artifacts: the base bundle (no Chromium) and
+/// its zip, unpacked and launched outside the source tree, and the Dreamer
+/// Web zip, added with the unpacked app's `dream web install` into an
+/// empty data directory ([`crate::fresh::mac_check`]).
 fn package_away_from_tree(dir: &Path) -> Result<Done, String> {
-    use crate::package::{Profile, build_bundle, smoke_from_zip, verify_bundle, zip_bundle};
+    use crate::package::{Profile, macos_packages, smoke_from_zip};
     let out = dir.join("target").join("package");
-    let app = build_bundle(dir, Profile::Release, &out)?;
-    verify_bundle(&app)?;
-    let zip = zip_bundle(&app, &out)?;
-    println!("gate:   {}", zip.display());
+    let web = crate::deps::ensure_web(&crate::manifest::Manifest::load()?)?;
+    let made = macos_packages(dir, Profile::Release, &out, &web)?;
+    println!("gate:   {}", made.zip.display());
+    println!("gate:   {}", made.component_zip.display());
+    for line in crate::fresh::mac_check(dir)? {
+        println!("gate:   {line}");
+    }
     if !require_gui()? {
         return Ok(Done::NotRun);
     }
-    let output = smoke_from_zip(&zip)?;
+    let output = smoke_from_zip(&made.zip)?;
     for line in output.lines() {
         println!("gate:   {line}");
     }

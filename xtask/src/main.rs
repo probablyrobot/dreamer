@@ -41,15 +41,18 @@ commands:
   deps prepare|path [--target <triple>]
                                fetch, verify, and build pinned native dependencies
   deps web                     fetch and verify the web engine's (CEF, cmake, Ninja; macOS)
-  web bundle [--release]       the desktop with web panes as a development bundle (macOS)
+  web bundle [--release] [--install]
+                               the desktop with web panes and the Dreamer Web component beside it (macOS)
   headless [--cargo-args]      list the packages of the headless build
   hooks install|status         use the versioned git hooks in .githooks/
   package --platform macos|arch|linux|server|current [--debug] [--source-only] [--nodeps] [--target T]
-                               build a package (macOS: ad hoc signed zip with a signing record)
+                               build a package (macOS: ad hoc signed zips of the app and of Dreamer Web, with signing records)
   package --platform linux --container [--arch arm64|amd64]
                                the Linux archives built in an ubuntu:24.04 container
   package --fresh [--arch arm64|amd64]
                                run the Linux archives on fresh ubuntu:24.04 containers
+  package --fresh --platform macos
+                               add Dreamer Web from its zip with the unpacked app's dream, away from the tree
   icons [--check]              draw (or check) the application icon files
   policy                       check repository rules (workflow runners, pinned actions)
   schemes [--check]            generate the terminal color scheme table from the vendored files
