@@ -324,14 +324,6 @@ pub const SCHEMA: &[Key] = &[
         live: true,
     },
     Key {
-        path: "web.color",
-        kind: "srgb | display",
-        default: "srgb",
-        doc: "The color space web panes are drawn in. srgb matches the rest of the window: wide-gamut colors (Display P3 images, video, CSS color(display-p3 ...)) are clamped to sRGB. display draws pages in the display's own color space, so they keep their saturation on a wide-gamut display. Chromium reads it when it starts (the first web pane), so a change applies after Dreamer restarts.",
-        example: "display",
-        live: false,
-    },
-    Key {
         path: "memory.kosmonaut.mode",
         kind: "embedded",
         default: "embedded",
