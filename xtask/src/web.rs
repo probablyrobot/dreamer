@@ -10,8 +10,8 @@
 //!   `--install` then installs that component with the bundle's own `dream
 //!   web install`, into `web/` of your Dreamer data directory.
 //! - `cargo xtask web smoke` builds both and runs the gate's web pane
-//!   check ([`smoke`]) alone, with the component installed in a private
-//!   data directory.
+//!   check ([`smoke`]) alone, with the component added from a web pane
+//!   into a private data directory.
 //!
 //! `cargo xtask package` makes the same two things for a release, as two
 //! artifacts: the base zip and [`zip_component`]'s. The pinned CEF
@@ -410,6 +410,13 @@ const APP_CHECKS: usize = 7;
 /// link, and `web.screenshot` writes the page.
 const INSPECT_CHECKS: usize = 5;
 
+/// The install checks the web smoke reports passing (`smoke: web
+/// install:`), in its first run, with no Dreamer Web: the tab strip offers
+/// it, a web pane shows "Add Dreamer Web", its button adds it from
+/// `DREAMER_WEB_URL`, the offer is then gone, and the page loads and draws
+/// in that pane with no restart.
+const INSTALL_CHECKS: usize = 5;
+
 /// The name the smoke's agent sends the form.
 const SENT_NAME: &str = "Ada Lovelace";
 
@@ -431,31 +438,35 @@ const BROWSER_CHECKS: usize = 11;
 /// the agent's checks: the site got the form with the name it typed, and
 /// its screenshot of the form, and the web app's image, are those pages.
 ///
-/// Chromium comes from `component`, installed first with the bundle's
-/// `dream web install` into the smoke's private data directory, as a user
-/// adds Dreamer Web.
+/// Chromium comes from `component`, added first as a user adds Dreamer
+/// Web: the smoke's private data directory starts empty, and its first run
+/// (`--smoke-web-install`) presses a web pane's "Add Dreamer Web", which
+/// downloads the zip made here from `component` (`DREAMER_WEB_URL`, a
+/// `file://` directory). The other runs use what it installed.
 pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> {
+    use std::os::unix::fs::PermissionsExt as _;
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
     let pid = std::process::id();
     let socket = format!("dreamer-gate-web-{pid}");
     let root = PathBuf::from(format!("/tmp/drm-gate-web-{pid}"));
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(out);
-    std::fs::create_dir_all(root.join("config")).map_err(|e| e.to_string())?;
-    if let Err(e) = dream(
-        app,
-        &["web", "install"],
-        Some(component),
-        &[("DREAMER_DATA_DIR", root.join("data").into_os_string())],
-    ) {
+    let zips = root.join("zip");
+    let made = std::fs::create_dir_all(root.join("config"))
+        .and_then(|()| std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)))
+        .and_then(|()| std::fs::create_dir_all(&zips))
+        .map_err(|e| format!("{}: {e}", root.display()))
+        .and_then(|()| zip_component(component, &zips, web_component::VERSION));
+    if let Err(e) = made {
         let _ = std::fs::remove_dir_all(&root);
         return Err(e);
     }
     // The drawer Cmd+J shows from inside the page runs a plain shell: the
-    // check is about the shortcut, not about any agent.
+    // check is about the shortcut, not about any agent. Dreamer Web is
+    // offered, as by default.
     std::fs::write(
         root.join("config/dreamer.yaml"),
-        "agents:\n  pi:\n    command: [env, 'PS1=$ ', /bin/sh]\n",
+        "agents:\n  pi:\n    command: [env, 'PS1=$ ', /bin/sh]\nweb:\n  component: ask\n",
     )
     .map_err(|e| e.to_string())?;
     let started = Command::new(&tmux)
@@ -481,18 +492,24 @@ pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> 
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1");
         c
     };
-    // The browser after a restart: a new desktop process on the same
-    // profile, once the first passed.
-    let result = match dreamer(&["--smoke-web".as_ref(), out.as_os_str()]).output() {
-        Ok(first) if first.status.success() => dreamer(&["--smoke-web-restart".as_ref()])
-            .output()
-            .map(|again| {
-                let mut stdout = first.stdout;
-                stdout.extend(&again.stdout);
-                std::process::Output { stdout, ..again }
-            }),
+    // Dreamer Web added from a web pane; then the pages; then the browser
+    // after a restart: a new desktop process on the same profile. Each run
+    // once the one before it passed.
+    let then = |before: std::io::Result<std::process::Output>, mut next: Command| match before {
+        Ok(first) if first.status.success() => next.output().map(|again| {
+            let mut stdout = first.stdout;
+            stdout.extend(&again.stdout);
+            std::process::Output { stdout, ..again }
+        }),
         other => other,
     };
+    let mut adding = dreamer(&["--smoke-web-install".as_ref()]);
+    adding.env(web_component::URL_ENV, format!("file://{}", zips.display()));
+    let result = then(
+        adding.output(),
+        dreamer(&["--smoke-web".as_ref(), out.as_os_str()]),
+    );
+    let result = then(result, dreamer(&["--smoke-web-restart".as_ref()]));
     if let Some(pid) = std::fs::read_to_string(root.join("rt/dreamerd.lock"))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
@@ -572,6 +589,16 @@ pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> 
     }
     if let Some(missing) = CAPTURES.iter().find(|c| !checked.contains(**c)) {
         return Err(format!("the web smoke checked nothing in {missing}"));
+    }
+    let installs = lines
+        .iter()
+        .filter(|l| l.starts_with("smoke: web install:"))
+        .count();
+    if installs < INSTALL_CHECKS {
+        return Err(format!(
+            "the web smoke passed {installs} of {INSTALL_CHECKS} install checks\n{}",
+            lines.join("\n")
+        ));
     }
     let inputs = lines
         .iter()

@@ -146,8 +146,11 @@ impl TopologyFeed {
     }
 
     /// Open a web page in a new placeholder pane (`web.open`). The pane
-    /// shows up as a newer topology.
-    pub fn web_open(&self, request: api::WebOpen) {
+    /// shows up as a newer topology. The call returns as soon as the pane
+    /// exists (`wait_ms` 0): the view's own pane offers Dreamer Web if it
+    /// is missing, and this thread never waits for it to be added.
+    pub fn web_open(&self, mut request: api::WebOpen) {
+        request.wait_ms = Some(0);
         let _ = self.actions.send(Command::WebOpen(request));
     }
 

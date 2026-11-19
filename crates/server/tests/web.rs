@@ -661,3 +661,143 @@ async fn pages_are_read_and_driven_only_under_web_inspect_and_in_a_desktop() {
     .await;
     assert_eq!(e.code, api::code::INVALID_PARAMS);
 }
+
+/// Report Dreamer Web's status on `desktop`'s connection, as a desktop does.
+async fn report(desktop: &Client, status: api::WebComponentStatus, detail: Option<&str>) {
+    desktop
+        .call(Request::WebComponent(api::WebComponentState {
+            status: status as i32,
+            detail: detail.map(str::to_owned),
+        }))
+        .await
+        .expect("web.component");
+}
+
+async fn pane_ids(c: &Client) -> Vec<u32> {
+    topology(c).await.panes.iter().map(|p| p.id).collect()
+}
+
+/// The web pane that appeared beside `before`.
+async fn new_pane(c: &Client, before: &[u32]) -> u32 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(p) = pane_ids(c).await.into_iter().find(|p| !before.contains(p)) {
+            return p;
+        }
+        assert!(Instant::now() < deadline, "the web pane never appeared");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn web_open_waits_for_dreamer_web_and_fails_cleanly_without_it() {
+    use api::WebComponentStatus as S;
+    let s = Setup::new();
+    let c = s.client().await;
+    let desktop = s.client().await;
+    let session = topology(&c).await.sessions[0].id;
+    let req = |wait_ms: Option<u32>| api::WebOpen {
+        url: PAGE.into(),
+        session: Some(session),
+        wait_ms,
+        ..api::WebOpen::default()
+    };
+
+    // Missing in the desktop, which offers it: the call waits, and returns
+    // the pane once the desktop has added it.
+    report(&desktop, S::Missing, None).await;
+    let before = pane_ids(&c).await;
+    let waiting = {
+        let c = s.client().await;
+        let r = req(None);
+        tokio::spawn(async move { open(&c, r).await })
+    };
+    let pane = new_pane(&c, &before).await;
+    report(&desktop, S::Adding, None).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !waiting.is_finished(),
+        "web.open returned while it was being added"
+    );
+    report(&desktop, S::Ready, None).await;
+    let opened = tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("web.open returned once it was added")
+        .expect("join")
+        .expect("web.open");
+    assert_eq!(opened, pane);
+
+    // A wait of 0 (the desktop's own) returns at once, as with no desktop.
+    report(&desktop, S::Missing, None).await;
+    let now = tokio::time::timeout(Duration::from_secs(10), open(&c, req(Some(0))))
+        .await
+        .expect("at once")
+        .expect("web.open");
+    assert!(pane_ids(&c).await.contains(&now));
+
+    // The install failed: a typed error that says how to add it, and the
+    // pane it made is closed.
+    let before = pane_ids(&c).await;
+    report(&desktop, S::Failed, Some("the download failed")).await;
+    let e = open(&c, req(None)).await.expect_err("failed install");
+    assert_eq!(e.code, api::code::PRECONDITION, "{}", e.message);
+    assert!(
+        e.message
+            .starts_with("Dreamer Web is not installed: the download failed")
+            && e.message.contains("dream web install"),
+        "{}",
+        e.message
+    );
+    assert_eq!(pane_ids(&c).await, before);
+
+    // Turned off: refused the same way.
+    report(
+        &desktop,
+        S::Off,
+        Some("web.component is never in dreamer.yaml"),
+    )
+    .await;
+    let e = open(&c, req(None)).await.expect_err("turned off");
+    assert!(e.message.contains("never"), "{}", e.message);
+    assert_eq!(pane_ids(&c).await, before);
+
+    // The user declines by closing the pane while it waits.
+    report(&desktop, S::Missing, None).await;
+    let waiting = {
+        let c = s.client().await;
+        let r = req(None);
+        tokio::spawn(async move { open(&c, r).await })
+    };
+    let pane = new_pane(&c, &before).await;
+    c.call(Request::ActionsSubmit(api::SubmitAction {
+        action: Some(api::Action {
+            kind: Some(api::action::Kind::KillPane(api::KillPane { pane })),
+        }),
+        ..api::SubmitAction::default()
+    }))
+    .await
+    .expect("kill the pane");
+    let e = tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("web.open returned once the pane closed")
+        .expect("join")
+        .expect_err("declined");
+    assert!(e.message.contains("closed before"), "{}", e.message);
+
+    // A wait that runs out fails too, and closes its pane.
+    let e = open(&c, req(Some(300))).await.expect_err("ran out");
+    assert!(e.message.contains("not added within"), "{}", e.message);
+    assert_eq!(pane_ids(&c).await, before);
+
+    // The desktop's connection closes: nobody says it is missing, and the
+    // page opens as it always did.
+    drop(desktop);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), open(&c, req(Some(2_000)))).await {
+            Ok(Ok(_)) => break,
+            _ if Instant::now() < deadline => {}
+            other => panic!("web.open with no desktop: {other:?}"),
+        }
+    }
+}

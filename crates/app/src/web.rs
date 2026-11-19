@@ -432,6 +432,12 @@ impl WebPane {
         }
     }
 
+    /// The pane waits for Dreamer Web to be added, offering it.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    pub(crate) fn wants_component(&self) -> bool {
+        self.wants_component
+    }
+
     /// Why the page is not drawn, if it cannot be now: a problem, or
     /// Dreamer Web not added yet (for agents and smoke runs, which cannot
     /// click the pane's button).

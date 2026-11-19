@@ -123,6 +123,8 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
     if let Ok(mut l) = LIVE.write() {
         *l = Some(live);
     }
+    // `web.component` may have changed what the daemon is told.
+    crate::webcomp::publish();
     if redecorate {
         for w in cx.windows() {
             if let Some(w) = w.downcast::<crate::workspace::Workspace>() {

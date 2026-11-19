@@ -189,6 +189,14 @@
       "exited",
       "closed",
       "timeout"
+    ],
+    "WebComponentStatus": [
+      "unspecified",
+      "ready",
+      "missing",
+      "adding",
+      "failed",
+      "off"
     ]
   },
   "messages": {
@@ -4827,6 +4835,18 @@
         }
       }
     },
+    "WebComponentState": {
+      "fields": {
+        "detail": {
+          "repeated": false,
+          "type": "string"
+        },
+        "status": {
+          "repeated": false,
+          "type": "WebComponentStatus"
+        }
+      }
+    },
     "WebNavigate": {
       "fields": {
         "endpoint": {
@@ -4884,6 +4904,10 @@
         "url": {
           "repeated": false,
           "type": "string"
+        },
+        "wait_ms": {
+          "repeated": false,
+          "type": "u32"
         }
       }
     },
@@ -5170,6 +5194,7 @@
     "tmux.topology": "TopologyParams",
     "tmux.watch": "TopologyParams",
     "web.click": "WebClick",
+    "web.component": "WebComponentState",
     "web.navigate": "WebNavigate",
     "web.open": "WebOpen",
     "web.read": "WebRead",
@@ -5434,5 +5459,5 @@
       }
     }
   },
-  "version": "1.60"
+  "version": "1.61"
 }

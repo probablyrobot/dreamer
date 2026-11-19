@@ -22,6 +22,11 @@
 //! ([`web_component::install`]), on a thread of its own: it downloads with
 //! `curl`, checks, and swaps the component in, keeping what was there on
 //! any failure.
+//!
+//! The daemon hears the status whenever it changes ([`report_to`],
+//! `web.component`), so an agent's `web.open` waits while it is being
+//! added or offered here, and fails at once when it is turned off or its
+//! install failed.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -52,11 +57,24 @@ struct Shared {
     status: Status,
     /// The first-start offer shows in the tab strip.
     offer: bool,
+    /// The status was looked at (until then it is only assumed missing,
+    /// and not reported).
+    looked: bool,
+    /// Where the status is reported to the daemon, and what was sent last.
+    to: Option<async_channel::Sender<api::WebComponentState>>,
+    sent: Option<api::WebComponentState>,
+    /// Copies already on the system are not used (a smoke run, which must
+    /// add the component itself and never link the user's own).
+    no_system_copies: bool,
 }
 
 static STATE: Mutex<Shared> = Mutex::new(Shared {
     status: Status::Missing(None),
     offer: false,
+    looked: false,
+    to: None,
+    sent: None,
+    no_system_copies: false,
 });
 
 fn with<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
@@ -82,6 +100,73 @@ pub(crate) fn status() -> Status {
     with(|s| s.status.clone())
 }
 
+/// What the daemon is told of the status, once it was looked at.
+fn report(s: &Shared, mode: WebComponent) -> Option<api::WebComponentState> {
+    use api::WebComponentStatus as W;
+    if !can_add() || !s.looked {
+        return None;
+    }
+    let (status, detail) = match &s.status {
+        Status::Ready => (W::Ready, None),
+        Status::Adding(_) => (W::Adding, None),
+        Status::Failed(why) => (W::Failed, Some(why.clone())),
+        Status::Missing(_) if mode == WebComponent::Never => (
+            W::Off,
+            Some(
+                "it is turned off in the desktop (web.component: never in dreamer.yaml)".to_owned(),
+            ),
+        ),
+        Status::Missing(why) => (W::Missing, why.clone()),
+    };
+    Some(api::WebComponentState {
+        status: status as i32,
+        detail,
+    })
+}
+
+/// Tell the daemon the status, if it changed since it was last told.
+pub(crate) fn publish() {
+    let mode = mode();
+    with(|s| {
+        let Some(now) = report(s, mode) else {
+            return;
+        };
+        if s.sent.as_ref() == Some(&now) {
+            return;
+        }
+        if let Some(to) = &s.to
+            && to.try_send(now.clone()).is_ok()
+        {
+            s.sent = Some(now);
+        }
+    });
+}
+
+/// Report the status to the daemon through `to` from now on (the capture
+/// connection, which reports it again whenever it connects).
+pub(crate) fn report_to(to: async_channel::Sender<api::WebComponentState>) {
+    with(|s| {
+        s.to = Some(to);
+        s.sent = None;
+    });
+    publish();
+}
+
+/// A smoke run adds the component itself: copies already on the system
+/// (the user's own) are neither used nor linked.
+pub(crate) fn without_system_copies() {
+    with(|s| s.no_system_copies = true);
+}
+
+/// This build's installer, without the system's copies in a smoke run.
+fn installer(no_system_copies: bool) -> Result<Installer, String> {
+    let mut i = Installer::for_this_build()?;
+    if no_system_copies {
+        i.system.clear();
+    }
+    Ok(i)
+}
+
 /// What is installed now: a manifest read and a few files looked at.
 fn look() -> Status {
     let dir = web_component::installed_dir();
@@ -99,13 +184,16 @@ fn look() -> Status {
 #[cfg_attr(not(feature = "web"), allow(dead_code))]
 pub(crate) fn look_now() -> bool {
     let now = look();
-    with(|s| {
+    let ready = with(|s| {
         match (&s.status, &now) {
             (Status::Adding(_), _) | (Status::Failed(_), Status::Missing(_)) => {}
             _ => s.status = now,
         }
+        s.looked = true;
         s.status == Status::Ready
-    })
+    });
+    publish();
+    ready
 }
 
 /// What an install thread reports.
@@ -124,21 +212,23 @@ pub(crate) fn add(cx: &mut App) {
     }
     let start = with(|s| {
         if matches!(s.status, Status::Adding(_)) {
-            return false;
+            return None;
         }
         s.status = Status::Adding(Step::Looking);
-        true
+        s.looked = true;
+        Some(s.no_system_copies)
     });
-    if !start {
+    let Some(no_system_copies) = start else {
         return;
-    }
+    };
+    publish();
     cx.refresh_windows();
     let setting = crate::live::with(|l| l.web.url.clone()).flatten();
     let (tx, rx) = async_channel::unbounded::<Report>();
     let thread = std::thread::Builder::new()
         .name("dreamer-web-install".into())
         .spawn(move || {
-            let result = Installer::for_this_build().and_then(|i| {
+            let result = installer(no_system_copies).and_then(|i| {
                 let url = web_component::download_url(setting.as_deref(), &i.want.target);
                 i.install(&Source::Find(url), &mut |step| {
                     let _ = tx.try_send(Report::Step(step));
@@ -148,6 +238,7 @@ pub(crate) fn add(cx: &mut App) {
         });
     if let Err(e) = thread {
         with(|s| s.status = Status::Failed(format!("cannot start the install: {e}")));
+        publish();
         return;
     }
     cx.spawn(async move |cx| {
@@ -162,6 +253,7 @@ pub(crate) fn add(cx: &mut App) {
                     }
                     Report::Done(Err(e)) => s.status = Status::Failed(e),
                 });
+                publish();
                 // Web panes waiting for it load their pages as they repaint.
                 cx.refresh_windows();
             });
@@ -197,19 +289,22 @@ fn answer(cx: &mut App, answer: &'static str) {
 
 /// At the desktop's start: look for the component off the UI thread; when
 /// it is missing, use a copy on the system in place, else (per
-/// `web.component`) add it or offer it once.
+/// `web.component`) add it or offer it once. With `never` it only looks,
+/// for the daemon to hear that it is not there.
 pub(crate) fn startup(cx: &mut App) {
-    if !can_add() || mode() == WebComponent::Never {
+    if !can_add() {
         return;
     }
+    let no_system_copies = with(|s| s.no_system_copies);
     let (tx, rx) = async_channel::bounded::<(Status, bool)>(1);
     let looked = std::thread::Builder::new()
         .name("dreamer-web-look".into())
         .spawn(move || {
             let mut now = look();
             if now != Status::Ready
+                && mode() != WebComponent::Never
                 && let Ok(Some(_)) =
-                    Installer::for_this_build().and_then(|i| i.use_system_copy(&mut |_| {}))
+                    installer(no_system_copies).and_then(|i| i.use_system_copy(&mut |_| {}))
             {
                 now = Status::Ready;
             }
@@ -228,7 +323,9 @@ pub(crate) fn startup(cx: &mut App) {
                 if !matches!(s.status, Status::Adding(_)) {
                     s.status = now.clone();
                 }
+                s.looked = true;
             });
+            publish();
             if now != Status::Ready {
                 match mode() {
                     WebComponent::Auto => add(cx),
@@ -266,12 +363,15 @@ fn strip_button(
         .on_click(move |_, _, cx| on(cx))
 }
 
+/// Whether the first-start offer stands, and the status it shows.
+pub(crate) fn offered() -> Option<Status> {
+    let (shown, status) = with(|s| (s.offer, s.status.clone()));
+    (shown && mode() == WebComponent::Ask && status != Status::Ready).then_some(status)
+}
+
 /// The first-start offer, for the tab strip, while it stands.
 pub(crate) fn offer(t: &Theme) -> Option<gpui::Div> {
-    let (shown, status) = with(|s| (s.offer, s.status.clone()));
-    if !shown || mode() != WebComponent::Ask || status == Status::Ready {
-        return None;
-    }
+    let status = offered()?;
     let row = div().flex().items_center().gap_1().px_2();
     Some(match status {
         Status::Adding(step) => row.text_color(c(t.muted)).child(step.to_string()),
@@ -301,6 +401,42 @@ pub(crate) fn offer(t: &Theme) -> Option<gpui::Div> {
     })
 }
 
+/// What a web pane waiting for the component shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InPane {
+    /// Nothing: it is there, or this build cannot add it.
+    Nothing,
+    /// Why it cannot draw the page: the component is turned off.
+    Off,
+    /// Why it is missing, and the button that adds it.
+    Add(String),
+    /// The install's progress.
+    Adding(Step),
+    /// Why the install failed, and the button that tries again.
+    Failed(String),
+}
+
+/// What a web pane waiting for the component shows now.
+pub(crate) fn in_pane_state() -> InPane {
+    if !can_add() {
+        return InPane::Nothing;
+    }
+    match status() {
+        Status::Ready => InPane::Nothing,
+        Status::Missing(_) if mode() == WebComponent::Never => InPane::Off,
+        Status::Missing(why) => InPane::Add(why.unwrap_or_else(|| {
+            "Web pages need Dreamer Web (Chromium), which is added apart from Dreamer.".to_owned()
+        })),
+        Status::Adding(step) => InPane::Adding(step),
+        Status::Failed(why) => InPane::Failed(why),
+    }
+}
+
+/// The in-pane button's click: add the component, or try again.
+pub(crate) fn press_add(cx: &mut App) {
+    add(cx);
+}
+
 /// What a web pane shows instead of its page while the component is not
 /// there: why, and the button to add it, the progress, or the error and a
 /// retry.
@@ -319,28 +455,20 @@ pub(crate) fn in_pane(t: &Theme) -> gpui::Div {
             .hover(|s| s.border_color(c(t.focus)))
             .cursor_pointer()
             .child(label)
-            .on_click(|_, _, cx| add(cx))
+            .on_click(|_, _, cx| press_add(cx))
     };
     let col = div().flex().flex_col().items_start().gap_2().pt_1();
-    if !can_add() {
-        return col;
-    }
     let add_label = format!("Add Dreamer Web ({})", size_label());
-    match status() {
-        Status::Ready => col,
-        Status::Missing(_) if mode() == WebComponent::Never => {
-            col.child(div().text_color(c(t.muted)).child(
-                "Web pages need Dreamer Web, which is turned off here (web.component: never in \
-                 dreamer.yaml). \"Add Dreamer Web\" in the palette adds it anyway.",
-            ))
-        }
-        Status::Missing(why) => col
-            .child(div().text_color(c(t.muted)).child(why.unwrap_or_else(|| {
-                "Web pages need Dreamer Web (Chromium), which is added apart from Dreamer."
-                    .to_owned()
-            })))
+    match in_pane_state() {
+        InPane::Nothing => col,
+        InPane::Off => col.child(div().text_color(c(t.muted)).child(
+            "Web pages need Dreamer Web, which is turned off here (web.component: never in \
+             dreamer.yaml). \"Add Dreamer Web\" in the palette adds it anyway.",
+        )),
+        InPane::Add(why) => col
+            .child(div().text_color(c(t.muted)).child(why))
             .child(button(add_label)),
-        Status::Adding(step) => {
+        InPane::Adding(step) => {
             let frac = match step {
                 Step::Downloading {
                     got,
@@ -359,7 +487,7 @@ pub(crate) fn in_pane(t: &Theme) -> gpui::Div {
                         .child(div().w(px(BAR * f)).h_full().rounded_sm().bg(c(t.accent)))
                 }))
         }
-        Status::Failed(why) => col
+        InPane::Failed(why) => col
             .child(div().text_color(c(t.danger)).child(why))
             .child(button("Try again".into())),
     }

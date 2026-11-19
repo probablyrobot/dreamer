@@ -774,11 +774,26 @@ and `dream web remove`.
   starting. Install such a zip with `dream web install` and no file
   instead, or remove the mark from the zip yourself (`xattr -d
   com.apple.quarantine FILE`) if you trust where it came from.
-- **Not yet.** An agent's or app's request that opens a web view returns
-  when the pane is made; it does not wait for Dreamer Web to be added.
-  On Linux, web panes and the component are not built yet; the installer
-  already knows where a distribution's copy would be (`/usr/lib/dreamer-web`,
-  or CEF of exactly the pinned release in `/usr/lib/cef` or `/opt/cef`).
+- **An agent's `web.open` waits for it.** Each desktop tells the daemon
+  whether it has Dreamer Web (`web.component`), whenever that changes.
+  While none has it but one is adding it, or offers it (`ask`, the pane
+  showing its button, or `auto`), `web.open` (an agent's, `dream web
+  open`, or `dream browser`) returns only once it is added, so the page
+  can be read and driven as soon as the call returns; it waits at most
+  ten minutes (`wait_ms` sets less). It fails instead, with
+  `-32002` (`PRECONDITION`) and "Dreamer Web is not installed: ..."
+  saying why and how to add it, when Dreamer Web is turned off
+  (`web.component: never`), when its install failed, when the wait runs
+  out, or when you close the pane before adding it (declining it). A
+  `web.open` that fails closes the pane it made, so nothing is left
+  behind for a page that will not be drawn. With no desktop running,
+  `web.open` returns as soon as the pane exists, as the desktop's own
+  web panes do (they show the button instead).
+- **Not yet.** An app's web view does not wait: it shows the button like
+  any web pane. On Linux, web panes and the component are not built yet;
+  the installer already knows where a distribution's copy would be
+  (`/usr/lib/dreamer-web`, or CEF of exactly the pinned release in
+  `/usr/lib/cef` or `/opt/cef`).
 
 ### A build with web panes
 
@@ -979,6 +994,19 @@ framework, and then runs `dreamer --smoke-web DIR` from the bundle
 against an isolated tmux server with private daemon, desktop, and
 configuration directories:
 
+- first, adding Dreamer Web as a person would (`dreamer
+  --smoke-web-install`, its own run of the desktop): the private data
+  directory starts empty, and `DREAMER_WEB_URL` names a `file://`
+  directory holding the zip and `.sha256` made from the bundle's
+  component (copies already on the Mac are not used). The tab strip
+  must show the first-start offer (`web.component: ask`); a web pane
+  must show **Add Dreamer Web**; its button is pressed (the click's own
+  handler, not a synthetic OS event); the install's progress must reach
+  the end with the component ready; the offer must be gone; and the
+  page must then load in that pane and draw frames, with no restart.
+  Each passed check is a `smoke: web install:` line, and the gate wants
+  all five. The rest of the check runs with the component this
+  installed;
 - the smoke opens a `data:` page beside the session's shell pane: one
   screen of `#2a6fdb`, then three screens of `#d9822b`, and a title that
   counts animation frames and reports the scroll position;

@@ -1,3 +1,7 @@
+//! `dreamer --smoke-web-install` first, in a desktop of its own with an
+//! empty data directory: Dreamer Web is added as a person would add it
+//! ([`install`]). Each passed check is a `smoke: web install:` line.
+//!
 //! `dreamer --smoke-web DIR`: a web pane against an isolated tmux whose
 //! session `main` has one shell pane. Opens a page with a known color and
 //! a long body in a pane beside it (`web.open`), waits until Chromium has
@@ -1635,6 +1639,209 @@ async fn browser(any: AnyWindowHandle, ws: &WeakEntity<Workspace>, cx: &mut Asyn
             "a site in the browser has window.dreamer: {plain:?}"
         ));
     }
+}
+
+/// How long adding Dreamer Web from a local zip may take: copying,
+/// unpacking, and checking a few hundred MB.
+const INSTALL: Duration = Duration::from_secs(300);
+
+/// `dreamer --smoke-web-install`, before `--smoke-web`, with an empty
+/// private data directory, `DREAMER_WEB_URL` naming a directory that holds
+/// the component's zip, and `web.component: ask`; copies already on the
+/// system are not used (they would be the user's). The tab strip offers
+/// Dreamer Web at the first start; a web pane opened without it shows
+/// "Add Dreamer Web"; its button, pressed through its own click handler,
+/// adds it with its progress; the offer is then gone; and the page loads
+/// and draws in that pane, with no restart. The pane is closed at the
+/// end, leaving the session as it was for `--smoke-web`, which runs with
+/// the component this added.
+pub(crate) async fn install(any: AnyWindowHandle, ws: WeakEntity<Workspace>, cx: &mut AsyncApp) {
+    use crate::webcomp::{self, InPane, Status};
+    wait_long(
+        any,
+        &ws,
+        cx,
+        "session main with its pane",
+        Duration::from_secs(20),
+        |w, _| !w.pane_ids().is_empty(),
+    )
+    .await;
+    if web_component::check(&web_component::installed_dir()) != web_component::State::Missing {
+        fail(&format!(
+            "Dreamer Web is already in the data directory ({}): this check needs an empty one",
+            web_component::installed_dir().display()
+        ));
+    }
+
+    // The first start offers it in the tab strip.
+    wait_long(
+        any,
+        &ws,
+        cx,
+        "the first-start offer of Dreamer Web (or its status looked at)",
+        Duration::from_secs(20),
+        |_, _| webcomp::offered().is_some() || webcomp::status() == Status::Ready,
+    )
+    .await;
+    match webcomp::offered() {
+        Some(Status::Missing(_)) => println!(
+            "smoke: web install: with no Dreamer Web, the tab strip offers it at the first start (web.component: ask)"
+        ),
+        other => fail(&format!(
+            "the tab strip does not offer Dreamer Web: {other:?}, status {:?}",
+            webcomp::status()
+        )),
+    }
+
+    // A web pane opened without it offers to add it.
+    let before: Vec<u32> = read(any, &ws, cx, |w, _| w.pane_ids()).unwrap_or_default();
+    let _ = cx.update_window(any, |_, _, cx| {
+        let _ = ws.update(cx, |w, _| {
+            w.topology.web_open(api::WebOpen {
+                url: PAGE.to_owned(),
+                pane: before.first().copied(),
+                ..api::WebOpen::default()
+            });
+        });
+    });
+    wait_long(
+        any,
+        &ws,
+        cx,
+        "a web pane waiting for Dreamer Web",
+        Duration::from_secs(30),
+        |w, cx| {
+            w.panes
+                .values()
+                .any(|v| v.web_pane().is_some_and(|p| p.read(cx).wants_component()))
+        },
+    )
+    .await;
+    let pane = read(any, &ws, cx, |w, cx| {
+        w.panes.iter().find_map(|(id, v)| {
+            v.web_pane()
+                .is_some_and(|p| p.read(cx).wants_component())
+                .then_some(*id)
+        })
+    })
+    .flatten()
+    .unwrap_or_else(|| fail("the web pane went away"));
+    match webcomp::in_pane_state() {
+        InPane::Add(why) => println!(
+            "smoke: web install: web pane %{pane} shows Add Dreamer Web instead of its page ({why})"
+        ),
+        other => fail(&format!(
+            "web pane %{pane} does not offer to add Dreamer Web: {other:?}"
+        )),
+    }
+
+    // Its button adds it, with the progress in the pane.
+    cx.update(webcomp::press_add);
+    let deadline = Instant::now() + INSTALL;
+    let mut steps: Vec<String> = Vec::new();
+    loop {
+        let (status, shown) = cx.update(|_| (webcomp::status(), webcomp::in_pane_state()));
+        if let InPane::Adding(step) = shown {
+            let what = match step {
+                web_component::install::Step::Looking => "looking",
+                web_component::install::Step::Downloading { .. } => "downloading",
+                web_component::install::Step::Unpacking => "unpacking",
+                web_component::install::Step::Checking => "checking",
+                web_component::install::Step::Installing => "installing",
+            };
+            if !steps.iter().any(|s| s == what) {
+                steps.push(what.to_owned());
+            }
+        }
+        match status {
+            Status::Ready => break,
+            Status::Failed(why) => fail(&format!("adding Dreamer Web failed: {why}")),
+            _ if Instant::now() > deadline => fail(&format!(
+                "Dreamer Web was not added within {} s (status {status:?})",
+                INSTALL.as_secs()
+            )),
+            _ => {}
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    if !steps.iter().any(|s| s == "downloading") {
+        fail(&format!(
+            "the install showed no download from DREAMER_WEB_URL (steps {steps:?})"
+        ));
+    }
+    let dir = web_component::installed_dir();
+    if !matches!(web_component::check(&dir), web_component::State::Ready(_))
+        || web_component::linked_to(&dir).is_some()
+    {
+        fail(&format!(
+            "{} is not this build's Dreamer Web, installed there",
+            dir.display()
+        ));
+    }
+    println!(
+        "smoke: web install: the pane's button added Dreamer Web ({}) into {}",
+        steps.join(", "),
+        dir.display()
+    );
+    if let Some(left) = webcomp::offered() {
+        fail(&format!(
+            "the first-start offer still shows once it was added: {left:?}"
+        ));
+    }
+    println!("smoke: web install: the first-start offer is gone once it was added");
+
+    // The page then loads in the same pane, with no restart.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match read(any, &ws, cx, web_pane).flatten() {
+            Some(Ok((id, ..))) if id == pane => break,
+            Some(Ok((id, ..))) => fail(&format!("the page loaded in pane %{id}, not %{pane}")),
+            Some(Err(problem)) if Instant::now() > deadline => {
+                fail(&format!("the web pane cannot draw its page: {problem}"))
+            }
+            None if Instant::now() > deadline => {
+                crate::stalled(
+                    any,
+                    cx,
+                    "never saw: the page loaded once Dreamer Web was added",
+                )
+                .await
+            }
+            _ => {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await
+            }
+        }
+    }
+    let Some((frames, _)) =
+        wait_page(any, &ws, cx, "the page once added", TEN, |n, _| n > 30).await
+    else {
+        fail("the page never drew 30 animation frames once Dreamer Web was added");
+    };
+    println!(
+        "smoke: web install: the page then loaded in pane %{pane} and Chromium drew {frames} frames, with no restart"
+    );
+
+    // The session as it was, for `--smoke-web`.
+    let _ = cx.update_window(any, |_, _, cx| {
+        let _ = ws.update(cx, |w, _| {
+            w.topology
+                .act(api::action::Kind::KillPane(api::KillPane { pane }));
+        });
+    });
+    wait_long(
+        any,
+        &ws,
+        cx,
+        "the web pane closed",
+        Duration::from_secs(10),
+        move |w, _| !w.pane_ids().contains(&pane),
+    )
+    .await;
+    cx.update(|cx| cx.quit());
 }
 
 /// `dreamer --smoke-web-restart DIR`, after `--smoke-web` with the same

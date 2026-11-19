@@ -1726,6 +1726,14 @@ impl api::Service for DaemonService {
         crate::web::navigate(&self.0, p).await
     }
 
+    async fn web_component(&self, p: api::WebComponentState) -> Result<api::Empty, RpcError> {
+        let conn = crate::leases::caller().ok_or_else(|| for_a_connection("web.component"))?;
+        self.0
+            .captures
+            .report_web(conn.conn, p)
+            .map(|()| api::Empty {})
+    }
+
     async fn web_state(&self, p: api::WebState) -> Result<api::Empty, RpcError> {
         self.check_endpoint(p.endpoint.as_deref())?;
         crate::web::state(&self.0, p).await

@@ -3023,6 +3023,9 @@ pub(crate) enum SmokeRun {
     Web(PathBuf),
     /// `--smoke-web-restart`: the browser's profile after a restart.
     WebRestart,
+    /// `--smoke-web-install`: with no Dreamer Web, the first-start offer,
+    /// and the component added from a web pane's button.
+    WebInstall,
 }
 
 /// What a window shows first.
@@ -3392,8 +3395,12 @@ pub(crate) fn open_via(
             SmokeRun::WebRestart => cx
                 .spawn(async move |cx| smoke::web::restart(any, weak, cx).await)
                 .detach(),
+            #[cfg(feature = "web")]
+            SmokeRun::WebInstall => cx
+                .spawn(async move |cx| smoke::web::install(any, weak, cx).await)
+                .detach(),
             #[cfg(not(feature = "web"))]
-            SmokeRun::Web(_) | SmokeRun::WebRestart => {
+            SmokeRun::Web(_) | SmokeRun::WebRestart | SmokeRun::WebInstall => {
                 let _ = daemon;
                 eprintln!("smoke: this build has no web engine (the `web` feature)");
                 std::process::exit(6);

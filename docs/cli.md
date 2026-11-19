@@ -161,7 +161,11 @@ there; with neither, the pane the command runs in (`TMUX_PANE`) is
 split. It prints the new pane (`%N`). `http`, `https`, `file`, and `data`
 URLs and `about:blank` are accepted, and so is an address as typed into a
 browser's address bar (below); anything else is refused. Plain tmux
-clients see the placeholder's text: the address.
+clients see the placeholder's text: the address. While Dreamer's desktop
+is adding [Dreamer Web](desktop.md#dreamer-web), or offers it in the new
+pane, the command waits until it is there; it fails, and the pane is
+closed, if Dreamer Web is turned off, its install fails, or the pane is
+closed first. `dream browser` does the same.
 
 `dream browser ADDRESS [--pane %N | --session $N|NAME] [--json]` opens
 the address in Dreamer's [browser](desktop.md#the-browser): a new web pane
