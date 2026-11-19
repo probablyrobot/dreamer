@@ -109,7 +109,7 @@ host carries no TypeScript tooling.
 
 | Crate | Version | Used by | License |
 | --- | --- | --- | --- |
-| `ureq` (default features off; `rustls`) | `=3.5.2`, with `ureq-proto` 0.7.1 | `app-script`: `fetch` in script apps, in `dreamer-termapp` | MIT OR Apache-2.0 |
+| `ureq` (default features off; `rustls`) | `=3.5.2`, with `ureq-proto` 0.7.1 | `app-script`: `fetch` in script apps, in `dreamer-termapp`; `dreamer-server` (with the `kosmonaut` feature): the `openai` memory embedder | MIT OR Apache-2.0 |
 | `rustls` (through `ureq`, provider `ring`) | `0.23.46`, with `rustls-webpki` 0.103.17 and `rustls-pki-types` 1.16.0 | same | Apache-2.0 OR ISC OR MIT (`rustls-webpki`: ISC) |
 | `ring` | `0.17.14` | same: rustls's cryptography | Apache-2.0 AND ISC |
 | `webpki-roots` | `1.0.12` | same: the root certificates | CDLA-Permissive-2.0 |
@@ -151,11 +151,23 @@ Why these:
   would accept those CAs but adds a platform-specific dependency tree per
   target; it can be switched to if apps need it.
 
-`cargo xtask policy` allows `ureq` in one product file,
-`crates/app-script/src/fetch.rs`, and nowhere else; that file opens no
-sockets of its own. None of these crates pulls in a UI framework, GPU, or
-font crate (`cargo xtask headless --check`). Only `dreamer-termapp` links
-them; the server, the CLI, and the desktop do not.
+The server uses the same client, at the same pin and features, for the
+`openai` memory embedder (`memory.kosmonaut.embedder.kind: openai`,
+[memory.md](memory.md#openai)): one blocking POST per batch of texts, on
+the thread a memory call already runs on off the event loop, with
+`timeout_global` for each request, no redirects, and no proxy. It is an
+optional dependency that the `kosmonaut` feature turns on, so a server
+built without that feature does not link it. Adding it changed only the
+server's own dependency list in `Cargo.lock`.
+
+`cargo xtask policy` allows `ureq` in two product files and nowhere else:
+`crates/app-script/src/fetch.rs` (app `fetch`, to the hosts a manifest
+lists) and `crates/server/src/memories/openai.rs` (the embedder, to the
+API base its settings name: `https`, or `http` to this machine only).
+Neither opens sockets of its own. None of these crates pulls in a UI
+framework, GPU, or font crate (`cargo xtask headless --check`).
+`dreamer-termapp` links them, and so does `dreamerd` built with the
+`kosmonaut` feature; the CLI and the desktop do not.
 
 ## Kosmonaut
 

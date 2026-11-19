@@ -1,8 +1,9 @@
 //! `fetch` for a script app: HTTP and HTTPS requests to the hosts its
 //! manifest lists (`[net] hosts`), under the `net.fetch` capability.
 //!
-//! This is the one place in product code that opens network connections
-//! of its own (`cargo xtask policy` allows `ureq` here and nowhere else).
+//! This is one of two places in product code that open network
+//! connections of their own (`cargo xtask policy` allows `ureq` here and
+//! in the server's `openai` memory embedder, nowhere else).
 //! Every request, and every redirect it follows, is checked against the
 //! listed hosts before a connection is made; anything else is refused.
 //! Requests run on a thread of their own, never on the app's, with a time

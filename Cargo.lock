@@ -1894,6 +1894,7 @@ dependencies = [
  "terminal-ghostty",
  "tmux-backend",
  "tokio",
+ "ureq",
  "view-tree",
  "wire",
  "workspace-config",

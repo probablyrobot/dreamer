@@ -9,10 +9,13 @@
 //!   ([`LOOPBACK_ONLY`]): forwards to a remote host's loopback ports, which
 //!   travel over the host's SSH connection. It may use TCP, and only on the
 //!   loopback: each of its binds and connects names `LOCALHOST`.
-//! - The HTTP client (`ureq`) is used in one product file only
-//!   ([`FETCH_ONLY`]): a script app's `fetch`, which checks every request
-//!   and redirect against the hosts the app's manifest lists, under its
-//!   `net.fetch` capability. That file opens no sockets of its own.
+//! - The HTTP client (`ureq`) is used in two product files only
+//!   ([`HTTP_CLIENT_FILES`]): a script app's `fetch`, which checks every
+//!   request and redirect against the hosts the app's manifest lists,
+//!   under its `net.fetch` capability; and the `openai` memory embedder,
+//!   which posts to the one API base its settings name (https, or http to
+//!   this machine) and only when the user configured it. Neither opens
+//!   sockets of its own.
 
 use crate::util::repo_root;
 
@@ -100,12 +103,18 @@ const NETWORK: [&str; 7] = [
     "ureq::",
 ];
 
-/// The HTTP client, allowed only in [`FETCH_ONLY`].
+/// The HTTP client, allowed only in [`HTTP_CLIENT_FILES`].
 const HTTP_CLIENT: &str = "ureq::";
 
-/// The one product file that may use the HTTP client: a script app's
-/// `fetch`, to the hosts its manifest lists.
-const FETCH_ONLY: &str = "crates/app-script/src/fetch.rs";
+/// The product files that may use the HTTP client: a script app's
+/// `fetch`, to the hosts its manifest lists; and the `openai` memory
+/// embedder, to the embeddings API the user configured
+/// (`memory.kosmonaut.embedder`), with the key from the environment
+/// variable the settings name.
+const HTTP_CLIENT_FILES: [&str; 2] = [
+    "crates/app-script/src/fetch.rs",
+    "crates/server/src/memories/openai.rs",
+];
 
 /// The one product file that may use TCP (`web.forward`): it listens on
 /// this machine's loopback and connects to the host's, nothing else.
@@ -161,9 +170,9 @@ fn check_source(name: &str, text: &str) -> Vec<String> {
                 continue;
             }
         }
-        let found = NETWORK
-            .iter()
-            .find(|n| line.contains(**n) && !(name == FETCH_ONLY && **n == HTTP_CLIENT));
+        let found = NETWORK.iter().find(|n| {
+            line.contains(**n) && !(HTTP_CLIENT_FILES.contains(&name) && **n == HTTP_CLIENT)
+        });
         if let Some(api) = found {
             out.push(format!(
                 "{name}:{}: `{api}`: product code opens no network sockets; remote hosts are reached only through SSH",
@@ -239,12 +248,18 @@ mod tests {
     }
 
     #[test]
-    fn only_fetch_uses_the_http_client_and_it_opens_no_sockets() {
+    fn only_fetch_and_the_embedder_use_the_http_client_and_open_no_sockets() {
         let client = "use ureq::http;\nlet a = ureq::Agent::config_builder();\n";
-        assert!(check_source(FETCH_ONLY, client).is_empty());
-        assert_eq!(check_source("crates/x/src/f.rs", client).len(), 2);
         let socket = "let s = std::net::TcpStream::connect(addr);\n";
-        assert_eq!(check_source(FETCH_ONLY, socket).len(), 1);
+        for file in HTTP_CLIENT_FILES {
+            assert!(check_source(file, client).is_empty());
+            assert_eq!(check_source(file, socket).len(), 1);
+        }
+        assert_eq!(check_source("crates/x/src/f.rs", client).len(), 2);
+        assert_eq!(
+            check_source("crates/server/src/memories.rs", client).len(),
+            2
+        );
     }
 
     #[test]

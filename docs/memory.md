@@ -204,18 +204,51 @@ graph, and no model runs. `memory.kosmonaut.embedder` adds one:
 | --- | --- | --- |
 | `static` | `path` | Reads word vectors from a file in the word2vec text format (one word and its numbers per line; a first line of count and dimension is skipped), as fastText and GloVe publish them. A text's vector is the mean of its words' vectors. Nothing runs and nothing leaves the machine |
 | `local` | `command`, `dimension`, `timeout` (default 30s) | Runs a program for each batch: it reads a JSON array of strings on standard input and prints a JSON array of vectors, one per string, each `dimension` long. The program runs whatever model it likes, under the user's control |
+| `openai` | `model`, `key_env`, `url` (default `https://api.openai.com/v1`), `dimension`, `timeout` (default 30s) | Sends the texts to OpenAI's embeddings API (`POST <url>/embeddings`), up to 96 per request, each request limited to `timeout`. The texts leave the machine, and the user's account is billed |
 
 A memory is embedded when it is remembered or changed; memories written
 before the embedder was configured are embedded at the next recall that
 reaches them. Vectors are kept beside the memories with the name of the
-model that made them (`static:<file name>`, `local:<program>`), and only
-vectors of the configured model are compared. When the embedder fails,
-recall still answers by words and the graph, and its `problems` say why
-there were no vectors.
+model that made them (`static:<file name>`, `local:<program>`,
+`openai:<model>`), and only vectors of the configured model are compared.
+When the embedder fails, recall still answers by words and the graph, and
+its `problems` say why there were no vectors.
 
-Dreamer opens no network connections of its own, so it has no built-in
-client for a hosted embedding API; a `local` program may call one with
-the user's own key.
+#### OpenAI
+
+```yaml
+memory:
+  provider: kosmonaut
+  kosmonaut:
+    embedder:
+      kind: openai
+      model: text-embedding-3-small
+      key_env: OPENAI_API_KEY
+```
+
+- **The key** is read from the environment variable `key_env` names, in
+  `dreamerd`'s environment, at each call, and from nowhere else: no
+  keychain, no file, no other variable. It is sent only in the request's
+  `Authorization` header and is never logged or shown. When the variable
+  is unset or empty, nothing is sent and recall's `problems` name the
+  variable. `dreamerd` started by the desktop or by `dream` inherits that
+  program's environment.
+- **`dimension`** is the vector length. `text-embedding-3-small` (1536),
+  `text-embedding-3-large` (3072), and `text-embedding-ada-002` (1536)
+  need none; set it to have a `text-embedding-3` model return shorter
+  vectors (it is sent as `dimensions`), or for any other model.
+- **`url`** is the API base; `/embeddings` is added to it. It must be
+  `https`, except to this machine (`localhost`, `127.0.0.1`, `[::1]`),
+  where plain `http` is allowed for a local server that speaks the same
+  API. No proxy from the environment is used and redirects are not
+  followed.
+- **Failures:** a refused key (HTTP 401 or 403), an API that cannot be
+  reached, an error answer, or no answer within `timeout` each show as a
+  problem in that recall, which still answers by words and the graph.
+  Memories left without a vector are embedded at a later recall.
+
+Apart from app `fetch`, this embedder is the only part of Dreamer that
+opens a network connection of its own, and only when it is configured.
 
 ### Import and export
 
@@ -252,8 +285,7 @@ memory:
 
 A change applies to the next call, like other live settings
 ([settings.md](settings.md)). `memory.kosmonaut.mode: server` is refused:
-only the embedded mode exists so far. So is `embedder.kind: openai` (see
-[Embedders](#embedders)).
+only the embedded mode exists so far.
 
 ## Grants
 
