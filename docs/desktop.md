@@ -1118,8 +1118,11 @@ configuration directories:
   a page whose background is `color(display-p3 1 0 0)`, zooms its pane,
   and captures it live (`color-live.png`) and as its snapshot under the
   palette (`color-palette.png`), in `srgb/` and `display/`. With `srgb`
-  the live page must be sRGB's red as the screen shows it, within 30 per
-  channel (clamped); how the snapshot compares is printed. With
+  the live page must be drawn as the window draws the same sRGB color,
+  its snapshot, within 30 per channel. The window's layer is not color
+  matched, so on a wide-gamut display that is the screen's full red;
+  how it compares with sRGB's red as a color-managed view shows it is
+  printed. With
   `display` the snapshot must match the live page within 30 per channel,
   and on a wide-gamut display the live page must not be sRGB's red (the
   color is beyond sRGB). On a display that is not wide-gamut that one
