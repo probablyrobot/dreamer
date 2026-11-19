@@ -462,3 +462,71 @@ async fn a_daemon_that_cannot_start_gives_the_client_its_reason() {
     let e = ensure_running(&launch, "test").await.expect_err("refused");
     assert!(e.to_string().contains("no-such-dreamerd"), "{e}");
 }
+
+/// Started from Finder, the daemon has launchd's PATH. It takes the user's
+/// PATH from their login shell, so it runs the tmux found there (#422).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_with_launchds_path_finds_tmux_on_the_login_shells_path() {
+    let d = Dirs::new();
+    let tmux = TmuxServer::start(80, 24, "sleep 600").expect("tmux");
+    let program = tmux_program();
+    let real = if program.is_absolute() {
+        program
+    } else {
+        let paths = std::env::var_os("PATH").expect("PATH");
+        std::env::split_paths(&paths)
+            .map(|p| p.join(&program))
+            .find(|p| p.is_file())
+            .expect("tmux on PATH")
+    };
+    let bin = d.root.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    let marker = d.root.join("ran");
+    let script = |path: &Path, body: String| {
+        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).expect("write");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    // A stand-in tmux that only the login shell's PATH reaches.
+    script(
+        &bin.join("tmux"),
+        format!(
+            "echo ran >> '{}'\nexec '{}' \"$@\"",
+            marker.display(),
+            real.display()
+        ),
+    );
+    let shell = d.root.join("shell");
+    script(
+        &shell,
+        format!(
+            "PATH='{}:/usr/bin:/bin' exec /bin/sh -c \"$3\"",
+            bin.display()
+        ),
+    );
+    let mut daemon = Command::new(EXE)
+        .args(["--tmux-socket", tmux.socket()])
+        .envs(d.env())
+        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+        .env("SHELL", &shell)
+        .env("HOME", &d.root)
+        .env_remove("DREAMER_TMUX")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("dreamerd");
+    let c = connect_soon(&d.socket()).await;
+    match c
+        .call(Request::TmuxTopology(api::TopologyParams::default()))
+        .await
+        .expect("topology")
+    {
+        Response::TmuxTopology(t) => assert_eq!(t.sessions.len(), 1),
+        other => panic!("{other:?}"),
+    }
+    assert!(marker.exists(), "the stand-in tmux never ran");
+    c.call(Request::DaemonShutdown(api::Empty {}))
+        .await
+        .expect("shutdown");
+    assert!(wait_exit(&mut daemon, Duration::from_secs(5)).is_some());
+}
