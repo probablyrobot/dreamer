@@ -534,7 +534,15 @@ it across desktop restarts all come from tmux.
   Dreamer draws, so while the command palette or the context menu is
   open, web panes show a snapshot of the page taken as it opened, and the
   live page comes back when it closes. Pages are drawn in sRGB, as the
-  terminals are, so the snapshot has the live page's colors.
+  terminals are, and color matched to the display as the window is, so a
+  page's colors look as the same colors do in a terminal, and the
+  snapshot has the live page's colors. With `web.color: display`
+  ([settings.md](settings.md#web-page-colors)) they are drawn in the
+  display's color space instead, so wide-gamut colors (Display P3 images,
+  video, CSS `color(display-p3 ...)`) keep their saturation; the snapshot
+  is converted from that space to sRGB before it is drawn, so for as long
+  as it shows those colors are clamped. Chromium takes the setting as it starts, so a
+  change applies once Dreamer restarts.
 - **Focus.** Clicking the page focuses its pane, here and in tmux; keys
   then go to the page. Focusing another pane (a click, the palette, the
   find bar, the drawer, tmux's prefix keys) takes the keys back, and
@@ -1105,6 +1113,22 @@ configuration directories:
   is a `smoke: web inspect:` line, and the gate wants all five, the site
   must have got the form with the name typed, and the screenshot must be
   mostly the form's `#3fa34d`;
+- then [page colors](settings.md#web-page-colors), in two more runs of
+  the desktop (`dreamer --smoke-web-color DIR`), since Chromium takes
+  `web.color` as it starts: the gate writes `web.color: srgb`, then
+  `display`, into its private configuration before each. Each run opens
+  a page whose top half is sRGB's red and bottom half Display P3's red
+  (`color(display-p3 1 0 0)`), zooms its pane, and captures it live
+  (`color-live.png`) and as its snapshot under the palette
+  (`color-palette.png`), in `srgb/` and `display/`. In both modes the
+  page's sRGB red must be sRGB's red as the window shows it (Chromium's
+  output is color matched, as the window's is), and the snapshot must
+  match the live page there, within 30 per channel. Display P3's red must
+  then be clamped to sRGB's red with `srgb`, and stay beyond it with
+  `display`; on a display that is not wide-gamut that check is a `smoke:
+  web color not run:` line instead. Each passed check
+  is a `smoke: web color:` line, and the gate wants six, counting a
+  check not run;
 - the gate checks each capture as the smoke's `checks.txt` lists: the
   page's color covers at least 90% of the pane's rectangle (of the
   zoomed pane, or of the part beside the palette) and at most 1% of the

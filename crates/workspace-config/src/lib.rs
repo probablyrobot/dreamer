@@ -30,8 +30,8 @@ pub use settings::{
     Appearance, ClipboardSettings, ClipboardTmux, ClipboardWrite, Decorations, DownloadSettings,
     DrawerSettings, DrawerSide, EmbedderSettings, FallbackSettings, FontSettings,
     KosmonautSettings, LinkSettings, MemoryProvider, MemorySettings, MiddleClick, STARTER_SETTINGS,
-    Settings, TierSettings, WebComponent, WebSettings, WindowSettings, ensure_settings_file,
-    load_settings, settings_path,
+    Settings, TierSettings, WebColor, WebComponent, WebSettings, WindowSettings,
+    ensure_settings_file, load_settings, settings_path,
 };
 
 use std::path::{Path, PathBuf};

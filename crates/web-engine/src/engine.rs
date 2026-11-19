@@ -48,6 +48,38 @@ thread_local! {
     static STARTED: RefCell<Option<Result<(), String>>> = const { RefCell::new(None) };
 }
 
+/// Whether Chromium draws pages in the display's color space
+/// (`web.color: display`), as [`start`] was told; read as CEF initializes
+/// and as it launches each helper process.
+static DISPLAY_COLOR: AtomicBool = AtomicBool::new(false);
+
+/// Pages rasterized in sRGB, as the rest of the window is drawn, unless
+/// `web.color` is `display`: wide-gamut colors are clamped to sRGB, and a
+/// page's capture (its snapshot under an overlay) has the colors the live
+/// page shows. Chromium still matches its output to the screen, as the
+/// toolkit does. (`force-color-profile` would instead tell Chromium the
+/// screen is sRGB, so its output reaches a wide-gamut screen unmatched and
+/// oversaturated.) Without the switch Chromium draws in the display's
+/// color space.
+fn force_srgb(cl: &mut CommandLine) {
+    if !DISPLAY_COLOR.load(Ordering::Relaxed) {
+        cl.append_switch_with_value(
+            Some(&CefString::from("force-raster-color-profile")),
+            Some(&CefString::from("srgb")),
+        );
+    }
+}
+
+/// The color space Chromium was started with ([`start`]); `Srgb` before
+/// it starts.
+pub fn color() -> crate::Color {
+    if started() && DISPLAY_COLOR.load(Ordering::Relaxed) {
+        crate::Color::Display
+    } else {
+        crate::Color::Srgb
+    }
+}
+
 /// The process's arguments as CEF reads them, kept for the process: only
 /// the executable, so the desktop's own options never reach Chromium.
 struct MainArgv {
@@ -83,20 +115,20 @@ mod handlers {
         impl App {
             fn on_before_command_line_processing(
                 &self,
-                _process_type: Option<&CefString>,
+                process_type: Option<&CefString>,
                 command_line: Option<&mut CommandLine>,
             ) {
                 // Chromium's cookie encryption key would otherwise go into
                 // the login keychain, with a prompt.
-                // Pages are drawn in sRGB, as the rest of the window is:
-                // a page's capture (its snapshot under an overlay) then
-                // has the colors the live page shows.
-                if let Some(cl) = command_line {
-                    cl.append_switch(Some(&CefString::from("use-mock-keychain")));
-                    cl.append_switch_with_value(
-                        Some(&CefString::from("force-color-profile")),
-                        Some(&CefString::from("srgb")),
-                    );
+                let Some(cl) = command_line else { return };
+                cl.append_switch(Some(&CefString::from("use-mock-keychain")));
+                // The browser process (no process type) draws pages in
+                // sRGB unless `web.color` is `display`; its helpers are
+                // told the same as they launch (below), so a helper never
+                // decides this itself.
+                let browser = process_type.is_none_or(|t| t.to_string().is_empty());
+                if browser {
+                    force_srgb(cl);
                 }
             }
             fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
@@ -122,6 +154,11 @@ mod handlers {
     wrap_browser_process_handler! {
         pub struct DreamerBrowserProcess;
         impl BrowserProcessHandler {
+            fn on_before_child_process_launch(&self, command_line: Option<&mut CommandLine>) {
+                if let Some(cl) = command_line {
+                    force_srgb(cl);
+                }
+            }
             fn on_schedule_message_pump_work(&self, delay_ms: i64) {
                 if let Some(wake) = WAKE.get() {
                     wake(delay_ms);
@@ -880,7 +917,9 @@ fn app_bundle(exe: &Path) -> Option<PathBuf> {
 /// directory; see [`web_component`]), make the application object answer
 /// CEF's protocol, and initialize with an external message pump. Chromium
 /// runs its helper processes from the component's helper apps.
-/// `cache_dir` holds Chromium's profile. `wake` is called from any thread
+/// `cache_dir` holds Chromium's profile. `color` is the color space pages
+/// are drawn in, for as long as the process runs: Chromium takes it as it
+/// initializes, so a later call's is ignored. `wake` is called from any thread
 /// with a delay in milliseconds whenever CEF wants [`do_work`]; the caller
 /// should also call it at least every 33 ms or so while browsers exist.
 ///
@@ -888,7 +927,11 @@ fn app_bundle(exe: &Path) -> Option<PathBuf> {
 /// call returns the first one's outcome, except while the component is
 /// not installed (or not this build's): it is looked for again each time,
 /// so adding it needs no restart.
-pub fn start(cache_dir: &Path, wake: impl Fn(i64) + Send + Sync + 'static) -> Result<(), String> {
+pub fn start(
+    cache_dir: &Path,
+    color: crate::Color,
+    wake: impl Fn(i64) + Send + Sync + 'static,
+) -> Result<(), String> {
     if let Some(done) = STARTED.with(|s| s.borrow().clone()) {
         return done;
     }
@@ -905,6 +948,7 @@ pub fn start(cache_dir: &Path, wake: impl Fn(i64) + Send + Sync + 'static) -> Re
         // toolkit's run loop), before initialize.
         unsafe { appkit::adopt_application_protocol()? };
         let _ = WAKE.set(Box::new(wake));
+        DISPLAY_COLOR.store(color == crate::Color::Display, Ordering::Relaxed);
         std::fs::create_dir_all(cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
         // Chromium compares profile paths with links resolved (`/tmp` is
         // `/private/tmp`): an app's profile must be inside this one.
@@ -1694,6 +1738,13 @@ impl WebView {
     pub fn window_number(&self) -> Option<isize> {
         // SAFETY: the window's live content view; main thread.
         unsafe { appkit::window_number(self.parent) }
+    }
+
+    /// The color space of the screen the view's window is on: what
+    /// Chromium draws in with `web.color: display`.
+    pub fn screen_color_space(&self) -> Option<crate::ColorSpace> {
+        // SAFETY: the window's live content view; main thread.
+        unsafe { appkit::screen_color_space(self.parent) }
     }
 }
 
