@@ -37,17 +37,18 @@ directory: the agent's working directory, or `DREAMER_APPS_ROOT`.
 1. **New.** Pick the template closest to the request: `table` (rows from
    the daemon, Enter acts on one), `form` (fields and a button), `chat`
    (a log and an input). It writes a working package, its fixtures,
-   `types/dreamer.d.ts`, and the test's expected screens.
+   `types/dreamer.d.ts`, and the test's expected screens. There is no
+   `web` template; for a page, see "Web pages" below.
 2. **Edit** `app.ts`. Keep `fixtures/load.json` the same shape as what
    `load()` returns, and add every method you call to `capabilities`.
-3. **Check** until `ok` is true. Fix problems in order; each has a file,
-   line, column, and message (an unknown `ui.*` builder or property, an
-   unknown `dreamer.*` method or parameter, a value of the wrong kind).
+3. **Check** until `ok` is true (see "Reading the check" below).
 4. **Preview as text first**, from the fixtures with no daemon, and read
-   it: is everything there, does it fit? Then, if a Dreamer window is
-   running, **as an image** to see the native drawing. Without a window
-   the image preview fails with `no Dreamer window is running`; the text
-   preview is enough then.
+   it: is everything there, does it fit, are the columns wide enough?
+   Then, if a Dreamer window is running, **as an image** to see the
+   native drawing: it opens the preview in a window of its own, returns
+   the PNG, and closes the window again. Without a window the image
+   preview fails with `no Dreamer window is running`; the text preview
+   is enough then. Fix what looks wrong and check again.
 5. **Test.** `fixtures/events.jsonl` holds one event per line
    (`{"kind":"key","key":"Down"}`, `{"kind":"text","text":"hi"}`); the
    test compares the screen after each with `fixtures/expect/NNN.txt`.
@@ -58,7 +59,32 @@ directory: the agent's working directory, or `DREAMER_APPS_ROOT`.
    (`dream app rollback NAME`). The installed name is the app's id
    (`local.NAME`) unless you give one.
 7. **Open** it with `app_launch`: beside the pane you run in (the chat),
-   or `beside` another pane, or `new_window`. Tell the user the pane.
+   or `beside` another pane, or `new_window`. Tell the user the pane it
+   is in (`%N` from the result). A later install of the same app reloads
+   the open pane; you need not launch it again.
+
+### Reading the check
+
+`app_check` (and `dream app check DIR --json`) answers with `ok`,
+`problems`, and `needs` (the grant the manifest asks for). Each problem
+has `file`, `line`, `column`, and `message`, and the first one is also
+in `error`. Fix them in order, then check again: one fix can reveal the
+next problem. What the messages mean:
+
+| Message | Fix |
+| --- | --- |
+| `` `ui.tabel` is not a ui builder; did you mean `table`? `` | Use the builder named; the list is under "Components" |
+| `` `colums` is not a property of ui.table; did you mean `columns`? `` | Rename or remove the property |
+| `` `selected` of ui.table takes a string or a number, not a boolean `` | Give a value of the kind named |
+| `` `dreamer.tmux.topolgy` is not an API method; did you mean `topology`? `` | Use the method named; `types/dreamer.d.ts` lists them all |
+| `` `endpont` is not a field of the parameters of dreamer.tmux.topology (TopologyParams); did you mean `endpoint`? `` | Use the record's field, as declared in `types/dreamer.d.ts` |
+| `ok: false`, `problems` empty, and `error` such as ``app.ts:23:9: Expected ',', got 'ident'`` | A syntax error, or a manifest problem: `error` says where |
+
+The check does not compare the methods `app.ts` calls with
+`capabilities`. A call outside them is refused when the app runs (the
+status line shows `dreamer.DreamerError` and why), so keep the two in
+step yourself. The check passing also does not mean the screen looks
+right: preview it.
 
 Installing and opening need the `own` or `elsewhere` level; at `observe`
 they are refused. Opening an app beside a pane you did not create asks
@@ -108,34 +134,54 @@ app({
 - **Types**: `types/dreamer.d.ts` (`dream app types DIR` writes it again
   after an update) declares every method's parameters and results
   (`Dreamer.Pane`, `Dreamer.JobRecord`, ...) and every builder.
-- **Globals**: `setTimeout`, `setInterval`, `console`, `fetch`, and the
-  language's built-ins. No files or processes.
+- **Globals**: `setTimeout`, `setInterval`, `clearTimeout`,
+  `clearInterval`, `console`, `fetch`, and the language's built-ins. No
+  files or processes, and no way to load other code.
 - **`fetch`** reaches only the hosts the manifest lists, with the
   `net.fetch` capability: `capabilities = ["net.fetch"]` and
   `[net] hosts = ["api.example.com", "localhost:8080"]` (a host alone
   means its scheme's port). Method, headers, a string body; the response
   has `status`, `ok`, `headers`, `text()`, `json()`. Anything else,
   a redirect to an unlisted host included, rejects with a `TypeError`.
-  Each request may take 30 s and its body 8 MiB.
+  Each request may take 30 s and its body 8 MiB. For anything else, get
+  data through `dreamer.*` (jobs, collectors, terminals).
 - **Limits**: each entry into the app may run 250 ms; the heap is
   64 MiB. Errors show on the status line; the app keeps running.
 
 ## Components (`ui.*`)
 
-Each takes an object with an optional `key` and `title`.
+Each takes an object with an optional `key` and `title`. Give every
+node whose place can change a `key`, so the selection and scroll
+position stay with it.
 
 | Kind | Builders and their fields |
 | --- | --- |
 | Layout | `column`, `row`, `scroll`, `tabs` (`active`), `split` (`sizes`, `direction`): `children`, or `(children, fields)` |
 | Data | `table` (`columns`, `rows`, `rowKey`, `selected`, `onSelect`, `onEnter`), `list` (`rows`, `field`, `rowKey`, `selected`, `onSelect`, `onEnter`), `log` (`lines`), `gauge` (`ratio`, `label`), `chart` (`values`) |
 | Text | `text`, `markdown`, `code` (`language`), `diff`, `badge` (`tone`): `text`, or `(text, fields)` |
-| Input | `button` (`label`, `onPress`), `input` (`label`, `value`, `placeholder`, `onChange`, `onSubmit`), `select` (`label`, `options`, `value` or `selected`, `onChange`), `toggle` (`label`, `on`, `onChange`) |
+| Input | `button` (`label`, `onPress`), `input` (`label`, `value`, `placeholder`, `onChange`, `onEnter`, `onSubmit`), `select` (`label`, `options`, `value` or `selected`, `onChange`), `toggle` (`label`, `on`, `onChange`) |
 | Status | `progress` (`ratio`, `label`), `status` (`items`: `{ text, tone }`), and `ui.screen(node, { status, focus, title })` for the status line |
+| Embeds | `terminal` (`pane`: a number or `"%3"`), `image` (`src`), `web` (`src`): also `(pane or src, fields)` |
 
 Tones are `neutral`, `accent`, `success`, `warning`, and `danger`. Tab
 moves the focus between tables, lists, and controls; `q` (outside an
-input) or Ctrl-c ends the app. There is no web or embedded-page
-component in this version, and no `web` template.
+input) or Ctrl-c ends the app.
+
+- **`terminal`** shows another pane's screen, live and read only. It
+  needs `terminal.read` in `capabilities` and the pane in the grant
+  (`all_panes = true` for a pane chosen at run time); otherwise the node
+  shows `refused:` and why.
+- **`image`** shows a PNG or JPEG from the package, by its path there
+  (`img/logo.png`); not an absolute path and not `..`.
+- **Web pages.** `web` shows a page drawn by the desktop: a file in the
+  package's `web/` directory (`index.html` when `src` is empty), or an
+  address on the app's origin or one of its `[web] allow` origins. A
+  page from the package gets `window.dreamer.call(method, params)`,
+  under the app's grant. A plain terminal shows only the page's
+  address, and the text preview shows the node, not the page: preview
+  as an image to see it. A whole app can be a page (a web app: `[web]`
+  in `app.toml` and no `app.ts`); see "Web pages and web apps" in
+  `docs/termapp.md`.
 
 ## Rules
 

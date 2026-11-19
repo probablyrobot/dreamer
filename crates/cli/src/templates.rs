@@ -325,8 +325,9 @@ pub fn new(args: &[String]) -> Result<(), String> {
     valid(name)?;
     if template == "web" {
         return Err(
-            "the web template needs web panes, which this version of Dreamer does not have; \
-             use table, form, or chat"
+            "there is no web template in this version; start from table, form, or chat and \
+             add a page with ui.web, or write a web app (\"Web pages and web apps\" in \
+             docs/termapp.md)"
                 .into(),
         );
     }

@@ -386,7 +386,7 @@ export default function (pi: ExtensionAPI) {
 		name: "app_check",
 		label: "Check app",
 		description:
-			"Check an app package: build its app.ts, then the manifest, the grant it needs, TypeScript type errors, and the view tree. Returns ok, and problems as file, line, column, and message; fix each and check again.",
+			"Check an app package: build its app.ts, then the manifest, the grant it needs, TypeScript type errors, and the view tree. Returns ok, and problems as file, line, column, and message (a syntax error is in error instead); fix them in order and check again. The check does not hold the methods app.ts calls to the manifest's capabilities: add each one you call.",
 		parameters: Type.Object({ dir: appDirParam }),
 		run: (p) => appTools().check(p),
 	});
