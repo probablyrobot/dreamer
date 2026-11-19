@@ -26,6 +26,10 @@ from `Cargo.lock` at packaging time.
 | ratatui | 0.30.2 | MIT | `dreamer-termapp` |
 | crossterm | 0.29.0 | MIT | `dreamer-termapp` |
 | rmcp | 3.10.0 | Apache-2.0 | `dream` (MCP) |
+| ureq | 3.5.2 | MIT OR Apache-2.0 | `dreamer-termapp` (`fetch` in script apps) |
+| rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT | `dreamer-termapp` (`fetch`) |
+| ring | 0.17.14 | Apache-2.0 AND ISC | `dreamer-termapp` (`fetch`) |
+| webpki-roots | 1.0.12 | CDLA-Permissive-2.0 | `dreamer-termapp` (`fetch`: Mozilla's root certificates) |
 
 ## Terminal color schemes
 

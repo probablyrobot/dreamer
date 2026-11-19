@@ -18,7 +18,7 @@ pub use model::{
     clean_text, text,
 };
 pub use process::{
-    Engine, EngineOut, EngineStart, Preview, Stamp, allowed, package_stamp, preview_process,
-    replay_process, run_process, run_process_with, script_js,
+    Engine, EngineOut, EngineStart, NetGrant, Preview, Stamp, allowed, package_stamp,
+    preview_process, replay_process, run_process, run_process_with, script_js,
 };
 pub use run::{Endpoint, Input, Session, check_module, load, preview, replay, run, run_with};

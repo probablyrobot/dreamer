@@ -180,6 +180,10 @@ fn stamps(path: &Path, m: &Manifest) -> Vec<Option<std::time::SystemTime>> {
 pub(crate) struct Conn {
     pub(crate) client: Arc<client::Client>,
     pub(crate) pushed: tokio::sync::mpsc::Receiver<client::Pushed>,
+    /// The grant the connection holds, as the daemon answered registering
+    /// or narrowing; none for a connection that did neither (the user's
+    /// own), which may ask with `grants.current`.
+    pub(crate) grant: Option<api::Grant>,
 }
 
 /// The launch ticket, when started by `dream app run`.
@@ -203,16 +207,21 @@ pub(crate) async fn connect(
     .await
     .map_err(|_| "the daemon did not answer".to_owned())?
     .map_err(|e| e.to_string())?;
+    let mut grant = None;
     if let Some((launch_id, ticket)) = endpoint.ticket.then(ticket).flatten() {
         if *registered {
             return Err("the daemon restarted, so this app's grant ended; relaunch it".into());
         }
-        c.call(api::Request::AppsRegister(api::RegisterApp {
-            launch_id,
-            ticket,
-        }))
-        .await
-        .map_err(|e| format!("could not register: {e}"))?;
+        let r = c
+            .call(api::Request::AppsRegister(api::RegisterApp {
+                launch_id,
+                ticket,
+            }))
+            .await
+            .map_err(|e| format!("could not register: {e}"))?;
+        if let api::Response::AppsRegister(r) = r {
+            grant = r.grant;
+        }
         *registered = true;
     }
     if endpoint.narrow {
@@ -220,14 +229,18 @@ pub(crate) async fn connect(
         if !events.is_empty() {
             methods.extend(["events.subscribe".into(), "events.unsubscribe".into()]);
         }
-        c.call(api::Request::GrantsNarrow(api::Grant {
-            owner: false,
-            methods,
-            all_panes: true,
-            ..api::Grant::default()
-        }))
-        .await
-        .map_err(|e| format!("could not narrow the grant: {e}"))?;
+        let r = c
+            .call(api::Request::GrantsNarrow(api::Grant {
+                owner: false,
+                methods,
+                all_panes: true,
+                ..api::Grant::default()
+            }))
+            .await
+            .map_err(|e| format!("could not narrow the grant: {e}"))?;
+        if let api::Response::GrantsNarrow(g) = r {
+            grant = Some(g);
+        }
     }
     let pushed = c.pushed().ok_or("no event stream")?;
     if !events.is_empty() {
@@ -241,6 +254,7 @@ pub(crate) async fn connect(
     Ok(Conn {
         client: Arc::new(c),
         pushed,
+        grant,
     })
 }
 

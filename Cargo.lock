@@ -275,6 +275,7 @@ dependencies = [
  "rquickjs",
  "serde_json",
  "tokio",
+ "ureq",
  "view-tree",
 ]
 

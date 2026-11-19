@@ -9,6 +9,10 @@
 //!   ([`LOOPBACK_ONLY`]): forwards to a remote host's loopback ports, which
 //!   travel over the host's SSH connection. It may use TCP, and only on the
 //!   loopback: each of its binds and connects names `LOCALHOST`.
+//! - The HTTP client (`ureq`) is used in one product file only
+//!   ([`FETCH_ONLY`]): a script app's `fetch`, which checks every request
+//!   and redirect against the hosts the app's manifest lists, under its
+//!   `net.fetch` capability. That file opens no sockets of its own.
 
 use crate::util::repo_root;
 
@@ -86,14 +90,22 @@ fn check_workflow(name: &str, text: &str) -> Vec<String> {
 
 /// Network APIs product code must not use: SSH is the only way between
 /// hosts.
-const NETWORK: [&str; 6] = [
+const NETWORK: [&str; 7] = [
     "TcpListener",
     "TcpStream",
     "UdpSocket",
     "tokio::net::Tcp",
     "tokio::net::Udp",
     "std::net::",
+    "ureq::",
 ];
+
+/// The HTTP client, allowed only in [`FETCH_ONLY`].
+const HTTP_CLIENT: &str = "ureq::";
+
+/// The one product file that may use the HTTP client: a script app's
+/// `fetch`, to the hosts its manifest lists.
+const FETCH_ONLY: &str = "crates/app-script/src/fetch.rs";
 
 /// The one product file that may use TCP (`web.forward`): it listens on
 /// this machine's loopback and connects to the host's, nothing else.
@@ -149,7 +161,10 @@ fn check_source(name: &str, text: &str) -> Vec<String> {
                 continue;
             }
         }
-        if let Some(api) = NETWORK.iter().find(|n| line.contains(**n)) {
+        let found = NETWORK
+            .iter()
+            .find(|n| line.contains(**n) && !(name == FETCH_ONLY && **n == HTTP_CLIENT));
+        if let Some(api) = found {
             out.push(format!(
                 "{name}:{}: `{api}`: product code opens no network sockets; remote hosts are reached only through SSH",
                 i + 1
@@ -221,6 +236,15 @@ mod tests {
         assert_eq!(check_source("f.rs", bad).len(), 2);
         let ok = "use tokio::net::UnixStream;\n// a TcpStream in a comment\n#[cfg(test)]\nmod tests { use std::net::TcpListener; }\n";
         assert!(check_source("f.rs", ok).is_empty());
+    }
+
+    #[test]
+    fn only_fetch_uses_the_http_client_and_it_opens_no_sockets() {
+        let client = "use ureq::http;\nlet a = ureq::Agent::config_builder();\n";
+        assert!(check_source(FETCH_ONLY, client).is_empty());
+        assert_eq!(check_source("crates/x/src/f.rs", client).len(), 2);
+        let socket = "let s = std::net::TcpStream::connect(addr);\n";
+        assert_eq!(check_source(FETCH_ONLY, socket).len(), 1);
     }
 
     #[test]

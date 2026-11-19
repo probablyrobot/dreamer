@@ -2895,6 +2895,49 @@ interface Console {
 }
 declare var console: Console;
 
+/** Request headers: an object, `[name, value]` pairs, or `Headers`. */
+type HeadersInit = Record<string, string> | [string, string][] | Headers;
+/** What `fetch` takes beside the URL. */
+interface RequestInit {
+  /** GET (the default), HEAD, POST, PUT, PATCH, DELETE, or OPTIONS. */
+  method?: string;
+  headers?: HeadersInit;
+  /** A string; none for GET and HEAD. */
+  body?: string | null;
+  /** Follow redirects to listed hosts (the default), fail on one, or answer with it. */
+  redirect?: "follow" | "error" | "manual";
+}
+/** Headers, names in lowercase. */
+declare class Headers {
+  constructor(init?: HeadersInit);
+  append(name: string, value: string): void;
+  set(name: string, value: string): void;
+  get(name: string): string | null;
+  has(name: string): boolean;
+  delete(name: string): void;
+  forEach(fn: (value: string, name: string, headers: Headers) => void): void;
+  entries(): IterableIterator<[string, string]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<string>;
+  [Symbol.iterator](): IterableIterator<[string, string]>;
+}
+/** A response, its body read whole. */
+interface Response {
+  readonly status: number;
+  readonly statusText: string;
+  /** The status is 200 to 299. */
+  readonly ok: boolean;
+  /** The URL it came from, after redirects. */
+  readonly url: string;
+  readonly redirected: boolean;
+  readonly headers: Headers;
+  readonly bodyUsed: boolean;
+  text(): Promise<string>;
+  json(): Promise<any>;
+}
+/** An HTTP request to a host the manifest's `[net] hosts` lists; needs `net.fetch` in the app's grant. Anything else, a redirect to an unlisted host included, rejects with a `TypeError`. */
+declare function fetch(url: string | { url: string }, init?: RequestInit): Promise<Response>;
+
 declare module "dreamer" {
   export const app: typeof globalThis.app;
   export const ui: Dreamer.Ui;

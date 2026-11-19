@@ -11,14 +11,20 @@
 //!   answer, a timer, drawing) has a deadline; code still running at it is
 //!   interrupted, and the app stops, its last view kept and marked stale.
 //!   The app's heap has a memory limit, and its stack a size limit.
-//! - **Globals.** The app sees `app`, `ui`, `dreamer`, the timers, and
-//!   `console` (`prelude.js`), and the language's own built-ins. There is
-//!   no `fetch`, filesystem, process, or module loader: the only module
-//!   an app can import is `dreamer`.
+//! - **Globals.** The app sees `app`, `ui`, `dreamer`, the timers,
+//!   `console`, and `fetch` (`prelude.js`), and the language's own
+//!   built-ins. There is no filesystem, process, or module loader: the
+//!   only module an app can import is `dreamer`.
+//! - **`fetch`** reaches only the hosts the manifest lists, and only when
+//!   the app's grant holds `net.fetch`, as the host learns it from the
+//!   daemon ([`fetch`], `app_model::NetGrant`). Each request runs on a thread of
+//!   its own with a time and size limit; its answer enters the app like a
+//!   call's, under the same per-entry deadline.
 //! - **Focus and controls.** The host moves the focus and keeps each
 //!   control's value ([`controls`]); the app's handlers hear about it.
 
 mod controls;
+mod fetch;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -44,6 +50,12 @@ pub const MEMORY_LIMIT: usize = 64 << 20;
 const STACK_LIMIT: usize = 1 << 20;
 /// The most timers an app may have pending.
 const TIMERS: usize = 1000;
+/// How long one `fetch` may take, redirects and the body included.
+pub const FETCH_TIME: Duration = Duration::from_secs(30);
+/// The largest response body (and request body) a `fetch` takes.
+pub const FETCH_SIZE: usize = 8 << 20;
+/// The most requests an app may have in flight.
+const FETCHES: usize = 16;
 
 const PRELUDE: &str = include_str!("prelude.js");
 
@@ -58,6 +70,10 @@ export const dreamer = globalThis.dreamer;
 pub struct Limits {
     pub call: Duration,
     pub memory: usize,
+    /// How long one `fetch` may take.
+    pub fetch_time: Duration,
+    /// The largest body one `fetch` sends or takes.
+    pub fetch_size: usize,
 }
 
 impl Default for Limits {
@@ -65,6 +81,8 @@ impl Default for Limits {
         Limits {
             call: CALL_LIMIT,
             memory: MEMORY_LIMIT,
+            fetch_time: FETCH_TIME,
+            fetch_size: FETCH_SIZE,
         }
     }
 }
@@ -142,6 +160,7 @@ enum End {
 /// What the app's code asked of the host during a turn.
 enum Native {
     Call(u64, String, String),
+    Fetch(u64, fetch::Request),
     Log(String),
     Fatal(String),
 }
@@ -156,6 +175,9 @@ struct Js {
     tripped: Rc<Cell<bool>>,
     queue: Rc<RefCell<Vec<Native>>>,
     timers: Rc<RefCell<HashMap<u64, Instant>>>,
+    /// Requests sent and not yet answered.
+    fetching: Rc<Cell<usize>>,
+    client: fetch::Client,
     limits: Limits,
 }
 
@@ -172,6 +194,7 @@ impl Js {
         limits: Limits,
         app: &app_protocol::AppInfo,
         methods: &[String],
+        net: fetch::Net,
         fixture: Option<&str>,
     ) -> Result<Js, String> {
         let rt = Runtime::new().map_err(|e| e.to_string())?;
@@ -198,6 +221,8 @@ impl Js {
             tripped,
             queue: Rc::new(RefCell::new(Vec::new())),
             timers: Rc::new(RefCell::new(HashMap::new())),
+            fetching: Rc::new(Cell::new(0)),
+            client: fetch::Client::new(net, limits.fetch_time, limits.fetch_size),
             limits,
         };
         let hooks = js.within("starting the app", |ctx| {
@@ -241,6 +266,42 @@ impl Js {
                 Function::new(ctx.clone(), move |id: f64| {
                     t.borrow_mut().remove(&(id as u64));
                 })?,
+            )?;
+            // A request: refused here (an error to reject with) when the
+            // app may not send it, else queued for a thread of its own.
+            let (q, fetching, client) = (js.queue.clone(), js.fetching.clone(), js.client.clone());
+            host.set(
+                "fetch",
+                Function::new(
+                    ctx.clone(),
+                    move |id: f64,
+                          url: String,
+                          method: String,
+                          headers: String,
+                          body: Option<String>,
+                          redirect: String|
+                          -> Option<String> {
+                        if fetching.get() >= FETCHES {
+                            return Some(format!("fetch: more than {FETCHES} requests in flight"));
+                        }
+                        match fetch::Request::new(
+                            client.net(),
+                            &url,
+                            &method,
+                            &headers,
+                            body,
+                            &redirect,
+                            client.size(),
+                        ) {
+                            Ok(req) => {
+                                fetching.set(fetching.get() + 1);
+                                q.borrow_mut().push(Native::Fetch(id as u64, req));
+                                None
+                            }
+                            Err(why) => Some(why),
+                        }
+                    },
+                )?,
             )?;
             let q = js.queue.clone();
             host.set(
@@ -397,6 +458,8 @@ async fn run(start: EngineStart, limits: Limits) -> Result<End, String> {
         name,
         js: source,
         fixture,
+        hosts,
+        net,
         mut input,
         output,
     } = start;
@@ -411,7 +474,10 @@ async fn run(start: EngineStart, limits: Limits) -> Result<End, String> {
         protocol: PROTOCOL,
         name: Some(format!("app.ts runtime {}", env!("CARGO_PKG_VERSION"))),
     });
-    let js = Js::new(limits, &app, &granted(&methods), fixture.as_deref())?;
+    let net = fetch::Net::new(net, &hosts);
+    let js = Js::new(limits, &app, &granted(&methods), net, fixture.as_deref())?;
+    // Answers to requests, from their threads.
+    let (fetched_tx, mut fetched) = mpsc::unbounded_channel();
     js.evaluate(&name, &source)?;
     js.hook::<_, ()>("starting the app", "start", (live,))?;
     let mut controls = Controls::default();
@@ -427,6 +493,17 @@ async fn run(start: EngineStart, limits: Limits) -> Result<End, String> {
                     method,
                     params: serde_json::from_str(&params).unwrap_or_default(),
                 }),
+                Native::Fetch(id, req) => {
+                    let (client, done) = (js.client.clone(), fetched_tx.clone());
+                    let ran = std::thread::Builder::new()
+                        .name(format!("fetch {id}"))
+                        .spawn(move || {
+                            let _ = done.send((id, client.fetch(req)));
+                        });
+                    if let Err(e) = ran {
+                        let _ = fetched_tx.send((id, Err(format!("fetch: no thread for it: {e}"))));
+                    }
+                }
                 Native::Log(line) => {
                     let _ = output.send(EngineOut::Log(line));
                 }
@@ -467,6 +544,15 @@ async fn run(start: EngineStart, limits: Limits) -> Result<End, String> {
                 for id in js.due() {
                     js.hook::<_, ()>("a timer", "fire", (id as f64,))?;
                 }
+                continue;
+            }
+            Some((id, answer)) = fetched.recv() => {
+                js.fetching.set(js.fetching.get().saturating_sub(1));
+                let (head, body, error) = match answer {
+                    Ok(f) => (Some(f.head_json()), Some(f.body), None),
+                    Err(why) => (None, None, Some(why)),
+                };
+                js.hook::<_, ()>("a fetch's answer", "fetched", (id as f64, head, body, error))?;
                 continue;
             }
         };

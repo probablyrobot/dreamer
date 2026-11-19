@@ -384,6 +384,41 @@ pub fn dts(s: &Schema, ui: &Ui) -> String {
          declare function clearInterval(id?: number): void;\n\
          interface Console {\n  log(...data: unknown[]): void;\n  warn(...data: unknown[]): void;\n  error(...data: unknown[]): void;\n}\n\
          declare var console: Console;\n\n\
+         /** Request headers: an object, `[name, value]` pairs, or `Headers`. */\n\
+         type HeadersInit = Record<string, string> | [string, string][] | Headers;\n\
+         /** What `fetch` takes beside the URL. */\n\
+         interface RequestInit {\n  \
+         /** GET (the default), HEAD, POST, PUT, PATCH, DELETE, or OPTIONS. */\n  method?: string;\n  \
+         headers?: HeadersInit;\n  \
+         /** A string; none for GET and HEAD. */\n  body?: string | null;\n  \
+         /** Follow redirects to listed hosts (the default), fail on one, or answer with it. */\n  \
+         redirect?: \"follow\" | \"error\" | \"manual\";\n}\n\
+         /** Headers, names in lowercase. */\n\
+         declare class Headers {\n  \
+         constructor(init?: HeadersInit);\n  \
+         append(name: string, value: string): void;\n  \
+         set(name: string, value: string): void;\n  \
+         get(name: string): string | null;\n  \
+         has(name: string): boolean;\n  \
+         delete(name: string): void;\n  \
+         forEach(fn: (value: string, name: string, headers: Headers) => void): void;\n  \
+         entries(): IterableIterator<[string, string]>;\n  \
+         keys(): IterableIterator<string>;\n  \
+         values(): IterableIterator<string>;\n  \
+         [Symbol.iterator](): IterableIterator<[string, string]>;\n}\n\
+         /** A response, its body read whole. */\n\
+         interface Response {\n  \
+         readonly status: number;\n  \
+         readonly statusText: string;\n  \
+         /** The status is 200 to 299. */\n  readonly ok: boolean;\n  \
+         /** The URL it came from, after redirects. */\n  readonly url: string;\n  \
+         readonly redirected: boolean;\n  \
+         readonly headers: Headers;\n  \
+         readonly bodyUsed: boolean;\n  \
+         text(): Promise<string>;\n  \
+         json(): Promise<any>;\n}\n\
+         /** An HTTP request to a host the manifest's `[net] hosts` lists; needs `net.fetch` in the app's grant. Anything else, a redirect to an unlisted host included, rejects with a `TypeError`. */\n\
+         declare function fetch(url: string | { url: string }, init?: RequestInit): Promise<Response>;\n\n\
          declare module \"dreamer\" {\n  \
          export const app: typeof globalThis.app;\n  \
          export const ui: Dreamer.Ui;\n  \

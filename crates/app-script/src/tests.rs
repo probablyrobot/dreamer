@@ -32,6 +32,8 @@ impl Host {
                 name: "app.ts".into(),
                 js: js.into(),
                 fixture: None,
+                hosts: Vec::new(),
+                net: app_model::NetGrant::default(),
                 input,
                 output,
             },
@@ -224,6 +226,7 @@ app({
     let limits = Limits {
         call: Duration::from_secs(5),
         memory: 16 << 20,
+        ..Limits::default()
     };
     let mut h = Host::start(js, &[], limits);
     h.until("drew", |h| h.view.is_some()).await;

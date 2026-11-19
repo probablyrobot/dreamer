@@ -108,8 +108,15 @@ app({
 - **Types**: `types/dreamer.d.ts` (`dream app types DIR` writes it again
   after an update) declares every method's parameters and results
   (`Dreamer.Pane`, `Dreamer.JobRecord`, ...) and every builder.
-- **Globals**: `setTimeout`, `setInterval`, `console`, and the language's
-  built-ins. No `fetch`, files, or processes.
+- **Globals**: `setTimeout`, `setInterval`, `console`, `fetch`, and the
+  language's built-ins. No files or processes.
+- **`fetch`** reaches only the hosts the manifest lists, with the
+  `net.fetch` capability: `capabilities = ["net.fetch"]` and
+  `[net] hosts = ["api.example.com", "localhost:8080"]` (a host alone
+  means its scheme's port). Method, headers, a string body; the response
+  has `status`, `ok`, `headers`, `text()`, `json()`. Anything else,
+  a redirect to an unlisted host included, rejects with a `TypeError`.
+  Each request may take 30 s and its body 8 MiB.
 - **Limits**: each entry into the app may run 250 ms; the heap is
   64 MiB. Errors show on the status line; the app keeps running.
 
