@@ -56,6 +56,9 @@ pub fn arguments(spec: &Spec) -> Vec<String> {
             ),
             format!("mcp_servers.dreamer.args=[{}]", args.join(",")),
             format!("mcp_servers.dreamer.env={{{}}}", env.join(",")),
+            // Otherwise each Dreamer tool call comes as an elicitation,
+            // which is declined; the server is already narrowed to the grant.
+            crate::codex::APPROVE_DREAMER_TOOLS.to_owned(),
         ] {
             a.push("-c".to_owned());
             a.push(kv);
