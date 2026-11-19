@@ -102,8 +102,8 @@ fn beside(name: &str, package: &str) -> PathBuf {
     p
 }
 
-fn setup() -> Setup {
-    let root = PathBuf::from(format!("/tmp/drm-script-{}", std::process::id()));
+fn setup(name: &str) -> Setup {
+    let root = PathBuf::from(format!("/tmp/drm-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("root");
     let tmux = TmuxServer::start(120, 30, "/bin/sh").expect("tmux");
@@ -194,7 +194,7 @@ async fn input(c: &client::Client, i: api::AppInput) {
 
 #[test]
 fn a_typescript_app_works_under_its_grant_and_survives_a_runaway_handler() {
-    let s = setup();
+    let s = setup("script");
     let dir = s.root.join("pkg");
     package(&dir, APP_TS);
     let out = check(&dir);
@@ -410,4 +410,148 @@ fn dream_app_check_reports_type_stripping_errors_with_positions() {
     assert!(err.contains("app.ts:2:"), "{err}");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A script app whose manifest declares `net.fetch` and lists a local
+/// server; a button fetches from it.
+fn fetch_package(dir: &Path, port: u16) {
+    std::fs::create_dir_all(dir).expect("dir");
+    let manifest = format!(
+        "schema_version = 2\nid = \"test.fetch\"\nversion = \"0.1.0\"\ntitle = \"Fetch\"\n\
+         capabilities = [\"net.fetch\"]\n\n[script]\nsource = \"app.ts\"\n\n\
+         [net]\nhosts = [\"127.0.0.1:{port}\"]\n"
+    );
+    std::fs::write(dir.join("app.toml"), manifest).expect("manifest");
+    let ts = format!(
+        r#"import {{ app, ui }} from "dreamer";
+type State = {{ said: string }};
+app({{
+  state: {{ said: "ready" }} as State,
+  view(s: State) {{
+    return ui.column({{ key: "main", children: [
+      ui.button({{ key: "go", label: "Fetch", onPress: async (): Promise<Partial<State>> => {{
+        try {{
+          const r = await fetch("http://127.0.0.1:{port}/hi");
+          return {{ said: "got " + r.status + " " + (await r.text()) }};
+        }} catch (e) {{
+          return {{ said: "refused: " + (e as Error).message }};
+        }}
+      }} }}),
+      ui.text({{ key: "said", text: s.said }}),
+    ] }});
+  }},
+}});
+"#
+    );
+    std::fs::write(dir.join("app.ts"), ts).expect("app.ts");
+}
+
+/// A server on 127.0.0.1 that answers every request with `hello`.
+fn serve_hello() -> u16 {
+    use std::io::{BufRead, BufReader, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = l.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let mut r = BufReader::new(s.try_clone().expect("clone"));
+            let mut line = String::new();
+            while r.read_line(&mut line).is_ok_and(|n| n > 0) && !line.trim().is_empty() {
+                line.clear();
+            }
+            let mut w = s;
+            let _ = w.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\nconnection: close\r\n\r\nhello",
+            );
+        }
+    });
+    port
+}
+
+/// `fetch` follows the grant the daemon gave the launch, not what the
+/// manifest declares: launched without `net.fetch` it is refused, and
+/// launched with it the same package fetches.
+#[test]
+fn fetch_needs_net_fetch_in_the_launch_grant() {
+    let s = setup("fetch");
+    let port = serve_hello();
+    let dir = s.root.join("pkg");
+    fetch_package(&dir, port);
+    let out = check(&dir);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let socket = s.root.join("rt/dreamerd.sock");
+        let c = client::Client::connect(&socket, "test")
+            .await
+            .expect("connect");
+        let Response::TmuxTopology(t) = call(&c, Request::TmuxTopology(Default::default())).await
+        else {
+            panic!("not a topology");
+        };
+        for (methods, expect) in [
+            (
+                vec!["tmux.topology"],
+                "refused: fetch: this app's grant does not include `net.fetch`",
+            ),
+            (vec!["net.fetch"], "got 200 hello"),
+        ] {
+            let Response::AppsLaunch(launched) = call(
+                &c,
+                Request::AppsLaunch(api::LaunchApp {
+                    app_id: "test.fetch".into(),
+                    grant: Some(api::Grant {
+                        methods: methods.into_iter().map(String::from).collect(),
+                        ..api::Grant::default()
+                    }),
+                    argv: vec![APP.into(), dir.join("app.toml").display().to_string()],
+                    session: t.sessions[0].id,
+                    ..api::LaunchApp::default()
+                }),
+            )
+            .await
+            else {
+                panic!("not launched");
+            };
+            let pane = launched.pane;
+            let mut mirror = view_tree::Mirror::default();
+            let mut after = 0;
+            // The daemon has the tree once the host registered, and the
+            // host asks for its grant as it connects.
+            tree_until(&c, pane, &mut mirror, &mut after, "drew", |f| {
+                said(f) == Some("ready")
+            })
+            .await;
+            input(
+                &c,
+                api::AppInput {
+                    pane,
+                    select: Some(0),
+                    node: Some("go".into()),
+                    ..api::AppInput::default()
+                },
+            )
+            .await;
+            let f = tree_until(&c, pane, &mut mirror, &mut after, "fetched", |f| {
+                said(f) != Some("ready")
+            })
+            .await;
+            assert_eq!(said(&f), Some(expect));
+            input(
+                &c,
+                api::AppInput {
+                    pane,
+                    key: "q".into(),
+                    ..api::AppInput::default()
+                },
+            )
+            .await;
+        }
+    });
 }

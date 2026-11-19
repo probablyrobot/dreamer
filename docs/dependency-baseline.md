@@ -105,6 +105,58 @@ with spaces, so positions in the JavaScript are positions in the
 TypeScript without a source map; it lives in the CLI only, so the app
 host carries no TypeScript tooling.
 
+## HTTP client (`fetch` in script apps)
+
+| Crate | Version | Used by | License |
+| --- | --- | --- | --- |
+| `ureq` (default features off; `rustls`) | `=3.5.2`, with `ureq-proto` 0.7.1 | `app-script`: `fetch` in script apps, in `dreamer-termapp` | MIT OR Apache-2.0 |
+| `rustls` (through `ureq`, provider `ring`) | `0.23.46`, with `rustls-webpki` 0.103.17 and `rustls-pki-types` 1.16.0 | same | Apache-2.0 OR ISC OR MIT (`rustls-webpki`: ISC) |
+| `ring` | `0.17.14` | same: rustls's cryptography | Apache-2.0 AND ISC |
+| `webpki-roots` | `1.0.12` | same: the root certificates | CDLA-Permissive-2.0 |
+
+All four were already in `Cargo.lock` (CEF's build tooling resolves the
+same versions), so adding `fetch` added no new package to the lock.
+`ureq` is pinned exactly; the others are pinned by the lock and move only
+with it.
+
+Why these:
+
+- **A small blocking client, off the app's thread.** A script app's
+  engine runs on a thread of its own with a single-threaded Tokio runtime
+  for its timers. `fetch` sends each request on a thread of its own and
+  hands the answer back to the engine, as a call's answer comes back
+  from the daemon, so neither a slow server nor the client's I/O can
+  hold up the app or count against its 250 ms per entry. A blocking
+  client fits that with no second async runtime: `ureq` is HTTP/1.1 only,
+  has a timeout for the whole exchange (`timeout_global`, which covers
+  connecting, redirects as we follow them, and reading the body), a body
+  size limit, and can stop following redirects (`max_redirects(0)`) so
+  `fetch` checks each one against the manifest's hosts before connecting.
+  `reqwest` and `hyper` would bring a multi-threaded runtime, HTTP/2, and
+  several times the code for features `fetch` does not offer.
+- **rustls with `ring`.** Pure Rust TLS with a small amount of C and
+  assembly in `ring`, built by the `cc` crate with the C compiler every
+  target already needs (QuickJS and Luau are built the same way). The
+  other rustls provider, `aws-lc-rs`, builds a much larger C library and
+  can need CMake (and, for some configurations, NASM or Go), which the
+  headless builds, the ARM64 Linux container included, do not otherwise
+  need. No OpenSSL or system TLS library is linked, so the
+  macOS and Linux builds behave the same.
+- **`webpki-roots`, not the platform verifier.** The roots are Mozilla's
+  set, compiled in: the same on every machine, with nothing read from the
+  system at run time and no Security.framework or OpenSSL probing.
+  The cost is that a certificate from a private or corporate CA that the
+  system trusts is refused, and the roots move only when Dreamer is
+  updated (`webpki-roots` is part of the lock). `rustls-platform-verifier`
+  would accept those CAs but adds a platform-specific dependency tree per
+  target; it can be switched to if apps need it.
+
+`cargo xtask policy` allows `ureq` in one product file,
+`crates/app-script/src/fetch.rs`, and nowhere else; that file opens no
+sockets of its own. None of these crates pulls in a UI framework, GPU, or
+font crate (`cargo xtask headless --check`). Only `dreamer-termapp` links
+them; the server, the CLI, and the desktop do not.
+
 ## GPUI
 
 | Item | Value |

@@ -718,6 +718,8 @@ app({
   build.
 - **One file.** The only module an app can import is `dreamer`; its
   `app`, `ui`, and `dreamer` are also globals.
+- **The network.** `fetch` reaches only the hosts `[net]` lists, and only
+  with the `net.fetch` capability ([`fetch`](#fetch)).
 
 ### The app
 
@@ -755,10 +757,10 @@ app keeps running.
 ### `dreamer`, `ui`, and the other globals
 
 The globals are `app`, `ui`, `dreamer`, `setTimeout`, `setInterval`,
-`clearTimeout`, `clearInterval`, and `console` (`log`, `warn`, `error`),
-beside the language's own built-ins (`JSON`, `Math`, `Date`, `Promise`,
-...). There is no `fetch`, no file system, no processes, and no way to
-load other code.
+`clearTimeout`, `clearInterval`, `console` (`log`, `warn`, `error`), and
+`fetch` (with `Headers` and `Response`), beside the language's own
+built-ins (`JSON`, `Math`, `Date`, `Promise`, ...). There is no file
+system, no processes, and no way to load other code.
 
 - **`dreamer`** has one async function for each API method the app's
   capabilities allow, named as in the API: `dreamer.tmux.topology()`,
@@ -795,13 +797,93 @@ load other code.
   an app has at most 1000 timers pending.
 - **`console`** lines are kept as a process app's standard error is.
 
+### `fetch`
+
+`fetch` sends HTTP and HTTPS requests, only to the hosts the manifest
+lists, and only when the app's capabilities include `net.fetch`:
+
+```toml
+capabilities = ["net.fetch"]
+
+[script]
+source = "app.ts"
+
+[net]
+hosts = ["api.example.com", "localhost:8080", "127.0.0.1:3000", "[::1]:8080"]
+```
+
+```ts
+const r = await fetch("https://api.example.com/v1/items?limit=10", {
+  headers: { Authorization: "Bearer " + token },
+});
+if (!r.ok) throw new Error("items: " + r.status);
+const items = await r.json();
+```
+
+- **Hosts.** Each entry is a name or an address, with an optional port.
+  `api.example.com` allows that host on its scheme's own port (443 for
+  `https`, 80 for `http`); `localhost:8080` allows that port only. There
+  are no wildcards: `api.example.com` does not allow `example.com` or
+  `x.api.example.com`. A name is matched as written (case aside), before
+  it is resolved.
+- **The capability.** `fetch` needs `net.fetch` in the grant the app
+  actually holds: the one the daemon gave its launch, as it answers the
+  app host's registration. Declaring it in the manifest puts it in the
+  grant `dream app run` and the desktop ask for, so it is shown with the
+  app's other capabilities. A launch that grants less makes `fetch`
+  reject, saying the app's grant does not include `net.fetch`, whatever
+  the manifest says. Until the host has connected and knows the grant,
+  `fetch` is refused too. The app host checks the grant and the hosts
+  itself: the requests never pass through the daemon. A package with
+  `[net]` needs `net.fetch`, and `net.fetch` needs `[net]`; only a script
+  app has either.
+- **Refused.** A URL that is not `http` or `https`, a host or port the
+  manifest does not list, a user name or password in the URL, a method
+  other than `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, or
+  `OPTIONS`, a body on a `GET` or `HEAD`, and setting a header that
+  belongs to the connection (`Host`, `Content-Length`, `Connection`,
+  `Transfer-Encoding`, `Proxy-*`, ...) reject with a `TypeError` whose
+  message says why, before any connection is made.
+- **Redirects** are followed (at most 20), and each one is checked as the
+  first request was: a redirect to a host the manifest does not list is
+  refused, and the request fails. A 303, or a 301 or 302 answering a
+  `POST`, goes on as a `GET` without its body; `Authorization` and
+  `Cookie` are not sent to another origin. `redirect: "error"` fails on a
+  redirect instead, and `redirect: "manual"` answers with the redirect.
+- **In a preview** (`--preview`, `dream app preview`, and a test's
+  replay) there is no launch, so the package's declared capabilities
+  stand for the grant, and requests are sent to the same hosts: there
+  are no fixtures for `fetch`.
+- **What it takes:** a URL (or an object with `url`), and `method`,
+  `headers` (an object, `[name, value]` pairs, or `Headers`), `body` (a
+  string; `JSON.stringify` an object), and `redirect`. There is no
+  `signal`, streaming, `FormData`, or binary body.
+- **What it answers:** a `Response` with `status`, `statusText`, `ok`,
+  `url` (after redirects), `redirected`, `headers` (names in lowercase;
+  `get`, `has`, `forEach`, `entries`), and the body, read whole, through
+  `text()` or `json()`, once. The body is read as UTF-8. An HTTP error
+  status is a response, not a rejection; a network failure, a refused
+  request, or a limit rejects with a `TypeError`.
+- **Limits.** A request, with its redirects and its body, may take 30 s;
+  past that it fails with `no complete answer within 30000 ms`. A body
+  may be 8 MiB, sent or received; a larger response fails with `the
+  response is larger than ... bytes`. An app may have 16 requests in
+  flight. Requests run on threads of their own, never the app's, so a
+  slow server never counts against the 250 ms an entry into the app may
+  run; the answer then enters the app like any other, under that limit.
+- **The client.** HTTP/1.1 over TLS (rustls), checking certificates
+  against the Mozilla root store Dreamer is built with, not the
+  system's: a certificate from a private CA is refused. No proxy from the
+  environment is used, no cookies are kept, nothing is cached, and no
+  compressed encoding is asked for.
+
 ### Types and `dream app check`
 
 `dreamer.d.ts` declares everything above for editors: each `dreamer.*`
 method with its parameters and result as interfaces (`Dreamer.Pane`,
 `Dreamer.TopologyParams`, ...), enums as unions of their names, the `ui`
-builders and each one's properties, `app()`, the timers, `console`, and
-the module `"dreamer"`. It is generated from the API schema
+builders and each one's properties, `app()`, the timers, `console`,
+`fetch` (with `Headers` and `Response`), and the module `"dreamer"`. It is generated from the API schema
 ([api.md](api.md)) and the builders' list, so it matches this version of
 Dreamer. Parameters are declared with every field optional, as the API
 takes them; results with the fields the API always sends as required.
@@ -876,9 +958,9 @@ The app runs on a thread of its own, never on the pane's drawing and
 input, so a slow app cannot hold up the pane or the desktop.
 
 - **Time:** every entry into the app (starting it, a handler, a call's
-  answer, a timer, an event, drawing the view, with the promise
-  reactions each queues) may run 250 ms. Code still running then is
-  interrupted.
+  answer, a fetch's answer, a timer, an event, drawing the view, with
+  the promise reactions each queues) may run 250 ms. Code still running
+  then is interrupted. A `fetch` has its own limits ([`fetch`](#fetch)).
 - **Memory:** the app's heap may hold 64 MiB, and its stack 1 MiB.
 - **Failing.** When code is interrupted, memory runs out, the code does
   not load, `app()` is not called, or `view` throws or returns something

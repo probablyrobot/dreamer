@@ -25,6 +25,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -81,6 +82,62 @@ pub fn allowed(capabilities: &[String], method: &str) -> Result<(), CallError> {
     }
 }
 
+/// Whether a script app's `fetch` is granted: by `net.fetch` in the grant
+/// its host's connection holds, as the daemon says (its answer to
+/// `apps.register` or `grants.narrow`, else `grants.current`), not by
+/// what its manifest declares, so a launch that grants less allows no
+/// `fetch`. Until the host knows the grant, `fetch` is refused. A preview
+/// or a test runs the package on the user's behalf with no launch, so
+/// there it is what the manifest declares ([`NetGrant::declared`]).
+///
+/// The host keeps one for the app's life and the engine reads it at each
+/// request, so an engine started again sees the grant already known.
+#[derive(Debug, Clone, Default)]
+pub struct NetGrant(Arc<AtomicU8>);
+
+// Its states; 0 (the default) is not known yet.
+const NET_GRANTED: u8 = 1;
+const NET_REFUSED: u8 = 2;
+
+impl NetGrant {
+    /// As the capabilities `methods` declare: for a preview or a test.
+    pub fn declared(methods: &[String]) -> NetGrant {
+        let g = NetGrant::default();
+        g.declare(methods);
+        g
+    }
+
+    fn declare(&self, methods: &[String]) {
+        let on = allowed(methods, crate::manifest::NET_FETCH).is_ok();
+        self.0
+            .store(if on { NET_GRANTED } else { NET_REFUSED }, Ordering::SeqCst);
+    }
+
+    /// From the grant the host's connection holds; none when the daemon
+    /// did not say, which grants nothing.
+    pub fn set(&self, grant: Option<&api::Grant>) {
+        let on = grant
+            .is_some_and(|g| g.owner || allowed(&g.methods, crate::manifest::NET_FETCH).is_ok());
+        self.0
+            .store(if on { NET_GRANTED } else { NET_REFUSED }, Ordering::SeqCst);
+    }
+
+    /// Whether `fetch` may run; why not otherwise.
+    pub fn check(&self) -> Result<(), String> {
+        match self.0.load(Ordering::SeqCst) {
+            NET_GRANTED => Ok(()),
+            NET_REFUSED => Err(format!(
+                "fetch: this app's grant does not include `{}`",
+                crate::manifest::NET_FETCH
+            )),
+            _ => Err(
+                "fetch: the app's grant is not known yet (it is not connected to the daemon)"
+                    .into(),
+            ),
+        }
+    }
+}
+
 /// What the program's output reader saw.
 enum Out {
     Line(String),
@@ -102,6 +159,11 @@ pub struct EngineStart {
     pub js: String,
     /// Data for a preview, as JSON: the app draws it instead of loading.
     pub fixture: Option<String>,
+    /// The hosts its `fetch` may reach, as the manifest's `[net]` lists
+    /// them; `fetch` also needs `net.fetch` in the app's grant (`net`).
+    pub hosts: Vec<String>,
+    /// Whether `fetch` is granted, as the host learns it.
+    pub net: NetGrant,
     /// Messages from the host, one line each.
     pub input: mpsc::Receiver<String>,
     pub output: mpsc::UnboundedSender<EngineOut>,
@@ -215,9 +277,10 @@ fn start(
     live: bool,
     engine: Option<&Engine>,
     fixture: Option<String>,
+    net: &NetGrant,
 ) -> Result<Running, String> {
     let running = if m.is_script() {
-        start_script(dir, m, engine, fixture)?
+        start_script(dir, m, engine, fixture, net)?
     } else {
         start_program(dir, m)?
     };
@@ -256,6 +319,7 @@ fn start_script(
     m: &Manifest,
     engine: Option<&Engine>,
     fixture: Option<String>,
+    net: &NetGrant,
 ) -> Result<Running, String> {
     let engine = engine.ok_or("this host does not run script apps")?;
     let (name, js) = script_js(dir, m)?;
@@ -266,6 +330,8 @@ fn start_script(
         name,
         js,
         fixture,
+        hosts: m.net_hosts(),
+        net: net.clone(),
         input,
         output,
     })?;
@@ -636,7 +702,21 @@ pub async fn run_process_with(
     let mut view: Option<Frame> = None;
     let mut stopped: Option<String> = None;
     let mut status: Option<String> = None;
-    let mut running = match start(&dir, &manifest, false, engine.as_ref(), fixture.clone()) {
+    // `fetch`: granted by the daemon's grant once connected; in a
+    // preview, as the package declares.
+    let net = if preview.is_some() {
+        NetGrant::declared(&methods)
+    } else {
+        NetGrant::default()
+    };
+    let mut running = match start(
+        &dir,
+        &manifest,
+        false,
+        engine.as_ref(),
+        fixture.clone(),
+        &net,
+    ) {
         Ok(r) => Some(r),
         Err(e) => {
             stopped = Some(e);
@@ -874,7 +954,8 @@ pub async fn run_process_with(
                                 reloads += 1;
                                 status = None;
                                 stopped = None;
-                                match start(&dir, &m, false, engine.as_ref(), fx.clone()) {
+                                net.declare(&m.methods());
+                                match start(&dir, &m, false, engine.as_ref(), fx.clone(), &net) {
                                     Ok(r) => running = Some(r),
                                     Err(e) => stopped = Some(e),
                                 }
@@ -893,6 +974,12 @@ pub async fn run_process_with(
                     match connect(&endpoint, &mut registered, &[], &methods).await {
                         Ok(c) => {
                             app.embeds.grant = crate::embeds::grant_of(&c.client).await;
+                            // A registered app may not hold
+                            // `grants.current`; the daemon's answer to
+                            // registering says its grant.
+                            if preview.is_none() {
+                                net.set(c.grant.as_ref().or(app.embeds.grant.as_ref()));
+                            }
                             terminals = Some(crate::embeds::Follower::start(c.client.clone()));
                             if registered && hosting.is_none() {
                                 hosting = Some(host_views(c.client.clone()));
@@ -933,7 +1020,14 @@ pub async fn run_process_with(
                         "q" | "Esc" => break,
                         "r" => {
                             let live = conn.is_some() && preview.is_none();
-                            match start(&dir, &manifest, live, engine.as_ref(), fixture.clone()) {
+                            match start(
+                                &dir,
+                                &manifest,
+                                live,
+                                engine.as_ref(),
+                                fixture.clone(),
+                                &net,
+                            ) {
                                 Ok(r) => {
                                     running = Some(r);
                                     stopped = None;
@@ -1034,7 +1128,8 @@ pub async fn preview_process(path: &Path, engine: Option<Engine>) -> Result<Fram
     let fixture = load_fixture(&dir, &manifest)?;
     let calls = call_fixtures(&dir)?;
     let methods = manifest.methods();
-    let mut r = start(&dir, &manifest, false, engine.as_ref(), fixture)?;
+    let net = NetGrant::declared(&methods);
+    let mut r = start(&dir, &manifest, false, engine.as_ref(), fixture, &net)?;
     let mut view = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let result = loop {
@@ -1174,7 +1269,8 @@ pub async fn replay_process(
     let fixture = load_fixture(&dir, &manifest)?;
     let calls = call_fixtures(&dir)?;
     let methods = manifest.methods();
-    let mut r = start(&dir, &manifest, false, engine.as_ref(), fixture)?;
+    let net = NetGrant::declared(&methods);
+    let mut r = start(&dir, &manifest, false, engine.as_ref(), fixture, &net)?;
     let mut view = None;
     let result = async {
         let mut quit = matches!(

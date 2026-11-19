@@ -67,7 +67,95 @@ pub struct Manifest {
     /// `root`, script, or process) is a web app: its view is the page.
     #[serde(default)]
     pub web: Option<WebSpec>,
+    /// The hosts a script app's `fetch` may reach. Needs the `net.fetch`
+    /// capability.
+    #[serde(default)]
+    pub net: Option<NetSpec>,
 }
+
+/// What a script app's `fetch` may reach.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetSpec {
+    /// Hosts, each a name or address with an optional port:
+    /// `api.example.com` (the scheme's own port), `localhost:8080`,
+    /// `127.0.0.1:3000`, `[::1]:8080`. No scheme, path, or wildcard.
+    #[serde(default)]
+    pub hosts: Vec<String>,
+}
+
+/// One host a script app's `fetch` may reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetHost {
+    /// Lowercase; an IPv6 address in brackets.
+    pub host: String,
+    /// The one port allowed; without it, the scheme's own (443 or 80).
+    pub port: Option<u16>,
+}
+
+impl NetHost {
+    /// Read a `[net] hosts` entry.
+    pub fn parse(entry: &str) -> Result<NetHost, String> {
+        let bad = || {
+            format!(
+                "`{entry}` is not a host (a name or address with an optional port: `api.example.com`, `localhost:8080`)"
+            )
+        };
+        let (host, port) = if let Some(rest) = entry.strip_prefix('[') {
+            let (addr, after) = rest.split_once(']').ok_or_else(bad)?;
+            if addr.is_empty() || !addr.chars().all(|c| c.is_ascii_hexdigit() || c == ':') {
+                return Err(bad());
+            }
+            let port = match after {
+                "" => None,
+                p => Some(p.strip_prefix(':').ok_or_else(bad)?),
+            };
+            (format!("[{}]", addr.to_ascii_lowercase()), port)
+        } else {
+            let (host, port) = match entry.split_once(':') {
+                Some((h, p)) => (h, Some(p)),
+                None => (entry, None),
+            };
+            let label_ok = |l: &str| {
+                !l.is_empty()
+                    && l.len() <= 63
+                    && !l.starts_with('-')
+                    && !l.ends_with('-')
+                    && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            };
+            if host.len() > 253 || !host.split('.').all(label_ok) {
+                return Err(bad());
+            }
+            (host.to_ascii_lowercase(), port)
+        };
+        let port = match port {
+            None => None,
+            Some(p) if p.bytes().all(|b| b.is_ascii_digit()) => match p.parse::<u16>() {
+                Ok(n) if n > 0 => Some(n),
+                _ => return Err(bad()),
+            },
+            Some(_) => return Err(bad()),
+        };
+        Ok(NetHost { host, port })
+    }
+
+    /// Whether a request over `scheme` (`http` or `https`) to `host` on
+    /// `port` is to this host. `host` is lowercase; an IPv6 address in
+    /// brackets.
+    pub fn allows(&self, scheme: &str, host: &str, port: u16) -> bool {
+        let own = match scheme {
+            "https" => 443,
+            "http" => 80,
+            _ => return false,
+        };
+        self.host == host && self.port.unwrap_or(own) == port
+    }
+}
+
+/// The capability a script app needs for `fetch`, to the hosts its
+/// manifest's `[net]` lists. Not an API method: the app host checks it,
+/// and the daemon never sees the requests.
+pub const NET_FETCH: &str = "net.fetch";
 
 /// An app's web pages.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -1078,6 +1166,7 @@ impl Manifest {
                         || c == api::INSPECT_WEB
                         || c == api::FORWARD_WEB
                         || c == PROCESS
+                        || c == NET_FETCH
                 }
             };
             if !known {
@@ -1157,6 +1246,7 @@ impl Manifest {
         if let Some(w) = &self.web {
             self.validate_web(w, &mut errors);
         }
+        self.validate_net(&mut errors);
         if let Some(m) = &self.module
             && (m.is_empty() || m.contains("..") || m.starts_with('/'))
         {
@@ -1270,6 +1360,46 @@ impl Manifest {
                 ));
             }
         }
+    }
+
+    /// `[net]` and `net.fetch` go together, and only in a script app.
+    fn validate_net(&self, errors: &mut Vec<String>) {
+        let fetch = self.capabilities.iter().any(|c| c == NET_FETCH);
+        match &self.net {
+            Some(_) if !self.is_script() => {
+                errors.push("net: the hosts are for a script app's `fetch` ([script])".into());
+            }
+            Some(n) => {
+                if n.hosts.is_empty() {
+                    errors.push("net.hosts: list the hosts `fetch` may reach".into());
+                }
+                for h in &n.hosts {
+                    if let Err(e) = NetHost::parse(h) {
+                        errors.push(format!("net.hosts: {e}"));
+                    }
+                }
+                if !fetch {
+                    errors.push(format!(
+                        "net: `fetch` needs the `{NET_FETCH}` capability; add \"{NET_FETCH}\" to capabilities"
+                    ));
+                }
+            }
+            None if fetch && self.is_script() => errors.push(format!(
+                "capabilities: `{NET_FETCH}` needs the hosts it may reach, in [net] hosts"
+            )),
+            None if fetch => errors.push(format!(
+                "capabilities: `{NET_FETCH}` is for a script app ([script])"
+            )),
+            None => {}
+        }
+    }
+
+    /// The hosts a script app's `fetch` may reach, as `[net]` lists them.
+    pub fn net_hosts(&self) -> Vec<String> {
+        self.net
+            .as_ref()
+            .map(|n| n.hosts.clone())
+            .unwrap_or_default()
     }
 
     fn validate_process(&self, errors: &mut Vec<String>) {
@@ -1944,6 +2074,97 @@ source = "app.ts"
                 .any(|e| e.contains("data: a script app's code does this")),
             "{errors:?}"
         );
+    }
+
+    #[test]
+    fn fetch_needs_the_capability_and_the_hosts_and_only_in_a_script_app() {
+        let script = r#"
+schema_version = 2
+id = "local.weather"
+version = "0.1.0"
+title = "Weather"
+capabilities = ["net.fetch"]
+
+[script]
+source = "app.ts"
+
+[net]
+hosts = ["api.example.com", "localhost:8080", "[::1]:3000"]
+"#;
+        let m = Manifest::parse(script).expect("valid");
+        // The capability is part of what a launch grants, so the user
+        // sees it; the host checks it.
+        assert_eq!(m.methods(), ["net.fetch"]);
+        assert_eq!(m.net_hosts().len(), 3);
+        for (bad, why) in [
+            (
+                script.replace("capabilities = [\"net.fetch\"]", ""),
+                "`fetch` needs the `net.fetch` capability",
+            ),
+            (
+                script.replace("[net]\nhosts = [", "[nope]\nhosts = ["),
+                "unknown field",
+            ),
+            (
+                script.replace(
+                    "\n[net]\nhosts = [\"api.example.com\", \"localhost:8080\", \"[::1]:3000\"]",
+                    "",
+                ),
+                "needs the hosts it may reach",
+            ),
+            (
+                script.replace("\"api.example.com\"", "\"https://api.example.com\""),
+                "is not a host",
+            ),
+            (
+                script.replace("\"api.example.com\"", "\"*.example.com\""),
+                "is not a host",
+            ),
+            (
+                script.replace("\"localhost:8080\"", "\"localhost:0\""),
+                "is not a host",
+            ),
+            (
+                script.replace("\"localhost:8080\"", "\"localhost/x\""),
+                "is not a host",
+            ),
+            (
+                script
+                    .replace(
+                        "[script]\nsource = \"app.ts\"",
+                        "[process]\ncommand = [\"./x\"]",
+                    )
+                    .replace("[\"net.fetch\"]", "[\"net.fetch\", \"process\"]"),
+                "for a script app's `fetch`",
+            ),
+        ] {
+            let errors = match Manifest::parse(&bad) {
+                Ok(_) => panic!("valid: {bad}"),
+                Err(e) => e,
+            };
+            assert!(errors.iter().any(|e| e.contains(why)), "{why}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn a_net_host_allows_its_port_or_the_schemes_own() {
+        let h = NetHost::parse("API.example.com").expect("host");
+        assert_eq!(h.host, "api.example.com");
+        assert!(h.allows("https", "api.example.com", 443));
+        assert!(h.allows("http", "api.example.com", 80));
+        assert!(!h.allows("https", "api.example.com", 8443));
+        assert!(!h.allows("https", "example.com", 443));
+        assert!(!h.allows("ftp", "api.example.com", 443));
+        let l = NetHost::parse("127.0.0.1:8080").expect("host");
+        assert!(l.allows("http", "127.0.0.1", 8080));
+        assert!(!l.allows("http", "127.0.0.1", 80));
+        let v6 = NetHost::parse("[::1]:3000").expect("host");
+        assert!(v6.allows("http", "[::1]", 3000));
+        for bad in [
+            "", "a b", "[::1", "[]", "x:", "x:+80", "x:70000", "-x.com", "a..b",
+        ] {
+            assert!(NetHost::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

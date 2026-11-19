@@ -1,10 +1,11 @@
 // The app host's side of an app.ts, run in the app's own context before
 // the app. It defines the only globals an app gets (`app`, `ui`,
-// `dreamer`, the timers, and `console`) and returns the hooks the host
+// `dreamer`, the timers, `console`, and `fetch`) and returns the hooks the host
 // drives it through, which the app cannot reach.
 //
 // `host` holds the host's functions: call(id, method, paramsJson),
-// timer(id, ms), cancel(id), log(text), fatal(text).
+// timer(id, ms), cancel(id), fetch(id, url, method, headersJson, body,
+// redirect) (an error to reject with, or null), log(text), fatal(text).
 (function (host, methods, info, fixture) {
   "use strict";
 
@@ -163,6 +164,109 @@
     return Object.freeze(o);
   };
   freeze(dreamer);
+
+  // `fetch`, to the hosts the manifest lists: a subset of the standard
+  // one. The host checks the request and sends it off the app's thread;
+  // its answer comes back through `fetched`.
+  class Headers {
+    constructor(init) {
+      this._m = new Map();
+      if (init === undefined || init === null) return;
+      const pairs =
+        init instanceof Headers
+          ? init.entries()
+          : Array.isArray(init) || typeof init[Symbol.iterator] === "function"
+            ? init
+            : Object.entries(init);
+      for (const p of pairs) {
+        const [n, v] = Array.from(p);
+        this.append(n, v);
+      }
+    }
+    append(n, v) {
+      n = String(n).toLowerCase();
+      v = String(v);
+      const old = this._m.get(n);
+      this._m.set(n, old === undefined ? v : old + ", " + v);
+    }
+    set(n, v) {
+      this._m.set(String(n).toLowerCase(), String(v));
+    }
+    get(n) {
+      const v = this._m.get(String(n).toLowerCase());
+      return v === undefined ? null : v;
+    }
+    has(n) {
+      return this._m.has(String(n).toLowerCase());
+    }
+    delete(n) {
+      this._m.delete(String(n).toLowerCase());
+    }
+    forEach(fn, self) {
+      for (const [n, v] of this.entries()) fn.call(self, v, n, this);
+    }
+    *entries() {
+      yield* Array.from(this._m.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    }
+    *keys() {
+      for (const [n] of this.entries()) yield n;
+    }
+    *values() {
+      for (const [, v] of this.entries()) yield v;
+    }
+    [Symbol.iterator]() {
+      return this.entries();
+    }
+  }
+
+  class Response {
+    constructor(head, body) {
+      this.status = head.status;
+      this.statusText = head.statusText;
+      this.ok = head.status >= 200 && head.status < 300;
+      this.url = head.url;
+      this.redirected = head.redirected;
+      this.headers = new Headers(head.headers);
+      this.bodyUsed = false;
+      this._body = body;
+    }
+    _take() {
+      if (this.bodyUsed) return Promise.reject(new TypeError("fetch: the body was already read"));
+      this.bodyUsed = true;
+      const b = this._body;
+      this._body = "";
+      return Promise.resolve(b);
+    }
+    text() {
+      return this._take();
+    }
+    json() {
+      return this._take().then((t) => JSON.parse(t));
+    }
+  }
+
+  const fetches = new Map();
+  let nextFetch = 0;
+  function fetch(input, init) {
+    try {
+      init = init || {};
+      const url = String(input !== null && typeof input === "object" && "url" in input ? input.url : input);
+      const method = init.method === undefined ? "GET" : String(init.method);
+      const headers = Array.from(new Headers(init.headers).entries());
+      let body = init.body;
+      if (body === undefined || body === null) body = null;
+      else if (typeof body !== "string") {
+        throw new TypeError("fetch: a body is a string (JSON.stringify an object)");
+      }
+      const redirect = init.redirect === undefined ? "follow" : String(init.redirect);
+      const id = ++nextFetch;
+      const refused = host.fetch(id, url, method, JSON.stringify(headers), body, redirect);
+      if (refused != null) throw new TypeError(refused);
+      return new Promise((resolve, reject) => fetches.set(id, { resolve, reject }));
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
 
   // Timers, run by the host.
   const timers = new Map();
@@ -395,6 +499,9 @@
     clearTimeout,
     clearInterval: clearTimeout,
     console,
+    fetch,
+    Headers,
+    Response,
   })) {
     Object.defineProperty(g, k, { value: v, enumerable: false, writable: false });
   }
@@ -426,6 +533,15 @@
       pending.delete(id);
       if (message == null) p.resolve(ok == null ? null : JSON.parse(ok));
       else p.reject(new DreamerError(message, code));
+    },
+    // A request's answer: its status, URL, and headers as JSON with its
+    // body, or why it failed.
+    fetched(id, head, body, error) {
+      const p = fetches.get(id);
+      if (!p) return;
+      fetches.delete(id);
+      if (error != null) p.reject(new TypeError(error));
+      else p.resolve(new Response(JSON.parse(head), body));
     },
     fire(id) {
       const t = timers.get(id);

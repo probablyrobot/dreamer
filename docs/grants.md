@@ -305,6 +305,18 @@ that a connection with `hosts.*` and every pane, but not `web.forward`,
 is refused both `hosts.forward` and a `web.open` of `localhost:PORT` on a
 host.
 
+### `fetch` in script apps
+
+A script app's `fetch` ([termapp.md](termapp.md#fetch)) needs `net.fetch`
+in the grant its launch was given, and reaches only the hosts its
+manifest's `[net]` lists. `net.fetch` is not a method: the daemon never
+sees the requests. The app host reads the grant from the daemon's answer
+to `apps.register` (or `grants.narrow`) and checks it, and every request
+and redirect against the hosts, before it connects. A manifest that
+declares `net.fetch` gets it into the grant `dream app run` and the
+desktop ask for; a launch granted less refuses `fetch`. Until the host
+knows its grant, `fetch` is refused.
+
 ### What this does and does not protect
 
 The socket is owner-only, so any process of the same user can still
