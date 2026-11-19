@@ -1414,12 +1414,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let reports = root.join("target").join("gate").join(platform.name());
     let record = reuse_record_path(&reports, &tree);
     let last_tree_path = reports.join("worktree-tree");
+    // Later stages run what the reused ones built; with the build output
+    // gone (cleared to free disk, say) nothing is reused.
+    let built = root.join("target/gate/worktree/target/debug").is_dir();
     let reusable = match mode {
-        Mode::Full => reusable_stages(
+        Mode::Full if built => reusable_stages(
             std::fs::read_to_string(&record).ok().as_deref(),
             &tree,
             std::fs::read_to_string(&last_tree_path).ok().as_deref(),
         ),
+        Mode::Full => Vec::new(),
         // A new staged run of this tree decides afresh what it passed.
         Mode::Staged => {
             let _ = std::fs::remove_file(&record);
