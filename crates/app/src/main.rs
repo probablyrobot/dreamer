@@ -1704,6 +1704,8 @@ struct Args {
     web: Option<std::path::PathBuf>,
     /// The web pane smoke's second run: the browser after a restart.
     web_restart: bool,
+    /// The web color smoke (`web.color`), and where its captures go.
+    web_color: Option<std::path::PathBuf>,
     /// The web pane smoke's first run: Dreamer Web added from a web pane.
     web_install: bool,
     /// Parts of the workspace to open at start (`sidebar`, `palette`).
@@ -1749,6 +1751,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 a.smoke = true;
                 a.workspace = true;
                 a.web = Some(value("--smoke-web")?.into());
+            }
+            "--smoke-web-color" => {
+                a.smoke = true;
+                a.workspace = true;
+                a.web_color = Some(value("--smoke-web-color")?.into());
             }
             "--smoke-web-restart" => {
                 a.smoke = true;
@@ -1972,6 +1979,9 @@ fn main() -> ExitCode {
             let run = match (args.restore, args.clipboard, &args.web) {
                 _ if args.web_restart => workspace::SmokeRun::WebRestart,
                 _ if args.web_install => workspace::SmokeRun::WebInstall,
+                _ if args.web_color.is_some() => {
+                    workspace::SmokeRun::WebColor(args.web_color.clone().unwrap_or_default())
+                }
                 (_, _, Some(out)) => workspace::SmokeRun::Web(out.clone()),
                 (true, _, _) => workspace::SmokeRun::Restore,
                 (false, true, _) => workspace::SmokeRun::Clipboard,
