@@ -1997,6 +1997,54 @@
         }
       }
     },
+    "ForwardAck": {
+      "fields": {
+        "bytes": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "stream": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "ForwardData": {
+      "fields": {
+        "data": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "eof": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "error": {
+          "repeated": false,
+          "type": "string"
+        },
+        "stream": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "ForwardOpen": {
+      "fields": {
+        "port": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "ForwardStream": {
+      "fields": {
+        "stream": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
     "Grant": {
       "fields": {
         "all_panes": {
@@ -2070,6 +2118,38 @@
         "tmux_socket_path": {
           "repeated": false,
           "type": "string"
+        }
+      }
+    },
+    "HostForward": {
+      "fields": {
+        "name": {
+          "repeated": false,
+          "type": "string"
+        },
+        "port": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "HostForwardRef": {
+      "fields": {
+        "forward": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "HostForwarded": {
+      "fields": {
+        "forward": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "local_port": {
+          "repeated": false,
+          "type": "u32"
         }
       }
     },
@@ -5030,16 +5110,22 @@
     "filters.pause": "FilterRef",
     "filters.remove": "FilterRef",
     "filters.resume": "FilterRef",
+    "forward.ack": "ForwardAck",
+    "forward.close": "ForwardStream",
+    "forward.open": "ForwardOpen",
+    "forward.write": "ForwardData",
     "grants.current": "Empty",
     "grants.narrow": "Grant",
     "hosts.call": "HostCall",
     "hosts.connect": "HostConnect",
     "hosts.disconnect": "HostRef",
+    "hosts.forward": "HostForward",
     "hosts.install": "InstallParams",
     "hosts.install_plan": "InstallPlanParams",
     "hosts.list": "Empty",
     "hosts.reconnect": "HostRef",
     "hosts.subscribe": "HostSubscribe",
+    "hosts.unforward": "HostForwardRef",
     "hosts.upgrade": "UpgradeParams",
     "hosts.watch": "HostRef",
     "jobs.artifacts": "JobRef",
@@ -5348,5 +5434,5 @@
       }
     }
   },
-  "version": "1.59"
+  "version": "1.60"
 }

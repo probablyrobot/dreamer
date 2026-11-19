@@ -80,7 +80,9 @@ connection.
 Outgoing frames wait in two queues. Priority frames (input, requests,
 responses, events) always go first. Bulk messages (checkpoints, history,
 artifacts) are cut into chunks, so priority traffic waits behind at most one
-chunk. A single socket still has transport-level head-of-line blocking; the
+chunk. The daemon takes forward data (`forward.data`, see
+[remote.md](remote.md#forwards)) into the bulk queue only when both queues
+are empty, so it never waits ahead of anything else. A single socket still has transport-level head-of-line blocking; the
 queues only decide the order in which Dreamer writes.
 
 ## Evolution

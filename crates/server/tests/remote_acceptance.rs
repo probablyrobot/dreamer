@@ -131,6 +131,48 @@ fn cut_ssh(home: &std::path::Path) {
     let _ = Command::new("pkill").args(["-9", "-f", &pattern]).status();
 }
 
+/// A web server on the host's loopback: every request gets `body`.
+async fn serve(listener: tokio::net::TcpListener, body: std::sync::Arc<Vec<u8>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    while let Ok((mut s, _)) = listener.accept().await {
+        let body = body.clone();
+        tokio::spawn(async move {
+            let (mut req, mut b) = (Vec::new(), [0u8; 1024]);
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut b).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => req.extend_from_slice(&b[..n]),
+                }
+            }
+            let head = format!(
+                "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = s.write_all(head.as_bytes()).await;
+            let _ = s.write_all(&body).await;
+            let _ = s.shutdown().await;
+        });
+    }
+}
+
+/// `GET /` from 127.0.0.1:`port`, as a page would: the response's body.
+async fn get(port: u32) -> Vec<u8> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port as u16))
+        .await
+        .expect("the forward's port");
+    s.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .await
+        .expect("request");
+    let mut all = Vec::new();
+    s.read_to_end(&mut all).await.expect("response");
+    let at = all
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a response head");
+    all.split_off(at + 4)
+}
+
 fn far_pid(accept: &std::path::Path) -> Option<u32> {
     std::fs::read_to_string(accept.join("far/rt/dreamerd.lock"))
         .ok()
@@ -307,6 +349,86 @@ async fn remote_acceptance_through_real_openssh() {
             "acceptance: no automatic replay of uncertain input: not run (the call went through before the cut took effect)"
         );
     }
+
+    // A web pane's page on the host's loopback (a server listening only
+    // there), reached from this machine's loopback through the SSH
+    // connection the coordinator holds, while the host's terminal keeps
+    // printing on time.
+    let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("server");
+    let port = server.local_addr().expect("addr").port();
+    let mut page =
+        b"<!doctype html><title>far loopback</title><p>served on the host's loopback\n".to_vec();
+    let mut x = 0x2545_f491_u32;
+    while page.len() < 4 << 20 {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        page.push(b'a' + (x % 26) as u8);
+    }
+    let page = std::sync::Arc::new(page);
+    tokio::spawn(serve(server, page.clone()));
+    let Response::HostsForward(f) = call(
+        &c,
+        Request::HostsForward(api::HostForward {
+            name: "accept".into(),
+            port: u32::from(port),
+        }),
+    )
+    .await
+    else {
+        panic!("forward");
+    };
+    assert_ne!(f.local_port, u32::from(port));
+    let t = Instant::now();
+    // Pages are fetched, and checked byte for byte, until the echoes are
+    // done.
+    let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let pages = {
+        let (busy, page) = (busy.clone(), page.clone());
+        tokio::spawn(async move {
+            let mut n = 0;
+            while busy.load(std::sync::atomic::Ordering::SeqCst) || n == 0 {
+                let got = get(f.local_port).await;
+                assert!(got == *page, "the page arrived changed");
+                n += got.len();
+            }
+            n
+        })
+    };
+    let mut worst = Duration::ZERO;
+    for i in 0..5 {
+        let at = Instant::now();
+        type_far(&format!("echo fwd-$(({i}+40))"));
+        let want = format!("\nfwd-{}", i + 40);
+        pump(&mut rx, &mut replica, &mut seen, &want, |r, _| {
+            r.text().contains(&want)
+        })
+        .await;
+        worst = worst.max(at.elapsed());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    let bytes = pages.await.expect("pages");
+    println!(
+        "acceptance: {bytes} bytes of a page on the host's loopback in {} ms; slowest terminal echo meanwhile {} ms",
+        t.elapsed().as_millis(),
+        worst.as_millis()
+    );
+    assert!(worst < Duration::from_secs(2), "terminal output waited");
+    let _ = call(
+        &c,
+        Request::HostsUnforward(api::HostForwardRef { forward: f.forward }),
+    )
+    .await;
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", f.local_port as u16))
+            .await
+            .is_err(),
+        "the forward outlived its hold"
+    );
+    passed("a page on the host's loopback through a forward over SSH");
 
     // A large transfer does not starve interactive calls: a new view's
     // checkpoint of a pane holding megabytes of history, sent as chunked

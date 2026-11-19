@@ -101,6 +101,7 @@ bytes. `dream rpc` connects standard input and output to it.
 | `tmux.topology` | `TopologyUpdate` |
 | `events.batch` | `EventBatch` |
 | `messages.deliver` | `MessageDelivery` |
+| `forward.data` | `ForwardData` (a bulk record on the native wire) |
 
 The topic table is part of the schema (`notifications:` in `api.yaml`), so
 the Rust SDK (`api::Notification`), OpenRPC (`x-notifications`), and the

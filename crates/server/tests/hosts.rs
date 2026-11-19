@@ -809,3 +809,214 @@ async fn a_host_link_outlives_every_local_client_and_ssh_cuts_find_the_same_daem
     assert_eq!(s.remote_instance, first.0, "a different remote daemon");
     assert!(seen.ends.is_empty(), "{:?}", seen.ends);
 }
+
+/// A web server on the "host's" loopback: every request gets `body`.
+async fn serve(listener: tokio::net::TcpListener, body: std::sync::Arc<Vec<u8>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    while let Ok((mut s, _)) = listener.accept().await {
+        let body = body.clone();
+        tokio::spawn(async move {
+            let (mut req, mut b) = (Vec::new(), [0u8; 1024]);
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut b).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => req.extend_from_slice(&b[..n]),
+                }
+            }
+            let head = format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            let _ = s.write_all(head.as_bytes()).await;
+            let _ = s.write_all(&body).await;
+            let _ = s.shutdown().await;
+        });
+    }
+}
+
+/// `GET /` from 127.0.0.1:`port`: the response's body.
+async fn get(port: u32) -> std::io::Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port as u16)).await?;
+    s.write_all(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .await?;
+    let mut all = Vec::new();
+    s.read_to_end(&mut all).await?;
+    let at = all
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| std::io::Error::other("no response head"))?;
+    Ok(all.split_off(at + 4))
+}
+
+async fn forward(c: &Client, port: u16) -> Result<api::HostForwarded, client::ClientError> {
+    match c
+        .call(Request::HostsForward(api::HostForward {
+            name: "devbox".into(),
+            port: u32::from(port),
+        }))
+        .await?
+    {
+        Response::HostsForward(f) => Ok(f),
+        _ => panic!("forward"),
+    }
+}
+
+/// Whether anything accepts on 127.0.0.1:`port`.
+async fn accepting(port: u32) -> bool {
+    tokio::net::TcpStream::connect(("127.0.0.1", port as u16))
+        .await
+        .is_ok()
+}
+
+/// An address of this machine that is not the loopback, when it has one.
+fn outside_address() -> Option<std::net::IpAddr> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forward_reaches_the_hosts_loopback_and_closes_with_its_last_hold() {
+    let two = Two::new();
+    let mut c = two.client().await;
+    let mut rx = c.pushed().expect("pushed");
+    assert_eq!(
+        connect_devbox(&two, &c).await.state,
+        api::LinkState::Live as i32
+    );
+    // The "host" here is this machine: its server listens on the loopback
+    // only, and the forward reaches it through the host's daemon.
+    let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("server");
+    let port = server.local_addr().expect("addr").port();
+    let mut body = Vec::with_capacity(8 << 20);
+    let mut x = 0x2545_f491_u32;
+    while body.len() < 8 << 20 {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        body.extend_from_slice(&x.to_le_bytes());
+    }
+    let body = std::sync::Arc::new(body);
+    tokio::spawn(serve(server, body.clone()));
+
+    // A connection with an agent's reach to hosts, but not web.forward.
+    let agent = two.client().await;
+    let _ = agent
+        .call(Request::GrantsNarrow(api::Grant {
+            methods: vec!["hosts.*".into(), "web.open".into()],
+            all_panes: true,
+            ..api::Grant::default()
+        }))
+        .await
+        .expect("narrow");
+    let e = forward(&agent, port).await.expect_err("no web.forward");
+    assert!(e.to_string().contains("hosts.forward"), "{e}");
+    let open = Request::HostsCall(api::HostCall {
+        name: "devbox".into(),
+        method: "web.open".into(),
+        payload: Request::WebOpen(api::WebOpen {
+            url: format!("localhost:{port}"),
+            ..api::WebOpen::default()
+        })
+        .encode(),
+    });
+    let e = agent.call(open).await.expect_err("a page on the loopback");
+    assert!(e.to_string().contains("web.forward"), "{e}");
+
+    // The owner's forward: a loopback port of this machine, and only that.
+    let f = forward(&c, port).await.expect("forward");
+    assert_ne!(f.local_port, u32::from(port));
+    match outside_address() {
+        Some(ip) => assert!(
+            tokio::net::TcpStream::connect((ip, f.local_port as u16))
+                .await
+                .is_err(),
+            "the forward answers on {ip}"
+        ),
+        None => println!("no address besides the loopback: outside reach not checked"),
+    }
+
+    // Four 8 MiB pages at once, byte for byte, while the host's terminal
+    // keeps showing what it prints.
+    let sub = subscribe_devbox(&c).await;
+    let mut replica = Replica::new(0);
+    replica.begin(&sub).expect("begin");
+    let mut seen = Seen::default();
+    two.type_far("echo ready-$((1+1))");
+    pump(&mut rx, &mut replica, &mut seen, "ready-2", |r, _| {
+        r.text().contains("\nready-2")
+    })
+    .await;
+    let started = Instant::now();
+    let busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let downloads: Vec<_> = (0..4)
+        .map(|_| {
+            let (body, busy, port) = (body.clone(), busy.clone(), f.local_port);
+            tokio::spawn(async move {
+                let mut bytes = 0;
+                while busy.load(std::sync::atomic::Ordering::SeqCst) || bytes == 0 {
+                    let got = get(port).await.expect("page");
+                    assert!(got == *body, "a page arrived changed ({} bytes)", got.len());
+                    bytes += got.len();
+                }
+                bytes
+            })
+        })
+        .collect();
+    let mut worst = Duration::ZERO;
+    for i in 0..10 {
+        let t = Instant::now();
+        two.type_far(&format!("echo mark-$(({i}+100))"));
+        let want = format!("\nmark-{}", i + 100);
+        pump(&mut rx, &mut replica, &mut seen, &want, |r, _| {
+            r.text().contains(&want)
+        })
+        .await;
+        worst = worst.max(t.elapsed());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    let mut bytes = 0;
+    for d in downloads {
+        bytes += d.await.expect("downloads");
+    }
+    println!(
+        "forward: {bytes} bytes in {} ms; slowest terminal echo meanwhile {} ms",
+        started.elapsed().as_millis(),
+        worst.as_millis()
+    );
+    assert!(worst < Duration::from_secs(2), "terminal output waited");
+
+    // Holds of one port share its listener, which closes with the last.
+    let again = forward(&c, port).await.expect("second hold");
+    assert_eq!(again.local_port, f.local_port);
+    let unforward = |id| Request::HostsUnforward(api::HostForwardRef { forward: id });
+    c.call(unforward(f.forward)).await.expect("release one");
+    assert_eq!(
+        get(f.local_port).await.expect("still held").len(),
+        body.len()
+    );
+    c.call(unforward(again.forward))
+        .await
+        .expect("release last");
+    assert!(
+        !accepting(f.local_port).await,
+        "the listener outlived its holds"
+    );
+    assert!(c.call(unforward(again.forward)).await.is_err());
+
+    // A connection's holds go with it.
+    let other = two.client().await;
+    let held = forward(&other, port).await.expect("forward");
+    assert!(accepting(held.local_port).await);
+    drop(other);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while accepting(held.local_port).await {
+        assert!(
+            Instant::now() < deadline,
+            "a closed connection's forward stayed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

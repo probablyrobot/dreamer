@@ -125,14 +125,26 @@ fn app_drawn<'a>(p: &'a api::Pane, via: &replica::Via) -> Option<&'a str> {
 }
 
 /// The web page a pane's view draws instead of its terminal: its
-/// placeholder's page, for a pane of the local tmux (pages run on this
-/// machine, so a host's `localhost` would be the wrong one). `None` draws
-/// the terminal, which shows the placeholder's text.
+/// placeholder's page. Pages run on this machine: in a host's session, a
+/// page on the host's loopback is reached through a forward
+/// ([`forwarded`]), and a `file:` page (the host's file, not one here) is
+/// not drawn. `None` draws the terminal, which shows the placeholder's
+/// text.
 fn web_drawn<'a>(p: &'a api::Pane, via: &replica::Via) -> Option<&'a str> {
-    if *via != replica::Via::Local {
-        return None;
-    }
-    p.web.as_deref()
+    let url = p.web.as_deref()?;
+    let file = url
+        .get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("file:"));
+    (*via == replica::Via::Local || !file).then_some(url)
+}
+
+/// The host and port a page in a host's session is forwarded from: a page
+/// on that host's loopback. `None` for a local pane, and for any other
+/// page.
+fn forwarded(url: &str, via: &replica::Via) -> Option<(String, u16)> {
+    let host = via.host()?;
+    let port = workspace_config::browser::loopback_port(url)?;
+    Some((host.to_owned(), port))
 }
 
 pub(crate) struct Workspace {
@@ -1130,12 +1142,17 @@ impl Workspace {
 
     /// Where pane `pane` is drawn in this window now (window coordinates),
     /// and for an app pane the version of its view tree in the frame drawn
-    /// last; `None` when this window does not show it.
+    /// last; `None` when this window does not show it. `pane` is a pane of
+    /// the local daemon's tmux: a host's window shows none of those (its
+    /// pane numbers are the host's).
     pub(crate) fn pane_shown(
         &self,
         pane: u32,
         cx: &gpui::App,
     ) -> Option<(gpui::Bounds<gpui::Pixels>, Option<u64>)> {
+        if self.via != replica::Via::Local {
+            return None;
+        }
         let p = self.visible().into_iter().find(|p| p.id == pane)?;
         let (origin, (cw, ch)) = (self.origin?, self.cell?);
         let w = self.active_window()?;
@@ -1771,8 +1788,15 @@ impl Workspace {
         if let Some(url) = web_drawn(p, &self.via) {
             let (url, ws) = (url.to_owned(), cx.entity().downgrade());
             let kept = (p.title.clone(), p.web_scroll_x, p.web_scroll_y);
-            let view = cx
-                .new(|cx| crate::web::WebPane::new(pane, url.clone(), kept, None, ws, window, cx));
+            let forward = forwarded(&url, &self.via);
+            let socket = self.socket.clone();
+            let view = cx.new(|cx| {
+                let mut w = crate::web::WebPane::new(pane, url.clone(), kept, None, ws, window, cx);
+                if let Some((host, port)) = forward {
+                    w.forward_from(host, port, socket, cx);
+                }
+                w
+            });
             return Some(PaneView::Web { view, url });
         }
         if let Some(instance) = app_drawn(p, &self.via) {
@@ -1931,8 +1955,11 @@ impl Workspace {
                 .as_ref()
                 .and_then(|t| t.panes.iter().find(|p| p.id == *id))
                 .is_some_and(|p| {
+                    let page = web_drawn(p, &self.via);
                     app_drawn(p, &self.via) == view.app()
-                        && web_drawn(p, &self.via).is_some() == view.web().is_some()
+                        && page.is_some() == view.web().is_some()
+                        && page.and_then(|u| forwarded(u, &self.via))
+                            == view.web().and_then(|u| forwarded(u, &self.via))
                 })
         };
         // A web pane's address in tmux changed: its page follows (it
@@ -1946,8 +1973,11 @@ impl Workspace {
                 .as_ref()
                 .and_then(|t| t.panes.iter().find(|p| p.id == *id))
                 .and_then(|p| web_drawn(p, &self.via));
+            // A page that moves to another forwarded port gets a new view
+            // (and forward) instead.
             if let (PaneView::Web { view, url }, Some(now)) = (view, now)
                 && url != now
+                && forwarded(url, &self.via) == forwarded(now, &self.via)
             {
                 now.clone_into(url);
                 view.update(cx, |w, _| w.follow(now));

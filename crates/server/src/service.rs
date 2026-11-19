@@ -1638,6 +1638,33 @@ impl api::Service for DaemonService {
         self.0.hosts.call(p).await
     }
 
+    async fn hosts_forward(&self, p: api::HostForward) -> Result<api::HostForwarded, RpcError> {
+        let caller = crate::leases::caller().ok_or_else(|| for_a_connection("hosts.forward"))?;
+        self.0.hosts.forward(p, caller.conn).await
+    }
+
+    async fn hosts_unforward(&self, p: api::HostForwardRef) -> Result<api::Empty, RpcError> {
+        let caller = crate::leases::caller().ok_or_else(|| for_a_connection("hosts.unforward"))?;
+        self.0.hosts.forwards.release(p.forward, caller.conn)?;
+        Ok(api::Empty {})
+    }
+
+    async fn forward_open(&self, _: api::ForwardOpen) -> Result<api::ForwardStream, RpcError> {
+        Err(for_a_connection("forward.open"))
+    }
+
+    async fn forward_write(&self, _: api::ForwardData) -> Result<api::Empty, RpcError> {
+        Err(for_a_connection("forward.write"))
+    }
+
+    async fn forward_ack(&self, _: api::ForwardAck) -> Result<api::Empty, RpcError> {
+        Err(for_a_connection("forward.ack"))
+    }
+
+    async fn forward_close(&self, _: api::ForwardStream) -> Result<api::Empty, RpcError> {
+        Err(for_a_connection("forward.close"))
+    }
+
     async fn actions_get(&self, p: api::ActionQuery) -> Result<api::ActionRecord, RpcError> {
         self.0.actions.lock().await.get(&p.id)
     }

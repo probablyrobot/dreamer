@@ -1076,6 +1076,7 @@ impl Manifest {
                     method_info(c).is_some()
                         || c == api::MANAGE_FILTERS
                         || c == api::INSPECT_WEB
+                        || c == api::FORWARD_WEB
                         || c == PROCESS
                 }
             };

@@ -103,9 +103,27 @@ fn targets(r: &Request) -> Targets {
         | Request::HostsWatch(_)
         | Request::HostsInstallPlan(_)
         | Request::HostsInstall(_)
-        | Request::HostsUpgrade(_) => Targets::Everything,
+        | Request::HostsUpgrade(_)
+        | Request::HostsForward(_)
+        | Request::HostsUnforward(_)
+        | Request::ForwardOpen(_)
+        | Request::ForwardWrite(_)
+        | Request::ForwardAck(_)
+        | Request::ForwardClose(_) => Targets::Everything,
         _ => Targets::Nothing,
     }
+}
+
+/// Whether a call forwarded to a host opens or loads a page at that host's
+/// loopback, which the desktop reaches through a forward.
+fn opens_loopback(c: &api::HostCall) -> bool {
+    let url = match Request::decode(&c.method, &c.payload) {
+        Ok(Request::WebOpen(p)) => p.url,
+        Ok(Request::WebNavigate(p)) => p.url,
+        _ => return false,
+    };
+    let url = workspace_config::browser::web_address(&url).unwrap_or(url);
+    workspace_config::browser::loopback_port(&url).is_some()
 }
 
 /// Whether `wanted` is within `current`: a connection may give up
@@ -190,6 +208,10 @@ impl Grant {
         if api::INSPECT_METHODS.contains(&method) {
             return self.method_allowed(api::INSPECT_WEB);
         }
+        // So is reaching a host's loopback ports.
+        if method == api::method::HOSTS_FORWARD || method == api::method::HOSTS_UNFORWARD {
+            return self.method_allowed(api::FORWARD_WEB);
+        }
         self.0.owner
             || self.0.methods.iter().any(|m| {
                 m == method
@@ -236,6 +258,15 @@ impl Grant {
         if !self.method_allowed(method) {
             return Err(forbidden(format!(
                 "`{method}` is not in this connection's grant"
+            )));
+        }
+        if let Request::HostsCall(c) = request
+            && opens_loopback(c)
+            && !self.method_allowed(api::FORWARD_WEB)
+        {
+            return Err(forbidden(format!(
+                "a page at a host's loopback address needs `{}` in this connection's grant",
+                api::FORWARD_WEB
             )));
         }
         if g.all_panes {
@@ -379,6 +410,49 @@ mod tests {
         assert!(g.check("web.read", &read(3)).is_ok());
         let e = g.check("web.read", &read(4)).expect_err("other pane");
         assert!(e.message.contains("%4"), "{e}");
+    }
+
+    #[test]
+    fn a_hosts_loopback_is_reached_only_under_web_forward() {
+        let forward = Request::HostsForward(api::HostForward {
+            name: "devbox".into(),
+            port: 3000,
+        });
+        let page = |url: &str| {
+            Request::HostsCall(api::HostCall {
+                name: "devbox".into(),
+                method: "web.open".into(),
+                payload: Request::WebOpen(api::WebOpen {
+                    url: url.into(),
+                    ..api::WebOpen::default()
+                })
+                .encode(),
+            })
+        };
+        let mut agent = narrow(&["hosts.*", "web.open"], &[]);
+        agent.0.all_panes = true;
+        let e = agent
+            .check("hosts.forward", &forward)
+            .expect_err("no web.forward");
+        assert!(e.message.contains("hosts.forward"), "{e}");
+        let e = agent
+            .check("hosts.call", &page("localhost:3000"))
+            .expect_err("a page at the host's loopback");
+        assert!(e.message.contains("web.forward"), "{e}");
+        assert!(
+            agent
+                .check("hosts.call", &page("https://example.com/"))
+                .is_ok()
+        );
+        agent.0.methods.push(api::FORWARD_WEB.into());
+        assert!(agent.check("hosts.forward", &forward).is_ok());
+        assert!(
+            agent
+                .check("hosts.call", &page("http://127.0.0.1:3000/"))
+                .is_ok()
+        );
+        assert!(!narrow(&["hosts.forward"], &[]).method_allowed("hosts.forward"));
+        assert!(Grant::owner().check("hosts.forward", &forward).is_ok());
     }
 
     #[test]

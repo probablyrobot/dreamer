@@ -33,6 +33,13 @@ pub const MANAGE_FILTERS: &str = "filters.manage";
 /// an agent's default grant does not. See `docs/grants.md`.
 pub const INSPECT_WEB: &str = "web.inspect";
 
+/// Not a method: the grant entry that lets a connection other than the
+/// owner reach a remote host's loopback ports: `hosts.forward`, and a web
+/// page opened or loaded on a host (through `hosts.call`) at a loopback
+/// address, which the desktop reaches through a forward. See
+/// `docs/grants.md`.
+pub const FORWARD_WEB: &str = "web.forward";
+
 /// The methods [`INSPECT_WEB`] allows; a grant listing one of them by name
 /// does not.
 pub const INSPECT_METHODS: [&str; 4] = [

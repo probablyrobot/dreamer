@@ -80,6 +80,65 @@ pub fn web_address(typed: &str) -> Result<String, String> {
     }
 }
 
+/// An `http` or `https` URL whose host is the loopback (`localhost`,
+/// `127.x.y.z`, or `[::1]`): what comes before the port, the port (the
+/// scheme's default when none is written), the scheme's default port, and
+/// what follows the port. `None` for anything else, and for a URL with
+/// user information.
+fn loopback(url: &str) -> Option<(&str, u16, u16, &str)> {
+    let lower = url.get(..8).unwrap_or(url).to_ascii_lowercase();
+    let (start, default) = if lower.starts_with("http://") {
+        (7, 80)
+    } else if lower.starts_with("https://") {
+        (8, 443)
+    } else {
+        return None;
+    };
+    let end = url[start..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |i| start + i);
+    let authority = &url[start..end];
+    let (host, port) = if authority.starts_with('[') {
+        let close = authority.find(']')?;
+        authority.split_at(close + 1)
+    } else {
+        match authority.rfind(':') {
+            Some(i) => authority.split_at(i),
+            None => (authority, ""),
+        }
+    };
+    let lower = host.to_ascii_lowercase();
+    let v4 = lower.strip_prefix("127.").is_some_and(|r| {
+        r.split('.').count() == 3 && r.split('.').all(|o| o.parse::<u8>().is_ok())
+    });
+    if !(lower == "localhost" || lower == "[::1]" || v4) {
+        return None;
+    }
+    let port = match port.strip_prefix(':') {
+        Some(p) => p.parse::<u16>().ok().filter(|p| *p != 0)?,
+        None if port.is_empty() => default,
+        None => return None,
+    };
+    Some((&url[..start + host.len()], port, default, &url[end..]))
+}
+
+/// The port of a URL on the loopback: a page that a web pane in a remote
+/// host's session reaches through a forward to that host.
+pub fn loopback_port(url: &str) -> Option<u16> {
+    loopback(url).map(|(_, port, _, _)| port)
+}
+
+/// The same loopback URL on another port, written without one when that
+/// is the scheme's default. `None` when `url` is not on the loopback.
+pub fn on_port(url: &str, port: u16) -> Option<String> {
+    let (before, _, default, after) = loopback(url)?;
+    Some(if port == default {
+        format!("{before}{after}")
+    } else {
+        format!("{before}:{port}{after}")
+    })
+}
+
 /// Chromium's profile directory: `web/` in the desktop's state directory.
 pub fn web_dir() -> Option<PathBuf> {
     crate::desktop_state::state_dir().map(|d| d.join("web"))
@@ -145,7 +204,44 @@ fn remove(dir: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CLEAR_ASKED, Cleared, LOCK, PROFILE, clear, clear_if_asked, web_address};
+    use super::{
+        CLEAR_ASKED, Cleared, LOCK, PROFILE, clear, clear_if_asked, loopback_port, on_port,
+        web_address,
+    };
+
+    #[test]
+    fn loopback_urls_move_to_another_port_and_nothing_else_does() {
+        assert_eq!(loopback_port("http://localhost:3000/a?b#c"), Some(3000));
+        assert_eq!(loopback_port("https://LOCALHOST/"), Some(443));
+        assert_eq!(loopback_port("http://127.0.0.1"), Some(80));
+        assert_eq!(loopback_port("http://[::1]:8080/x"), Some(8080));
+        for not in [
+            "http://example.com:3000/",
+            "http://localhost.example.com/",
+            "http://127.0.0.1.nip.io/",
+            "http://user@localhost:3000/",
+            "http://localhost:0/",
+            "http://localhost:99999/",
+            "http://localhost:x/",
+            "file:///tmp/a",
+            "ftp://localhost/",
+        ] {
+            assert_eq!(loopback_port(not), None, "{not}");
+        }
+        assert_eq!(
+            on_port("http://localhost:3000/a?b", 49152).as_deref(),
+            Some("http://localhost:49152/a?b")
+        );
+        assert_eq!(
+            on_port("http://[::1]/x", 5000).as_deref(),
+            Some("http://[::1]:5000/x")
+        );
+        assert_eq!(
+            on_port("http://localhost:49152/", 80).as_deref(),
+            Some("http://localhost/")
+        );
+        assert_eq!(on_port("https://example.com/", 1), None);
+    }
 
     #[test]
     fn a_typed_address_becomes_the_url_it_means_or_is_refused() {
