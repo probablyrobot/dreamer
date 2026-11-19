@@ -534,13 +534,7 @@ it across desktop restarts all come from tmux.
   Dreamer draws, so while the command palette or the context menu is
   open, web panes show a snapshot of the page taken as it opened, and the
   live page comes back when it closes. Pages are drawn in sRGB, as the
-  terminals are, so the snapshot has the live page's colors. With
-  `web.color: display` ([settings.md](settings.md#web-page-colors)) they
-  are drawn in the display's color space instead, so wide-gamut colors
-  (Display P3 images, video, CSS `color(display-p3 ...)`) keep their
-  saturation, and the snapshot is converted from that space to sRGB
-  before it is drawn. Chromium takes the setting as it starts, so a
-  change applies once Dreamer restarts.
+  terminals are, so the snapshot has the live page's colors.
 - **Focus.** Clicking the page focuses its pane, here and in tmux; keys
   then go to the page. Focusing another pane (a click, the palette, the
   find bar, the drawer, tmux's prefix keys) takes the keys back, and
@@ -1111,24 +1105,6 @@ configuration directories:
   is a `smoke: web inspect:` line, and the gate wants all five, the site
   must have got the form with the name typed, and the screenshot must be
   mostly the form's `#3fa34d`;
-- then [page colors](settings.md#web-page-colors), in two more runs of
-  the desktop (`dreamer --smoke-web-color DIR`), since Chromium takes
-  `web.color` as it starts: the gate writes `web.color: srgb`, then
-  `display`, into its private configuration before each. Each run opens
-  a page whose background is `color(display-p3 1 0 0)`, zooms its pane,
-  and captures it live (`color-live.png`) and as its snapshot under the
-  palette (`color-palette.png`), in `srgb/` and `display/`. With `srgb`
-  the live page must be drawn as the window draws the same sRGB color,
-  its snapshot, within 30 per channel. The window's layer is not color
-  matched, so on a wide-gamut display that is the screen's full red;
-  how it compares with sRGB's red as a color-managed view shows it is
-  printed. With
-  `display` the snapshot must match the live page within 30 per channel,
-  and on a wide-gamut display the live page must not be sRGB's red (the
-  color is beyond sRGB). On a display that is not wide-gamut that one
-  check is a `smoke: web color not run:` line instead. Each passed check
-  is a `smoke: web color:` line, and the gate wants three, counting a
-  check not run;
 - the gate checks each capture as the smoke's `checks.txt` lists: the
   page's color covers at least 90% of the pane's rectangle (of the
   zoomed pane, or of the part beside the palette) and at most 1% of the

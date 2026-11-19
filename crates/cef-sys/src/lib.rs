@@ -7,9 +7,8 @@
 //! may depend on this crate; the headless executables never link CEF
 //! (`cargo xtask headless --check`).
 //!
-//! Without the `cef` feature the crate holds only the Core Graphics color
-//! calls on macOS ([`color`]), so workspace builds that do not ask for web
-//! panes need no CEF distribution.
+//! Without the `cef` feature the crate is empty, so workspace builds that do
+//! not ask for web panes need no CEF distribution.
 #![allow(unsafe_code)]
 
 #[cfg(feature = "cef")]
@@ -17,6 +16,3 @@ pub use cef;
 
 #[cfg(all(feature = "cef", target_os = "macos"))]
 pub mod mac;
-
-#[cfg(target_os = "macos")]
-pub mod color;

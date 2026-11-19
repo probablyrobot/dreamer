@@ -24,9 +24,8 @@ The file is the one place to configure Dreamer, and changes apply live.
   `dreamer.yaml not applied: …` with the reason until the file reads
   again. The daemon logs it and publishes a `config.changed` event with
   state `refused`.
-- **Not live.** Provider settings apply to the next agent run, agent
-  harness settings to the next session, and `web.color` once Dreamer
-  restarts.
+- **Not live.** Provider settings apply to the next agent run, and agent
+  harness settings to the next session.
 
 Two commands help with edits:
 - `dream config schema` lists every key: its kind and range, default,
@@ -77,7 +76,6 @@ web:
   url: https://example.com/dreamer-web/  # optional; default: the release
   downloads:
     folder: ~/Downloads                  # optional; default ~/Downloads (Linux: the XDG download folder)
-  color: srgb                            # srgb (default) or display; applies once Dreamer restarts
 ```
 
 ## Font
@@ -354,27 +352,6 @@ download.
 web:
   downloads:
     folder: ~/Downloads/web
-```
-
-## Web page colors
-
-`web.color` is the color space web panes draw pages in
-([desktop.md](desktop.md#web-panes)):
-- `srgb` (the default) draws them in sRGB, as the terminals and the
-  chrome are. Wide-gamut colors (Display P3 images, video, CSS
-  `color(display-p3 ...)`) are clamped to sRGB, so on a P3 display they
-  look less saturated than in Safari or Chrome.
-- `display` draws them in the display's own color space, so those colors
-  keep their saturation on a wide-gamut display. The snapshot shown while
-  the palette or a menu covers a page is converted to sRGB before it is
-  drawn.
-
-Chromium reads it when it starts, with the first web pane, so a change
-applies once Dreamer restarts.
-
-```yaml
-web:
-  color: display
 ```
 
 ## Memory

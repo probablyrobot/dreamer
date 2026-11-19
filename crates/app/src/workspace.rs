@@ -3023,10 +3023,6 @@ pub(crate) enum SmokeRun {
     Web(PathBuf),
     /// `--smoke-web-restart`: the browser's profile after a restart.
     WebRestart,
-    /// `--smoke-web-color DIR`: a Display P3 color, live and as the
-    /// page's snapshot, in the color space `web.color` names.
-    #[cfg_attr(not(feature = "web"), allow(dead_code))]
-    WebColor(PathBuf),
     /// `--smoke-web-install`: with no Dreamer Web, the first-start offer,
     /// and the component added from a web pane's button.
     WebInstall,
@@ -3400,18 +3396,11 @@ pub(crate) fn open_via(
                 .spawn(async move |cx| smoke::web::restart(any, weak, cx).await)
                 .detach(),
             #[cfg(feature = "web")]
-            SmokeRun::WebColor(out) => cx
-                .spawn(async move |cx| smoke::web::color(any, weak, out, cx).await)
-                .detach(),
-            #[cfg(feature = "web")]
             SmokeRun::WebInstall => cx
                 .spawn(async move |cx| smoke::web::install(any, weak, cx).await)
                 .detach(),
             #[cfg(not(feature = "web"))]
-            SmokeRun::Web(_)
-            | SmokeRun::WebRestart
-            | SmokeRun::WebInstall
-            | SmokeRun::WebColor(_) => {
+            SmokeRun::Web(_) | SmokeRun::WebRestart | SmokeRun::WebInstall => {
                 let _ = daemon;
                 eprintln!("smoke: this build has no web engine (the `web` feature)");
                 std::process::exit(6);

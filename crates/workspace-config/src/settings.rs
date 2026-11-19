@@ -42,30 +42,6 @@ pub struct WebSettings {
     /// `DREAMER_WEB_URL` variable, when set, comes first.
     pub url: Option<String>,
     pub downloads: DownloadSettings,
-    pub color: WebColor,
-}
-
-/// The color space Chromium draws pages in. Read when Chromium starts
-/// (the first web pane), so a change applies after Dreamer restarts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum WebColor {
-    /// sRGB, as the rest of the window is drawn: wide-gamut colors are
-    /// clamped to it.
-    #[default]
-    Srgb,
-    /// The display's own color space: Display P3 images, video, and CSS
-    /// colors keep their saturation on a wide-gamut display.
-    Display,
-}
-
-impl WebColor {
-    pub fn name(self) -> &'static str {
-        match self {
-            WebColor::Srgb => "srgb",
-            WebColor::Display => "display",
-        }
-    }
 }
 
 /// Whether Dreamer offers to add Dreamer Web when it is missing.
@@ -535,7 +511,6 @@ struct WebFile {
     url: Option<String>,
     #[serde(default)]
     downloads: DownloadsFile,
-    color: Option<WebColor>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1181,9 +1156,6 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(c) = file.web.component {
         s.web.component = c;
     }
-    if let Some(c) = file.web.color {
-        s.web.color = c;
-    }
     if let Some(u) = file.web.url {
         let u = u.trim();
         if !["https://", "http://", "file://"]
@@ -1571,18 +1543,6 @@ mod tests {
         let e = parse_settings("window:\n  decorations: minimal\n", None).expect_err("bad");
         assert_eq!(e.line, Some(2), "{e}");
         assert!(e.message.contains("full"), "{e}");
-    }
-
-    #[test]
-    fn web_pages_are_drawn_in_srgb_unless_the_settings_say_display() {
-        assert_eq!(Settings::default().web.color, WebColor::Srgb);
-        for (text, want) in [("srgb", WebColor::Srgb), ("display", WebColor::Display)] {
-            let s = parse_settings(&format!("web:\n  color: {text}\n"), None).expect(text);
-            assert_eq!(s.web.color, want);
-            assert_eq!(want.name(), text);
-        }
-        let e = parse_settings("web:\n  color: p3\n", None).expect_err("bad");
-        assert!(e.to_string().contains("p3"), "{e}");
     }
 
     #[test]
