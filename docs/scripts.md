@@ -45,10 +45,12 @@ local ok, err = pcall(dreamer.daemon.shutdown)   -- refused outside the grant
 | Running time per call into the script | 50 ms | The interrupt hook stops it with a time budget error |
 | Each host call | 5 s | The call fails with `-32004` (no answer within the deadline) |
 
-The running-time budget counts only time the script itself runs. Time
-spent waiting for host calls does not count, and each host call has its
-own deadline instead. After an overrun the VM stays usable. What happens
-next (terminate, report, restart) is up to whoever hosts the script.
+The running-time budget counts only time the script itself runs: the CPU
+time of the thread running it, so a busy machine that keeps the script
+waiting for a processor does not use it up. Time spent waiting for host
+calls does not count, and each host call has its own deadline instead.
+After an overrun the VM stays usable. What happens next (terminate,
+report, restart) is up to whoever hosts the script.
 
 ## Running scripts in the daemon
 

@@ -183,8 +183,9 @@ fn an_inspector_runs_a_prompt_with_its_read_only_tools_and_shows_what_it_did() {
     );
     // `q` is part of the prompt, not quit.
     s.type_line(&pane, "which panes quit?");
+    // The usage line comes when the turn ends, a moment after the answer.
     let done = s.wait(&pane, "answered", |t| {
-        t.contains("STANDIN-ANSWER two panes")
+        t.contains("STANDIN-ANSWER two panes") && t.contains("tokens in")
     });
     assert!(done.contains("> which panes quit?"), "{done}");
     assert!(done.contains("→ terminal_query"), "{done}");

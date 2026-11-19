@@ -8,8 +8,8 @@
 //!
 //! Budgets:
 //! - memory: a hard allocation ceiling per VM;
-//! - time: an interrupt hook checks a deadline while Luau code runs and
-//!   aborts the call when it passes.
+//! - time: an interrupt hook checks the CPU time the call has used while
+//!   Luau code runs and aborts the call when it passes the limit.
 //!
 //! Exceeding a budget returns [`ScriptError::Budget`]; the VM stays usable,
 //! and the caller decides whether to restart it (spec section 12.7).
@@ -68,31 +68,48 @@ pub trait Host {
     fn call(&self, method: String, params: serde_json::Value) -> HostFuture;
 }
 
-/// The script's running time within one call into it: paused while it
-/// waits for the host.
+/// CPU time the calling thread has used. A script runs on one thread (a
+/// [`Script`] is not `Send`), so this is time it actually ran: not time
+/// the thread waited to be scheduled on a busy or emulated machine.
+fn thread_cpu() -> Duration {
+    let t = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    Duration::new(
+        u64::try_from(t.tv_sec).unwrap_or(0),
+        u32::try_from(t.tv_nsec).unwrap_or(0),
+    )
+}
+
+/// The script's running time within one call into it: the CPU time it
+/// used, paused while it waits for the host.
 #[derive(Debug, Default)]
 struct Clock {
     limit: Cell<Duration>,
-    spent: Cell<Duration>,
-    since: Cell<Option<Instant>>,
+    /// Wall and CPU time of earlier stretches of this call.
+    wall: Cell<Duration>,
+    cpu: Cell<Duration>,
+    /// When the current stretch started: wall clock and thread CPU time.
+    since: Cell<Option<(Instant, Duration)>>,
 }
 
 impl Clock {
     fn start(&self, limit: Duration) {
         self.limit.set(limit);
-        self.spent.set(Duration::ZERO);
-        self.since.set(Some(Instant::now()));
+        self.wall.set(Duration::ZERO);
+        self.cpu.set(Duration::ZERO);
+        self.since.set(Some((Instant::now(), thread_cpu())));
     }
 
     fn pause(&self) {
-        if let Some(s) = self.since.take() {
-            self.spent.set(self.spent.get() + s.elapsed());
+        if let Some((wall, cpu)) = self.since.take() {
+            self.wall.set(self.wall.get() + wall.elapsed());
+            self.cpu
+                .set(self.cpu.get() + thread_cpu().saturating_sub(cpu));
         }
     }
 
     fn resume(&self) {
         if self.limit.get() > Duration::ZERO {
-            self.since.set(Some(Instant::now()));
+            self.since.set(Some((Instant::now(), thread_cpu())));
         }
     }
 
@@ -102,9 +119,17 @@ impl Clock {
     }
 
     fn exceeded(&self) -> bool {
-        self.since
-            .get()
-            .is_some_and(|s| self.spent.get() + s.elapsed() >= self.limit.get())
+        let Some((wall, cpu)) = self.since.get() else {
+            return false;
+        };
+        let limit = self.limit.get();
+        // A thread's CPU time never runs ahead of the wall clock, so the
+        // cheap clock answers the interrupt hook until the limit could
+        // have been reached.
+        if self.wall.get() + wall.elapsed() < limit {
+            return false;
+        }
+        self.cpu.get() + thread_cpu().saturating_sub(cpu) >= limit
     }
 }
 
@@ -238,8 +263,14 @@ impl Script {
 
     /// Run a chunk of Luau source under the call-time budget.
     pub fn exec(&self, name: &str, source: &str) -> Result<Value, ScriptError> {
+        // Compiling is not running: the budget starts with the chunk. As
+        // with `Chunk::eval`, an expression is returned, else it is a block.
+        let load = |src: &str| self.lua.load(src).set_name(name).into_function();
+        let chunk = load(&format!("return {source}"))
+            .or_else(|_| load(source))
+            .map_err(classify)?;
         self.clock.start(self.limits.call_time);
-        let result = self.lua.load(source).set_name(name).eval::<Value>();
+        let result = chunk.call::<Value>(());
         self.clock.stop();
         result.map_err(classify)
     }
@@ -247,8 +278,14 @@ impl Script {
     /// Run a chunk that may call the host; it yields while calls are in
     /// flight. Needs a Tokio runtime (for host-call deadlines).
     pub async fn run(&self, name: &str, source: &str) -> Result<(), ScriptError> {
+        let chunk = self
+            .lua
+            .load(source)
+            .set_name(name)
+            .into_function()
+            .map_err(classify)?;
         self.clock.start(self.limits.call_time);
-        let result = self.lua.load(source).set_name(name).exec_async().await;
+        let result = chunk.call_async::<()>(()).await;
         self.clock.stop();
         result.map_err(classify)
     }

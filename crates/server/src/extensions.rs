@@ -439,14 +439,20 @@ async fn run_once(state: &Arc<State>, ext: &Arc<Ext>) -> Ended {
                 }
             }
             () = ext.wake.notified() => {
-                // Asked to stop: say so, then signal, then kill.
+                // Asked to stop: say so and give it the time to finish up and
+                // exit by itself, then signal, then kill. Its answer comes
+                // before it has finished: a signal right after the answer
+                // would cut that short.
+                let asked = tokio::time::Instant::now() + SHUTDOWN;
                 let _ = ask(&calls, "extension.shutdown", json!({}), SHUTDOWN).await;
-                if let Some(pid) = pid {
-                    signal(pid, "-TERM");
-                }
-                if tokio::time::timeout(TERM, child.wait()).await.is_err() {
-                    stop(&mut child);
-                    let _ = child.wait().await;
+                if tokio::time::timeout_at(asked, child.wait()).await.is_err() {
+                    if let Some(pid) = pid {
+                        signal(pid, "-TERM");
+                    }
+                    if tokio::time::timeout(TERM, child.wait()).await.is_err() {
+                        stop(&mut child);
+                        let _ = child.wait().await;
+                    }
                 }
                 serving.abort();
                 return Ended::Stopped;

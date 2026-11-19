@@ -110,8 +110,8 @@ JSON-RPC by the conventions in [api.md](api.md#json-rpc-endpoint).
 - **Parking.** After 8 failures in a row the extension is parked as
   `failed` with its last error, until `dream extensions restart NAME`.
 - **Stopping.** When the daemon stops (or on `extensions.restart`) it asks
-  `extension.shutdown`, waits a second, sends SIGTERM to the process
-  group, and kills it after two more seconds.
+  `extension.shutdown` and gives it a second to exit by itself, then sends
+  SIGTERM to the process group, and kills it after two more seconds.
 - **Never in the way.** An extension's input and output run on their own
   tasks with bounded queues. Terminal input, output, and every other client
   keep flowing while an extension is slow, stalled, or restarting.
