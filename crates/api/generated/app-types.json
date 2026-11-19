@@ -2833,6 +2833,38 @@
         }
       }
     },
+    "MemoryTransfer": {
+      "fields": {
+        "context": {
+          "repeated": false,
+          "type": "MemoryContext"
+        },
+        "scope": {
+          "repeated": false,
+          "type": "MemoryScope"
+        }
+      }
+    },
+    "MemoryTransferred": {
+      "fields": {
+        "from": {
+          "repeated": false,
+          "type": "string"
+        },
+        "ids": {
+          "repeated": true,
+          "type": "string"
+        },
+        "problems": {
+          "repeated": true,
+          "type": "MemoryProblem"
+        },
+        "to": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
     "MemoryUpdate": {
       "fields": {
         "clear_links": {
@@ -5159,8 +5191,10 @@
     "jobs.start": "JobStart",
     "leases.acquire": "LeaseAcquire",
     "leases.release": "LeaseRef",
+    "memory.export": "MemoryTransfer",
     "memory.forget": "MemoryRef",
     "memory.get": "MemoryRef",
+    "memory.import": "MemoryTransfer",
     "memory.list": "MemoryListQuery",
     "memory.recall": "MemoryRecall",
     "memory.remember": "MemoryRemember",
@@ -5459,5 +5493,5 @@
       }
     }
   },
-  "version": "1.61"
+  "version": "1.62"
 }

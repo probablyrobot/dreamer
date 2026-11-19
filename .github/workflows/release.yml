@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # Git dependencies through git itself, so the URL rewrite below applies.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
 jobs:
   linux-x86-64:
     name: release linux archives (x86-64)
@@ -20,6 +24,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Cargo fetches every git source in Cargo.lock, optional ones too, so
+      # every job needs the private Kosmonaut repository (read-only token).
+      - name: Access to the private Kosmonaut repository
+        env:
+          KOSMONAUT_TOKEN: ${{ secrets.KOSMONAUT_TOKEN }}
+        run: git config --global url."https://x-access-token:${KOSMONAUT_TOKEN}@github.com/DeytaHQ/".insteadOf "https://github.com/DeytaHQ/"
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install GUI build dependencies

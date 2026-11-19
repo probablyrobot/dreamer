@@ -1457,6 +1457,20 @@ impl api::Service for DaemonService {
         self.0.memory.forget(p).await
     }
 
+    async fn memory_import(
+        &self,
+        p: api::MemoryTransfer,
+    ) -> Result<api::MemoryTransferred, RpcError> {
+        self.0.memory.import(p).await
+    }
+
+    async fn memory_export(
+        &self,
+        p: api::MemoryTransfer,
+    ) -> Result<api::MemoryTransferred, RpcError> {
+        self.0.memory.export(p).await
+    }
+
     async fn collect_list(&self, _: api::Empty) -> Result<api::CollectList, RpcError> {
         Ok(self.0.collectors.list())
     }

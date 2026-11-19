@@ -1,70 +1,150 @@
 //! Durable memory (`memory.*`, see `docs/memory.md`): the API on the
-//! provider `memory:` in `dreamer.yaml` names, applied live. The user
-//! scope lives in `<config dir>/memory/`, the host scope in
-//! `<state dir>/memory/host/`, each session's in
-//! `<state dir>/memory/sessions/<id>/`, and a project's in
-//! `<project root>/.dreamer/memory/`. Calls do file I/O, so they run off
-//! the event loop.
+//! provider `memory:` in `dreamer.yaml` names, applied live.
+//!
+//! - `files`: the user scope lives in `<config dir>/memory/`, the host
+//!   scope in `<state dir>/memory/host/`, each session's in
+//!   `<state dir>/memory/sessions/<id>/`, and a project's in
+//!   `<project root>/.dreamer/memory/`.
+//! - `kosmonaut` (a build with the `kosmonaut` feature): one database for
+//!   the user, `<data dir>/memory.kosmonaut` unless the settings name
+//!   another, opened on first use.
+//!
+//! `memory.import` and `memory.export` copy between `files` and the
+//! provider in force. Calls do I/O, so they run off the event loop.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use api::{RpcError, code};
-use workspace_config::{MemoryProvider, MemorySettings};
+use workspace_config::{KosmonautSettings, MemoryProvider, MemorySettings};
 
 use crate::log;
 
 #[derive(Debug)]
 pub struct Memory {
-    user: Option<PathBuf>,
-    host: PathBuf,
-    sessions: PathBuf,
-    current: RwLock<(MemoryProvider, Arc<dyn memory::Provider>)>,
+    files: Arc<memory::Files>,
+    current: RwLock<(MemorySettings, Arc<dyn memory::Provider>)>,
 }
 
-fn build(
-    p: MemoryProvider,
-    user: Option<PathBuf>,
-    host: PathBuf,
-    sessions: PathBuf,
-) -> Arc<dyn memory::Provider> {
-    match p {
-        MemoryProvider::Files => Arc::new(memory::Files::new(user, host, sessions)),
+fn build(s: &MemorySettings, files: &Arc<memory::Files>) -> Arc<dyn memory::Provider> {
+    match s.provider {
+        MemoryProvider::Files => files.clone(),
+        MemoryProvider::Kosmonaut => kosmonaut(&s.kosmonaut),
+    }
+}
+
+#[cfg(feature = "kosmonaut")]
+fn kosmonaut(k: &KosmonautSettings) -> Arc<dyn memory::Provider> {
+    use memory::embed::{Command, Embedder, Lazy};
+    use workspace_config::EmbedderSettings;
+    let path = k
+        .path
+        .clone()
+        .unwrap_or_else(|| platform::data_dir().join("memory.kosmonaut"));
+    let embedder: Option<Arc<dyn Embedder>> = match &k.embedder {
+        None => None,
+        Some(EmbedderSettings::Static { path }) => {
+            Some(Arc::new(Lazy::static_vectors(path.clone())))
+        }
+        Some(EmbedderSettings::Local {
+            command,
+            dimension,
+            timeout,
+        }) => match Command::new(command.clone(), *dimension, *timeout) {
+            Ok(c) => Some(Arc::new(c)),
+            Err(e) => {
+                log::warn(format!("memory embedder: {e}; recall runs without vectors"));
+                None
+            }
+        },
+    };
+    Arc::new(memory::Kosmonaut::new(path, embedder))
+}
+
+#[cfg(not(feature = "kosmonaut"))]
+fn kosmonaut(_: &KosmonautSettings) -> Arc<dyn memory::Provider> {
+    log::warn("memory provider kosmonaut: this dreamerd was built without the kosmonaut feature");
+    Arc::new(Unavailable)
+}
+
+/// The `kosmonaut` provider in a build without it: every call says so.
+#[cfg(not(feature = "kosmonaut"))]
+#[derive(Debug)]
+struct Unavailable;
+
+#[cfg(not(feature = "kosmonaut"))]
+impl Unavailable {
+    fn error<T>() -> Result<T, memory::Error> {
+        Err(memory::Error::Invalid(
+            "memory.provider is kosmonaut, but this dreamerd was built without the kosmonaut \
+             feature: set memory.provider: files, or use a build that has it"
+                .into(),
+        ))
+    }
+}
+
+#[cfg(not(feature = "kosmonaut"))]
+impl memory::Provider for Unavailable {
+    fn name(&self) -> &'static str {
+        "kosmonaut"
+    }
+    fn remember(
+        &self,
+        _: &memory::Context,
+        _: memory::New,
+    ) -> Result<memory::Memory, memory::Error> {
+        Unavailable::error()
+    }
+    fn list(
+        &self,
+        _: &memory::Context,
+        _: Option<memory::Scope>,
+        _: Option<memory::Kind>,
+    ) -> Result<memory::Found, memory::Error> {
+        Unavailable::error()
+    }
+    fn get(&self, _: &memory::Context, _: &str) -> Result<memory::Memory, memory::Error> {
+        Unavailable::error()
+    }
+    fn update(
+        &self,
+        _: &memory::Context,
+        _: &str,
+        _: memory::Change,
+    ) -> Result<memory::Memory, memory::Error> {
+        Unavailable::error()
+    }
+    fn forget(&self, _: &memory::Context, _: &str) -> Result<memory::Memory, memory::Error> {
+        Unavailable::error()
+    }
+    fn put(
+        &self,
+        _: &memory::Context,
+        _: &memory::Memory,
+    ) -> Result<memory::Memory, memory::Error> {
+        Unavailable::error()
     }
 }
 
 impl Memory {
     pub fn new(state_dir: &Path, settings: &MemorySettings) -> Memory {
-        let user = workspace_config::config_dir().map(|d| d.join("memory"));
-        let host = state_dir.join("memory").join("host");
-        let sessions = state_dir.join("memory").join("sessions");
-        let provider = build(
-            settings.provider,
-            user.clone(),
-            host.clone(),
-            sessions.clone(),
-        );
+        let files = Arc::new(memory::Files::new(
+            workspace_config::config_dir().map(|d| d.join("memory")),
+            state_dir.join("memory").join("host"),
+            state_dir.join("memory").join("sessions"),
+        ));
+        let provider = build(settings, &files);
         Memory {
-            user,
-            host,
-            sessions,
-            current: RwLock::new((settings.provider, provider)),
+            files,
+            current: RwLock::new((settings.clone(), provider)),
         }
     }
 
     /// Use the provider `settings` name from the next call on.
     pub fn configure(&self, settings: &MemorySettings) {
         let mut cur = self.current.write().unwrap_or_else(|e| e.into_inner());
-        if cur.0 != settings.provider {
-            *cur = (
-                settings.provider,
-                build(
-                    settings.provider,
-                    self.user.clone(),
-                    self.host.clone(),
-                    self.sessions.clone(),
-                ),
-            );
+        if cur.0 != *settings {
+            *cur = (settings.clone(), build(settings, &self.files));
             log::info(format!(
                 "configuration applied: memory provider {}",
                 settings.provider.name()
@@ -170,6 +250,58 @@ impl Memory {
         let cx = context(p.context);
         self.run(move |m| m.forget(&cx, &p.id)).await.map(item)
     }
+
+    /// `memory.import`: from `files` into the provider in force.
+    pub async fn import(&self, p: api::MemoryTransfer) -> Result<api::MemoryTransferred, RpcError> {
+        self.transfer(p, true).await
+    }
+
+    /// `memory.export`: from the provider in force into `files`.
+    pub async fn export(&self, p: api::MemoryTransfer) -> Result<api::MemoryTransferred, RpcError> {
+        self.transfer(p, false).await
+    }
+
+    async fn transfer(
+        &self,
+        p: api::MemoryTransfer,
+        import: bool,
+    ) -> Result<api::MemoryTransferred, RpcError> {
+        let cx = context(p.context);
+        let scope = scope(p.scope)?;
+        let current = self.provider();
+        if current.name() == "files" {
+            return Err(invalid(
+                "the provider in force is files: import and export copy between files and \
+                 another provider (memory.provider)"
+                    .into(),
+            ));
+        }
+        let files: Arc<dyn memory::Provider> = self.files.clone();
+        let (from, to) = if import {
+            (files, current)
+        } else {
+            (current, files)
+        };
+        let names = (from.name(), to.name());
+        let moved = tokio::task::spawn_blocking(move || {
+            memory::transfer(from.as_ref(), to.as_ref(), &cx, scope)
+        })
+        .await
+        .map_err(|e| RpcError::new(code::INTERNAL, e.to_string()))?
+        .map_err(error)?;
+        log::info(format!(
+            "memory: copied {} from {} to {}",
+            moved.ids.len(),
+            names.0,
+            names.1
+        ));
+        Ok(api::MemoryTransferred {
+            ids: moved.ids,
+            problems: moved.problems.into_iter().map(problem).collect(),
+            from: names.0.to_owned(),
+            to: names.1.to_owned(),
+        })
+    }
 }
 
 fn invalid(m: String) -> RpcError {
@@ -249,14 +381,14 @@ fn item(m: memory::Memory) -> api::MemoryItem {
 fn items(f: memory::Found, provider: &str) -> api::MemoryItems {
     api::MemoryItems {
         items: f.items.into_iter().map(item).collect(),
-        problems: f
-            .problems
-            .into_iter()
-            .map(|p| api::MemoryProblem {
-                path: p.path.display().to_string(),
-                message: p.message,
-            })
-            .collect(),
+        problems: f.problems.into_iter().map(problem).collect(),
         provider: provider.to_owned(),
+    }
+}
+
+fn problem(p: memory::Problem) -> api::MemoryProblem {
+    api::MemoryProblem {
+        path: p.path.display().to_string(),
+        message: p.message,
     }
 }

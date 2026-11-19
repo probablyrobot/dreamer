@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 61 }
+version: { major: 1, minor: 62 }
 package: dreamer.v1
 
 types:
@@ -2146,7 +2146,7 @@ types:
     fields:
       - { n: 1, name: items, type: MemoryItem, repeated: true }
       - { n: 2, name: problems, type: MemoryProblem, repeated: true }
-      - { n: 3, name: provider, type: string, doc: "The provider in force (files)." }
+      - { n: 3, name: provider, type: string, doc: "The provider in force (files or kosmonaut)." }
 
   - message: MemoryRecall
     fields:
@@ -2187,6 +2187,19 @@ types:
       - { n: 6, name: links, type: string, repeated: true, doc: "Replace the links with these." }
       - { n: 7, name: clear_links, type: bool, doc: "Remove every link." }
       - { n: 8, name: context, type: MemoryContext }
+
+  - message: MemoryTransfer
+    doc: "Which memories memory.import and memory.export copy."
+    fields:
+      - { n: 1, name: scope, type: MemoryScope, doc: "Unspecified: every scope the context reaches." }
+      - { n: 2, name: context, type: MemoryContext }
+
+  - message: MemoryTransferred
+    fields:
+      - { n: 1, name: ids, type: string, repeated: true, doc: "The memories copied, newest first." }
+      - { n: 2, name: problems, type: MemoryProblem, repeated: true, doc: "Memory files that could not be read; they are left out." }
+      - { n: 3, name: from, type: string, doc: "The provider copied from." }
+      - { n: 4, name: to, type: string, doc: "The provider copied into." }
 
 methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
@@ -2291,6 +2304,8 @@ methods:
   - { method: memory.get, params: MemoryRef, result: MemoryItem }
   - { method: memory.update, params: MemoryUpdate, result: MemoryItem, mutation: true }
   - { method: memory.forget, params: MemoryRef, result: MemoryItem, mutation: true, doc: "Delete a memory and its index line; the reply is what was deleted." }
+  - { method: memory.import, params: MemoryTransfer, result: MemoryTransferred, mutation: true, doc: "Copy what the files provider holds into the provider in force, keeping ids, text, links, and times; a memory with the same id is replaced. Refused while files is the provider in force." }
+  - { method: memory.export, params: MemoryTransfer, result: MemoryTransferred, mutation: true, doc: "Copy what the provider in force holds into the files provider, as markdown files and their MEMORY.md index; a file with the same id is replaced. Refused while files is the provider in force." }
   - { method: apps.publish_tree, params: AppTreePublish, result: Empty, mutation: true, doc: "A registered app host publishes a version of its view tree for its pane. A patch that does not follow the version kept is refused with a precondition error; the host then sends the whole tree." }
   - { method: apps.tree, params: AppTreeQuery, result: AppTree, doc: "An app pane's view tree: the whole tree, or the patches since the caller's version, waiting for a newer one (the owner, or an agent's grant at own or elsewhere for an app pane it launched)." }
   - { method: apps.capture, params: AppCapture, result: AppCaptured, mutation: true, doc: "An app pane as the user's desktop draws it, written as a PNG file by the desktop; refused when no desktop is connected (the owner, or an agent's grant at own or elsewhere for an app pane it launched)." }

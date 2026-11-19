@@ -7,8 +7,17 @@ and serves it with the `memory.*` API, `dream memory`, and the agent
 grants. Instructions files (`AGENTS.md`, `CLAUDE.md`) and session
 transcripts are separate; memory never changes them.
 
-The only provider today is `files`: one markdown file per memory, which a
-person can read, edit, diff, and commit like any other file.
+There are two providers:
+
+- `files` (the default): one markdown file per memory, which a person can
+  read, edit, diff, and commit like any other file.
+- `kosmonaut`: one graph database for the user, Kosmonaut embedded in the
+  daemon, where memories are nodes linked to their project, session,
+  files, panes, and each other ([Kosmonaut](#kosmonaut)). It is in a
+  `dreamerd` built with the `kosmonaut` feature.
+
+`dream memory import` and `dream memory export` copy memories between the
+two, so the readable form is never lost.
 
 ## Scopes and kinds
 
@@ -131,6 +140,8 @@ is at most 100.
 | `memory.get` | `id`, `context` | `MemoryItem` |
 | `memory.update` | `id`, and any of `text`, `kind`, `title`, `description`, `links` (replace), `clear_links`; `context` | The changed `MemoryItem` |
 | `memory.forget` | `id`, `context` | The `MemoryItem` that was deleted |
+| `memory.import` | `scope` (optional), `context` | `MemoryTransferred`: the `ids` copied from `files` into the provider in force, `problems`, `from`, `to` |
+| `memory.export` | `scope` (optional), `context` | `MemoryTransferred`: the `ids` copied from the provider in force into `files` |
 
 `remember` needs `text`, `kind`, and `scope`. Without a `title` it takes
 the text's first line (up to 60 characters); without a `description`, the
@@ -138,15 +149,111 @@ title. `MemoryItems` holds `items`, `problems`, and the `provider` in
 force. An id in the project or session scope needs the same `context` it
 was made with. An unknown id fails with `NOT_FOUND`.
 
+## Kosmonaut
+
+With `memory.provider: kosmonaut` the daemon keeps memory in
+[Kosmonaut](dependency-baseline.md#kosmonaut), a graph database it runs
+in-process (`mode: embedded`). It needs a `dreamerd` built with the
+`kosmonaut` feature (`cargo build -p dreamer-server --features kosmonaut`);
+in a build without it, every memory call fails with `INVALID_PARAMS` and
+says so.
+
+**One database per user.** Every scope lives in one database,
+`<data dir>/memory.kosmonaut/` (`~/.local/share/dreamer/memory.kosmonaut`
+by default, or `memory.kosmonaut.path`), opened on the first memory call.
+Each memory is tagged with its scope and owner: the project root for a
+project memory, the session id for a session memory. A request sees only
+the scopes its context reaches, so another project's memories never come
+back. The API, ids, kinds, and fields are the same as with `files`;
+`path` is empty.
+
+**The graph.** A memory is a node, related to:
+
+| Relation | To | When |
+| --- | --- | --- |
+| `IN_PROJECT` | the project (its root) | a project memory |
+| `IN_SESSION` | the agent session | a session memory |
+| `LINKS_TO` | another memory | a link that is a memory's id (`user/prefers-tabs`) |
+| `ABOUT_PANE` | a pane | a link `pane:%3` or `%3` |
+| `ABOUT_FILE` | a file | any other link but a URL; a relative path in a project memory is the project's |
+
+Every relation has a valid time. When an update drops a link, its edge is
+closed at that moment instead of deleted, so the database keeps what a
+memory was linked to and until when. Forgetting a memory deletes it and
+its edges.
+
+**Recall** ranks by words exactly as `files` does ([Recall](#recall)), so
+switching providers does not change which memories match or their order.
+After the word matches, Kosmonaut adds memories one edge from the best
+of them: ones that link to a match or that a match links to, and ones
+about the same file or pane. These score below every word match (500,
+plus 10 for each further edge). With an [embedder](#embedders), memories
+whose vectors are near the query's come next (similarity of at least 0.5;
+score below 500).
+
+**Collector rows and session summaries** have tables in the same
+database, linked to their pane, session, and project, so they can be
+found next to the memories they concern.
+
+### Embedders
+
+Without an embedder there are no vectors: recall is by words and the
+graph, and no model runs. `memory.kosmonaut.embedder` adds one:
+
+| `kind` | Settings | What it does |
+| --- | --- | --- |
+| `static` | `path` | Reads word vectors from a file in the word2vec text format (one word and its numbers per line; a first line of count and dimension is skipped), as fastText and GloVe publish them. A text's vector is the mean of its words' vectors. Nothing runs and nothing leaves the machine |
+| `local` | `command`, `dimension`, `timeout` (default 30s) | Runs a program for each batch: it reads a JSON array of strings on standard input and prints a JSON array of vectors, one per string, each `dimension` long. The program runs whatever model it likes, under the user's control |
+
+A memory is embedded when it is remembered or changed; memories written
+before the embedder was configured are embedded at the next recall that
+reaches them. Vectors are kept beside the memories with the name of the
+model that made them (`static:<file name>`, `local:<program>`), and only
+vectors of the configured model are compared. When the embedder fails,
+recall still answers by words and the graph, and its `problems` say why
+there were no vectors.
+
+Dreamer opens no network connections of its own, so it has no built-in
+client for a hosted embedding API; a `local` program may call one with
+the user's own key.
+
+### Import and export
+
+`memory.import` copies every memory the `files` provider holds in the
+scopes the context reaches (or the one `scope` given) into the provider in
+force; `memory.export` copies the other way. Ids, kinds, titles,
+descriptions, text, links, and times are kept, and a memory with the same
+id on the other side is replaced; nothing is deleted on either side. Both
+are refused while `files` is the provider in force. A file that does not
+read is left out and reported in `problems`.
+
+Exported files are what `files` would have written: the same frontmatter,
+the same `MEMORY.md` lines, and the file's modification time set to the
+memory's updated time. Frontmatter keys Dreamer does not use are kept in
+a file that is replaced, but are not carried through Kosmonaut.
+
+```sh
+dream memory import             # files -> kosmonaut, every scope this directory reaches
+dream memory export --scope project
+```
+
 ## Settings
 
 ```yaml
 memory:
-  provider: files    # default, and the only provider so far
+  provider: files        # default; or kosmonaut
+  kosmonaut:             # used when the provider is kosmonaut
+    mode: embedded       # default, and the only mode so far
+    path: ~/.local/share/dreamer/memory.kosmonaut   # default: <data dir>/memory.kosmonaut
+    embedder:            # optional
+      kind: static
+      path: ~/models/words.vec
 ```
 
 A change applies to the next call, like other live settings
-([settings.md](settings.md)).
+([settings.md](settings.md)). `memory.kosmonaut.mode: server` is refused:
+only the embedded mode exists so far. So is `embedder.kind: openai` (see
+[Embedders](#embedders)).
 
 ## Grants
 
@@ -156,6 +263,8 @@ hold `memory.recall`, `memory.list`, `memory.get`, and `memory.remember`
 at every level, since reading notes and adding one are not acting.
 `memory.update` and `memory.forget` change or delete what may be a memory
 the user wrote, so they come from `own` up. Neither asks for approval.
+`memory.import` and `memory.export` are in no agent grant: they are the
+owner's.
 
 The daemon's socket belongs to the user, so `dream memory` run by the
 user holds the owner grant. Run by an agent, it holds the agent's grant
@@ -209,6 +318,8 @@ dream memory list [--scope SCOPE] [--kind KIND]
 dream memory get ID
 dream memory update ID [--text TEXT | --text -] [--kind KIND] [--title T] [--description D] [--link L]... [--clear-links]
 dream memory forget ID
+dream memory import [--scope SCOPE]
+dream memory export [--scope SCOPE]
 ```
 
 Every command takes `--json` (the API's reply), `--cwd DIR` (default: the

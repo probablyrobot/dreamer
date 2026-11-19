@@ -94,9 +94,10 @@ pub enum Decorations {
 }
 
 /// Durable memory (see `docs/memory.md`): which provider keeps it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemorySettings {
     pub provider: MemoryProvider,
+    pub kosmonaut: KosmonautSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -105,15 +106,44 @@ pub enum MemoryProvider {
     /// Markdown files with frontmatter and a `MEMORY.md` index.
     #[default]
     Files,
+    /// Kosmonaut, a graph database, embedded in the daemon.
+    Kosmonaut,
 }
 
 impl MemoryProvider {
     pub fn name(self) -> &'static str {
         match self {
             MemoryProvider::Files => "files",
+            MemoryProvider::Kosmonaut => "kosmonaut",
         }
     }
 }
+
+/// `memory.kosmonaut`: the embedded database (the only mode so far).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KosmonautSettings {
+    /// The database directory; `None`: `memory.kosmonaut` in Dreamer's
+    /// data directory.
+    pub path: Option<PathBuf>,
+    /// `None`: no vectors; recall by words and the graph.
+    pub embedder: Option<EmbedderSettings>,
+}
+
+/// `memory.kosmonaut.embedder`: what turns memories into vectors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmbedderSettings {
+    /// Word vectors from a file (word2vec text format).
+    Static { path: PathBuf },
+    /// A local model behind a program: JSON texts in, JSON vectors out.
+    Local {
+        command: Vec<String>,
+        dimension: usize,
+        timeout: std::time::Duration,
+    },
+}
+
+/// The longest a local embedder may take for one call, by default.
+pub const DEFAULT_EMBEDDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Where the harness drawer docks in a window, and how much of it it takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -483,6 +513,146 @@ struct WindowFile {
 #[serde(deny_unknown_fields)]
 struct MemoryFile {
     provider: Option<MemoryProvider>,
+    #[serde(default)]
+    kosmonaut: KosmonautFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KosmonautFile {
+    mode: Option<String>,
+    path: Option<String>,
+    embedder: Option<EmbedderFile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmbedderFile {
+    kind: String,
+    path: Option<String>,
+    command: Option<Vec<String>>,
+    dimension: Option<usize>,
+    timeout: Option<serde_norway::Value>,
+    model: Option<String>,
+    api_key_env: Option<String>,
+}
+
+/// `~/x` under the home directory, or an absolute path.
+fn absolute(at: &str, v: &str) -> Result<PathBuf, (String, String)> {
+    let bad = || {
+        (
+            at.to_owned(),
+            format!("`{v}` is not an absolute path or one under ~/"),
+        )
+    };
+    if let Some(rest) = v.strip_prefix("~/") {
+        let home = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .ok_or_else(bad)?;
+        return Ok(PathBuf::from(home).join(rest));
+    }
+    let p = PathBuf::from(v);
+    if p.is_absolute() { Ok(p) } else { Err(bad()) }
+}
+
+fn parse_kosmonaut(f: &KosmonautFile) -> Result<KosmonautSettings, (String, String)> {
+    match f.mode.as_deref() {
+        None | Some("embedded") => {}
+        Some("server") => {
+            return Err((
+                "memory.kosmonaut.mode".into(),
+                "server is not available yet; embedded is".into(),
+            ));
+        }
+        Some(m) => {
+            return Err((
+                "memory.kosmonaut.mode".into(),
+                format!("`{m}` is not embedded"),
+            ));
+        }
+    }
+    let path = f
+        .path
+        .as_deref()
+        .map(|p| absolute("memory.kosmonaut.path", p))
+        .transpose()?;
+    let embedder = match &f.embedder {
+        None => None,
+        Some(e) => Some(parse_embedder(e)?),
+    };
+    Ok(KosmonautSettings { path, embedder })
+}
+
+fn parse_embedder(e: &EmbedderFile) -> Result<EmbedderSettings, (String, String)> {
+    let at = |k: &str| format!("memory.kosmonaut.embedder.{k}");
+    let unused = |keys: &[(&str, bool)]| -> Result<(), (String, String)> {
+        match keys.iter().find(|(_, set)| *set) {
+            Some((k, _)) => Err((at(k), format!("not used by kind {}", e.kind))),
+            None => Ok(()),
+        }
+    };
+    match e.kind.as_str() {
+        "static" => {
+            unused(&[
+                ("command", e.command.is_some()),
+                ("dimension", e.dimension.is_some()),
+                ("timeout", e.timeout.is_some()),
+                ("model", e.model.is_some()),
+                ("api_key_env", e.api_key_env.is_some()),
+            ])?;
+            let p = e
+                .path
+                .as_deref()
+                .ok_or_else(|| (at("path"), "the word vector file is required".into()))?;
+            Ok(EmbedderSettings::Static {
+                path: absolute(&at("path"), p)?,
+            })
+        }
+        "local" => {
+            unused(&[
+                ("path", e.path.is_some()),
+                ("model", e.model.is_some()),
+                ("api_key_env", e.api_key_env.is_some()),
+            ])?;
+            let command = e
+                .command
+                .clone()
+                .filter(|c| c.first().is_some_and(|p| !p.trim().is_empty()))
+                .ok_or_else(|| {
+                    (
+                        at("command"),
+                        "the program and its arguments are required".into(),
+                    )
+                })?;
+            let dimension = e
+                .dimension
+                .filter(|d| (1..=65_536).contains(d))
+                .ok_or_else(|| {
+                    (
+                        at("dimension"),
+                        "the vector length (1 to 65536) is required".into(),
+                    )
+                })?;
+            let timeout = match &e.timeout {
+                None => DEFAULT_EMBEDDER_TIMEOUT,
+                Some(v) => parse_wait(v)
+                    .map_err(|m| (at("timeout"), m))?
+                    .ok_or_else(|| (at("timeout"), "a local embedder needs a timeout".into()))?,
+            };
+            Ok(EmbedderSettings::Local {
+                command,
+                dimension,
+                timeout,
+            })
+        }
+        "openai" => Err((
+            at("kind"),
+            "openai is not available yet: Dreamer opens no network connections of its own; \
+             use static, or local with a program that runs your model"
+                .into(),
+        )),
+        k => Err((at("kind"), format!("`{k}` is not static or local"))),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -886,6 +1056,8 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(p) = file.memory.provider {
         s.memory.provider = p;
     }
+    s.memory.kosmonaut =
+        parse_kosmonaut(&file.memory.kosmonaut).map_err(|(at, m)| error(origin, &at, m))?;
     if let Some(d) = file.window.decorations {
         s.window.decorations = d;
     }
@@ -975,6 +1147,60 @@ mod tests {
         let e = parse_settings("memory:\n  provider: notes\n", None).expect_err("notes");
         assert!(e.message.contains("files"), "{e}");
         assert!(parse_settings("memory:\n  path: x\n", None).is_err());
+    }
+
+    #[test]
+    fn kosmonaut_is_embedded_and_its_embedder_is_optional() {
+        let s = parse_settings("memory:\n  provider: kosmonaut\n", None).expect("kosmonaut");
+        assert_eq!(s.memory.provider, MemoryProvider::Kosmonaut);
+        assert_eq!(s.memory.kosmonaut, KosmonautSettings::default());
+        let s = parse_settings(
+            "memory:\n  provider: kosmonaut\n  kosmonaut:\n    mode: embedded\n    path: /data/m\n    \
+             embedder:\n      kind: local\n      command: [embed, --stdin]\n      dimension: 384\n      timeout: 5s\n",
+            None,
+        )
+        .expect("local");
+        assert_eq!(s.memory.kosmonaut.path, Some(PathBuf::from("/data/m")));
+        assert_eq!(
+            s.memory.kosmonaut.embedder,
+            Some(EmbedderSettings::Local {
+                command: vec!["embed".into(), "--stdin".into()],
+                dimension: 384,
+                timeout: std::time::Duration::from_secs(5),
+            })
+        );
+        let s = parse_settings(
+            "memory:\n  kosmonaut:\n    embedder:\n      kind: static\n      path: /v/words.vec\n",
+            None,
+        )
+        .expect("static");
+        assert_eq!(
+            s.memory.kosmonaut.embedder,
+            Some(EmbedderSettings::Static {
+                path: PathBuf::from("/v/words.vec")
+            })
+        );
+        for (bad, why) in [
+            ("    mode: server\n", "not available yet"),
+            ("    path: relative\n", "absolute"),
+            (
+                "    embedder:\n      kind: openai\n      api_key_env: OPENAI_API_KEY\n",
+                "network",
+            ),
+            ("    embedder:\n      kind: static\n", "required"),
+            (
+                "    embedder:\n      kind: local\n      command: [x]\n",
+                "vector length",
+            ),
+            (
+                "    embedder:\n      kind: static\n      path: /v\n      dimension: 3\n",
+                "not used",
+            ),
+            ("    embedder:\n      kind: magic\n", "magic"),
+        ] {
+            let e = parse_settings(&format!("memory:\n  kosmonaut:\n{bad}"), None).expect_err(bad);
+            assert!(e.message.contains(why), "{bad}: {e}");
+        }
     }
 
     #[test]

@@ -308,7 +308,10 @@ ID [options]`, and `forget ID` do the rest. Every command takes `--json`,
 `--cwd DIR` (default: the current directory, which picks the project), and
 `--session ID` (default: `$DREAMER_SESSION_ID`). SCOPE is `user`, `host`,
 `project`, or `session`; KIND is `user`, `feedback`, `project`, or
-`reference`. See [memory.md](memory.md).
+`reference`. `dream memory import [--scope SCOPE]` copies the memory files
+into the provider in force (`kosmonaut`), and `dream memory export [--scope
+SCOPE]` copies the other way; both print what they copied. See
+[memory.md](memory.md).
 
 ## Scripts
 

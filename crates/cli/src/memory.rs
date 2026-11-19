@@ -15,6 +15,10 @@ pub const USAGE: &str = "usage:
   dream memory update ID [--text TEXT | --text -] [--kind KIND] [--title T]
                          [--description D] [--link L]... [--clear-links]
   dream memory forget ID
+  dream memory import [--scope SCOPE]
+  dream memory export [--scope SCOPE]
+import copies the files provider's memories into the provider in force
+(memory.provider), export copies the other way; both keep ids and times.
 SCOPE: user | host | project | session.  KIND: user | feedback | project | reference.
 Text after `--` is never read as an option. Every command takes [--json], [--cwd DIR] (default: this directory; it finds
 the project), and [--session ID] (default: $DREAMER_SESSION_ID). `-` reads
@@ -182,6 +186,14 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
             id: one(&p.words)?,
             context,
         }),
+        "import" if p.words.is_empty() => Request::MemoryImport(api::MemoryTransfer {
+            scope: p.scope,
+            context,
+        }),
+        "export" if p.words.is_empty() => Request::MemoryExport(api::MemoryTransfer {
+            scope: p.scope,
+            context,
+        }),
         _ => return Err(USAGE.into()),
     };
     let json = p.json;
@@ -197,6 +209,7 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
                 | Response::MemoryGet(m)
                 | Response::MemoryUpdate(m)
                 | Response::MemoryForget(m) => pretty(m),
+                Response::MemoryImport(t) | Response::MemoryExport(t) => pretty(t),
                 other => return Err(format!("unexpected reply {other:?}")),
             }?;
             println!("{text}");
@@ -249,6 +262,23 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
             }
             Response::MemoryUpdate(m) => println!("updated {}{}", m.id, at(&m)),
             Response::MemoryForget(m) => println!("forgot {}{}", m.id, at(&m)),
+            Response::MemoryImport(t) | Response::MemoryExport(t) => {
+                println!(
+                    "copied {} {} from {} to {}",
+                    t.ids.len(),
+                    if t.ids.len() == 1 {
+                        "memory"
+                    } else {
+                        "memories"
+                    },
+                    t.from,
+                    t.to
+                );
+                for id in &t.ids {
+                    println!("  {id}");
+                }
+                problems(&t.problems);
+            }
             other => return Err(format!("unexpected reply {other:?}")),
         }
         Ok(())

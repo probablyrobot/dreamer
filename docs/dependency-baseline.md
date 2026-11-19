@@ -157,6 +157,43 @@ sockets of its own. None of these crates pulls in a UI framework, GPU, or
 font crate (`cargo xtask headless --check`). Only `dreamer-termapp` links
 them; the server, the CLI, and the desktop do not.
 
+## Kosmonaut
+
+| Item | Value |
+| --- | --- |
+| Source | `https://github.com/DeytaHQ/kosmonaut` (private; crate `kosmonaut` and its `ram-*` crates) |
+| Tag | `v0.24.0` |
+| Commit | `dbd5af275a7efa3f2ff3ca45afc45b40a214430e` (recorded in `Cargo.lock`) |
+| Used by | `memory` and `dreamer-server`, behind their `kosmonaut` feature: the embedded `kosmonaut` memory provider ([memory.md](memory.md#kosmonaut)) |
+| Kosmonaut toolchain | Rust 1.95 at least (its own pin 1.98.1); builds with our 1.99.1 |
+| Features | Default: no cloud backends, no Arrow; `object_store` with the local file system only |
+| License | Apache-2.0. What it adds to `Cargo.lock` (Tantivy, `object_store`, zstd, and others) is MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, Unlicense, or zlib, alone or as choices |
+
+Not in release archives: the feature is off by default, and packaging
+builds without it. It is pure Rust apart from zstd (C, built by
+`zstd-sys` with the `cc` crate), and pulls in no UI, windowing, GPU, or
+font crate, so the headless crates may use it.
+
+**Access.** The repository is private, and Cargo fetches every git
+source in `Cargo.lock` (optional ones too) before it builds anything, so
+every build needs read access to it, with or without the feature:
+
+- On a development machine, the owner's own git login. Set
+  `CARGO_NET_GIT_FETCH_WITH_CLI=true` so Cargo fetches through `git` and
+  its credential helper (for example `gh auth setup-git`). Dreamer never
+  reads a credential store itself.
+- In GitHub Actions, the `KOSMONAUT_TOKEN` secret (a fine-grained,
+  read-only token): each job rewrites `https://github.com/DeytaHQ/` to an
+  address that carries it, before any `cargo` command, and sets
+  `CARGO_NET_GIT_FETCH_WITH_CLI`.
+- In the containers the gate, `cargo xtask package --container`, and
+  `cargo xtask bench` run, which have no GitHub login: the host runs
+  `cargo fetch --locked`, copies the locked commit from its cargo cache
+  into a bare mirror under `target/private-git/`, and mounts it read-only;
+  git in the container reads the repository's URL from the mirror
+  (`url.<mirror>.insteadOf`). No token enters a container
+  (`xtask/src/private_git.rs`).
+
 ## GPUI
 
 | Item | Value |

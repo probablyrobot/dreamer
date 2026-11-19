@@ -2,7 +2,8 @@
 //! the config directory, the host and session scopes in the state
 //! directory, a project's in the project; hand edits seen at once; a bad
 //! file reported; agent grants that may remember but not forget below
-//! `own`.
+//! `own`; switching to the `kosmonaut` provider, with import from and
+//! export to the files.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -40,6 +41,7 @@ impl Setup {
             .env("DREAMER_RUNTIME_DIR", root.join("rt"))
             .env("DREAMER_STATE_DIR", root.join("st"))
             .env("DREAMER_CONFIG_DIR", root.join("config"))
+            .env("DREAMER_DATA_DIR", root.join("data"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -298,4 +300,98 @@ async fn an_observing_agent_remembers_but_does_not_forget() {
     }
     let kept = std::fs::read_to_string(path(&mine)).expect("the user's memory");
     assert!(kept.ends_with("Written by the user\n"), "{kept}");
+}
+
+async fn transfer(c: &Client, s: &Setup, import: bool) -> Result<api::MemoryTransferred, i32> {
+    let p = api::MemoryTransfer {
+        scope: api::MemoryScope::Unspecified as i32,
+        context: s.context(),
+    };
+    let r = if import {
+        c.call(Request::MemoryImport(p)).await
+    } else {
+        c.call(Request::MemoryExport(p)).await
+    };
+    match r {
+        Ok(Response::MemoryImport(t) | Response::MemoryExport(t)) => Ok(t),
+        Ok(other) => panic!("transfer: {other:?}"),
+        Err(e) => Err(code(e)),
+    }
+}
+
+/// `memory.provider: kosmonaut` applies live. With the feature, the files
+/// go in with import and come back out with export; without it, every
+/// memory call says the build lacks it. Import and export need a provider
+/// other than files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kosmonaut_takes_over_live_and_the_files_move_in_and_out() {
+    use api::MemoryScope as S;
+    let s = Setup::new();
+    let c = s.client().await;
+    let first = remember(&c, &s, "Deploys go through staging first", S::Project).await;
+    assert_eq!(
+        transfer(&c, &s, true).await.expect_err("files in force"),
+        api::code::INVALID_PARAMS
+    );
+    std::fs::write(
+        s.root.join("config/dreamer.yaml"),
+        "memory:\n  provider: kosmonaut\n",
+    )
+    .expect("settings");
+    // Applied within the watcher's period.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let listed = loop {
+        let r = c
+            .call(Request::MemoryList(api::MemoryListQuery {
+                context: s.context(),
+                ..api::MemoryListQuery::default()
+            }))
+            .await;
+        match r {
+            Ok(Response::MemoryList(l)) if l.provider == "files" => {}
+            other => break other,
+        }
+        assert!(Instant::now() < deadline, "the provider never changed");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    if cfg!(not(feature = "kosmonaut")) {
+        let e = listed.expect_err("no kosmonaut in this build");
+        assert_eq!(code(e), api::code::INVALID_PARAMS);
+        return;
+    }
+    match listed {
+        Ok(Response::MemoryList(l)) => {
+            assert_eq!(l.provider, "kosmonaut");
+            assert!(l.items.is_empty(), "{l:?}");
+        }
+        other => panic!("list: {other:?}"),
+    }
+    let moved = transfer(&c, &s, true).await.expect("import");
+    assert_eq!(
+        (moved.from.as_str(), moved.to.as_str()),
+        ("files", "kosmonaut")
+    );
+    assert_eq!(moved.ids, std::slice::from_ref(&first.id));
+    assert!(s.root.join("data/memory.kosmonaut").is_dir());
+    let found = recall(&c, &s, "staging", S::Unspecified).await;
+    assert_eq!(found.provider, "kosmonaut");
+    assert_eq!(found.items.len(), 1);
+    assert_eq!(found.items[0].id, first.id);
+    assert_eq!(found.items[0].path, None);
+    // A memory kept in Kosmonaut only reaches the files on export.
+    let second = remember(&c, &s, "Releases ship on Tuesdays", S::Project).await;
+    let dir = path(&first).parent().expect("dir").to_path_buf();
+    let file = dir.join("releases-ship-on-tuesdays.md");
+    assert!(!file.exists());
+    let moved = transfer(&c, &s, false).await.expect("export");
+    assert_eq!(
+        (moved.from.as_str(), moved.to.as_str()),
+        ("kosmonaut", "files")
+    );
+    assert_eq!(moved.ids.len(), 2);
+    assert!(moved.ids.contains(&second.id));
+    let text = std::fs::read_to_string(&file).expect("exported");
+    assert!(text.ends_with("Releases ship on Tuesdays\n"), "{text}");
+    let index = std::fs::read_to_string(dir.join("MEMORY.md")).expect("index");
+    assert!(index.contains("(releases-ship-on-tuesdays.md)"), "{index}");
 }

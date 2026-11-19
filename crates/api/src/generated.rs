@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 61;
+pub const PROTOCOL_MINOR: u32 = 62;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -5487,7 +5487,7 @@ pub struct MemoryItems {
     pub items: Vec<MemoryItem>,
     #[prost(message, repeated, tag = "2")]
     pub problems: Vec<MemoryProblem>,
-    /// The provider in force (files).
+    /// The provider in force (files or kosmonaut).
     #[prost(string, tag = "3")]
     pub provider: String,
 }
@@ -5595,6 +5595,36 @@ pub struct MemoryUpdate {
     pub context: Option<MemoryContext>,
 }
 
+/// Which memories memory.import and memory.export copy.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryTransfer {
+    /// Unspecified: every scope the context reaches.
+    #[prost(enumeration = "MemoryScope", tag = "1")]
+    #[serde(with = "memory_scope_json")]
+    pub scope: i32,
+    #[prost(message, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<MemoryContext>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryTransferred {
+    /// The memories copied, newest first.
+    #[prost(string, repeated, tag = "1")]
+    pub ids: Vec<String>,
+    /// Memory files that could not be read; they are left out.
+    #[prost(message, repeated, tag = "2")]
+    pub problems: Vec<MemoryProblem>,
+    /// The provider copied from.
+    #[prost(string, tag = "3")]
+    pub from: String,
+    /// The provider copied into.
+    #[prost(string, tag = "4")]
+    pub to: String,
+}
+
 /// Method names.
 pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
@@ -5699,6 +5729,8 @@ pub mod method {
     pub const MEMORY_GET: &str = "memory.get";
     pub const MEMORY_UPDATE: &str = "memory.update";
     pub const MEMORY_FORGET: &str = "memory.forget";
+    pub const MEMORY_IMPORT: &str = "memory.import";
+    pub const MEMORY_EXPORT: &str = "memory.export";
     pub const APPS_PUBLISH_TREE: &str = "apps.publish_tree";
     pub const APPS_TREE: &str = "apps.tree";
     pub const APPS_CAPTURE: &str = "apps.capture";
@@ -6440,6 +6472,20 @@ pub const METHODS: &[MethodInfo] = &[
         doc: "Delete a memory and its index line; the reply is what was deleted.",
     },
     MethodInfo {
+        name: "memory.import",
+        params: "MemoryTransfer",
+        result: "MemoryTransferred",
+        mutation: true,
+        doc: "Copy what the files provider holds into the provider in force, keeping ids, text, links, and times; a memory with the same id is replaced. Refused while files is the provider in force.",
+    },
+    MethodInfo {
+        name: "memory.export",
+        params: "MemoryTransfer",
+        result: "MemoryTransferred",
+        mutation: true,
+        doc: "Copy what the provider in force holds into the files provider, as markdown files and their MEMORY.md index; a file with the same id is replaced. Refused while files is the provider in force.",
+    },
+    MethodInfo {
         name: "apps.publish_tree",
         params: "AppTreePublish",
         result: "Empty",
@@ -6644,6 +6690,8 @@ pub enum Request {
     MemoryGet(MemoryRef),
     MemoryUpdate(MemoryUpdate),
     MemoryForget(MemoryRef),
+    MemoryImport(MemoryTransfer),
+    MemoryExport(MemoryTransfer),
     AppsPublishTree(AppTreePublish),
     AppsTree(AppTreeQuery),
     AppsCapture(AppCapture),
@@ -6765,6 +6813,8 @@ impl Request {
             Self::MemoryGet(_) => "memory.get",
             Self::MemoryUpdate(_) => "memory.update",
             Self::MemoryForget(_) => "memory.forget",
+            Self::MemoryImport(_) => "memory.import",
+            Self::MemoryExport(_) => "memory.export",
             Self::AppsPublishTree(_) => "apps.publish_tree",
             Self::AppsTree(_) => "apps.tree",
             Self::AppsCapture(_) => "apps.capture",
@@ -6887,6 +6937,8 @@ impl Request {
             Self::MemoryGet(v) => ::prost::Message::encode_to_vec(v),
             Self::MemoryUpdate(v) => ::prost::Message::encode_to_vec(v),
             Self::MemoryForget(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryImport(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryExport(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsPublishTree(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsTree(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCapture(v) => ::prost::Message::encode_to_vec(v),
@@ -7030,6 +7082,8 @@ impl Request {
             "memory.get" => Ok(Self::MemoryGet(::prost::Message::decode(bytes)?)),
             "memory.update" => Ok(Self::MemoryUpdate(::prost::Message::decode(bytes)?)),
             "memory.forget" => Ok(Self::MemoryForget(::prost::Message::decode(bytes)?)),
+            "memory.import" => Ok(Self::MemoryImport(::prost::Message::decode(bytes)?)),
+            "memory.export" => Ok(Self::MemoryExport(::prost::Message::decode(bytes)?)),
             "apps.publish_tree" => Ok(Self::AppsPublishTree(::prost::Message::decode(bytes)?)),
             "apps.tree" => Ok(Self::AppsTree(::prost::Message::decode(bytes)?)),
             "apps.capture" => Ok(Self::AppsCapture(::prost::Message::decode(bytes)?)),
@@ -7152,6 +7206,8 @@ impl Request {
             Self::MemoryGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MemoryUpdate(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MemoryForget(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryImport(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryExport(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsPublishTree(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsTree(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCapture(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -7289,6 +7345,8 @@ impl Request {
             "memory.get" => Ok(Self::MemoryGet(serde_json::from_value(value)?)),
             "memory.update" => Ok(Self::MemoryUpdate(serde_json::from_value(value)?)),
             "memory.forget" => Ok(Self::MemoryForget(serde_json::from_value(value)?)),
+            "memory.import" => Ok(Self::MemoryImport(serde_json::from_value(value)?)),
+            "memory.export" => Ok(Self::MemoryExport(serde_json::from_value(value)?)),
             "apps.publish_tree" => Ok(Self::AppsPublishTree(serde_json::from_value(value)?)),
             "apps.tree" => Ok(Self::AppsTree(serde_json::from_value(value)?)),
             "apps.capture" => Ok(Self::AppsCapture(serde_json::from_value(value)?)),
@@ -7413,6 +7471,8 @@ pub enum Response {
     MemoryGet(MemoryItem),
     MemoryUpdate(MemoryItem),
     MemoryForget(MemoryItem),
+    MemoryImport(MemoryTransferred),
+    MemoryExport(MemoryTransferred),
     AppsPublishTree(Empty),
     AppsTree(AppTree),
     AppsCapture(AppCaptured),
@@ -7534,6 +7594,8 @@ impl Response {
             Self::MemoryGet(_) => "memory.get",
             Self::MemoryUpdate(_) => "memory.update",
             Self::MemoryForget(_) => "memory.forget",
+            Self::MemoryImport(_) => "memory.import",
+            Self::MemoryExport(_) => "memory.export",
             Self::AppsPublishTree(_) => "apps.publish_tree",
             Self::AppsTree(_) => "apps.tree",
             Self::AppsCapture(_) => "apps.capture",
@@ -7656,6 +7718,8 @@ impl Response {
             Self::MemoryGet(v) => ::prost::Message::encode_to_vec(v),
             Self::MemoryUpdate(v) => ::prost::Message::encode_to_vec(v),
             Self::MemoryForget(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryImport(v) => ::prost::Message::encode_to_vec(v),
+            Self::MemoryExport(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsPublishTree(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsTree(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCapture(v) => ::prost::Message::encode_to_vec(v),
@@ -7799,6 +7863,8 @@ impl Response {
             "memory.get" => Ok(Self::MemoryGet(::prost::Message::decode(bytes)?)),
             "memory.update" => Ok(Self::MemoryUpdate(::prost::Message::decode(bytes)?)),
             "memory.forget" => Ok(Self::MemoryForget(::prost::Message::decode(bytes)?)),
+            "memory.import" => Ok(Self::MemoryImport(::prost::Message::decode(bytes)?)),
+            "memory.export" => Ok(Self::MemoryExport(::prost::Message::decode(bytes)?)),
             "apps.publish_tree" => Ok(Self::AppsPublishTree(::prost::Message::decode(bytes)?)),
             "apps.tree" => Ok(Self::AppsTree(::prost::Message::decode(bytes)?)),
             "apps.capture" => Ok(Self::AppsCapture(::prost::Message::decode(bytes)?)),
@@ -7921,6 +7987,8 @@ impl Response {
             Self::MemoryGet(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MemoryUpdate(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MemoryForget(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryImport(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::MemoryExport(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsPublishTree(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsTree(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCapture(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -8058,6 +8126,8 @@ impl Response {
             "memory.get" => Ok(Self::MemoryGet(serde_json::from_value(value)?)),
             "memory.update" => Ok(Self::MemoryUpdate(serde_json::from_value(value)?)),
             "memory.forget" => Ok(Self::MemoryForget(serde_json::from_value(value)?)),
+            "memory.import" => Ok(Self::MemoryImport(serde_json::from_value(value)?)),
+            "memory.export" => Ok(Self::MemoryExport(serde_json::from_value(value)?)),
             "apps.publish_tree" => Ok(Self::AppsPublishTree(serde_json::from_value(value)?)),
             "apps.tree" => Ok(Self::AppsTree(serde_json::from_value(value)?)),
             "apps.capture" => Ok(Self::AppsCapture(serde_json::from_value(value)?)),
@@ -8576,6 +8646,16 @@ pub trait Service: Sync {
         &self,
         params: MemoryRef,
     ) -> impl ::core::future::Future<Output = Result<MemoryItem, RpcError>> + Send;
+    /// Copy what the files provider holds into the provider in force, keeping ids, text, links, and times; a memory with the same id is replaced. Refused while files is the provider in force.
+    fn memory_import(
+        &self,
+        params: MemoryTransfer,
+    ) -> impl ::core::future::Future<Output = Result<MemoryTransferred, RpcError>> + Send;
+    /// Copy what the provider in force holds into the files provider, as markdown files and their MEMORY.md index; a file with the same id is replaced. Refused while files is the provider in force.
+    fn memory_export(
+        &self,
+        params: MemoryTransfer,
+    ) -> impl ::core::future::Future<Output = Result<MemoryTransferred, RpcError>> + Send;
     /// A registered app host publishes a version of its view tree for its pane. A patch that does not follow the version kept is refused with a precondition error; the host then sends the whole tree.
     fn apps_publish_tree(
         &self,
@@ -8870,6 +8950,8 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
         Request::MemoryGet(p) => service.memory_get(p).await.map(Response::MemoryGet),
         Request::MemoryUpdate(p) => service.memory_update(p).await.map(Response::MemoryUpdate),
         Request::MemoryForget(p) => service.memory_forget(p).await.map(Response::MemoryForget),
+        Request::MemoryImport(p) => service.memory_import(p).await.map(Response::MemoryImport),
+        Request::MemoryExport(p) => service.memory_export(p).await.map(Response::MemoryExport),
         Request::AppsPublishTree(p) => service
             .apps_publish_tree(p)
             .await

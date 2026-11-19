@@ -24,6 +24,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
+  # Git dependencies through git itself, so the URL rewrite below applies.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 # Linux only. `cargo xtask policy` fails if any workflow uses a macOS runner.
 
@@ -34,6 +36,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Cargo fetches every git source in Cargo.lock, optional ones too, so
+      # every job needs the private Kosmonaut repository (read-only token).
+      - name: Access to the private Kosmonaut repository
+        env:
+          KOSMONAUT_TOKEN: ${{ secrets.KOSMONAUT_TOKEN }}
+        run: git config --global url."https://x-access-token:${KOSMONAUT_TOKEN}@github.com/DeytaHQ/".insteadOf "https://github.com/DeytaHQ/"
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install OpenSSH server and tmux build dependencies
@@ -70,6 +78,12 @@ jobs:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Cargo fetches every git source in Cargo.lock, optional ones too, so
+      # every job needs the private Kosmonaut repository (read-only token).
+      - name: Access to the private Kosmonaut repository
+        env:
+          KOSMONAUT_TOKEN: ${{ secrets.KOSMONAUT_TOKEN }}
+        run: git config --global url."https://x-access-token:${KOSMONAUT_TOKEN}@github.com/DeytaHQ/".insteadOf "https://github.com/DeytaHQ/"
       - name: Install pinned toolchain and target
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -134,12 +148,21 @@ jobs:
           fontconfig freetype2 libxkbcommon libxkbcommon-x11 libx11 libxcb
           wayland vulkan-icd-loader
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Cargo fetches every git source in Cargo.lock, optional ones too, so
+      # every job needs the private Kosmonaut repository (read-only token).
+      - name: Access to the private Kosmonaut repository
+        env:
+          KOSMONAUT_TOKEN: ${{ secrets.KOSMONAUT_TOKEN }}
+        run: git config --global url."https://x-access-token:${KOSMONAUT_TOKEN}@github.com/DeytaHQ/".insteadOf "https://github.com/DeytaHQ/"
       - name: Build the package as an unprivileged user
+        env:
+          KOSMONAUT_TOKEN: ${{ secrets.KOSMONAUT_TOKEN }}
         run: |
           useradd -m builder
           chown -R builder "$GITHUB_WORKSPACE"
           sudo -u builder git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          sudo -u builder bash -c "cd '$GITHUB_WORKSPACE' && cargo xtask package --platform arch"
+          sudo -u builder git config --global url."https://x-access-token:${KOSMONAUT_TOKEN}@github.com/DeytaHQ/".insteadOf "https://github.com/DeytaHQ/"
+          sudo -u builder bash -c "cd '$GITHUB_WORKSPACE' && CARGO_NET_GIT_FETCH_WITH_CLI=true cargo xtask package --platform arch"
       - name: Install the package and run what it installed
         run: |
           pacman -U --noconfirm target/package/arch/dreamer-*.pkg.tar.zst
@@ -171,6 +194,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Cargo fetches every git source in Cargo.lock, optional ones too, so
+      # every job needs the private Kosmonaut repository (read-only token).
+      - name: Access to the private Kosmonaut repository
+        env:
+          KOSMONAUT_TOKEN: ${{ secrets.KOSMONAUT_TOKEN }}
+        run: git config --global url."https://x-access-token:${KOSMONAUT_TOKEN}@github.com/DeytaHQ/".insteadOf "https://github.com/DeytaHQ/"
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install GUI build dependencies

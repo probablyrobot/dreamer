@@ -298,7 +298,10 @@ fn run(args: Args) -> Result<ExitCode, String> {
             collectors: collectors::Collectors::new(state_dir.join("collectors")),
             memory: memories::Memory::new(
                 &state_dir,
-                &settings.as_ref().map(|s| s.memory).unwrap_or_default(),
+                &settings
+                    .as_ref()
+                    .map(|s| s.memory.clone())
+                    .unwrap_or_default(),
             ),
             decorations: decorations::Decorations::default(),
             agents: agents::Agents::default(),

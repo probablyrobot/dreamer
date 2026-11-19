@@ -1,15 +1,24 @@
 [package]
 name = "memory"
-description = "Durable memory: the provider interface and the files provider"
+description = "Durable memory: the provider interface, the files provider, and the Kosmonaut provider"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# The `kosmonaut` provider: Kosmonaut embedded as a library. Off by default,
+# so a headless build can leave the engine out. See docs/memory.md.
+kosmonaut = ["dep:kosmonaut"]
+
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_norway = "0.9.42"
+serde_json = "1.0.154"
+# Pinned to a release tag; Cargo.lock records its commit. The repository is
+# private: see docs/dependency-baseline.md for how builds get access to it.
+kosmonaut = { git = "https://github.com/DeytaHQ/kosmonaut", tag = "v0.24.0", optional = true }
 
 [lints]
 workspace = true

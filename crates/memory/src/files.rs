@@ -26,7 +26,9 @@ use std::sync::Mutex;
 use serde::Deserialize;
 use serde_norway::{Mapping, Value};
 
-use crate::{Change, Context, Error, Found, Kind, Memory, New, Problem, Provider, Scope, time};
+use crate::{
+    Change, Context, Error, Found, Kind, Memory, New, Problem, Provider, Scope, split_id, time,
+};
 
 /// The index file in every scope's directory.
 pub const INDEX: &str = "MEMORY.md";
@@ -58,14 +60,10 @@ impl Files {
         }
     }
 
-    /// The project a working directory belongs to: the nearest directory
-    /// at or above it that holds `.dreamer/memory` or `.git`, else the
-    /// directory itself.
+    /// The project a working directory belongs to: see
+    /// [`crate::project_root`].
     pub fn project_root(cwd: &Path) -> PathBuf {
-        cwd.ancestors()
-            .find(|a| a.join(".dreamer").join("memory").is_dir() || a.join(".git").exists())
-            .unwrap_or(cwd)
-            .to_path_buf()
+        crate::project_root(cwd)
     }
 
     /// The directory that holds `scope`'s memories for `cx`.
@@ -75,34 +73,8 @@ impl Files {
                 Error::Invalid("the user scope needs a configuration directory".into())
             }),
             Scope::Host => Ok(self.host.clone()),
-            Scope::Project => {
-                let cwd = cx.cwd.as_deref().ok_or_else(|| {
-                    Error::Invalid("the project scope needs a working directory".into())
-                })?;
-                if !cwd.is_absolute() {
-                    return Err(Error::Invalid(format!(
-                        "the working directory `{}` is not absolute",
-                        cwd.display()
-                    )));
-                }
-                Ok(Files::project_root(cwd).join(".dreamer").join("memory"))
-            }
-            Scope::Session => {
-                let id = cx
-                    .session
-                    .as_deref()
-                    .ok_or_else(|| Error::Invalid("the session scope needs a session id".into()))?;
-                let ok = !id.is_empty()
-                    && id.len() <= 128
-                    && !id.starts_with('.')
-                    && id
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
-                if !ok {
-                    return Err(Error::Invalid(format!("`{id}` is not a session id")));
-                }
-                Ok(self.sessions.join(id))
-            }
+            Scope::Project => Ok(crate::project_of(cx)?.join(".dreamer").join("memory")),
+            Scope::Session => Ok(self.sessions.join(crate::session_of(cx)?)),
         }
     }
 
@@ -133,22 +105,6 @@ impl Files {
         let entry = read(&path, scope).map_err(Error::Malformed)?;
         Ok((scope, path, entry))
     }
-}
-
-/// `user/prefers-tabs` to its scope and file name.
-fn split_id(id: &str) -> Result<(Scope, &str), Error> {
-    let bad = || Error::Invalid(format!("`{id}` is not a memory id (scope/name)"));
-    let (scope, name) = id.split_once('/').ok_or_else(bad)?;
-    let scope = Scope::from_name(scope).ok_or_else(bad)?;
-    let ok = !name.is_empty()
-        && name.len() <= 200
-        && !name.starts_with('.')
-        && name != "MEMORY"
-        && !name.contains(['/', '\\', '\0']);
-    if !ok {
-        return Err(bad());
-    }
-    Ok((scope, name))
 }
 
 /// What a file holds besides the memory: frontmatter keys Dreamer does
@@ -267,11 +223,11 @@ fn read(path: &Path, scope: Scope) -> Result<Entry, Problem> {
 }
 
 /// One line: newlines and runs of space become one space.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn shorten(text: &str, max: usize) -> String {
+pub(crate) fn shorten(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
     }
@@ -282,7 +238,7 @@ fn shorten(text: &str, max: usize) -> String {
 }
 
 /// A title from the text's first line that is not empty.
-fn title_of(text: &str) -> String {
+pub(crate) fn title_of(text: &str) -> String {
     let first = text
         .lines()
         .map(|l| l.trim().trim_start_matches('#').trim())
@@ -292,7 +248,7 @@ fn title_of(text: &str) -> String {
 }
 
 /// A file name from a title: lowercase letters and digits joined by `-`.
-fn slug(title: &str) -> String {
+pub(crate) fn slug(title: &str) -> String {
     let mut s = String::new();
     for c in title.chars().flat_map(char::to_lowercase) {
         if c.is_alphanumeric() {
@@ -322,6 +278,18 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), Error> {
         let _ = std::fs::remove_file(&tmp);
         io(e)
     })
+}
+
+/// Set a memory file's modification time to the memory's updated time, so
+/// reading it back gives that time and not the moment of the write (the
+/// frontmatter keeps whole seconds; the file time keeps the rest).
+fn set_time(path: &Path, unix_ms: u64) -> Result<(), Error> {
+    let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(unix_ms);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .and_then(|f| f.set_modified(at))
+        .map_err(|e| Error::Io(format!("{}: {e}", path.display())))
 }
 
 fn render(m: &Memory, extra: &BTreeMap<String, Value>) -> Result<String, Error> {
@@ -461,6 +429,7 @@ impl Provider for Files {
             score: None,
         };
         write_atomic(&path, &render(&m, &BTreeMap::new())?)?;
+        set_time(&path, m.updated_unix_ms)?;
         let file = format!("{name}.md");
         set_index(&dir, &file, Some(index_line(&m, &file)))?;
         read(&path, new.scope)
@@ -538,10 +507,41 @@ impl Provider for Files {
         }
         m.updated_unix_ms = time::now_ms().max(m.updated_unix_ms);
         write_atomic(&path, &render(&m, &entry.extra)?)?;
+        set_time(&path, m.updated_unix_ms)?;
         let file = format!("{}.md", file_name(&path));
         if let Some(dir) = path.parent() {
             set_index(dir, &file, Some(index_line(&m, &file)))?;
         }
+        read(&path, scope)
+            .map(|e| e.memory)
+            .map_err(Error::Malformed)
+    }
+
+    fn put(&self, cx: &Context, m: &Memory) -> Result<Memory, Error> {
+        if m.text.trim().is_empty() {
+            return Err(Error::Invalid("a memory needs text".into()));
+        }
+        let (scope, name) = split_id(&m.id)?;
+        if scope != m.scope {
+            return Err(Error::Invalid(format!(
+                "`{}` is not in the {} scope",
+                m.id,
+                m.scope.name()
+            )));
+        }
+        let dir = self.dir(cx, scope)?;
+        let io = |e: std::io::Error| Error::Io(format!("{}: {e}", dir.display()));
+        let _guard = self.lock();
+        std::fs::create_dir_all(&dir).map_err(io)?;
+        let path = dir.join(format!("{name}.md"));
+        // Keys a person added to a file that is there stay.
+        let extra = read(&path, scope).map(|e| e.extra).unwrap_or_default();
+        let mut m = m.clone();
+        m.text = m.text.trim_end().to_owned();
+        write_atomic(&path, &render(&m, &extra)?)?;
+        set_time(&path, m.updated_unix_ms)?;
+        let file = format!("{name}.md");
+        set_index(&dir, &file, Some(index_line(&m, &file)))?;
         read(&path, scope)
             .map(|e| e.memory)
             .map_err(Error::Malformed)
