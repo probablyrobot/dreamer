@@ -15,6 +15,11 @@
 //!
 //! A request that names a `web.*` method is run on the page of the pane
 //! in the window that shows it (inspect.rs), and answered with its result.
+//!
+//! The same connection reports whether this desktop can draw web pages
+//! (`web.component`, from webcomp.rs) whenever that changes, and again
+//! after connecting: a `web.open` waits on it while Dreamer Web is being
+//! added here.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -46,6 +51,7 @@ pub(crate) fn serve(socket: PathBuf, cx: &mut gpui::App) {
     }
     let (requests_tx, requests) = async_channel::unbounded::<api::AppCaptureRequest>();
     let (answers, answers_rx) = tokio::sync::mpsc::unbounded_channel::<Answer>();
+    let (reports_tx, reports) = async_channel::unbounded::<api::WebComponentState>();
     let spawned = std::thread::Builder::new()
         .name("dreamer-capture".into())
         .spawn(move || {
@@ -55,11 +61,12 @@ pub(crate) fn serve(socket: PathBuf, cx: &mut gpui::App) {
             else {
                 return;
             };
-            rt.block_on(wait_for_requests(socket, requests_tx, answers_rx));
+            rt.block_on(wait_for_requests(socket, requests_tx, answers_rx, reports));
         });
     if spawned.is_err() {
         return;
     }
+    crate::webcomp::report_to(reports_tx);
     cx.spawn(async move |cx| {
         while let Ok(r) = requests.recv().await {
             let answers = answers.clone();
@@ -93,14 +100,17 @@ pub(crate) fn serve(socket: PathBuf, cx: &mut gpui::App) {
     .detach();
 }
 
-/// Ask the daemon for requests, hand them over, and send the answers;
-/// connect again after a loss.
+/// Ask the daemon for requests, hand them over, and send the answers and
+/// Dreamer Web's status; connect again after a loss.
 async fn wait_for_requests(
     socket: PathBuf,
     requests: async_channel::Sender<api::AppCaptureRequest>,
     mut answers: tokio::sync::mpsc::UnboundedReceiver<Answer>,
+    reports: async_channel::Receiver<api::WebComponentState>,
 ) {
     let mut backoff = Duration::from_millis(500);
+    // The status last reported, to report again on a new connection.
+    let mut latest: Option<api::WebComponentState> = None;
     loop {
         let c = match client::Client::connect(&socket, "desktop-capture").await {
             Ok(c) => std::sync::Arc::new(c),
@@ -111,6 +121,9 @@ async fn wait_for_requests(
             }
         };
         backoff = Duration::from_millis(500);
+        if let Some(state) = latest.clone() {
+            report(&c, state).await;
+        }
         let next = |c: std::sync::Arc<client::Client>| {
             Box::pin(async move {
                 c.call(api::Request::AppsCaptureWait(api::AppCaptureWait {
@@ -138,6 +151,12 @@ async fn wait_for_requests(
                     }
                     Err(_) => break,
                 },
+                r = reports.recv(), if !reports.is_closed() => {
+                    if let Ok(state) = r {
+                        latest = Some(state.clone());
+                        report(&c, state).await;
+                    }
+                }
                 a = answers.recv() => {
                     let Some((id, answer)) = a else { return };
                     let done = match answer {
@@ -160,6 +179,12 @@ async fn wait_for_requests(
         }
         tokio::time::sleep(backoff).await;
     }
+}
+
+/// Report Dreamer Web's status on the capture connection. A daemon without
+/// `web.component` has nothing that waits on it.
+async fn report(c: &client::Client, state: api::WebComponentState) {
+    let _ = c.call(api::Request::WebComponent(state)).await;
 }
 
 /// Where to capture: the window's bounds on the screen and the pane's

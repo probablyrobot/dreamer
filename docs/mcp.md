@@ -89,7 +89,7 @@ components.
 
 | Tool | Does | Through |
 | --- | --- | --- |
-| `browser_open` | Open an address (`url`: a URL, or as typed into an address bar, such as `example.com` or `localhost:3000`) in Dreamer's [browser](desktop.md#the-browser): a new web pane beside the pane the server runs in, beside `beside`, or in a `new_window`, which this session owns; or, with `pane`, load it in that web pane. Returns the `pane` and the `url` | `web.open`, `web.navigate` |
+| `browser_open` | Open an address (`url`: a URL, or as typed into an address bar, such as `example.com` or `localhost:3000`) in Dreamer's [browser](desktop.md#the-browser): a new web pane beside the pane the server runs in, beside `beside`, or in a `new_window`, which this session owns; or, with `pane`, load it in that web pane. Returns the `pane` and the `url`. A new pane waits while the desktop adds [Dreamer Web](desktop.md#dreamer-web) (or offers it), and fails with why, its pane closed, when it is not there and will not be | `web.open`, `web.navigate` |
 
 The page runs in the user's desktop, with no Dreamer API; the agent
 reads it with the page tools below, when its grant allows. Not at the

@@ -13,6 +13,11 @@
 //! `web.screenshot`, `web.click`, `web.type`) travel the same way: the
 //! request names the method and carries its parameters, and the desktop
 //! showing the pane's page runs it there and answers with its result.
+//!
+//! A desktop also reports on that connection whether it can draw web pages
+//! (`web.component`: Dreamer Web ready, missing, being added, failed, or
+//! turned off), kept until the connection closes. A `web.open` that finds
+//! it missing waits on these reports ([`Captures::web_verdict`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
@@ -38,6 +43,21 @@ struct Server {
     queue: VecDeque<api::AppCaptureRequest>,
     waiting: u32,
     seen: Option<Instant>,
+    /// What it last reported of Dreamer Web.
+    web: Option<api::WebComponentState>,
+}
+
+/// What the desktops that report Dreamer Web say of it, for a `web.open`
+/// that would wait until a page can load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebVerdict {
+    /// A desktop has it, or none says it is missing (none running, or
+    /// none that reports): go on, as the page will load where it can.
+    Go,
+    /// It is being added, or offered to be: wait for it.
+    Wait,
+    /// Every desktop that reports it says it will not be there, and why.
+    No(String),
 }
 
 impl Server {
@@ -311,13 +331,67 @@ impl Captures {
         Ok(())
     }
 
+    /// The desktop on `conn` reports Dreamer Web's status there.
+    pub fn report_web(&self, conn: u64, state: api::WebComponentState) -> Result<(), RpcError> {
+        {
+            let mut i = self.inner.lock().map_err(|_| poisoned())?;
+            i.servers.entry(conn).or_default().web = Some(state);
+        }
+        self.wake();
+        Ok(())
+    }
+
+    /// What the desktops' reports of Dreamer Web come to (see
+    /// [`WebVerdict`]).
+    pub fn web_verdict(&self) -> WebVerdict {
+        use api::WebComponentStatus as S;
+        let Ok(i) = self.inner.lock() else {
+            return WebVerdict::Go;
+        };
+        let mut wait = false;
+        let mut why: Vec<String> = Vec::new();
+        for s in i.servers.values().filter_map(|s| s.web.as_ref()) {
+            match S::try_from(s.status).unwrap_or(S::Unspecified) {
+                S::Ready => return WebVerdict::Go,
+                S::Missing | S::Adding => wait = true,
+                status @ (S::Failed | S::Off) => {
+                    let said = s.detail.clone().unwrap_or_else(|| {
+                        if status == S::Off {
+                            "it is turned off (web.component: never)".into()
+                        } else {
+                            "it could not be added".into()
+                        }
+                    });
+                    if !why.contains(&said) {
+                        why.push(said);
+                    }
+                }
+                S::Unspecified => {}
+            }
+        }
+        match (wait, why.is_empty()) {
+            (true, _) => WebVerdict::Wait,
+            (false, true) => WebVerdict::Go,
+            (false, false) => WebVerdict::No(why.join("; ")),
+        }
+    }
+
+    /// Changes to the desktops and their reports, to wait on.
+    pub fn changes(&self) -> watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+
     /// Connection `conn` closed: it answers no more captures.
     pub fn drop_conn(&self, conn: u64) {
         let Ok(mut i) = self.inner.lock() else {
             return;
         };
-        if i.servers.remove(&conn).is_none() {
+        let Some(gone) = i.servers.remove(&conn) else {
             return;
+        };
+        if gone.web.is_some() {
+            // A web.open waiting on its report decides again.
+            self.wake();
         }
         let ended: Vec<u64> = i
             .pending
@@ -496,6 +570,62 @@ mod tests {
         }
         let e = c.capture(&capture(5)).await.expect_err("declined");
         assert_eq!(e.message, "pane %5 is not shown in this window");
+    }
+
+    fn web(status: api::WebComponentStatus, detail: Option<&str>) -> api::WebComponentState {
+        api::WebComponentState {
+            status: status as i32,
+            detail: detail.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn web_open_waits_while_a_desktop_adds_dreamer_web_and_fails_only_when_none_will() {
+        use api::WebComponentStatus as S;
+        let c = Captures::default();
+        // No desktop reports: the page loads wherever it can, as before.
+        assert_eq!(c.web_verdict(), WebVerdict::Go);
+        c.report_web(1, web(S::Missing, None)).expect("report");
+        assert_eq!(c.web_verdict(), WebVerdict::Wait);
+        c.report_web(1, web(S::Adding, None)).expect("report");
+        assert_eq!(c.web_verdict(), WebVerdict::Wait);
+        // Another desktop that will never add it does not end the wait.
+        c.report_web(2, web(S::Off, None)).expect("report");
+        assert_eq!(c.web_verdict(), WebVerdict::Wait);
+        c.report_web(1, web(S::Failed, Some("the download failed")))
+            .expect("report");
+        let WebVerdict::No(why) = c.web_verdict() else {
+            panic!("every desktop said no: {:?}", c.web_verdict());
+        };
+        assert!(why.contains("the download failed"), "{why}");
+        assert!(why.contains("web.component: never"), "{why}");
+        // One that has it is enough.
+        c.report_web(1, web(S::Ready, None)).expect("report");
+        assert_eq!(c.web_verdict(), WebVerdict::Go);
+        // A desktop that goes takes its report with it.
+        c.drop_conn(1);
+        assert!(matches!(c.web_verdict(), WebVerdict::No(_)));
+        c.drop_conn(2);
+        assert_eq!(c.web_verdict(), WebVerdict::Go);
+    }
+
+    #[tokio::test]
+    async fn a_report_wakes_whoever_waits_on_it() {
+        let c = Captures::default();
+        let mut changes = c.changes();
+        changes.borrow_and_update();
+        c.report_web(3, web(api::WebComponentStatus::Ready, None))
+            .expect("report");
+        tokio::time::timeout(Duration::from_secs(5), changes.changed())
+            .await
+            .expect("woken")
+            .expect("open");
+        changes.borrow_and_update();
+        c.drop_conn(3);
+        tokio::time::timeout(Duration::from_secs(5), changes.changed())
+            .await
+            .expect("woken by the close")
+            .expect("open");
     }
 
     #[tokio::test]

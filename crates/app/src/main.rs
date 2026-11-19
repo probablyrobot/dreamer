@@ -35,6 +35,7 @@ mod theme;
 mod theme_pick;
 mod tmux_keys;
 mod web;
+mod webcomp;
 
 use theme::{c, ca};
 mod bench_gui;
@@ -1703,6 +1704,8 @@ struct Args {
     web: Option<std::path::PathBuf>,
     /// The web pane smoke's second run: the browser after a restart.
     web_restart: bool,
+    /// The web pane smoke's first run: Dreamer Web added from a web pane.
+    web_install: bool,
     /// Parts of the workspace to open at start (`sidebar`, `palette`).
     open: Vec<String>,
     /// `dreamerd` options for a daemon started on demand.
@@ -1751,6 +1754,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 a.smoke = true;
                 a.workspace = true;
                 a.web_restart = true;
+            }
+            "--smoke-web-install" => {
+                a.smoke = true;
+                a.workspace = true;
+                a.web_install = true;
             }
             "--smoke-workspace-restore" => {
                 a.smoke = true;
@@ -1922,6 +1930,15 @@ fn main() -> ExitCode {
         cx.background_spawn(async { live::set_themes(live::themes()) })
             .detach();
         live::watch(cx);
+        // Dreamer Web: found, used in place, or offered once (not in smoke
+        // runs, which bring their own, but for the one that adds it: from
+        // its own download, never from a copy of the user's).
+        if args.web_install {
+            webcomp::without_system_copies();
+        }
+        if workspace_mode && (!args.smoke || args.web_install) {
+            webcomp::startup(cx);
+        }
 
         if workspace_mode {
             let launch = client::Launch::new(args.daemon.clone());
@@ -1954,6 +1971,7 @@ fn main() -> ExitCode {
             }
             let run = match (args.restore, args.clipboard, &args.web) {
                 _ if args.web_restart => workspace::SmokeRun::WebRestart,
+                _ if args.web_install => workspace::SmokeRun::WebInstall,
                 (_, _, Some(out)) => workspace::SmokeRun::Web(out.clone()),
                 (true, _, _) => workspace::SmokeRun::Restore,
                 (false, true, _) => workspace::SmokeRun::Clipboard,

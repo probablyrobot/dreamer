@@ -54,7 +54,7 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `apps.tree`, `apps.capture` | The owner grant, or an agent's grant at `own` or `elsewhere` for an app pane it launched ([below](#agents-and-apps)) |
 | `apps.capture_wait`, `apps.capture_done` | The owner grant: images of panes are made by the user's desktop, for the user |
 | `web.open`, `web.navigate` | The owner grant, or an agent's grant at `own` or `elsewhere` (never an app's); `web.open` with `pane`, that pane in scope, else `all_panes`; `web.navigate`, its pane in scope |
-| `web.state` | The owner grant: the desktop drawing a page reports it |
+| `web.state`, `web.component` | The owner grant: the desktop drawing a page reports it, and whether it has Dreamer Web |
 | `web.read`, `web.screenshot`, `web.click`, `web.type` | `web.inspect` in the grant (never the methods by name) and the pane in scope; see [Reading and driving pages](#reading-and-driving-pages) |
 | `apps.call` | The owner grant (the desktop showing an app's page). The call it carries is checked against that app's grant, as the app's own ([below](#web-pages-of-apps)) |
 | `apps.publish`, `apps.publish_tree` | A registered app host's own connection, whatever its grant lists; it publishes for its own pane only |

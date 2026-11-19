@@ -1023,6 +1023,10 @@ impl Workspace {
                 }
                 None
             }
+            C::AddWeb => {
+                crate::webcomp::add(cx);
+                None
+            }
             // Chosen in the palette's own list.
             C::Theme => None,
             // The app's own commands, dispatched above.
@@ -2267,6 +2271,8 @@ impl Render for Workspace {
                     .text_color(c(t.warning))
                     .child(s)
             }))
+            // Dreamer Web, offered once at the first start.
+            .children(crate::webcomp::offer(&t))
             // A configuration change that was not applied, and why: the
             // settings in force stay until the file reads again.
             .children(
@@ -3017,6 +3023,9 @@ pub(crate) enum SmokeRun {
     Web(PathBuf),
     /// `--smoke-web-restart`: the browser's profile after a restart.
     WebRestart,
+    /// `--smoke-web-install`: with no Dreamer Web, the first-start offer,
+    /// and the component added from a web pane's button.
+    WebInstall,
 }
 
 /// What a window shows first.
@@ -3386,8 +3395,12 @@ pub(crate) fn open_via(
             SmokeRun::WebRestart => cx
                 .spawn(async move |cx| smoke::web::restart(any, weak, cx).await)
                 .detach(),
+            #[cfg(feature = "web")]
+            SmokeRun::WebInstall => cx
+                .spawn(async move |cx| smoke::web::install(any, weak, cx).await)
+                .detach(),
             #[cfg(not(feature = "web"))]
-            SmokeRun::Web(_) | SmokeRun::WebRestart => {
+            SmokeRun::Web(_) | SmokeRun::WebRestart | SmokeRun::WebInstall => {
                 let _ = daemon;
                 eprintln!("smoke: this build has no web engine (the `web` feature)");
                 std::process::exit(6);

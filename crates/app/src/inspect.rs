@@ -258,9 +258,9 @@ mod engine {
         loop {
             let state = cx.update(|cx| {
                 let p = page.read(cx);
-                match (&p.view, &p.problem) {
+                match (&p.view, p.not_drawn()) {
                     (Some(v), _) => Ok(v.load_status().is_some()),
-                    (None, Some(why)) => Err(why.clone()),
+                    (None, Some(why)) => Err(why),
                     (None, None) => Ok(false),
                 }
             })?;

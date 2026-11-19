@@ -694,20 +694,61 @@ extension ([agents.md](agents.md#dreamers-tools-inside-pi)).
 Chromium is not in the Dreamer package. It is a separate component,
 Dreamer Web, so an install that only wants terminals stays small: the
 Dreamer zip is the same with or without it, and Dreamer Web is about
-150 MB to download and 330 MB installed. Add it once:
+150 MB to download and 334 MB installed. You add it once, in any of
+these ways; they all run the same installer:
 
-```sh
-dream web install
-```
+- **At the first start.** When Dreamer opens without it, the tab strip
+  offers it once: "Add web panes? Dreamer Web, about 150 MB", with
+  **Add** and **Later**. Add installs it, showing its progress there.
+  Later hides the offer for good (the answer is kept in
+  `web-component-offer` in the desktop's state directory); the button in
+  web panes and the palette still add it. The offer never covers or
+  blocks a terminal.
+- **In a web pane.** A web pane opened without it (by you, by `dream web
+  open` or `dream browser`, by an agent's `web.open`, or an app's web
+  view) shows the page's address and **Add Dreamer Web (about 150 MB)**.
+  A click downloads it, with its progress in the pane, checks it,
+  installs it, and loads the page, with no restart. If anything fails,
+  the pane says why and offers **Try again**; what was installed before
+  stays as it was.
+- **From the palette:** "Add Dreamer Web".
+- **From a shell:** `dream web install` ([cli.md](cli.md#dreamer-web)).
 
-This downloads the Dreamer Web zip of your Dreamer's version from the
-release, checks its SHA-256, checks the component, and installs it in
-`web/` of Dreamer's data directory (`~/.local/share/dreamer/web` unless
-`DREAMER_DATA_DIR` or `XDG_DATA_HOME` says otherwise). With a zip you
-already have, give its path: `dream web install
-dreamer-web-<version>-aarch64-apple-darwin.zip`. See
-[cli.md](cli.md#dreamer-web) for `dream web status` and `dream web
-remove`.
+Nothing is downloaded until you choose one of these, unless
+`web.component` is `auto` ([settings.md](settings.md#dreamer-web)):
+
+| `web.component` | What Dreamer does when Dreamer Web is missing |
+| --- | --- |
+| `ask` (default) | Offers it once at the first start, and in each web pane that needs it |
+| `auto` | Adds it without asking, at the start and whenever a web pane needs it (for managed setups) |
+| `never` | Offers nothing. Web panes say it is turned off; the palette's "Add Dreamer Web" and `dream web install` still add it |
+
+An install downloads the Dreamer Web zip of your Dreamer's version with
+`curl`, checks its SHA-256 against the `.sha256` published beside it,
+checks the component, and installs it in `web/` of Dreamer's data
+directory (`~/.local/share/dreamer/web` unless `DREAMER_DATA_DIR` or
+`XDG_DATA_HOME` says otherwise). See [cli.md](cli.md#dreamer-web) for
+installing from a zip or directory you already have, `dream web status`,
+and `dream web remove`.
+
+- **Where it downloads from.** The release of your Dreamer version, unless
+  `DREAMER_WEB_URL` (first) or `web.url` in `dreamer.yaml` names another
+  place: the zip's own address, or a directory's that holds it (with its
+  `.sha256` beside it), over `https`, `http`, or `file`. Dreamer's
+  releases are not public yet, so the default address may not be
+  reachable; a failed download says so and names these settings.
+- **A copy already on this machine** is used in place, before anything is
+  downloaded: Dreamer then links `web/` to it instead of copying it. It is
+  looked for at the first start and at every install, in
+  `/Library/Application Support/Dreamer/web` (a copy an administrator
+  installed for every user of the Mac), then in the default Dreamer data
+  directory (`~/.local/share/dreamer/web`) when `DREAMER_DATA_DIR`
+  points elsewhere. It must be exactly this Dreamer version's component,
+  not writable by other users, and pass the same checks as an install;
+  otherwise it is skipped. `dream web status` says when the component in
+  use is such a copy, and where it is; `dream web remove` then removes
+  only the link. A Chrome or Chromium browser on the system is not
+  Chromium Embedded Framework and is never used.
 
 - **What it holds.** CEF's framework (`Chromium Embedded
   Framework.framework`), the five helper apps Chromium runs its renderer,
@@ -718,14 +759,13 @@ remove`.
   was built for.
 - **Loaded on first use.** Chromium starts with the first web pane, from
   the installed component, not with the app.
-- **Without it,** a web pane shows its address and says that web pages
-  need Dreamer Web and to run `dream web install`; the rest of Dreamer
-  works as before. A pane opened after you add it draws its page; there
-  is no need to restart.
+- **Without it,** the rest of Dreamer works as before. A web pane that
+  is waiting for it draws its page as soon as it is added; there is no
+  need to restart.
 - **One version.** The helper apps are built with Dreamer, so Dreamer Web
   must be the one of the same Dreamer version (and CEF release). After
-  updating Dreamer, run `dream web install` again; until then web panes
-  say which version is installed and which is needed.
+  updating Dreamer, web panes say which version is installed and which is
+  needed, and offer to add this version's.
 - **Signing.** Like the app, the component is signed ad hoc, not with a
   Developer ID or notarized. `dream web install` downloads with `curl`,
   which does not mark the file as quarantined. A zip that a browser
@@ -734,6 +774,26 @@ remove`.
   starting. Install such a zip with `dream web install` and no file
   instead, or remove the mark from the zip yourself (`xattr -d
   com.apple.quarantine FILE`) if you trust where it came from.
+- **An agent's `web.open` waits for it.** Each desktop tells the daemon
+  whether it has Dreamer Web (`web.component`), whenever that changes.
+  While none has it but one is adding it, or offers it (`ask`, the pane
+  showing its button, or `auto`), `web.open` (an agent's, `dream web
+  open`, or `dream browser`) returns only once it is added, so the page
+  can be read and driven as soon as the call returns; it waits at most
+  ten minutes (`wait_ms` sets less). It fails instead, with
+  `-32002` (`PRECONDITION`) and "Dreamer Web is not installed: ..."
+  saying why and how to add it, when Dreamer Web is turned off
+  (`web.component: never`), when its install failed, when the wait runs
+  out, or when you close the pane before adding it (declining it). A
+  `web.open` that fails closes the pane it made, so nothing is left
+  behind for a page that will not be drawn. With no desktop running,
+  `web.open` returns as soon as the pane exists, as the desktop's own
+  web panes do (they show the button instead).
+- **Not yet.** An app's web view does not wait: it shows the button like
+  any web pane. On Linux, web panes and the component are not built yet;
+  the installer already knows where a distribution's copy would be
+  (`/usr/lib/dreamer-web`, or CEF of exactly the pinned release in
+  `/usr/lib/cef` or `/opt/cef`).
 
 ### A build with web panes
 
@@ -776,6 +836,7 @@ Escape closes.
 | Show or hide decorations in this pane (filter marks) | Switches drawing [decorations](#decorations) for the focused pane, in this window |
 | Open an app package as a panel…, Close the app panel | Shows an [app panel](#app-panels), or removes it |
 | Open a web page… | Asks for a URL and opens it in a [web pane](#web-panes) beside the focused pane |
+| Add Dreamer Web | Adds [Dreamer Web](#dreamer-web), the Chromium component web panes need: a copy already on this machine, else the download (about 150 MB). Only in a build with web panes |
 | Theme… (colors of the terminals and the window) | Lists every theme with a swatch and previews the highlighted one; Enter keeps it in `dreamer.yaml`, Escape puts the file back ([settings](settings.md#terminal)) |
 | New Dreamer window (on a new session), Settings…, About Dreamer, Copy, Paste, Find in pane…, Bigger text, Smaller text, Actual text size, Full screen, Minimize window, Zoom window, Bring all windows to front, Quit Dreamer | The [menu commands](#menus-and-shortcuts) |
 
@@ -933,6 +994,19 @@ framework, and then runs `dreamer --smoke-web DIR` from the bundle
 against an isolated tmux server with private daemon, desktop, and
 configuration directories:
 
+- first, adding Dreamer Web as a person would (`dreamer
+  --smoke-web-install`, its own run of the desktop): the private data
+  directory starts empty, and `DREAMER_WEB_URL` names a `file://`
+  directory holding the zip and `.sha256` made from the bundle's
+  component (copies already on the Mac are not used). The tab strip
+  must show the first-start offer (`web.component: ask`); a web pane
+  must show **Add Dreamer Web**; its button is pressed (the click's own
+  handler, not a synthetic OS event); the install's progress must reach
+  the end with the component ready; the offer must be gone; and the
+  page must then load in that pane and draw frames, with no restart.
+  Each passed check is a `smoke: web install:` line, and the gate wants
+  all five. The rest of the check runs with the component this
+  installed;
 - the smoke opens a `data:` page beside the session's shell pane: one
   screen of `#2a6fdb`, then three screens of `#d9822b`, and a title that
   counts animation frames and reports the scroll position;

@@ -28,8 +28,8 @@ pub use schema::{Direction, NodeSpec, Size, WindowSpec, WorkspaceFile};
 pub use settings::{
     Appearance, ClipboardSettings, ClipboardTmux, ClipboardWrite, Decorations, DrawerSettings,
     DrawerSide, FallbackSettings, FontSettings, LinkSettings, MemoryProvider, MemorySettings,
-    MiddleClick, STARTER_SETTINGS, Settings, TierSettings, WindowSettings, ensure_settings_file,
-    load_settings, settings_path,
+    MiddleClick, STARTER_SETTINGS, Settings, TierSettings, WebComponent, WebSettings,
+    WindowSettings, ensure_settings_file, load_settings, settings_path,
 };
 
 use std::path::{Path, PathBuf};

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 60;
+pub const PROTOCOL_MINOR: u32 = 61;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1144,6 +1144,64 @@ mod drawer_want_json {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
         crate::json::enum_value(d, |n| DrawerWant::from_name(n).map(|e| e as i32))
+    }
+}
+
+/// Whether a desktop can draw web pages: Dreamer Web, the component that holds Chromium, as that desktop knows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum WebComponentStatus {
+    Unspecified = 0,
+    /// Installed: pages load.
+    Ready = 1,
+    /// Not installed, and web panes offer to add it (web.component: ask).
+    Missing = 2,
+    /// Being added.
+    Adding = 3,
+    /// The last try to add it failed; web panes offer to try again.
+    Failed = 4,
+    /// Not installed, and not offered (web.component: never).
+    Off = 5,
+}
+
+impl WebComponentStatus {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Ready => "ready",
+            Self::Missing => "missing",
+            Self::Adding => "adding",
+            Self::Failed => "failed",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "ready" => Some(Self::Ready),
+            "missing" => Some(Self::Missing),
+            "adding" => Some(Self::Adding),
+            "failed" => Some(Self::Failed),
+            "off" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+mod web_component_status_json {
+    use super::WebComponentStatus;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match WebComponentStatus::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| WebComponentStatus::from_name(n).map(|e| e as i32))
     }
 }
 
@@ -4863,6 +4921,10 @@ pub struct WebOpen {
     #[prost(string, optional, tag = "4")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// While Dreamer Web is not installed in a desktop that reports it (web.component) and is being added or offered there: how long to wait for it before failing; default 600000 (ten minutes), at most that. 0 returns as soon as the pane exists, as with no desktop running.
+    #[prost(uint32, optional, tag = "5")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -4871,6 +4933,19 @@ pub struct WebOpened {
     /// The new web pane.
     #[prost(uint32, tag = "1")]
     pub pane: u32,
+}
+
+/// What a desktop reports of Dreamer Web (web.component), on the connection it answers captures on, whenever it changes: a web.open waiting for it to be added returns once a desktop reports it ready, and fails when every desktop that reports says it will not be.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebComponentState {
+    #[prost(enumeration = "WebComponentStatus", tag = "1")]
+    #[serde(with = "web_component_status_json")]
+    pub status: i32,
+    /// Why it is missing, failed, or off.
+    #[prost(string, optional, tag = "2")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// What a web pane's page shows, from the desktop drawing it, kept in the placeholder: the page's title as the pane's title and in the placeholder's text for plain tmux clients, and its scroll position for the page to open there again.
@@ -5631,6 +5706,7 @@ pub mod method {
     pub const APPS_CAPTURE_DONE: &str = "apps.capture_done";
     pub const APPS_CALL: &str = "apps.call";
     pub const WEB_OPEN: &str = "web.open";
+    pub const WEB_COMPONENT: &str = "web.component";
     pub const WEB_STATE: &str = "web.state";
     pub const WEB_NAVIGATE: &str = "web.navigate";
     pub const WEB_READ: &str = "web.read";
@@ -6410,7 +6486,14 @@ pub const METHODS: &[MethodInfo] = &[
         params: "WebOpen",
         result: "WebOpened",
         mutation: true,
-        doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner, or an agent at own or elsewhere, which asks before splitting a pane it did not create).",
+        doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner, or an agent at own or elsewhere, which asks before splitting a pane it did not create). While Dreamer Web is being added or offered in the desktop, waits until it is there (wait_ms); fails with PRECONDITION, the pane closed, when it is turned off, its install failed, the pane was closed, or the wait ran out.",
+    },
+    MethodInfo {
+        name: "web.component",
+        params: "WebComponentState",
+        result: "Empty",
+        mutation: true,
+        doc: "Report this desktop's Dreamer Web status, kept for its connection until it closes (owner only; the desktop reports it).",
     },
     MethodInfo {
         name: "web.state",
@@ -6568,6 +6651,7 @@ pub enum Request {
     AppsCaptureDone(AppCaptureDone),
     AppsCall(AppCall),
     WebOpen(WebOpen),
+    WebComponent(WebComponentState),
     WebState(WebState),
     WebNavigate(WebNavigate),
     WebRead(WebRead),
@@ -6688,6 +6772,7 @@ impl Request {
             Self::AppsCaptureDone(_) => "apps.capture_done",
             Self::AppsCall(_) => "apps.call",
             Self::WebOpen(_) => "web.open",
+            Self::WebComponent(_) => "web.component",
             Self::WebState(_) => "web.state",
             Self::WebNavigate(_) => "web.navigate",
             Self::WebRead(_) => "web.read",
@@ -6809,6 +6894,7 @@ impl Request {
             Self::AppsCaptureDone(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebComponent(v) => ::prost::Message::encode_to_vec(v),
             Self::WebState(v) => ::prost::Message::encode_to_vec(v),
             Self::WebNavigate(v) => ::prost::Message::encode_to_vec(v),
             Self::WebRead(v) => ::prost::Message::encode_to_vec(v),
@@ -6951,6 +7037,7 @@ impl Request {
             "apps.capture_done" => Ok(Self::AppsCaptureDone(::prost::Message::decode(bytes)?)),
             "apps.call" => Ok(Self::AppsCall(::prost::Message::decode(bytes)?)),
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
+            "web.component" => Ok(Self::WebComponent(::prost::Message::decode(bytes)?)),
             "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
             "web.navigate" => Ok(Self::WebNavigate(::prost::Message::decode(bytes)?)),
             "web.read" => Ok(Self::WebRead(::prost::Message::decode(bytes)?)),
@@ -7072,6 +7159,7 @@ impl Request {
             Self::AppsCaptureDone(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebComponent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebNavigate(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebRead(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -7208,6 +7296,7 @@ impl Request {
             "apps.capture_done" => Ok(Self::AppsCaptureDone(serde_json::from_value(value)?)),
             "apps.call" => Ok(Self::AppsCall(serde_json::from_value(value)?)),
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
+            "web.component" => Ok(Self::WebComponent(serde_json::from_value(value)?)),
             "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
             "web.navigate" => Ok(Self::WebNavigate(serde_json::from_value(value)?)),
             "web.read" => Ok(Self::WebRead(serde_json::from_value(value)?)),
@@ -7331,6 +7420,7 @@ pub enum Response {
     AppsCaptureDone(Empty),
     AppsCall(AppCallResult),
     WebOpen(WebOpened),
+    WebComponent(Empty),
     WebState(Empty),
     WebNavigate(Empty),
     WebRead(WebPage),
@@ -7451,6 +7541,7 @@ impl Response {
             Self::AppsCaptureDone(_) => "apps.capture_done",
             Self::AppsCall(_) => "apps.call",
             Self::WebOpen(_) => "web.open",
+            Self::WebComponent(_) => "web.component",
             Self::WebState(_) => "web.state",
             Self::WebNavigate(_) => "web.navigate",
             Self::WebRead(_) => "web.read",
@@ -7572,6 +7663,7 @@ impl Response {
             Self::AppsCaptureDone(v) => ::prost::Message::encode_to_vec(v),
             Self::AppsCall(v) => ::prost::Message::encode_to_vec(v),
             Self::WebOpen(v) => ::prost::Message::encode_to_vec(v),
+            Self::WebComponent(v) => ::prost::Message::encode_to_vec(v),
             Self::WebState(v) => ::prost::Message::encode_to_vec(v),
             Self::WebNavigate(v) => ::prost::Message::encode_to_vec(v),
             Self::WebRead(v) => ::prost::Message::encode_to_vec(v),
@@ -7714,6 +7806,7 @@ impl Response {
             "apps.capture_done" => Ok(Self::AppsCaptureDone(::prost::Message::decode(bytes)?)),
             "apps.call" => Ok(Self::AppsCall(::prost::Message::decode(bytes)?)),
             "web.open" => Ok(Self::WebOpen(::prost::Message::decode(bytes)?)),
+            "web.component" => Ok(Self::WebComponent(::prost::Message::decode(bytes)?)),
             "web.state" => Ok(Self::WebState(::prost::Message::decode(bytes)?)),
             "web.navigate" => Ok(Self::WebNavigate(::prost::Message::decode(bytes)?)),
             "web.read" => Ok(Self::WebRead(::prost::Message::decode(bytes)?)),
@@ -7835,6 +7928,7 @@ impl Response {
             Self::AppsCaptureDone(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::AppsCall(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebOpen(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::WebComponent(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebState(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebNavigate(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::WebRead(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -7971,6 +8065,7 @@ impl Response {
             "apps.capture_done" => Ok(Self::AppsCaptureDone(serde_json::from_value(value)?)),
             "apps.call" => Ok(Self::AppsCall(serde_json::from_value(value)?)),
             "web.open" => Ok(Self::WebOpen(serde_json::from_value(value)?)),
+            "web.component" => Ok(Self::WebComponent(serde_json::from_value(value)?)),
             "web.state" => Ok(Self::WebState(serde_json::from_value(value)?)),
             "web.navigate" => Ok(Self::WebNavigate(serde_json::from_value(value)?)),
             "web.read" => Ok(Self::WebRead(serde_json::from_value(value)?)),
@@ -8511,11 +8606,16 @@ pub trait Service: Sync {
         &self,
         params: AppCall,
     ) -> impl ::core::future::Future<Output = Result<AppCallResult, RpcError>> + Send;
-    /// Open a web page in a new placeholder pane that desktops draw the page in (owner, or an agent at own or elsewhere, which asks before splitting a pane it did not create).
+    /// Open a web page in a new placeholder pane that desktops draw the page in (owner, or an agent at own or elsewhere, which asks before splitting a pane it did not create). While Dreamer Web is being added or offered in the desktop, waits until it is there (wait_ms); fails with PRECONDITION, the pane closed, when it is turned off, its install failed, the pane was closed, or the wait ran out.
     fn web_open(
         &self,
         params: WebOpen,
     ) -> impl ::core::future::Future<Output = Result<WebOpened, RpcError>> + Send;
+    /// Report this desktop's Dreamer Web status, kept for its connection until it closes (owner only; the desktop reports it).
+    fn web_component(
+        &self,
+        params: WebComponentState,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
     /// Keep a web pane's page title and scroll position in its placeholder (owner only; the desktop drawing the page reports them).
     fn web_state(
         &self,
@@ -8786,6 +8886,7 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .map(Response::AppsCaptureDone),
         Request::AppsCall(p) => service.apps_call(p).await.map(Response::AppsCall),
         Request::WebOpen(p) => service.web_open(p).await.map(Response::WebOpen),
+        Request::WebComponent(p) => service.web_component(p).await.map(Response::WebComponent),
         Request::WebState(p) => service.web_state(p).await.map(Response::WebState),
         Request::WebNavigate(p) => service.web_navigate(p).await.map(Response::WebNavigate),
         Request::WebRead(p) => service.web_read(p).await.map(Response::WebRead),

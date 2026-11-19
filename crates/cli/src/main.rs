@@ -93,7 +93,7 @@ const USAGE: &str = "usage:
   dream approvals [--json] | allow ID [--pane] | deny ID
   dream drawer toggle|show|hide|status|new [--yes] [--session $N|NAME] [--window @N] [--pane %N] [--json]
   dream web open URL [--session $N|NAME | --pane %N] [--json]   (a web page in a new pane; drawn by the desktop)
-  dream web install [FILE.zip | DIR] | dream web status | dream web remove   (Dreamer Web: Chromium for web panes, installed apart from Dreamer)
+  dream web install [FILE.zip | DIR | URL] | dream web status | dream web remove   (Dreamer Web: Chromium for web panes, installed apart from Dreamer)
   dream browser ADDRESS [--pane %N | --session $N|NAME] [--json] | dream browser clear   (the browser: a new pane, or another address in web pane %N)
   dream agents status [--json] | update [--version X.Y.Z] | rollback   (the pi Dreamer installs)
   dream agents pi [ARGS...] | dream agents profile init|status|log|diff|revert|commit|check   (its profile)

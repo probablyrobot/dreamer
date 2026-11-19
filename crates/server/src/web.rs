@@ -10,13 +10,26 @@
 //! itself runs in the desktop, never here: a desktop drawing it follows a
 //! change of its URL (`web.navigate`) by loading the new address, and
 //! reports where the page went by itself (a link) in `web.state`.
+//!
+//! Desktops draw pages with Dreamer Web, a component added apart from
+//! Dreamer, and report whether they have it (`web.component`). When none
+//! has it but one is adding it or offers to (its web panes show a button
+//! that adds it), `web.open` waits until one has it, at most `wait_ms`
+//! (ten minutes by default), so an agent can use the page as soon as the
+//! call returns. It fails instead, closing the pane it made, when every
+//! desktop that reports says it will not be there (turned off with
+//! `web.component: never`, or its install failed), when the wait runs
+//! out, or when the user closes the pane first (declining it). With no
+//! desktop running, or `wait_ms` 0, it returns as soon as the pane exists.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use api::{RpcError, code};
 use domain::{TmuxPaneId, TmuxSessionId};
 use tmux_backend::ops::{self, Launch, Split};
 
+use crate::captures::WebVerdict;
 use crate::log;
 use crate::service::State;
 
@@ -65,7 +78,93 @@ fn address(typed: &str) -> Result<String, RpcError> {
     })
 }
 
+/// How long `web.open` waits for Dreamer Web at most, and by default.
+const COMPONENT_WAIT: Duration = Duration::from_secs(600);
+
 pub async fn open(state: &Arc<State>, p: api::WebOpen) -> Result<api::WebOpened, RpcError> {
+    let wait = p
+        .wait_ms
+        .map_or(COMPONENT_WAIT, |ms| Duration::from_millis(u64::from(ms)))
+        .min(COMPONENT_WAIT);
+    let pane = place(state, p).await?;
+    if !wait.is_zero() {
+        component(state, pane, wait).await?;
+    }
+    Ok(api::WebOpened { pane: pane.0 })
+}
+
+/// Why `web.open` failed for want of Dreamer Web, and how to add it.
+fn not_installed(why: &str) -> RpcError {
+    RpcError::new(
+        code::PRECONDITION,
+        format!(
+            "Dreamer Web is not installed: {why}. Web pages need it (Chromium, added apart from \
+             Dreamer): add it with the button in a web pane, \"Add Dreamer Web\" in the \
+             desktop's palette, or `dream web install`, then open the page again."
+        ),
+    )
+}
+
+/// Wait until a desktop can draw pane `pane`'s page (see the module's
+/// description), at most `limit`; on failure the pane is closed.
+async fn component(state: &Arc<State>, pane: TmuxPaneId, limit: Duration) -> Result<(), RpcError> {
+    let deadline = tokio::time::Instant::now() + limit;
+    let mut changes = state.captures.changes();
+    let mut told = false;
+    let why = loop {
+        changes.borrow_and_update();
+        match state.captures.web_verdict() {
+            WebVerdict::Go => return Ok(()),
+            WebVerdict::No(why) => break why,
+            WebVerdict::Wait => {}
+        }
+        if !told {
+            log::info(format!(
+                "web: pane %{} waits for Dreamer Web to be added",
+                pane.0
+            ));
+            told = true;
+        }
+        if !pane_exists(state, pane).await? {
+            return Err(not_installed("the web pane was closed before it was added"));
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break format!("it was not added within {} s", limit.as_secs());
+        }
+        // A report wakes this; the pane is looked at once a second.
+        let tick = (deadline - now).min(Duration::from_secs(1));
+        if let Ok(Err(_)) = tokio::time::timeout(tick, changes.changed()).await {
+            tokio::time::sleep(tick).await;
+        }
+    };
+    let mut guard = state.endpoint().await?;
+    if let Some(ep) = guard.as_mut()
+        && let Err(e) = ops::kill_pane(&ep.conn, pane).await
+    {
+        log::warn(format!(
+            "web: closing pane %{}: {}",
+            pane.0,
+            ops::failure_message(&e)
+        ));
+    }
+    log::info(format!(
+        "web: pane %{} closed: Dreamer Web is not there ({why})",
+        pane.0
+    ));
+    Err(not_installed(&why))
+}
+
+/// Whether pane `pane` is still there.
+async fn pane_exists(state: &Arc<State>, pane: TmuxPaneId) -> Result<bool, RpcError> {
+    let guard = state.endpoint().await?;
+    Ok(guard
+        .as_ref()
+        .is_some_and(|ep| ep.tracker.inventory().panes.contains_key(&pane)))
+}
+
+/// Make the placeholder pane, mark it, and show it.
+async fn place(state: &Arc<State>, p: api::WebOpen) -> Result<TmuxPaneId, RpcError> {
     let url = address(&p.url)?;
     let mut guard = state.endpoint().await?;
     let ep = guard
@@ -115,7 +214,7 @@ pub async fn open(state: &Arc<State>, p: api::WebOpen) -> Result<api::WebOpened,
         .await
         .map_err(|e| refused(&e))?;
     log::info(format!("web: opened a page in pane %{}", pane.0));
-    Ok(api::WebOpened { pane: pane.0 })
+    Ok(pane)
 }
 
 /// Keep `url` as web pane `pane`'s page, with `title`: its surface option,

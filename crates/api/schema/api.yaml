@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 60 }
+version: { major: 1, minor: 61 }
 package: dreamer.v1
 
 types:
@@ -1814,10 +1814,31 @@ types:
       - { n: 2, name: session, type: u32, optional: true, doc: "The session to open a new window in." }
       - { n: 3, name: pane, type: u32, optional: true, doc: "The pane to split (side by side) instead." }
       - { n: 4, name: endpoint, type: string, optional: true }
+      - { n: 5, name: wait_ms, type: u32, optional: true, doc: "While Dreamer Web is not installed in a desktop that reports it (web.component) and is being added or offered there: how long to wait for it before failing; default 600000 (ten minutes), at most that. 0 returns as soon as the pane exists, as with no desktop running." }
 
   - message: WebOpened
     fields:
       - { n: 1, name: pane, type: u32, doc: "The new web pane." }
+
+  - enum: WebComponentStatus
+    doc: "Whether a desktop can draw web pages: Dreamer Web, the component that holds Chromium, as that desktop knows it."
+    values:
+      - { n: 0, name: unspecified }
+      - { n: 1, name: ready, doc: "Installed: pages load." }
+      - { n: 2, name: missing, doc: "Not installed, and web panes offer to add it (web.component: ask)." }
+      - { n: 3, name: adding, doc: "Being added." }
+      - { n: 4, name: failed, doc: "The last try to add it failed; web panes offer to try again." }
+      - { n: 5, name: off, doc: "Not installed, and not offered (web.component: never)." }
+
+  - message: WebComponentState
+    doc: >-
+      What a desktop reports of Dreamer Web (web.component), on the
+      connection it answers captures on, whenever it changes: a web.open
+      waiting for it to be added returns once a desktop reports it ready,
+      and fails when every desktop that reports says it will not be.
+    fields:
+      - { n: 1, name: status, type: WebComponentStatus }
+      - { n: 2, name: detail, type: string, optional: true, doc: "Why it is missing, failed, or off." }
 
   - message: WebState
     doc: >-
@@ -2276,7 +2297,8 @@ methods:
   - { method: apps.capture_wait, params: AppCaptureWait, result: AppCaptureRequest, doc: "A desktop waits for the next capture to make; while it waits, it counts as a desktop that answers captures (owner only)." }
   - { method: apps.capture_done, params: AppCaptureDone, result: Empty, mutation: true, doc: "A desktop's answer to a capture request (owner only)." }
   - { method: apps.call, params: AppCall, result: AppCallResult, mutation: true, doc: "Call a method for the app in a pane, under that app's grant and as that app: what its web pages ask through their bridge (owner only; the desktop drawing the page passes it on). Subscriptions and the app host's own methods are not bridged." }
-  - { method: web.open, params: WebOpen, result: WebOpened, mutation: true, doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner, or an agent at own or elsewhere, which asks before splitting a pane it did not create)." }
+  - { method: web.open, params: WebOpen, result: WebOpened, mutation: true, doc: "Open a web page in a new placeholder pane that desktops draw the page in (owner, or an agent at own or elsewhere, which asks before splitting a pane it did not create). While Dreamer Web is being added or offered in the desktop, waits until it is there (wait_ms); fails with PRECONDITION, the pane closed, when it is turned off, its install failed, the pane was closed, or the wait ran out." }
+  - { method: web.component, params: WebComponentState, result: Empty, mutation: true, doc: "Report this desktop's Dreamer Web status, kept for its connection until it closes (owner only; the desktop reports it)." }
   - { method: web.state, params: WebState, result: Empty, mutation: true, doc: "Keep a web pane's page title and scroll position in its placeholder (owner only; the desktop drawing the page reports them)." }
   - { method: web.navigate, params: WebNavigate, result: Empty, mutation: true, doc: "Load another address in a web pane: its URL in tmux changes, and the desktop drawing it navigates there (owner, or an agent at own or elsewhere, which asks for a pane it did not create)." }
   - { method: web.read, params: WebRead, result: WebPage, doc: "A page's address, title, text, and (tree) accessibility tree, from the desktop showing it (needs web.inspect in the grant)." }

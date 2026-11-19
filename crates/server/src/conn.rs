@@ -625,8 +625,10 @@ fn refuse(state: &State, conn: &Conn, req: &wire::Request) -> Option<wire::Respo
         // Images of app panes are the user's desktop's to make.
         api::method::APPS_CAPTURE_WAIT,
         api::method::APPS_CAPTURE_DONE,
-        // The desktop drawing a page reports its state.
+        // The desktop drawing a page reports its state, and whether it
+        // can draw pages at all.
         api::method::WEB_STATE,
+        api::method::WEB_COMPONENT,
         // An app's page calls through the user's desktop.
         api::method::APPS_CALL,
     ]
