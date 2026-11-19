@@ -430,6 +430,27 @@ const SENT_NAME: &str = "Ada Lovelace";
 /// login's session cookie after a restart.
 const BROWSER_CHECKS: usize = 14;
 
+/// The color checks the web smoke reports (`smoke: web color:`), in its
+/// two `--smoke-web-color` runs: with `web.color: srgb`, Display P3's red
+/// is clamped to sRGB live; with `display`, the page's snapshot under the
+/// palette matches the live page, and Display P3's red is out of sRGB's
+/// range live. That last one needs a wide-gamut display: without one it
+/// is a `smoke: web color not run:` line instead.
+const COLOR_CHECKS: usize = 3;
+
+/// Set `web.color` to `mode` in the smoke's `dreamer.yaml` (its `web:`
+/// section is the file's last).
+fn with_color(config: &Path, mode: &str) -> Result<(), String> {
+    let text = std::fs::read_to_string(config).map_err(|e| format!("{}: {e}", config.display()))?;
+    let kept: String = text
+        .lines()
+        .filter(|l| !l.starts_with("  color:"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    std::fs::write(config, format!("{kept}  color: {mode}\n"))
+        .map_err(|e| format!("{}: {e}", config.display()))
+}
+
 /// Run the bundle's `dreamer --smoke-web` against an isolated tmux server
 /// with private daemon, desktop, and configuration directories, then check
 /// its captures as its `checks.txt` lists: the page's color fills the web
@@ -439,6 +460,9 @@ const BROWSER_CHECKS: usize = 14;
 /// fail in the app itself; each one passed is a line of its output. Last,
 /// the agent's checks: the site got the form with the name it typed, and
 /// its screenshot of the form, and the web app's image, are those pages.
+/// Then `web.color`, in two more runs (`--smoke-web-color`, after
+/// `web.color: srgb` and then `display` are written to the configuration):
+/// see [`COLOR_CHECKS`].
 ///
 /// Chromium comes from `component`, added first as a user adds Dreamer
 /// Web: the smoke's private data directory starts empty, and its first run
@@ -518,6 +542,22 @@ pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> 
         dreamer(&["--smoke-web".as_ref(), out.as_os_str()]),
     );
     let result = then(result, dreamer(&["--smoke-web-restart".as_ref()]));
+    // `web.color`, a run for each: Chromium takes it as it starts. The
+    // configuration is written before each run starts.
+    let color = |mode: &str| dreamer(&["--smoke-web-color".as_ref(), out.join(mode).as_os_str()]);
+    let config = root.join("config/dreamer.yaml");
+    let result = match result {
+        Ok(r) if r.status.success() => with_color(&config, "srgb")
+            .map_err(std::io::Error::other)
+            .and_then(|()| then(Ok(r), color("srgb"))),
+        other => other,
+    };
+    let result = match result {
+        Ok(r) if r.status.success() => with_color(&config, "display")
+            .map_err(std::io::Error::other)
+            .and_then(|()| then(Ok(r), color("display"))),
+        other => other,
+    };
     if let Some(pid) = std::fs::read_to_string(root.join("rt/dreamerd.lock"))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
@@ -635,6 +675,20 @@ pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> 
     if browser < BROWSER_CHECKS {
         return Err(format!(
             "the web smoke passed {browser} of {BROWSER_CHECKS} browser checks\n{}",
+            lines.join("\n")
+        ));
+    }
+    let colors = lines
+        .iter()
+        .filter(|l| l.starts_with("smoke: web color:"))
+        .count();
+    let colors_not_run = lines
+        .iter()
+        .filter(|l| l.starts_with("smoke: web color not run:"))
+        .count();
+    if colors + colors_not_run < COLOR_CHECKS || colors == 0 {
+        return Err(format!(
+            "the web smoke passed {colors} of {COLOR_CHECKS} color checks ({colors_not_run} not run)\n{}",
             lines.join("\n")
         ));
     }

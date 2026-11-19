@@ -94,6 +94,49 @@ pub enum Event {
     },
 }
 
+/// The color space Chromium draws pages in (`web.color`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Color {
+    /// sRGB, as the rest of the window: wide-gamut colors are clamped.
+    #[default]
+    Srgb,
+    /// The display's own color space. A page's capture is then in that
+    /// space, and is converted to sRGB before the toolkit draws it
+    /// ([`capture_to_srgb`]).
+    Display,
+}
+
+/// A color space (Core Graphics), as a page's capture or a screen has.
+#[cfg(target_os = "macos")]
+pub use cef_sys::color::ColorSpace;
+
+/// Convert a page's capture (`width` × `height` RGBA pixels, 8 bits per
+/// channel) from `from`, the color space it was drawn in, to sRGB, in
+/// place: colors beyond sRGB are clipped to it. Nothing changes when
+/// `from` is sRGB. Takes a few milliseconds for a large page: never on
+/// the UI thread.
+#[cfg(target_os = "macos")]
+pub fn capture_to_srgb(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    from: &ColorSpace,
+) -> Result<(), String> {
+    if from.is_srgb() {
+        return Ok(());
+    }
+    let srgb = ColorSpace::srgb().ok_or("no sRGB color space")?;
+    cef_sys::color::convert_rgba(rgba, width as usize, height as usize, from, &srgb)
+}
+
+/// Convert `rgba` from sRGB to `to` (the smoke's expected colors in a
+/// screen capture).
+#[cfg(target_os = "macos")]
+pub fn srgb_to(rgba: &mut [u8], width: u32, height: u32, to: &ColorSpace) -> Result<(), String> {
+    let srgb = ColorSpace::srgb().ok_or("no sRGB color space")?;
+    cef_sys::color::convert_rgba(rgba, width as usize, height as usize, &srgb, to)
+}
+
 pub mod browser;
 pub mod site;
 pub use site::{AppPage, BridgeCall};
@@ -101,4 +144,6 @@ pub use site::{AppPage, BridgeCall};
 #[cfg(all(feature = "engine", target_os = "macos"))]
 mod engine;
 #[cfg(all(feature = "engine", target_os = "macos"))]
-pub use engine::{WebView, do_work, profile_ready, run_subprocess, shutdown, start, started};
+pub use engine::{
+    WebView, color, do_work, profile_ready, run_subprocess, shutdown, start, started,
+};
