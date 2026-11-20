@@ -62,7 +62,10 @@ app({
             label: "Shut the daemon down",
             onPress: async () => {
               try {
-                await dreamer.call("daemon.shutdown");
+                // Named at run time: `dream app install` refuses a
+                // literal call outside the capabilities, and this one is
+                // here to be refused by the host.
+                await dreamer.call(["daemon", "shutdown"].join("."));
                 return { said: "it shut down" };
               } catch (e) {
                 return { said: "refused: " + (e as Error).message };

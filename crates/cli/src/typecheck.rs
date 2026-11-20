@@ -363,6 +363,9 @@ struct Checker<'k> {
     unresolved: Mark,
     /// Imports from "dreamer", by local binding.
     imports: HashMap<(String, SyntaxContext), Role>,
+    /// The manifest's `capabilities`, when known: a method they do not
+    /// cover is refused when the app runs, so it is a problem here.
+    capabilities: Option<&'k [String]>,
     problems: Vec<Problem>,
 }
 
@@ -375,6 +378,28 @@ impl Checker<'_> {
             column: at.col.0 + 1,
             message,
         });
+    }
+
+    /// Report `method`, called at `span`, when the capabilities do not
+    /// cover it.
+    fn granted(&mut self, method: &str, span: Span) {
+        let Some(caps) = self.capabilities else {
+            return;
+        };
+        let covered = caps.iter().any(|c| {
+            c == method
+                || c.strip_suffix(".*")
+                    .is_some_and(|s| method.strip_prefix(s).is_some_and(|r| r.starts_with('.')))
+        });
+        if !covered {
+            self.report(
+                span,
+                format!(
+                    "`{method}` is not in the app's capabilities, so the call is refused; \
+                     add it to `capabilities` in app.toml"
+                ),
+            );
+        }
     }
 
     fn role(&self, e: &Expr) -> Option<Role> {
@@ -681,6 +706,7 @@ impl Checker<'_> {
                     let Some(params) = k.types.methods.get(method) else {
                         return;
                     };
+                    self.granted(method, c.callee.span());
                     let what = format!("the parameters of dreamer.{method} ({params})");
                     self.object_arg(args.first(), Shape::Message(params), &what);
                 } else if names.len() == 1 && names[0].0 == "call" {
@@ -693,6 +719,7 @@ impl Checker<'_> {
                         };
                         match k.types.methods.get(m) {
                             Some(params) => {
+                                self.granted(m, s.span);
                                 let what = format!("the parameters of {m} ({params})");
                                 self.object_arg(args.get(1), Shape::Message(params), &what);
                             }
@@ -839,7 +866,15 @@ impl Checker<'_> {
 /// The mistakes in `source` (named `name`; TypeScript unless it ends in
 /// `.js`). Code that does not parse has none: stripping reports its
 /// syntax errors.
+#[cfg(test)]
 pub fn check(name: &str, source: &str) -> Vec<Problem> {
+    check_granted(name, source, None)
+}
+
+/// As [`check`], and with `capabilities` (the manifest's), each API
+/// method the code calls by name that they do not cover. A method named
+/// at run time is not seen; the daemon still refuses it.
+pub fn check_granted(name: &str, source: &str, capabilities: Option<&[String]>) -> Vec<Problem> {
     GLOBALS.set(&Globals::new(), || {
         let cm: Lrc<SourceMap> = Lrc::default();
         let fm = cm.new_source_file(
@@ -898,6 +933,7 @@ pub fn check(name: &str, source: &str) -> Vec<Problem> {
             file: name.to_owned(),
             unresolved,
             imports,
+            capabilities,
             problems: Vec::new(),
         };
         module.visit_with(&mut c);
@@ -914,6 +950,33 @@ mod tests {
             .iter()
             .map(Problem::to_string)
             .collect()
+    }
+
+    #[test]
+    fn a_call_its_capabilities_do_not_cover_is_named_where_it_is() {
+        let caps = ["tmux.*".to_owned(), "terminal.read".to_owned()];
+        let src = "await dreamer.tmux.topology();\n\
+                   await dreamer.terminal.read({ pane: 1 });\n\
+                   const j = await dreamer.jobs.list({});\n\
+                   dreamer.call(\"terminal.query\", {});\n\
+                   dreamer.call(\"tmux\" + \".x\");\n";
+        let p: Vec<String> = check_granted("app.ts", src, Some(&caps))
+            .iter()
+            .map(Problem::to_string)
+            .collect();
+        assert_eq!(
+            p,
+            [
+                "app.ts:3:17: `jobs.list` is not in the app's capabilities, so the call is \
+                 refused; add it to `capabilities` in app.toml",
+                "app.ts:4:14: `terminal.query` is not in the app's capabilities, so the call is \
+                 refused; add it to `capabilities` in app.toml",
+            ]
+        );
+        assert!(
+            check("app.ts", src).is_empty(),
+            "no capabilities known: no such problem"
+        );
     }
 
     #[test]

@@ -78,13 +78,14 @@ next problem. What the messages mean:
 | `` `selected` of ui.table takes a string or a number, not a boolean `` | Give a value of the kind named |
 | `` `dreamer.tmux.topolgy` is not an API method; did you mean `topology`? `` | Use the method named; `types/dreamer.d.ts` lists them all |
 | `` `endpont` is not a field of the parameters of dreamer.tmux.topology (TopologyParams); did you mean `endpoint`? `` | Use the record's field, as declared in `types/dreamer.d.ts` |
+| `` `jobs.list` is not in the app's capabilities, so the call is refused; add it to `capabilities` in app.toml `` | Add the method (or its service, `jobs.*`) to `capabilities` |
 | `ok: false`, `problems` empty, and `error` such as ``app.ts:23:9: Expected ',', got 'ident'`` | A syntax error, or a manifest problem: `error` says where |
 
-The check does not compare the methods `app.ts` calls with
-`capabilities`. A call outside them is refused when the app runs (the
-status line shows `dreamer.DreamerError` and why), so keep the two in
-step yourself. The check passing also does not mean the screen looks
-right: preview it.
+The check sees the methods `app.ts` calls by name (`dreamer.jobs.list()`,
+`dreamer.call("jobs.list")`). A method named at run time is not seen; a
+call outside `capabilities` is then refused when the app runs (the
+status line shows `dreamer.DreamerError` and why). The check passing
+also does not mean the screen looks right: preview it.
 
 Installing and opening need the `own` or `elsewhere` level; at `observe`
 they are refused. Opening an app beside a pane you did not create asks

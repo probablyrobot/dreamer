@@ -667,6 +667,9 @@ exec /bin/sh -c "exec $3"
     });
     let out = cli.ok(&["hosts", "disconnect", "devbox"]);
     assert!(out.contains("closed"), "{out}");
+    // An attempt already under way when the disconnect came may still log
+    // itself; count once that has settled.
+    std::thread::sleep(Duration::from_millis(500));
     let count = lines_in(&r("attempts"));
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(lines_in(&r("attempts")), count, "retried after disconnect");
