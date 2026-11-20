@@ -973,12 +973,9 @@ pub async fn run_process_with(
                 if conn.is_none() && !gave_up && now >= retry {
                     match connect(&endpoint, &mut registered, &[], &methods).await {
                         Ok(c) => {
-                            app.embeds.grant = crate::embeds::grant_of(&c.client).await;
-                            // A registered app may not hold
-                            // `grants.current`; the daemon's answer to
-                            // registering says its grant.
+                            app.embeds.grant = crate::embeds::grant_of(&c).await;
                             if preview.is_none() {
-                                net.set(c.grant.as_ref().or(app.embeds.grant.as_ref()));
+                                net.set(app.embeds.grant.as_ref());
                             }
                             terminals = Some(crate::embeds::Follower::start(c.client.clone()));
                             if registered && hosting.is_none() {
