@@ -20,7 +20,7 @@
 //! selects the whole field through Chromium's own edit command. Copy,
 //! cut, and paste are not pressed: they would use the system pasteboard,
 //! which a check never touches. A window that is not the key window
-//! cannot be typed into: exit 5.
+//! cannot be typed into or clicked: exit 5.
 //!
 //! Then an app's own page: the example web app (`examples/apps/panes-web`,
 //! granted `tmux.topology`) opens beside the shell pane. Its page lists
@@ -281,11 +281,13 @@ pub(crate) async fn run(
     let seen = loop {
         match read(any, &ws, cx, web_pane).flatten() {
             Some(Ok(s)) => break s,
-            Some(Err(problem)) => fail(&format!("the web pane cannot draw its page: {problem}")),
-            None if Instant::now() > deadline => {
+            Some(Err(problem)) if problem != crate::web::BEING_ADDED => {
+                fail(&format!("the web pane cannot draw its page: {problem}"))
+            }
+            _ if Instant::now() > deadline => {
                 crate::stalled(any, cx, "never saw: the web page loaded in its pane").await
             }
-            None => {
+            _ => {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await
@@ -1357,6 +1359,15 @@ async fn click_element(
         fail(&format!("no element {id} in the page: {at:?}"));
     };
     if let Err(e) = with_view(any, ws, cx, pane, |v| v.click(x as f32, y as f32)) {
+        // Another app took the keys (the user at the Mac): not this
+        // check's to judge, as for typing.
+        let key = cx
+            .update_window(any, |_, window, _| window.is_window_active())
+            .unwrap_or(false);
+        if !key {
+            println!("smoke: a click on {id}: the window is not the key window; not run");
+            std::process::exit(crate::INCONCLUSIVE);
+        }
         fail(&format!("a click on {id}: {e}"));
     }
 }
@@ -2092,10 +2103,12 @@ pub(crate) async fn install(any: AnyWindowHandle, ws: WeakEntity<Workspace>, cx:
         match read(any, &ws, cx, web_pane).flatten() {
             Some(Ok((id, ..))) if id == pane => break,
             Some(Ok((id, ..))) => fail(&format!("the page loaded in pane %{id}, not %{pane}")),
-            Some(Err(problem)) if Instant::now() > deadline => {
+            Some(Err(problem))
+                if problem != crate::web::BEING_ADDED && Instant::now() > deadline =>
+            {
                 fail(&format!("the web pane cannot draw its page: {problem}"))
             }
-            None if Instant::now() > deadline => {
+            _ if Instant::now() > deadline => {
                 crate::stalled(
                     any,
                     cx,
@@ -2267,11 +2280,13 @@ pub(crate) async fn color(
         .flatten();
         match found {
             Some(Ok(id)) => break id,
-            Some(Err(problem)) => fail(&format!("the web pane cannot draw its page: {problem}")),
-            None if Instant::now() > deadline => {
+            Some(Err(problem)) if problem != crate::web::BEING_ADDED => {
+                fail(&format!("the web pane cannot draw its page: {problem}"))
+            }
+            _ if Instant::now() > deadline => {
                 crate::stalled(any, cx, "never saw: the color page loaded in its pane").await
             }
-            None => {
+            _ => {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await

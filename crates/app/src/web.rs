@@ -388,6 +388,10 @@ pub(crate) struct WebPane {
     _focus: [Subscription; 2],
 }
 
+/// What [`WebPane::not_drawn`] says while Dreamer Web is installed but the
+/// pane has not taken it up yet: a passing state, not a problem.
+pub(crate) const BEING_ADDED: &str = "Dreamer Web is being added";
+
 impl WebPane {
     /// `kept`: the page's title and scroll position as the placeholder
     /// keeps them; the page opens scrolled there. `app`: the app whose
@@ -545,7 +549,7 @@ impl WebPane {
                 let dir = web_component::installed_dir();
                 web_component::check(&dir)
                     .problem(&dir)
-                    .unwrap_or_else(|| "Dreamer Web is being added".into())
+                    .unwrap_or_else(|| BEING_ADDED.into())
             })
         })
     }
