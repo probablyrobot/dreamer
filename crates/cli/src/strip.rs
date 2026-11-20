@@ -73,9 +73,38 @@ pub fn type_problems(manifest: &Path) -> Vec<crate::typecheck::Problem> {
     }
     let dir = manifest.parent().unwrap_or(Path::new("."));
     match std::fs::read_to_string(dir.join(&source)) {
-        Ok(text) => crate::typecheck::check(&source, &text),
+        Ok(text) => {
+            crate::typecheck::check_granted(&source, &text, capabilities(manifest).as_deref())
+        }
         Err(_) => Vec::new(),
     }
+}
+
+/// The methods a package's calls may use: its `capabilities`, and
+/// `collect.query` when a data source is a collector (the host adds it).
+/// None when the manifest cannot be read, which the check reports.
+fn capabilities(manifest: &Path) -> Option<Vec<String>> {
+    let table = std::fs::read_to_string(manifest)
+        .ok()?
+        .parse::<toml::Table>()
+        .ok()?;
+    let mut caps: Vec<String> = table
+        .get("capabilities")
+        .and_then(|c| c.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let collector = table
+        .get("data")
+        .and_then(|d| d.as_table())
+        .is_some_and(|d| d.values().any(|s| s.get("collector").is_some()));
+    if collector {
+        caps.push("collect.query".into());
+    }
+    Some(caps)
 }
 
 /// Diagnostics as `name:line:column: message`.

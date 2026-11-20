@@ -911,6 +911,10 @@ TypeScript compiler or Node. It reports, each with
 - a `ui.*` builder that does not exist, and a property a builder or
   `ui.screen`'s options do not have;
 - a property `app()` does not take;
+- a method called by name (`dreamer.jobs.list()`, or `dreamer.call`
+  with a literal name) that the manifest's `capabilities` do not cover,
+  which the app host would refuse when it runs; a method named at run
+  time is still only refused then;
 - a value written in place whose kind does not fit: a string, number,
   boolean, array, object, or function where the declaration takes
   another; a string that is not one of an enum's names; a fraction or a
