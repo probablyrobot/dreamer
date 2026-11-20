@@ -1227,6 +1227,40 @@ fn a_pane_app_registers_for_a_narrow_grant_and_its_ticket_never_leaks() {
     assert!(!log.contains(&ticket), "ticket in the daemon log");
 }
 
+/// An app launched for a narrow grant knows it from registering (a launch
+/// grant need not list `grants.current`), so a `terminal` node outside it
+/// is drawn as outside the app's grant, not left to the daemon's refusal.
+#[test]
+fn a_registered_apps_embed_outside_its_grant_is_marked() {
+    let cli = Cli::new();
+    let pkg = cli.root.join("embeds");
+    std::fs::create_dir_all(&pkg).expect("package");
+    std::fs::write(
+        pkg.join("app.toml"),
+        "schema_version = 2\nid = \"local.embeds\"\nversion = \"0.1.0\"\ntitle = \"Embeds\"\n\
+         capabilities = [\"terminal.read\"]\nroot = \"main\"\n\n[nodes.main]\ntype = \"terminal\"\npane = 0\n",
+    )
+    .expect("manifest");
+    let termapp = PathBuf::from(DREAM).with_file_name("dreamer-termapp");
+    let manifest = pkg.join("app.toml").display().to_string();
+    let out = cli.ok(&[
+        "app",
+        "run",
+        "embeds",
+        "--method",
+        "terminal.read",
+        "--",
+        &termapp.display().to_string(),
+        &manifest,
+    ]);
+    let (pane, _) = launched(&out);
+    let shown = cli.wait_pane(&pane, "outside the app's grant");
+    assert!(
+        shown.contains("pane %0 is outside the app's grant"),
+        "{shown}"
+    );
+}
+
 #[test]
 fn two_registered_apps_exchange_messages_with_stamped_senders() {
     let cli = Cli::new();

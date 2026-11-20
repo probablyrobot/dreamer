@@ -183,13 +183,13 @@ pub fn may_read(grant: &api::Grant, pane: u32) -> bool {
 impl Embeds {
     /// Why pane `pane` may not be shown, if it may not.
     fn refusal(&self, pane: u32) -> Option<String> {
-        if let Some(Screen::Refused(why)) = self.panes.get(&pane) {
-            return Some(why.clone());
+        if self.grant.as_ref().is_some_and(|g| !may_read(g, pane)) {
+            return Some(format!("pane %{pane} is outside the app's grant"));
         }
-        self.grant
-            .as_ref()
-            .filter(|g| !may_read(g, pane))
-            .map(|_| format!("pane %{pane} is outside the app's grant"))
+        match self.panes.get(&pane) {
+            Some(Screen::Refused(why)) => Some(why.clone()),
+            _ => None,
+        }
     }
 
     /// Fill in `frame`'s `terminal` and `image` nodes: refusals, and each
@@ -410,9 +410,15 @@ async fn follow(
     }
 }
 
-/// The grant the connection holds, if the daemon says.
-pub(crate) async fn grant_of(client: &client::Client) -> Option<api::Grant> {
-    match client
+/// The grant the connection holds: the daemon's answer to registering or
+/// narrowing, else (the user's own connection) asked with
+/// `grants.current`, which a launch grant usually does not list.
+pub(crate) async fn grant_of(conn: &crate::run::Conn) -> Option<api::Grant> {
+    if let Some(g) = &conn.grant {
+        return Some(g.clone());
+    }
+    match conn
+        .client
         .call(api::Request::GrantsCurrent(api::Empty {}))
         .await
     {

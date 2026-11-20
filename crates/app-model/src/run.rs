@@ -1066,7 +1066,7 @@ pub async fn run_with(
                     match connect(&endpoint, &mut registered, &watch, &app.manifest.methods()).await {
                         Ok(c) => {
                             *current.borrow_mut() = Some(c.client.clone());
-                            app.embeds.grant = crate::embeds::grant_of(&c.client).await;
+                            app.embeds.grant = crate::embeds::grant_of(&c).await;
                             terminals = Some(crate::embeds::Follower::start(c.client.clone()));
                             if registered && hosting.is_none() {
                                 hosting = Some(host_views(c.client.clone()));
