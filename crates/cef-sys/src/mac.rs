@@ -305,6 +305,49 @@ pub unsafe fn window_number(view: *mut c_void) -> Option<isize> {
     }
 }
 
+#[repr(C)]
+struct CGColorSpace {
+    _private: [u8; 0],
+}
+
+// SAFETY: `CGColorSpaceRef` is `struct CGColorSpace *`.
+unsafe impl objc2::encode::RefEncode for CGColorSpace {
+    const ENCODING_REF: objc2::encode::Encoding =
+        objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("CGColorSpace", &[]));
+}
+
+/// The color space of the screen the window holding `view` is on: the
+/// one Chromium draws pages in unless told otherwise.
+///
+/// # Safety
+///
+/// Main thread; `view` is null or a live `NSView`.
+pub unsafe fn screen_color_space(view: *mut c_void) -> Option<crate::color::ColorSpace> {
+    let view = view.cast::<AnyObject>();
+    if view.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees a live NSView; each object asked is
+    // checked for nil before it is sent a message, and the color space is
+    // retained before the autoreleased NSColorSpace can go.
+    unsafe {
+        let window: *mut AnyObject = msg_send![view, window];
+        if window.is_null() {
+            return None;
+        }
+        let screen: *mut AnyObject = msg_send![window, screen];
+        if screen.is_null() {
+            return None;
+        }
+        let space: *mut AnyObject = msg_send![screen, colorSpace];
+        if space.is_null() {
+            return None;
+        }
+        let cg: *mut CGColorSpace = msg_send![space, CGColorSpace];
+        crate::color::ColorSpace::retained(cg.cast())
+    }
+}
+
 /// `frame`, measured from the top left of `parent` as toolkits lay out, in
 /// `parent`'s own coordinates: AppKit's origin is at the bottom left unless
 /// the view is flipped.

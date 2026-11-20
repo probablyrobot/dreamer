@@ -1110,10 +1110,16 @@ impl WebPane {
     /// Ask Chromium for the page as drawn now. The page stays live until
     /// the image comes (decoded off this thread), or at most
     /// [`SNAPSHOT_WAIT`], and the workspace lays the pane out again then.
+    ///
+    /// Chromium matches its output to the screen, so its capture is in
+    /// the screen's color space (even with `web.color: srgb`, which only
+    /// rasterizes in sRGB): it is converted to sRGB, as GPUI draws images,
+    /// so the snapshot has the live page's colors.
     #[cfg(feature = "web")]
     fn ask_snapshot(&mut self, cx: &mut Context<Self>) {
         let Some(v) = &self.view else { return };
         self.snapshot = Snapshot::Asked;
+        let screen = v.screen_color_space();
         let (tx, rx) = async_channel::bounded(1);
         v.capture(move |reply| {
             let _ = tx.try_send(reply);
@@ -1122,7 +1128,7 @@ impl WebPane {
             let ex = cx.background_executor().clone();
             let decoded = ex.spawn(async move {
                 let reply = rx.recv().await.ok()?.ok()?;
-                decode_snapshot(&reply).ok()
+                decode_snapshot(&reply, screen.as_ref()).ok()
             });
             let timer = ex.timer(SNAPSHOT_WAIT);
             let image = futures_lite::future::or(decoded, async {
@@ -1483,14 +1489,94 @@ const KEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The image in Chromium's reply to a capture (`Page.captureScreenshot`:
 /// a PNG, base64, in `data`). Slow: never on the UI thread.
+///
+/// `screen` is the screen's color space when Chromium draws in it
+/// (`web.color: display`): the image is then converted to sRGB, from the
+/// color space its PNG names (an ICC profile), or from `screen` when it
+/// names none. A PNG marked sRGB, or any capture with `web.color: srgb`,
+/// is drawn as it is.
 #[cfg(feature = "web")]
-fn decode_snapshot(reply: &[u8]) -> Result<Arc<RenderImage>, String> {
+fn decode_snapshot(
+    reply: &[u8],
+    screen: Option<&web_engine::ColorSpace>,
+) -> Result<Arc<RenderImage>, String> {
     let v: serde_json::Value = serde_json::from_slice(reply).map_err(|e| e.to_string())?;
     let data = v
         .get("data")
         .and_then(serde_json::Value::as_str)
         .ok_or("no image in the reply")?;
-    terminal_render::decode_image(&api::json::decode_base64(data)?)
+    let png = api::json::decode_base64(data)?;
+    if screen.is_none() {
+        return terminal_render::decode_image(&png);
+    }
+    let (width, height, rgba) = snapshot_pixels(&png, screen)?;
+    terminal_render::rgba_image(width, height, rgba).ok_or_else(|| "an image of no size".into())
+}
+
+/// A capture's size and RGBA pixels, in sRGB: converted from the color
+/// space the PNG names, or from `screen` when it names none, unless it
+/// is marked sRGB or `screen` is `None` (the screen's space is unknown).
+#[cfg(feature = "web")]
+fn snapshot_pixels(
+    png: &[u8],
+    screen: Option<&web_engine::ColorSpace>,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let (width, height, mut rgba, space) = decode_png(png)?;
+    let Some(screen) = screen else {
+        return Ok((width, height, rgba));
+    };
+    let named = match space {
+        PngSpace::Srgb => return Ok((width, height, rgba)),
+        PngSpace::Icc(profile) => web_engine::ColorSpace::from_icc(&profile),
+        PngSpace::Unnamed => None,
+    };
+    web_engine::capture_to_srgb(&mut rgba, width, height, named.as_ref().unwrap_or(screen))?;
+    Ok((width, height, rgba))
+}
+
+/// The color space a PNG names.
+#[cfg(feature = "web")]
+pub(crate) enum PngSpace {
+    /// An `sRGB` chunk.
+    Srgb,
+    /// An ICC profile (`iCCP`).
+    Icc(Vec<u8>),
+    /// Neither.
+    Unnamed,
+}
+
+/// A PNG's size, its pixels as 8-bit RGBA, and the color space it names.
+#[cfg(feature = "web")]
+pub(crate) fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>, PngSpace), String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let space = match (&reader.info().icc_profile, reader.info().srgb) {
+        (Some(icc), _) => PngSpace::Icc(icc.to_vec()),
+        (None, Some(_)) => PngSpace::Srgb,
+        (None, None) => PngSpace::Unnamed,
+    };
+    let mut buf = vec![0; reader.output_buffer_size().ok_or("an image too large")?];
+    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    buf.truncate(info.buffer_size());
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => buf
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => buf
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[0], p[0], p[1]])
+            .collect(),
+        png::ColorType::Grayscale => buf.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return Err("an indexed PNG after expansion".into()),
+    };
+    Ok((info.width, info.height, rgba, space))
 }
 
 impl Render for WebPane {
@@ -1607,6 +1693,50 @@ fn shorten(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Bar, Download, Place, Saving, Typed, decide, download_text, found_text};
+
+    /// A 1×1 PNG of `rgb`, naming `icc` as its color space, or sRGB.
+    #[cfg(all(feature = "web", target_os = "macos"))]
+    fn one_pixel(rgb: [u8; 3], icc: Option<Vec<u8>>, srgb: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut info = png::Info::with_size(1, 1);
+        info.color_type = png::ColorType::Rgb;
+        info.bit_depth = png::BitDepth::Eight;
+        info.icc_profile = icc.map(Into::into);
+        info.srgb = srgb.then_some(png::SrgbRenderingIntent::Perceptual);
+        let mut w = png::Encoder::with_info(&mut out, info)
+            .expect("info")
+            .write_header()
+            .expect("header");
+        w.write_image_data(&rgb).expect("pixel");
+        w.finish().expect("png");
+        out
+    }
+
+    #[test]
+    #[cfg(all(feature = "web", target_os = "macos"))]
+    fn a_display_capture_is_converted_to_srgb_from_the_space_it_names_else_the_screens() {
+        use web_engine::ColorSpace;
+        let p3 = ColorSpace::display_p3().expect("P3");
+        let srgb = ColorSpace::srgb().expect("sRGB");
+        // sRGB's red, as Display P3 writes it.
+        let mut red_in_p3 = [255, 0, 0, 255];
+        web_engine::srgb_to(&mut red_in_p3, 1, 1, &p3).expect("to P3");
+        let red_in_p3 = [red_in_p3[0], red_in_p3[1], red_in_p3[2]];
+        assert!(red_in_p3[1] > 30, "{red_in_p3:?}");
+        let is_red = |px: &[u8]| px[0] > 245 && px[1] < 12 && px[2] < 12;
+        let pixels = |png: &[u8], screen| super::snapshot_pixels(png, screen).expect("pixels").2;
+
+        // The PNG names Display P3: converted from it, whatever the screen.
+        let named = one_pixel(red_in_p3, p3.icc(), false);
+        assert!(is_red(&pixels(&named, Some(&srgb))));
+        // It names nothing: the screen's space (Display P3 here).
+        let unnamed = one_pixel(red_in_p3, None, false);
+        assert!(is_red(&pixels(&unnamed, Some(&p3))));
+        // Marked sRGB, or `web.color: srgb` (no screen): as it is.
+        let marked = one_pixel(red_in_p3, None, true);
+        assert_eq!(pixels(&marked, Some(&p3))[..3], red_in_p3);
+        assert_eq!(pixels(&named, None)[..3], red_in_p3);
+    }
 
     #[test]
     fn a_page_shows_only_where_its_pane_is_drawn_and_uncovered() {
@@ -1750,8 +1880,13 @@ mod engine {
         if let Err(e) = workspace_config::browser::clear_if_asked(&profile) {
             eprintln!("dreamer: the browser's profile was not emptied: {e}");
         }
+        // `web.color` as it is now: Chromium keeps it until it next starts.
+        let color = match crate::live::with(|l| l.web.color).unwrap_or_default() {
+            workspace_config::WebColor::Srgb => web_engine::Color::Srgb,
+            workspace_config::WebColor::Display => web_engine::Color::Display,
+        };
         let (tx, rx) = async_channel::unbounded::<i64>();
-        web_engine::start(&profile, move |delay| {
+        web_engine::start(&profile, color, move |delay| {
             let _ = tx.try_send(delay);
         })?;
         // CEF asks for its work (with a delay) from any thread; it runs
