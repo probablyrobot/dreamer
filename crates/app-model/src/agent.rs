@@ -410,19 +410,21 @@ async fn call_for(
 ) -> Option<Value> {
     match host {
         None => crate::run::call(c, method, params).await.ok(),
+        // Typed, as `dream mcp` does: in JSON, `hosts.call`'s payload is
+        // base64, so a byte array there is refused.
         Some(h) => {
             let req = api::Request::from_json(method, params).ok()?;
-            let r = crate::run::call(
-                c,
-                "hosts.call",
-                json!({ "name": h, "method": method, "payload": req.encode() }),
-            )
-            .await
-            .ok()?;
-            let bytes: Vec<u8> = serde_json::from_value(r["payload"].clone()).ok()?;
-            api::Response::decode(method, &bytes)
-                .ok()
-                .map(|r| r.to_json())
+            let call = c.call(api::Request::HostsCall(api::HostCall {
+                name: h.to_owned(),
+                method: method.to_owned(),
+                payload: req.encode(),
+            }));
+            match tokio::time::timeout(std::time::Duration::from_secs(5), call).await {
+                Ok(Ok(api::Response::HostsCall(r))) => api::Response::decode(method, &r.payload)
+                    .ok()
+                    .map(|r| r.to_json()),
+                _ => None,
+            }
         }
     }
 }
