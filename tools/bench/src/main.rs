@@ -6,6 +6,7 @@
 //! ```text
 //! dreamer-bench headless [--panes N] [--history LINES] [--json FILE]
 //! dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]
+//! dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]
 //! dreamer-bench machine
 //! ```
 //!
@@ -14,6 +15,10 @@
 //! `yes` while a `cat` pane is typed into, timed both through the daemon
 //! and through tmux alone. `--idle M` adds `M` idle shells first;
 //! `--set` sets a global tmux option before anything starts.
+//!
+//! `streams` replays fixed corpora (`corpus.rs`) in `N` panes (16 by
+//! default) and measures throughput, CPU, memory, a replica's frames, and
+//! key to echo in a quiet pane alongside; see `streams.rs`.
 //!
 //! Each measure says what it timed. Results are printed as a table and,
 //! with `--json`, written for the record together with the machine they
@@ -31,17 +36,21 @@ use serde_json::{Value, json};
 use tmux_backend::TmuxServer;
 use tmux_backend::server::tmux_program;
 
+mod corpus;
+mod streams;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("headless") => headless(&args[1..]),
         Some("busy") => busy(&args[1..]),
+        Some("streams") => streams::streams(&args[1..]),
         Some("machine") if args.len() == 1 => {
             println!("{}", hardware());
             Ok(())
         }
         _ => Err(
-            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench machine"
+            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench machine"
                 .into(),
         ),
     };
