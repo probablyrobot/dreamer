@@ -242,6 +242,7 @@ async fn raw_subscribe(
         records: tx,
         client: None,
         ended: ended.clone(),
+        stamp: None,
     };
     let started = host.subscribe(id, resume, sink).await.ok()?;
     Some(RawStart { started, rx, ended })

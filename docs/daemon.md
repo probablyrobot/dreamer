@@ -12,6 +12,8 @@ keep running.
 | --- | --- |
 | `dream ensure-running [-L name \| --tmux-socket-path path] [--tmux PATH]` | Connect to the running daemon, or start one in the background with these tmux options. Concurrent calls start exactly one daemon |
 | `dream status [--json]` | Process, uptime, socket, log, connected clients, version, and the tmux endpoint's state. Does not start a daemon |
+| `dream status --perf [--json]` | The same, then performance diagnostics: stage timings, traffic counters, and queue depths (see [performance.md](performance.md#path-timings-and-diagnostics)) |
+| `dream diagnostics on\|off\|reset [--json]` | Turn performance diagnostics on or off, or zero them. They are off by default |
 | `dream version` | Client version and build family, plus the daemon's version if one is running |
 | `dream shutdown` | Stop the daemon and report what keeps running. A daemon from another build refuses this client's protocol, so `dream shutdown` sends that daemon SIGTERM instead, using the pid recorded in its startup lock |
 
@@ -158,6 +160,7 @@ demand.
 | Variable | Effect |
 | --- | --- |
 | `DREAMER_JOURNAL_PANE_BYTES`, `DREAMER_JOURNAL_HOST_BYTES` | Journal retention per pane and per host (defaults 8 MiB and 256 MiB); see [mirrors.md](mirrors.md) |
+| `DREAMER_DIAGNOSTICS` | `1`: performance diagnostics on from the start, as after `dream diagnostics on` |
 
 ## Environment for tests
 

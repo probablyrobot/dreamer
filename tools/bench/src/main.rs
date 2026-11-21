@@ -372,6 +372,62 @@ async fn key_to_echo(rig: &Rig, c: &Client, samples: usize) -> Result<Vec<f64>, 
     Ok(out)
 }
 
+/// Turn the daemon's diagnostics on or off (and zero them first with
+/// `reset`); what they hold after.
+async fn set_diagnostics(
+    c: &Client,
+    enabled: bool,
+    reset: bool,
+) -> Result<api::Diagnostics, String> {
+    match c
+        .call(Request::DaemonSetDiagnostics(api::DiagnosticsSettings {
+            enabled,
+            reset,
+        }))
+        .await
+    {
+        Ok(Response::DaemonSetDiagnostics(d)) => Ok(d),
+        Ok(_) => Err("unexpected reply".into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Key to echo again with diagnostics on, in the daemon and in this
+/// process (the replica), and the time split by stage over the same run:
+/// the end-to-end samples, then each stage's name, sample count, p50, and
+/// p95 in microseconds. A stage's samples are every record of the run, so
+/// besides the echoes they include the new pane's prompt and the line
+/// breaks.
+async fn key_to_echo_by_stage(
+    rig: &Rig,
+    c: &Client,
+    samples: usize,
+) -> Result<(Vec<f64>, Vec<(&'static str, u64, f64, f64)>), String> {
+    set_diagnostics(c, true, true).await?;
+    perf::reset();
+    perf::set_enabled(true);
+    let echo = key_to_echo(rig, c, samples).await;
+    perf::set_enabled(false);
+    let daemon = set_diagnostics(c, false, false).await?;
+    let echo = echo?;
+    let here = perf::snapshot();
+    let us = |ns: u64| ns as f64 / 1000.0;
+    let stages = perf::Stage::ALL
+        .iter()
+        .filter_map(|s| match s {
+            perf::Stage::ReplicaParse | perf::Stage::Frame => here
+                .stage(*s)
+                .map(|x| (s.name(), x.count, us(x.p50_ns), us(x.p95_ns))),
+            _ => daemon
+                .stages
+                .iter()
+                .find(|x| x.stage == s.name())
+                .map(|x| (s.name(), x.count, us(x.p50_ns), us(x.p95_ns))),
+        })
+        .collect();
+    Ok((echo, stages))
+}
+
 /// Key to echo inside tmux alone: `send-keys` into a `cat` pane, then
 /// `capture-pane` until the character is in tmux's grid. Each sample
 /// includes two tmux client round trips, so compare it with the same
@@ -696,6 +752,23 @@ async fn run_headless(panes: usize, history: usize) -> Result<Vec<Value>, String
     let echo = key_to_echo(&rig, &c, 200).await?;
     put("key to echo, 1 pane, p50", percentile(&echo, 0.5), "ms");
     put("key to echo, 1 pane, p95", percentile(&echo, 0.95), "ms");
+    // The same with diagnostics on, split by stage.
+    let (echo, stages) = key_to_echo_by_stage(&rig, &c, 200).await?;
+    put(
+        "key to echo, 1 pane, diagnostics on, p50",
+        percentile(&echo, 0.5),
+        "ms",
+    );
+    put(
+        "key to echo, 1 pane, diagnostics on, p95",
+        percentile(&echo, 0.95),
+        "ms",
+    );
+    for (stage, n, p50, p95) in stages {
+        eprintln!("bench: stage {stage}: {n} samples");
+        put(&format!("key to echo, stage {stage}, p50"), p50, "µs");
+        put(&format!("key to echo, stage {stage}, p95"), p95, "µs");
+    }
 
     // N idle panes, all Warm.
     let started = Instant::now();

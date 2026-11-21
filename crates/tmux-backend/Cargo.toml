@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 domain = { path = "../domain" }
+perf = { path = "../perf" }
 serde_json = "1.0.154"
 terminal-ghostty = { path = "../terminal-ghostty" }
 tmux-protocol = { path = "../tmux-protocol" }

@@ -90,17 +90,31 @@ pub fn version() -> Result<(), String> {
     })
 }
 
-pub fn status(json: bool) -> Result<(), String> {
+pub fn status(json: bool, perf: bool) -> Result<(), String> {
     rt()?.block_on(async {
         let mut c = connect().await?;
         let Response::DaemonStatus(s) = call(&mut c, Request::DaemonStatus(api::Empty {})).await?
         else {
             return Err("unexpected reply".into());
         };
+        let d = if perf {
+            let Response::DaemonDiagnostics(d) =
+                call(&mut c, Request::DaemonDiagnostics(api::Empty {})).await?
+            else {
+                return Err("unexpected reply".into());
+            };
+            Some(d)
+        } else {
+            None
+        };
         if json {
+            let v = match &d {
+                Some(d) => serde_json::json!({ "status": s, "diagnostics": d }),
+                None => serde_json::to_value(&s).map_err(|e| e.to_string())?,
+            };
             println!(
                 "{}",
-                serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?
+                serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?
             );
             return Ok(());
         }
@@ -137,8 +151,117 @@ pub fn status(json: bool) -> Result<(), String> {
                     .unwrap_or_default()
             );
         }
+        if let Some(d) = &d {
+            print_diagnostics(d);
+        }
         Ok(())
     })
+}
+
+/// `dream diagnostics on|off|reset`: `reset` zeroes them and leaves them
+/// as they are.
+pub fn diagnostics(what: &str, json: bool) -> Result<(), String> {
+    rt()?.block_on(async {
+        let mut c = connect().await?;
+        let enabled = match what {
+            "on" => true,
+            "off" => false,
+            _ => {
+                let Response::DaemonDiagnostics(d) =
+                    call(&mut c, Request::DaemonDiagnostics(api::Empty {})).await?
+                else {
+                    return Err("unexpected reply".into());
+                };
+                d.enabled
+            }
+        };
+        let Response::DaemonSetDiagnostics(d) = call(
+            &mut c,
+            Request::DaemonSetDiagnostics(api::DiagnosticsSettings {
+                enabled,
+                reset: what == "reset",
+            }),
+        )
+        .await?
+        else {
+            return Err("unexpected reply".into());
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?
+            );
+        } else {
+            print_diagnostics(&d);
+        }
+        Ok(())
+    })
+}
+
+fn print_diagnostics(d: &api::Diagnostics) {
+    let us = |ns: u64| ns as f64 / 1000.0;
+    if d.enabled {
+        println!(
+            "diagnostics on, collecting for {:.1}s",
+            d.collecting_ms as f64 / 1000.0
+        );
+    } else {
+        println!("diagnostics off (`dream diagnostics on` collects timings and counters)");
+    }
+    if d.enabled || d.stages.iter().any(|s| s.count > 0) {
+        println!(
+            "  {:<10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+            "stage", "count", "p50 µs", "p95 µs", "p99 µs", "max µs"
+        );
+        for s in &d.stages {
+            println!(
+                "  {:<10} {:>10} {:>10.1} {:>10.1} {:>10.1} {:>10.1}",
+                s.stage,
+                s.count,
+                us(s.p50_ns),
+                us(s.p95_ns),
+                us(s.p99_ns),
+                us(s.max_ns)
+            );
+        }
+        let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
+        println!("  read from tmux    {:.2} MiB", mib(d.tmux_bytes));
+        println!(
+            "  parsed            {:.2} MiB in {} records, {:.0} MiB/s while parsing",
+            mib(d.parsed_bytes),
+            d.records,
+            mib(d.parser_bytes_per_second)
+        );
+        println!(
+            "  sent to clients   {:.2} MiB in {} batches",
+            mib(d.transferred_bytes),
+            d.transferred_batches
+        );
+        println!(
+            "  subscriptions     {} from checkpoints ({:.2} MiB), {} replays, {} ended lagged",
+            d.checkpoints,
+            mib(d.checkpoint_bytes),
+            d.replays,
+            d.lagged_subscribers
+        );
+        println!(
+            "  overruns          {} mirrors rebuilt; {:.2} MiB of Cold output dropped",
+            d.reattaches,
+            mib(d.cold_dropped_bytes)
+        );
+    }
+    println!(
+        "  queues now        tmux events {}, held output {} panes / {} bytes, attaching {} (+{} waiting)",
+        d.event_queue, d.backlog_panes, d.backlog_bytes, d.attaching, d.attach_queue
+    );
+    println!(
+        "                    VT owners {:?} of {}, subscribers {} (fullest {} of {})",
+        d.worker_queues,
+        d.worker_queue_capacity,
+        d.subscribers,
+        d.subscriber_queue_max,
+        d.subscriber_queue_capacity
+    );
 }
 
 pub fn ensure(d: &DaemonArgs) -> Result<(), String> {

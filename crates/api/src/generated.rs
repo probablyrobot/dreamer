@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 62;
+pub const PROTOCOL_MINOR: u32 = 63;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1557,6 +1557,113 @@ pub struct DaemonStatus {
     /// Desktop processes connected now that answer apps.capture.
     #[prost(uint32, tag = "10")]
     pub desktops: u32,
+}
+
+/// Turn the daemon's performance diagnostics (spec 16.4) on or off. They are off by default, and cost nothing while off.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiagnosticsSettings {
+    #[prost(bool, tag = "1")]
+    pub enabled: bool,
+    /// Also start every timing and counter again from zero.
+    #[prost(bool, tag = "2")]
+    pub reset: bool,
+}
+
+/// How long one stage of the terminal path took, over every sample since diagnostics were turned on or reset. Percentiles come from histogram buckets and are within 6 %.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StageTiming {
+    /// input, tmux, decode, route, parse, publish, or transfer; see docs/performance.md.
+    #[prost(string, tag = "1")]
+    pub stage: String,
+    #[prost(uint64, tag = "2")]
+    pub count: u64,
+    #[prost(uint64, tag = "3")]
+    pub total_ns: u64,
+    #[prost(uint64, tag = "4")]
+    pub p50_ns: u64,
+    #[prost(uint64, tag = "5")]
+    pub p95_ns: u64,
+    #[prost(uint64, tag = "6")]
+    pub p99_ns: u64,
+    #[prost(uint64, tag = "7")]
+    pub max_ns: u64,
+}
+
+/// The daemon's performance diagnostics. Timings and counters cover the time since diagnostics were turned on or reset, and only while on; queue depths are read now, on or off. Nothing here holds terminal content.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Diagnostics {
+    #[prost(bool, tag = "1")]
+    pub enabled: bool,
+    /// Since diagnostics were turned on or last reset.
+    #[prost(uint64, tag = "2")]
+    pub collecting_ms: u64,
+    /// The daemon's stages, in path order.
+    #[prost(message, repeated, tag = "3")]
+    pub stages: Vec<StageTiming>,
+    /// Bytes read from tmux's control output.
+    #[prost(uint64, tag = "4")]
+    pub tmux_bytes: u64,
+    /// Output bytes parsed by canonical mirrors.
+    #[prost(uint64, tag = "5")]
+    pub parsed_bytes: u64,
+    /// parsed_bytes over the time spent in the parse stage: the canonical parser's throughput while it works.
+    #[prost(uint64, tag = "6")]
+    pub parser_bytes_per_second: u64,
+    /// Records (output chunks and resizes) applied by canonical mirrors.
+    #[prost(uint64, tag = "7")]
+    pub records: u64,
+    /// Terminal record bytes sent to subscribed clients, replays included.
+    #[prost(uint64, tag = "8")]
+    pub transferred_bytes: u64,
+    #[prost(uint64, tag = "9")]
+    pub transferred_batches: u64,
+    /// Subscriptions (views, taps, collectors) started from a checkpoint.
+    #[prost(uint64, tag = "10")]
+    pub checkpoints: u64,
+    #[prost(uint64, tag = "11")]
+    pub checkpoint_bytes: u64,
+    /// Subscriptions started by replaying the journal.
+    #[prost(uint64, tag = "12")]
+    pub replays: u64,
+    /// Subscriptions ended because their queue was full: dropped subscriber events, each reported to its subscriber as lagged.
+    #[prost(uint64, tag = "13")]
+    pub lagged_subscribers: u64,
+    /// Mirrors rebuilt from a fresh capture because a pane's output outran them.
+    #[prost(uint64, tag = "14")]
+    pub reattaches: u64,
+    /// Output of Cold panes, dropped before any VT work.
+    #[prost(uint64, tag = "15")]
+    pub cold_dropped_bytes: u64,
+    /// Events from tmux waiting for the mirror router.
+    #[prost(uint32, tag = "16")]
+    pub event_queue: u32,
+    /// Panes with output held because their owner's queue is full.
+    #[prost(uint32, tag = "17")]
+    pub backlog_panes: u32,
+    #[prost(uint64, tag = "18")]
+    pub backlog_bytes: u64,
+    /// Mirror attaches in progress.
+    #[prost(uint32, tag = "19")]
+    pub attaching: u32,
+    /// Panes waiting for a turn to attach.
+    #[prost(uint32, tag = "20")]
+    pub attach_queue: u32,
+    /// Output messages waiting for each VT owner.
+    #[prost(uint32, repeated, tag = "21")]
+    pub worker_queues: Vec<u32>,
+    #[prost(uint32, tag = "22")]
+    pub worker_queue_capacity: u32,
+    /// Subscriptions following mirrors now.
+    #[prost(uint32, tag = "23")]
+    pub subscribers: u32,
+    /// Records waiting in the fullest subscriber queue.
+    #[prost(uint32, tag = "24")]
+    pub subscriber_queue_max: u32,
+    #[prost(uint32, tag = "25")]
+    pub subscriber_queue_capacity: u32,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -5630,6 +5737,8 @@ pub mod method {
     pub const DAEMON_VERSION: &str = "daemon.version";
     pub const DAEMON_STATUS: &str = "daemon.status";
     pub const DAEMON_SHUTDOWN: &str = "daemon.shutdown";
+    pub const DAEMON_DIAGNOSTICS: &str = "daemon.diagnostics";
+    pub const DAEMON_SET_DIAGNOSTICS: &str = "daemon.set_diagnostics";
     pub const TMUX_TOPOLOGY: &str = "tmux.topology";
     pub const TMUX_SIZE_WINDOW: &str = "tmux.size_window";
     pub const CLIPBOARD_READ_TMUX_BUFFER: &str = "clipboard.read_tmux_buffer";
@@ -5777,6 +5886,20 @@ pub const METHODS: &[MethodInfo] = &[
         result: "ShutdownResult",
         mutation: true,
         doc: "Stop the daemon; tmux sessions and panes keep running.",
+    },
+    MethodInfo {
+        name: "daemon.diagnostics",
+        params: "Empty",
+        result: "Diagnostics",
+        mutation: false,
+        doc: "Performance diagnostics: stage timings, traffic counters, and queue depths. No terminal content.",
+    },
+    MethodInfo {
+        name: "daemon.set_diagnostics",
+        params: "DiagnosticsSettings",
+        result: "Diagnostics",
+        mutation: true,
+        doc: "Turn performance diagnostics on or off, or reset them.",
     },
     MethodInfo {
         name: "tmux.topology",
@@ -6591,6 +6714,8 @@ pub enum Request {
     DaemonVersion(Empty),
     DaemonStatus(Empty),
     DaemonShutdown(Empty),
+    DaemonDiagnostics(Empty),
+    DaemonSetDiagnostics(DiagnosticsSettings),
     TmuxTopology(TopologyParams),
     TmuxSizeWindow(SizeWindow),
     ClipboardReadTmuxBuffer(TmuxBufferRead),
@@ -6714,6 +6839,8 @@ impl Request {
             Self::DaemonVersion(_) => "daemon.version",
             Self::DaemonStatus(_) => "daemon.status",
             Self::DaemonShutdown(_) => "daemon.shutdown",
+            Self::DaemonDiagnostics(_) => "daemon.diagnostics",
+            Self::DaemonSetDiagnostics(_) => "daemon.set_diagnostics",
             Self::TmuxTopology(_) => "tmux.topology",
             Self::TmuxSizeWindow(_) => "tmux.size_window",
             Self::ClipboardReadTmuxBuffer(_) => "clipboard.read_tmux_buffer",
@@ -6838,6 +6965,8 @@ impl Request {
             Self::DaemonVersion(v) => ::prost::Message::encode_to_vec(v),
             Self::DaemonStatus(v) => ::prost::Message::encode_to_vec(v),
             Self::DaemonShutdown(v) => ::prost::Message::encode_to_vec(v),
+            Self::DaemonDiagnostics(v) => ::prost::Message::encode_to_vec(v),
+            Self::DaemonSetDiagnostics(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxSizeWindow(v) => ::prost::Message::encode_to_vec(v),
             Self::ClipboardReadTmuxBuffer(v) => ::prost::Message::encode_to_vec(v),
@@ -6961,6 +7090,10 @@ impl Request {
             "daemon.version" => Ok(Self::DaemonVersion(::prost::Message::decode(bytes)?)),
             "daemon.status" => Ok(Self::DaemonStatus(::prost::Message::decode(bytes)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(::prost::Message::decode(bytes)?)),
+            "daemon.diagnostics" => Ok(Self::DaemonDiagnostics(::prost::Message::decode(bytes)?)),
+            "daemon.set_diagnostics" => {
+                Ok(Self::DaemonSetDiagnostics(::prost::Message::decode(bytes)?))
+            }
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(::prost::Message::decode(bytes)?)),
             "clipboard.read_tmux_buffer" => Ok(Self::ClipboardReadTmuxBuffer(
@@ -7107,6 +7240,8 @@ impl Request {
             Self::DaemonVersion(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DaemonStatus(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DaemonShutdown(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DaemonDiagnostics(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DaemonSetDiagnostics(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxSizeWindow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ClipboardReadTmuxBuffer(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -7230,6 +7365,10 @@ impl Request {
             "daemon.version" => Ok(Self::DaemonVersion(serde_json::from_value(value)?)),
             "daemon.status" => Ok(Self::DaemonStatus(serde_json::from_value(value)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(serde_json::from_value(value)?)),
+            "daemon.diagnostics" => Ok(Self::DaemonDiagnostics(serde_json::from_value(value)?)),
+            "daemon.set_diagnostics" => {
+                Ok(Self::DaemonSetDiagnostics(serde_json::from_value(value)?))
+            }
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(serde_json::from_value(value)?)),
             "clipboard.read_tmux_buffer" => Ok(Self::ClipboardReadTmuxBuffer(
@@ -7372,6 +7511,8 @@ pub enum Response {
     DaemonVersion(VersionInfo),
     DaemonStatus(DaemonStatus),
     DaemonShutdown(ShutdownResult),
+    DaemonDiagnostics(Diagnostics),
+    DaemonSetDiagnostics(Diagnostics),
     TmuxTopology(Topology),
     TmuxSizeWindow(SizeResult),
     ClipboardReadTmuxBuffer(TmuxBuffer),
@@ -7495,6 +7636,8 @@ impl Response {
             Self::DaemonVersion(_) => "daemon.version",
             Self::DaemonStatus(_) => "daemon.status",
             Self::DaemonShutdown(_) => "daemon.shutdown",
+            Self::DaemonDiagnostics(_) => "daemon.diagnostics",
+            Self::DaemonSetDiagnostics(_) => "daemon.set_diagnostics",
             Self::TmuxTopology(_) => "tmux.topology",
             Self::TmuxSizeWindow(_) => "tmux.size_window",
             Self::ClipboardReadTmuxBuffer(_) => "clipboard.read_tmux_buffer",
@@ -7619,6 +7762,8 @@ impl Response {
             Self::DaemonVersion(v) => ::prost::Message::encode_to_vec(v),
             Self::DaemonStatus(v) => ::prost::Message::encode_to_vec(v),
             Self::DaemonShutdown(v) => ::prost::Message::encode_to_vec(v),
+            Self::DaemonDiagnostics(v) => ::prost::Message::encode_to_vec(v),
+            Self::DaemonSetDiagnostics(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxSizeWindow(v) => ::prost::Message::encode_to_vec(v),
             Self::ClipboardReadTmuxBuffer(v) => ::prost::Message::encode_to_vec(v),
@@ -7742,6 +7887,10 @@ impl Response {
             "daemon.version" => Ok(Self::DaemonVersion(::prost::Message::decode(bytes)?)),
             "daemon.status" => Ok(Self::DaemonStatus(::prost::Message::decode(bytes)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(::prost::Message::decode(bytes)?)),
+            "daemon.diagnostics" => Ok(Self::DaemonDiagnostics(::prost::Message::decode(bytes)?)),
+            "daemon.set_diagnostics" => {
+                Ok(Self::DaemonSetDiagnostics(::prost::Message::decode(bytes)?))
+            }
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(::prost::Message::decode(bytes)?)),
             "clipboard.read_tmux_buffer" => Ok(Self::ClipboardReadTmuxBuffer(
@@ -7888,6 +8037,8 @@ impl Response {
             Self::DaemonVersion(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DaemonStatus(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::DaemonShutdown(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DaemonDiagnostics(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::DaemonSetDiagnostics(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxSizeWindow(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::ClipboardReadTmuxBuffer(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -8011,6 +8162,10 @@ impl Response {
             "daemon.version" => Ok(Self::DaemonVersion(serde_json::from_value(value)?)),
             "daemon.status" => Ok(Self::DaemonStatus(serde_json::from_value(value)?)),
             "daemon.shutdown" => Ok(Self::DaemonShutdown(serde_json::from_value(value)?)),
+            "daemon.diagnostics" => Ok(Self::DaemonDiagnostics(serde_json::from_value(value)?)),
+            "daemon.set_diagnostics" => {
+                Ok(Self::DaemonSetDiagnostics(serde_json::from_value(value)?))
+            }
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
             "tmux.size_window" => Ok(Self::TmuxSizeWindow(serde_json::from_value(value)?)),
             "clipboard.read_tmux_buffer" => Ok(Self::ClipboardReadTmuxBuffer(
@@ -8165,6 +8320,16 @@ pub trait Service: Sync {
         &self,
         params: Empty,
     ) -> impl ::core::future::Future<Output = Result<ShutdownResult, RpcError>> + Send;
+    /// Performance diagnostics: stage timings, traffic counters, and queue depths. No terminal content.
+    fn daemon_diagnostics(
+        &self,
+        params: Empty,
+    ) -> impl ::core::future::Future<Output = Result<Diagnostics, RpcError>> + Send;
+    /// Turn performance diagnostics on or off, or reset them.
+    fn daemon_set_diagnostics(
+        &self,
+        params: DiagnosticsSettings,
+    ) -> impl ::core::future::Future<Output = Result<Diagnostics, RpcError>> + Send;
     /// Sessions, windows, and panes of one endpoint.
     fn tmux_topology(
         &self,
@@ -8737,6 +8902,14 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .daemon_shutdown(p)
             .await
             .map(Response::DaemonShutdown),
+        Request::DaemonDiagnostics(p) => service
+            .daemon_diagnostics(p)
+            .await
+            .map(Response::DaemonDiagnostics),
+        Request::DaemonSetDiagnostics(p) => service
+            .daemon_set_diagnostics(p)
+            .await
+            .map(Response::DaemonSetDiagnostics),
         Request::TmuxTopology(p) => service.tmux_topology(p).await.map(Response::TmuxTopology),
         Request::TmuxSizeWindow(p) => service
             .tmux_size_window(p)

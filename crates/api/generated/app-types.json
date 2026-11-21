@@ -1606,6 +1606,122 @@
         }
       }
     },
+    "Diagnostics": {
+      "fields": {
+        "attach_queue": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "attaching": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "backlog_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "backlog_panes": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "checkpoint_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "checkpoints": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "cold_dropped_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "collecting_ms": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "enabled": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "event_queue": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "lagged_subscribers": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "parsed_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "parser_bytes_per_second": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "reattaches": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "records": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "replays": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "stages": {
+          "repeated": true,
+          "type": "StageTiming"
+        },
+        "subscriber_queue_capacity": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "subscriber_queue_max": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "subscribers": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "tmux_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "transferred_batches": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "transferred_bytes": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "worker_queue_capacity": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "worker_queues": {
+          "repeated": true,
+          "type": "u32"
+        }
+      }
+    },
+    "DiagnosticsSettings": {
+      "fields": {
+        "enabled": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "reset": {
+          "repeated": false,
+          "type": "bool"
+        }
+      }
+    },
     "DrawerRequest": {
       "fields": {
         "endpoint": {
@@ -4041,6 +4157,38 @@
         }
       }
     },
+    "StageTiming": {
+      "fields": {
+        "count": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "max_ns": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "p50_ns": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "p95_ns": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "p99_ns": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "stage": {
+          "repeated": false,
+          "type": "string"
+        },
+        "total_ns": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
     "SubmitAction": {
       "fields": {
         "action": {
@@ -5151,6 +5299,8 @@
     "collect.list": "Empty",
     "collect.query": "CollectQuery",
     "collect.stop": "CollectRef",
+    "daemon.diagnostics": "Empty",
+    "daemon.set_diagnostics": "DiagnosticsSettings",
     "daemon.shutdown": "Empty",
     "daemon.status": "Empty",
     "daemon.version": "Empty",
@@ -5493,5 +5643,5 @@
       }
     }
   },
-  "version": "1.62"
+  "version": "1.63"
 }

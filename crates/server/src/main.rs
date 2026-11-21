@@ -120,6 +120,11 @@ fn main() -> ExitCode {
         _ => {}
     }
     adopt_user_path();
+    // Performance diagnostics from the start (`dream diagnostics on` turns
+    // them on later).
+    if std::env::var("DREAMER_DIAGNOSTICS").is_ok_and(|v| v == "1") {
+        perf::set_enabled(true);
+    }
     let args = match parse(&args) {
         Ok(a) => a,
         Err(e) => {

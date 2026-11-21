@@ -151,6 +151,43 @@ pub(crate) enum Control {
         pane: TmuxPaneId,
         reply: oneshot::Sender<bool>,
     },
+    /// Diagnostics: input was sent to the pane at `at`.
+    Input {
+        pane: TmuxPaneId,
+        at: std::time::Instant,
+    },
+    Queues {
+        reply: oneshot::Sender<RouterQueues>,
+    },
+}
+
+/// The router's queues at one moment.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RouterQueues {
+    /// Events from tmux waiting for the router.
+    pub events: usize,
+    /// Panes with output held because their owner's queue was full, and
+    /// the bytes held.
+    pub backlog_panes: usize,
+    pub backlog_bytes: usize,
+    /// Attaches in progress, and panes waiting for a turn.
+    pub attaching: usize,
+    pub attach_queue: usize,
+}
+
+/// Every queue on a connection's terminal path at one moment (spec 16.4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Queues {
+    pub router: RouterQueues,
+    /// Output messages waiting on each owner's data lane, and the lane's
+    /// capacity.
+    pub workers: Vec<usize>,
+    pub worker_capacity: usize,
+    /// Subscribers (views, taps, filters), the deepest subscriber queue,
+    /// and a subscriber queue's capacity.
+    pub subscribers: usize,
+    pub subscriber_max: usize,
+    pub subscriber_capacity: usize,
 }
 
 /// The mirrors of one tmux connection.
@@ -559,6 +596,41 @@ impl MirrorHost {
         })
         .ok()?;
         answer.await.ok().flatten()
+    }
+
+    /// Diagnostics: input is being sent to `pane` now, so the time to its
+    /// next output can be timed. Nothing while diagnostics are off.
+    pub fn note_input(&self, pane: TmuxPaneId) {
+        if perf::on() {
+            let _ = self.control.try_send(Control::Input {
+                pane,
+                at: std::time::Instant::now(),
+            });
+        }
+    }
+
+    /// The depth of every queue on this connection's terminal path.
+    pub async fn queues(&self) -> Queues {
+        let (reply, answer) = oneshot::channel();
+        let router = if self.control.send(Control::Queues { reply }).await.is_ok() {
+            answer.await.unwrap_or_default()
+        } else {
+            RouterQueues::default()
+        };
+        let mut q = Queues {
+            router,
+            workers: self.workers.iter().map(|w| w.queued()).collect(),
+            worker_capacity: self.workers.first().map_or(0, |w| w.capacity()),
+            ..Queues::default()
+        };
+        for m in self.status().await {
+            if let Some(l) = m.live {
+                q.subscribers += l.followers;
+                q.subscriber_max = q.subscriber_max.max(l.subscriber_queued);
+                q.subscriber_capacity = q.subscriber_capacity.max(l.subscriber_capacity);
+            }
+        }
+        q
     }
 
     /// Every mirrored pane and its state.

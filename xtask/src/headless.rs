@@ -30,6 +30,7 @@ pub const PACKAGES: &[&str] = &[
     "procreg",
     "providers",
     "mirror",
+    "perf",
     "platform",
     "replica",
     "ghostty-sys",

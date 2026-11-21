@@ -92,6 +92,8 @@ fn targets(r: &Request) -> Targets {
         },
         // A prefix binding is the user's own command: it can act anywhere.
         Request::TerminalMirrors(_)
+        | Request::DaemonDiagnostics(_)
+        | Request::DaemonSetDiagnostics(_)
         | Request::TmuxPrefixKey(_)
         | Request::DrawerToggle(_)
         | Request::DaemonShutdown(_)

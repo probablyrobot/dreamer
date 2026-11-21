@@ -1684,6 +1684,148 @@
         ],
         "type": "string"
       },
+      "Diagnostics": {
+        "description": "The daemon's performance diagnostics. Timings and counters cover the time since diagnostics were turned on or reset, and only while on; queue depths are read now, on or off. Nothing here holds terminal content.",
+        "properties": {
+          "attach_queue": {
+            "description": "Panes waiting for a turn to attach.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "attaching": {
+            "description": "Mirror attaches in progress.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "backlog_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "backlog_panes": {
+            "description": "Panes with output held because their owner's queue is full.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "checkpoint_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "checkpoints": {
+            "description": "Subscriptions (views, taps, collectors) started from a checkpoint.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cold_dropped_bytes": {
+            "description": "Output of Cold panes, dropped before any VT work.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "collecting_ms": {
+            "description": "Since diagnostics were turned on or last reset.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "event_queue": {
+            "description": "Events from tmux waiting for the mirror router.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lagged_subscribers": {
+            "description": "Subscriptions ended because their queue was full: dropped subscriber events, each reported to its subscriber as lagged.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parsed_bytes": {
+            "description": "Output bytes parsed by canonical mirrors.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "parser_bytes_per_second": {
+            "description": "parsed_bytes over the time spent in the parse stage: the canonical parser's throughput while it works.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reattaches": {
+            "description": "Mirrors rebuilt from a fresh capture because a pane's output outran them.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "records": {
+            "description": "Records (output chunks and resizes) applied by canonical mirrors.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "replays": {
+            "description": "Subscriptions started by replaying the journal.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stages": {
+            "description": "The daemon's stages, in path order.",
+            "items": {
+              "$ref": "#/components/schemas/StageTiming"
+            },
+            "type": "array"
+          },
+          "subscriber_queue_capacity": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subscriber_queue_max": {
+            "description": "Records waiting in the fullest subscriber queue.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subscribers": {
+            "description": "Subscriptions following mirrors now.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tmux_bytes": {
+            "description": "Bytes read from tmux's control output.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transferred_batches": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transferred_bytes": {
+            "description": "Terminal record bytes sent to subscribed clients, replays included.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worker_queue_capacity": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worker_queues": {
+            "description": "Output messages waiting for each VT owner.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "DiagnosticsSettings": {
+        "description": "Turn the daemon's performance diagnostics (spec 16.4) on or off. They are off by default, and cost nothing while off.",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "reset": {
+            "description": "Also start every timing and counter again from zero.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "DrawerRequest": {
         "description": "Which session's drawer, and where to show it. With none of session, window, or pane given the request is refused.",
         "properties": {
@@ -4491,6 +4633,40 @@
         },
         "type": "object"
       },
+      "StageTiming": {
+        "description": "How long one stage of the terminal path took, over every sample since diagnostics were turned on or reset. Percentiles come from histogram buckets and are within 6 %.",
+        "properties": {
+          "count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_ns": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "p50_ns": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "p95_ns": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "p99_ns": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stage": {
+            "description": "input, tmux, decode, route, parse, publish, or transfer; see docs/performance.md.",
+            "type": "string"
+          },
+          "total_ns": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "SubmitAction": {
         "properties": {
           "action": {
@@ -5757,7 +5933,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.62"
+    "version": "1.63"
   },
   "methods": [
     {
@@ -5797,6 +5973,46 @@
         }
       },
       "summary": "Stop the daemon; tmux sessions and panes keep running.",
+      "x-mutation": true
+    },
+    {
+      "name": "daemon.diagnostics",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Diagnostics"
+        }
+      },
+      "summary": "Performance diagnostics: stage timings, traffic counters, and queue depths. No terminal content.",
+      "x-mutation": false
+    },
+    {
+      "name": "daemon.set_diagnostics",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "enabled",
+          "schema": {
+            "type": "boolean"
+          }
+        },
+        {
+          "description": "Also start every timing and counter again from zero.",
+          "name": "reset",
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Diagnostics"
+        }
+      },
+      "summary": "Turn performance diagnostics on or off, or reset them.",
       "x-mutation": true
     },
     {

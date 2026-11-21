@@ -507,6 +507,28 @@ impl api::Service for DaemonService {
         })
     }
 
+    async fn daemon_diagnostics(&self, _: api::Empty) -> Result<api::Diagnostics, RpcError> {
+        Ok(self.diagnostics().await)
+    }
+
+    async fn daemon_set_diagnostics(
+        &self,
+        p: api::DiagnosticsSettings,
+    ) -> Result<api::Diagnostics, RpcError> {
+        if p.reset {
+            perf::reset();
+        }
+        if p.enabled != perf::on() {
+            perf::set_enabled(p.enabled);
+            log::info(if p.enabled {
+                "performance diagnostics on"
+            } else {
+                "performance diagnostics off"
+            });
+        }
+        Ok(self.diagnostics().await)
+    }
+
     async fn daemon_shutdown(&self, _: api::Empty) -> Result<api::ShutdownResult, RpcError> {
         self.0.shutting_down.store(true, Ordering::SeqCst);
         log::info("shutdown requested by a client");
@@ -917,6 +939,7 @@ impl api::Service for DaemonService {
 
     async fn terminal_input(&self, p: api::TerminalInput) -> Result<api::InputResult, RpcError> {
         use api::terminal_input::Event;
+        let received = perf::start();
         let host = self.mirror_host(p.endpoint.as_deref()).await?;
         let pane = domain::TmuxPaneId(p.pane);
         let typed = matches!(
@@ -1056,6 +1079,10 @@ impl api::Service for DaemonService {
         let batches = if bytes.is_empty() {
             0
         } else {
+            if received.is_some() {
+                perf::finish(perf::Stage::Input, received);
+                host.note_input(pane);
+            }
             tmux_backend::ops::send_bytes(&conn, pane, &bytes)
                 .await
                 .map_err(|e| {
@@ -1899,6 +1926,66 @@ impl api::Service for DaemonService {
 
 impl DaemonService {
     /// The mirrors of the endpoint, connecting it first if needed.
+    /// The daemon's diagnostics: what `perf` collected, and the mirror
+    /// queues now. Never connects to tmux.
+    async fn diagnostics(&self) -> api::Diagnostics {
+        let snap = perf::snapshot();
+        let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+        let parse_ns = snap.stage(perf::Stage::Parse).map_or(0, |s| s.total_ns);
+        let parsed = snap.counter(perf::Counter::ParsedBytes);
+        let mut d = api::Diagnostics {
+            enabled: snap.enabled,
+            collecting_ms: snap.collecting.as_millis() as u64,
+            stages: snap
+                .stages
+                .iter()
+                // The replica's stages are timed in the client.
+                .filter(|s| !matches!(s.stage, perf::Stage::ReplicaParse | perf::Stage::Frame))
+                .map(|s| api::StageTiming {
+                    stage: s.stage.name().into(),
+                    count: s.count,
+                    total_ns: s.total_ns,
+                    p50_ns: s.p50_ns,
+                    p95_ns: s.p95_ns,
+                    p99_ns: s.p99_ns,
+                    max_ns: s.max_ns,
+                })
+                .collect(),
+            tmux_bytes: snap.counter(perf::Counter::TmuxBytes),
+            parsed_bytes: parsed,
+            parser_bytes_per_second: if parse_ns == 0 {
+                0
+            } else {
+                (u128::from(parsed) * 1_000_000_000 / u128::from(parse_ns)) as u64
+            },
+            records: snap.counter(perf::Counter::Records),
+            transferred_bytes: snap.counter(perf::Counter::TransferredBytes),
+            transferred_batches: snap.counter(perf::Counter::TransferredBatches),
+            checkpoints: snap.counter(perf::Counter::Checkpoints),
+            checkpoint_bytes: snap.counter(perf::Counter::CheckpointBytes),
+            replays: snap.counter(perf::Counter::Replays),
+            lagged_subscribers: snap.counter(perf::Counter::Lagged),
+            reattaches: snap.counter(perf::Counter::Reattaches),
+            cold_dropped_bytes: snap.counter(perf::Counter::ColdDroppedBytes),
+            ..api::Diagnostics::default()
+        };
+        let host = self.0.mirrors.read().await.clone();
+        if let Some(host) = host {
+            let q = host.queues().await;
+            d.event_queue = n(q.router.events);
+            d.backlog_panes = n(q.router.backlog_panes);
+            d.backlog_bytes = q.router.backlog_bytes as u64;
+            d.attaching = n(q.router.attaching);
+            d.attach_queue = n(q.router.attach_queue);
+            d.worker_queues = q.workers.into_iter().map(n).collect();
+            d.worker_queue_capacity = n(q.worker_capacity);
+            d.subscribers = n(q.subscribers);
+            d.subscriber_queue_max = n(q.subscriber_max);
+            d.subscriber_queue_capacity = n(q.subscriber_capacity);
+        }
+        d
+    }
+
     pub async fn mirror_host(
         &self,
         endpoint: Option<&str>,

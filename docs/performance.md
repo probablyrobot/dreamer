@@ -49,7 +49,10 @@ them. A broken harness fails the job.
    - the daemon's mirror;
    - the replica's frame, whose cursor must move.
 
-   No GPU or paint is in this path.
+   No GPU or paint is in this path. Then 200 more keystrokes with
+   diagnostics on, in the daemon and in the harness's replica, reported
+   as "diagnostics on" with each stage's p50 and p95 (see
+   [Path timings](#path-timings-and-diagnostics)).
 3. **N idle panes.** Create N shells and time until every pane has a live
    mirror. Measure memory and the daemon's CPU over 10 s. With
    `--history LINES`, each shell first prints that many lines, so its
@@ -133,6 +136,60 @@ After a demotion the daemon hands freed memory back to the system:
 `malloc_trim` on Linux, and malloc pressure relief on macOS. macOS takes the
 pages back only under memory pressure, so the Cold RSS figure there stays
 high. On Linux it falls to near the heap figure.
+
+## Path timings and diagnostics
+
+The daemon and the replica can time each stage of the terminal path and
+count the traffic through it. This is off by default and costs nothing
+then: each hook reads one flag and takes no clock reading. While on, a
+stage costs two clock readings and a few atomic adds into a fixed
+histogram, with no lock, no allocation, and nothing per byte. Only
+durations and sizes are kept, never terminal content.
+
+```sh
+dream diagnostics on          # or start dreamerd with DREAMER_DIAGNOSTICS=1
+dream status --perf [--json]  # timings, counters, and queue depths
+dream diagnostics reset       # zero them; on or off stays as it was
+dream diagnostics off
+```
+
+The API is `daemon.diagnostics` and `daemon.set_diagnostics`.
+
+**Stages,** each timed per output chunk (or per input request) in path
+order:
+
+| Stage | Where | From | To |
+| --- | --- | --- | --- |
+| `input` | daemon | an input request arrives | its bytes are sent to tmux: the pane's input lane and the encoding against the canonical engine |
+| `tmux` | daemon | input sent to a pane | the next read of that pane's output. tmux, the pty, and the program are all in it |
+| `decode` | daemon | one read of tmux's control output returns | it is decoded into notifications |
+| `route` | daemon | output decoded | the pane's VT owner starts on it: the router, any held backlog, and the owner's queue |
+| `parse` | daemon | the canonical VT parse of one chunk starts | it ends |
+| `publish` | daemon | a parsed record is handed to subscribers | it is in the journal |
+| `transfer` | daemon | a record is handed to a subscriber | its batch reaches the client connection's writer |
+| `replica_parse` | client | a received batch is applied to the replica | it is applied |
+| `frame` | client | a frame is extracted from the replica | it is extracted |
+
+Between `transfer` and `replica_parse`, the socket write, the kernel, and
+the client's decoding are not timed. Glyph shaping, GPU submission, and
+presentation are the desktop's and are not timed here. Percentiles come
+from histogram buckets and are within 6 %.
+
+**Counters** cover the time since diagnostics were turned on or reset:
+- bytes read from tmux;
+- bytes parsed, the records applied, and the parser's throughput while it
+  works;
+- bytes and batches sent to clients;
+- subscriptions started from a checkpoint (and the checkpoints' bytes) or
+  by replay;
+- subscriptions ended as lagged: dropped subscriber events, each reported
+  to its subscriber;
+- mirrors rebuilt because a pane's output outran them;
+- bytes of Cold panes' output dropped.
+
+**Queue depths** are read when asked, on or off: tmux events waiting for
+the router, output held for a full owner queue, attaches running and
+waiting, each VT owner's queue, and the fullest subscriber queue.
 
 ## Results
 
@@ -291,6 +348,8 @@ Revision: branch `m7-05-launch-and-tabs`.
 
 ## Not measured yet
 
+- **Stage timings on named hardware.** `bench headless` prints them; no
+  run is recorded here yet.
 - **Desktop workloads on Linux** (Wayland and X11), and on macOS with more
   than 16 visible panes.
 - **Image-heavy and escape-heavy streams:** the `streams` workload

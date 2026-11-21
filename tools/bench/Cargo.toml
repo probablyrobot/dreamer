@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 api = { path = "../../crates/api" }
 client = { path = "../../crates/client" }
+perf = { path = "../../crates/perf" }
 platform = { path = "../../crates/platform" }
 replica = { path = "../../crates/replica" }
 serde_json = "1.0.154"

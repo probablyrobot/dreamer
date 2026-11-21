@@ -77,6 +77,16 @@ impl WorkerHandle {
         })
     }
 
+    /// Messages waiting on the data lane.
+    pub fn queued(&self) -> usize {
+        self.data.max_capacity() - self.data.capacity()
+    }
+
+    /// The data lane's capacity.
+    pub fn capacity(&self) -> usize {
+        self.data.max_capacity()
+    }
+
     /// Ahead of any queued output.
     pub fn urgent(&self, m: WorkerMsg) -> Result<(), WorkerGone> {
         self.urgent.send(m).map_err(|_| WorkerGone)?;
@@ -114,6 +124,10 @@ pub struct Sink {
     /// The subscribing client's id, if it gave one.
     pub client: Option<u64>,
     pub ended: Arc<AtomicU8>,
+    /// Diagnostics: marked when a record is handed to this subscriber, for
+    /// whoever forwards the records to time the transfer. Marked only while
+    /// diagnostics are on.
+    pub stamp: Option<Arc<perf::Stamp>>,
 }
 
 /// How a subscription starts.
@@ -235,6 +249,10 @@ pub struct LiveStats {
     /// How long since the pane last wrote anything (or since the mirror
     /// started, if it has written nothing).
     pub quiet: std::time::Duration,
+    /// Records waiting in the fullest subscriber queue, and a subscriber
+    /// queue's capacity (0 with no subscribers).
+    pub subscriber_queued: usize,
+    pub subscriber_capacity: usize,
 }
 
 #[derive(Debug)]
@@ -256,6 +274,8 @@ pub enum WorkerMsg {
         /// already part of the newer capture and is dropped.
         attach: u32,
         record: Record,
+        /// Diagnostics only: when the record was decoded from tmux's output.
+        at: Option<Instant>,
     },
     /// Nothing to do; makes a waiting worker look at its urgent lane.
     Wake,
@@ -371,13 +391,18 @@ impl Mirror {
                     .map(|it| (after, it.map(|(s, r)| (s, r.clone())).collect::<Vec<_>>()))
             });
         let start = match replay {
-            Some((after, records)) => Start::Replay { after, records },
+            Some((after, records)) => {
+                perf::count(perf::Counter::Replays, 1);
+                Start::Replay { after, records }
+            }
             None => {
                 let t = Instant::now();
                 let snapshot = self
                     .engine
                     .snapshot()
                     .map_err(|e| format!("snapshot: {e}"))?;
+                perf::count(perf::Counter::Checkpoints, 1);
+                perf::count(perf::Counter::CheckpointBytes, snapshot.len() as u64);
                 Start::Checkpoint {
                     sequence: self.sequence,
                     snapshot,
@@ -410,8 +435,14 @@ impl Mirror {
                 e
             });
             match s.records.try_send((seq, record.clone(), effect)) {
-                Ok(()) => true,
+                Ok(()) => {
+                    if let Some(stamp) = &s.stamp {
+                        stamp.mark();
+                    }
+                    true
+                }
                 Err(mpsc::error::TrySendError::Full(_)) => {
+                    perf::count(perf::Counter::Lagged, 1);
                     s.ended.store(end::LAGGED, Ordering::SeqCst);
                     false
                 }
@@ -446,6 +477,18 @@ impl Mirror {
                 })
                 .count(),
             quiet: self.last_output.elapsed(),
+            subscriber_queued: self
+                .subscribers
+                .iter()
+                .map(|s| s.records.max_capacity() - s.records.capacity())
+                .max()
+                .unwrap_or(0),
+            subscriber_capacity: self
+                .subscribers
+                .iter()
+                .map(|s| s.records.max_capacity())
+                .max()
+                .unwrap_or(0),
         }
     }
 
@@ -459,10 +502,16 @@ impl Mirror {
             Record::Bytes(b) => {
                 self.ingested += b.len() as u64;
                 self.last_output = Instant::now();
+                let parse = perf::start();
+                let fed = self.engine.feed(b);
+                if parse.is_some() {
+                    perf::finish(perf::Stage::Parse, parse);
+                    perf::count(perf::Counter::ParsedBytes, b.len() as u64);
+                }
                 // Mirrors never answer the application (tmux owns replies).
                 // Title and cwd become state; they and bells are live
                 // effects for subscribers present now, never journaled.
-                self.engine.feed(b).map(|fx| {
+                fed.map(|fx| {
                     if fx.title.is_some() {
                         self.title.clone_from(&fx.title);
                     }
@@ -499,10 +548,15 @@ impl Mirror {
         };
         match r {
             Ok(()) => {
+                let publish = perf::start();
                 if !self.subscribers.is_empty() {
                     self.publish(self.journal.next_sequence(), &record, effect);
                 }
                 self.sequence = self.journal.push(record, Instant::now());
+                if publish.is_some() {
+                    perf::finish(perf::Stage::Publish, publish);
+                    perf::count(perf::Counter::Records, 1);
+                }
             }
             Err(e) => self.error = Some(e.to_string()),
         }
@@ -688,6 +742,8 @@ pub fn spawn(
                                         reattaches: 0,
                                         followers: 0,
                                         quiet: std::time::Duration::ZERO,
+                                        subscriber_queued: 0,
+                                        subscriber_capacity: 0,
                                     },
                                 );
                                 continue;
@@ -731,7 +787,11 @@ pub fn spawn(
                         generation,
                         attach,
                         record,
+                        at,
                     } => {
+                        if let Some(at) = at {
+                            perf::record(perf::Stage::Route, at.elapsed());
+                        }
                         // A record for an older execution of the pane, or
                         // from before its latest attach, is stale.
                         if let Some(m) = mirrors

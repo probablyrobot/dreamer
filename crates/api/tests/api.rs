@@ -108,6 +108,15 @@ impl Service for Fixed {
     async fn daemon_status(&self, _: Empty) -> Result<api::DaemonStatus, RpcError> {
         Err(RpcError::new(api::code::UNAVAILABLE, "test"))
     }
+    async fn daemon_diagnostics(&self, _: Empty) -> Result<api::Diagnostics, RpcError> {
+        Err(RpcError::new(api::code::UNAVAILABLE, "test"))
+    }
+    async fn daemon_set_diagnostics(
+        &self,
+        _: api::DiagnosticsSettings,
+    ) -> Result<api::Diagnostics, RpcError> {
+        Err(RpcError::new(api::code::UNAVAILABLE, "test"))
+    }
     async fn daemon_shutdown(&self, _: Empty) -> Result<api::ShutdownResult, RpcError> {
         Err(RpcError::new(api::code::UNAVAILABLE, "test"))
     }

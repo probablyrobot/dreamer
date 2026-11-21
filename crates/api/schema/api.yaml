@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 62 }
+version: { major: 1, minor: 63 }
 package: dreamer.v1
 
 types:
@@ -67,6 +67,52 @@ types:
       - { n: 8, name: clients, type: u32, doc: "Connected API clients, including the caller." }
       - { n: 9, name: heap_in_use, type: u64, optional: true, doc: "Bytes the daemon's allocator has handed out and not had back, without the freed memory it keeps for reuse; absent where the platform cannot tell." }
       - { n: 10, name: desktops, type: u32, doc: "Desktop processes connected now that answer apps.capture." }
+
+  - message: DiagnosticsSettings
+    doc: "Turn the daemon's performance diagnostics (spec 16.4) on or off. They are off by default, and cost nothing while off."
+    fields:
+      - { n: 1, name: enabled, type: bool }
+      - { n: 2, name: reset, type: bool, doc: "Also start every timing and counter again from zero." }
+
+  - message: StageTiming
+    doc: "How long one stage of the terminal path took, over every sample since diagnostics were turned on or reset. Percentiles come from histogram buckets and are within 6 %."
+    fields:
+      - { n: 1, name: stage, type: string, doc: "input, tmux, decode, route, parse, publish, or transfer; see docs/performance.md." }
+      - { n: 2, name: count, type: u64 }
+      - { n: 3, name: total_ns, type: u64 }
+      - { n: 4, name: p50_ns, type: u64 }
+      - { n: 5, name: p95_ns, type: u64 }
+      - { n: 6, name: p99_ns, type: u64 }
+      - { n: 7, name: max_ns, type: u64 }
+
+  - message: Diagnostics
+    doc: "The daemon's performance diagnostics. Timings and counters cover the time since diagnostics were turned on or reset, and only while on; queue depths are read now, on or off. Nothing here holds terminal content."
+    fields:
+      - { n: 1, name: enabled, type: bool }
+      - { n: 2, name: collecting_ms, type: u64, doc: "Since diagnostics were turned on or last reset." }
+      - { n: 3, name: stages, type: StageTiming, repeated: true, doc: "The daemon's stages, in path order." }
+      - { n: 4, name: tmux_bytes, type: u64, doc: "Bytes read from tmux's control output." }
+      - { n: 5, name: parsed_bytes, type: u64, doc: "Output bytes parsed by canonical mirrors." }
+      - { n: 6, name: parser_bytes_per_second, type: u64, doc: "parsed_bytes over the time spent in the parse stage: the canonical parser's throughput while it works." }
+      - { n: 7, name: records, type: u64, doc: "Records (output chunks and resizes) applied by canonical mirrors." }
+      - { n: 8, name: transferred_bytes, type: u64, doc: "Terminal record bytes sent to subscribed clients, replays included." }
+      - { n: 9, name: transferred_batches, type: u64 }
+      - { n: 10, name: checkpoints, type: u64, doc: "Subscriptions (views, taps, collectors) started from a checkpoint." }
+      - { n: 11, name: checkpoint_bytes, type: u64 }
+      - { n: 12, name: replays, type: u64, doc: "Subscriptions started by replaying the journal." }
+      - { n: 13, name: lagged_subscribers, type: u64, doc: "Subscriptions ended because their queue was full: dropped subscriber events, each reported to its subscriber as lagged." }
+      - { n: 14, name: reattaches, type: u64, doc: "Mirrors rebuilt from a fresh capture because a pane's output outran them." }
+      - { n: 15, name: cold_dropped_bytes, type: u64, doc: "Output of Cold panes, dropped before any VT work." }
+      - { n: 16, name: event_queue, type: u32, doc: "Events from tmux waiting for the mirror router." }
+      - { n: 17, name: backlog_panes, type: u32, doc: "Panes with output held because their owner's queue is full." }
+      - { n: 18, name: backlog_bytes, type: u64 }
+      - { n: 19, name: attaching, type: u32, doc: "Mirror attaches in progress." }
+      - { n: 20, name: attach_queue, type: u32, doc: "Panes waiting for a turn to attach." }
+      - { n: 21, name: worker_queues, type: u32, repeated: true, doc: "Output messages waiting for each VT owner." }
+      - { n: 22, name: worker_queue_capacity, type: u32 }
+      - { n: 23, name: subscribers, type: u32, doc: "Subscriptions following mirrors now." }
+      - { n: 24, name: subscriber_queue_max, type: u32, doc: "Records waiting in the fullest subscriber queue." }
+      - { n: 25, name: subscriber_queue_capacity, type: u32 }
 
   - message: ShutdownResult
     fields:
@@ -2205,6 +2251,8 @@ methods:
   - { method: daemon.version, params: Empty, result: VersionInfo, doc: Protocol and build identity. }
   - { method: daemon.status, params: Empty, result: DaemonStatus, doc: "Process, socket, log, and tmux endpoint state." }
   - { method: daemon.shutdown, params: Empty, result: ShutdownResult, mutation: true, doc: "Stop the daemon; tmux sessions and panes keep running." }
+  - { method: daemon.diagnostics, params: Empty, result: Diagnostics, doc: "Performance diagnostics: stage timings, traffic counters, and queue depths. No terminal content." }
+  - { method: daemon.set_diagnostics, params: DiagnosticsSettings, result: Diagnostics, mutation: true, doc: "Turn performance diagnostics on or off, or reset them." }
   - { method: tmux.topology, params: TopologyParams, result: Topology, doc: "Sessions, windows, and panes of one endpoint." }
   - { method: tmux.size_window, params: SizeWindow, result: SizeResult, mutation: true, doc: "Size a tmux window for the client that owns its size (see SizeWindow)." }
   - { method: clipboard.read_tmux_buffer, params: TmuxBufferRead, result: TmuxBuffer, doc: "A tmux paste buffer's text: the newest, or one a clipboard.tmux_buffer event named." }
