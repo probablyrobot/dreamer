@@ -172,6 +172,7 @@ Recall and remember are in an agent's grant at every level; forget from
 | `read_pane` | A pane's screen and up to 500 lines of history | `terminal.read` |
 | `list_hosts` | The remote hosts Dreamer knows, and whether each is connected | `hosts.list` |
 | `check_job` | A job's record: state, exit status, window | `jobs.get` |
+| `list_jobs` | Every managed job's record: id, program, state (`running`, `succeeded`, `failed`, `killed`, `lost`), exit status or signal, and pane | `jobs.list` |
 | `create_pane` | Split a pane, optionally running an exact program | `actions.submit` |
 | `start_job` | Run an exact program as a job in its own window | `jobs.start` |
 | `send_input` | Type text into a pane, exactly as given, under the session's interaction lease on it. Once a person types into that pane, the session refuses to type there again | `leases.acquire`, `terminal.input` |
@@ -192,14 +193,31 @@ message. Results are JSON, as structured content and as text.
 
 ## Connected hosts
 
-`list_panes`, `read_pane`, `start_job`, and `check_job` take an optional
-`host`, the name of a connected host from `list_hosts`. The call is then
+`list_panes`, `read_pane`, `start_job`, `check_job`, and `list_jobs`
+take an optional `host`, the name of a connected host from `list_hosts`. The call is then
 forwarded to that host's daemon as a `hosts.call`, and the result says
 which `host` answered. `find_lines` takes `hosts` (`"*"` for every live
 one). Each host's result is its own. Running a check on two hosts is two
 `start_job` calls and two `check_job` calls, and one can fail while the
 other succeeds; nothing spans hosts atomically. A narrowed server needs
 `hosts.call` (and `hosts.list`) among its methods to reach other hosts.
+
+## Listed tools
+
+`tools/list` holds only the tools the server's grant lets it call, so an
+agent does not spend its turns on calls that would be refused. A tool is
+listed when the grant allows each API method in its row above (by name
+or as `service.*`; the page tools through `web.inspect`, the filter tools
+through `filters.manage` with content read) and its act level allows
+acting: at `observe` no acting tool is listed, and `browser_open` and
+`app_launch` need `own` or `elsewhere`. A tool that takes `host` is also
+listed when the grant allows `hosts.call`. The app tools that need no
+daemon (`app_new`, `app_check`, `app_preview`, `app_test`) are always
+listed, and `app_install` when the server may install. The server reads
+its grant once it has narrowed, so an agent session's grant counts too.
+
+Calling a tool that is not listed is still refused by the daemon, as
+before, with a tool error saying why.
 
 ## Narrowing
 
