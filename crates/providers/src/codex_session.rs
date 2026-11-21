@@ -19,10 +19,16 @@
 //! Threads run with `approvalPolicy: on-request` and the `workspace-write`
 //! sandbox: anything beyond the sandbox asks Dreamer. Dreamer's tools are
 //! `dream mcp`, given with `-c mcp_servers.dreamer.*` (Codex gives an MCP
-//! server only the environment it is configured with). A prompt sent while
-//! a turn runs waits for that turn to end.
+//! server only the environment it is configured with). Codex starts its
+//! MCP servers with a thread but does not wait for them before a turn, so
+//! a prompt waits until Codex says (`mcpServer/startupStatus/updated`)
+//! that `dreamer` is ready or failed, or [`TOOLS_WAIT`] has passed;
+//! otherwise an early turn would run without Dreamer's tools (Codex
+//! 0.170.0 took about 13 s to start `dream mcp`). A prompt sent while a
+//! turn runs waits for that turn to end.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -32,6 +38,9 @@ use crate::session::{
     Usage,
 };
 use crate::stdio::{Proc, Rpc, error_text, id_text, is_response};
+
+/// How long a prompt waits for Codex to start Dreamer's tools.
+pub const TOOLS_WAIT: Duration = Duration::from_secs(30);
 
 /// A TOML basic string (JSON's escaping is valid TOML).
 fn toml_string(s: &str) -> String {
@@ -147,7 +156,7 @@ pub async fn start(spec: &Spec) -> Result<Harness, String> {
         file: None,
     });
     let pid = proc.pid;
-    let mut state = Codex::new(thread.clone(), rpc);
+    let mut state = Codex::new(thread.clone(), rpc, spec.tools.is_some());
     let control = proc.run(updates_tx, move |mut out, mut inputs, updates| async move {
         let apply = |o: Out| {
             for w in o.writes {
@@ -161,8 +170,15 @@ pub async fn start(spec: &Spec) -> Result<Harness, String> {
             apply(state.message(&v));
         }
         let mut inputs_open = true;
+        let wait = tokio::time::sleep(TOOLS_WAIT);
+        tokio::pin!(wait);
+        let mut waiting = true;
         loop {
             tokio::select! {
+                _ = &mut wait, if waiting => {
+                    waiting = false;
+                    apply(state.tools_wait_over());
+                }
                 v = out.recv() => match v {
                     Some(v) => apply(state.message(&v)),
                     None => break,
@@ -204,6 +220,9 @@ pub struct Codex {
     /// Cancel as soon as the turn's id is known.
     cancel: bool,
     queue: VecDeque<String>,
+    /// Whether prompts may start: Dreamer's tools are ready or failed, or
+    /// there are none, or the wait is over.
+    tools_settled: bool,
     /// Approval requests waiting, by the id shown to Dreamer.
     asks: HashMap<String, Value>,
     /// Agent messages that came as deltas.
@@ -265,8 +284,11 @@ fn tool(item: &Value) -> Option<(String, Value, Option<String>, ToolStatus)> {
 }
 
 impl Codex {
-    pub(crate) fn new(thread: String, rpc: Rpc) -> Codex {
+    /// `tools`: whether Codex was given Dreamer's tools, whose start
+    /// prompts wait for.
+    pub(crate) fn new(thread: String, rpc: Rpc, tools: bool) -> Codex {
         Codex {
+            tools_settled: !tools,
             thread,
             rpc,
             running: false,
@@ -325,7 +347,7 @@ impl Codex {
         let mut out = Out::default();
         match i {
             Input::Prompt(text) => {
-                if self.running {
+                if self.running || !self.tools_settled {
                     self.queue.push_back(text);
                 } else {
                     self.begin(text, &mut out);
@@ -356,10 +378,49 @@ impl Codex {
         out
     }
 
+    /// Dreamer's tools are settled: prompts that waited start.
+    fn tools_settled(&mut self, out: &mut Out) {
+        if self.tools_settled {
+            return;
+        }
+        self.tools_settled = true;
+        if !self.running
+            && let Some(next) = self.queue.pop_front()
+        {
+            self.begin(next, out);
+        }
+    }
+
+    /// [`TOOLS_WAIT`] passed: prompts go on without waiting longer.
+    pub fn tools_wait_over(&mut self) -> Out {
+        let mut out = Out::default();
+        if !self.tools_settled {
+            out.updates.push(Update::Error(
+                "Codex did not say whether Dreamer's tools started; the prompt runs without waiting longer"
+                    .into(),
+            ));
+        }
+        self.tools_settled(&mut out);
+        out
+    }
+
     pub fn message(&mut self, v: &Value) -> Out {
         let mut out = Out::default();
         let p = &v["params"];
         match (v["method"].as_str(), v.get("id")) {
+            (Some("mcpServer/startupStatus/updated"), None) if p["name"] == "dreamer" => {
+                match p["status"].as_str() {
+                    Some("ready") => self.tools_settled(&mut out),
+                    Some("failed") => {
+                        let why = p["error"].as_str().unwrap_or("no reason given");
+                        out.updates.push(Update::Error(format!(
+                            "Codex could not start Dreamer's tools: {why}"
+                        )));
+                        self.tools_settled(&mut out);
+                    }
+                    _ => {}
+                }
+            }
             (None, Some(id)) => {
                 if id.as_u64().is_some() && id.as_u64() == self.starting {
                     self.starting = None;
@@ -566,7 +627,7 @@ mod tests {
 
     #[test]
     fn a_turn_maps_items_to_events_and_approvals_to_decisions() {
-        let mut c = Codex::new("thr".into(), Rpc::new(false));
+        let mut c = Codex::new("thr".into(), Rpc::new(false), false);
         let o = c.input(Input::Prompt("hi".into()));
         assert_eq!(o.writes[0]["method"], "turn/start");
         assert!(o.writes[0].get("jsonrpc").is_none());
@@ -618,6 +679,38 @@ mod tests {
         assert_eq!(o.writes[1]["params"]["turnId"], "t2");
         let o = c.message(&json!({"method":"turn/completed","params":{"threadId":"thr","turn":{"id":"t2","status":"interrupted"}}}));
         assert_eq!(o.updates, vec![Update::TurnEnd(StopReason::Cancelled)]);
+    }
+
+    #[test]
+    fn a_prompt_waits_for_dreamers_tools_to_start() {
+        let status = |name: &str, status: &str| json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"thr","name":name,"status":status,"error":if status == "failed" { json!("closed") } else { Value::Null }}});
+        let mut c = Codex::new("thr".into(), Rpc::new(false), true);
+        assert!(
+            c.input(Input::Prompt("hi".into())).writes.is_empty(),
+            "waits"
+        );
+        assert!(c.message(&status("dreamer", "starting")).writes.is_empty());
+        assert!(c.message(&status("codex_apps", "ready")).writes.is_empty());
+        let o = c.message(&status("dreamer", "ready"));
+        assert_eq!(o.writes[0]["method"], "turn/start");
+        assert_eq!(o.writes[0]["params"]["input"][0]["text"], "hi");
+
+        // Failed: said, and the prompt goes on without them.
+        let mut c = Codex::new("thr".into(), Rpc::new(false), true);
+        c.input(Input::Prompt("hi".into()));
+        let o = c.message(&status("dreamer", "failed"));
+        assert!(
+            matches!(&o.updates[0], Update::Error(e) if e.contains("Dreamer's tools") && e.contains("closed")),
+            "{o:?}"
+        );
+        assert_eq!(o.writes[0]["method"], "turn/start");
+
+        // Codex never says: the wait ends.
+        let mut c = Codex::new("thr".into(), Rpc::new(false), true);
+        c.input(Input::Prompt("hi".into()));
+        let o = c.tools_wait_over();
+        assert_eq!(o.writes[0]["method"], "turn/start");
+        assert!(c.tools_wait_over().updates.is_empty(), "once");
     }
 
     #[test]
