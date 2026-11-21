@@ -16,6 +16,10 @@
 //!   which posts to the one API base its settings name (https, or http to
 //!   this machine) and only when the user configured it. Neither opens
 //!   sockets of its own.
+//! - The gRPC client (`tonic`) is used in one product file only
+//!   ([`GRPC_CLIENT_FILE`]): the Kosmonaut memory provider's server mode,
+//!   to the one server its settings name (TLS, or plain only to this
+//!   machine or a Unix socket), and only when the user configured it.
 
 use crate::util::repo_root;
 
@@ -93,7 +97,7 @@ fn check_workflow(name: &str, text: &str) -> Vec<String> {
 
 /// Network APIs product code must not use: SSH is the only way between
 /// hosts.
-const NETWORK: [&str; 7] = [
+const NETWORK: [&str; 8] = [
     "TcpListener",
     "TcpStream",
     "UdpSocket",
@@ -101,6 +105,7 @@ const NETWORK: [&str; 7] = [
     "tokio::net::Udp",
     "std::net::",
     "ureq::",
+    "tonic::",
 ];
 
 /// The HTTP client, allowed only in [`HTTP_CLIENT_FILES`].
@@ -115,6 +120,14 @@ const HTTP_CLIENT_FILES: [&str; 2] = [
     "crates/app-script/src/fetch.rs",
     "crates/server/src/memories/openai.rs",
 ];
+
+/// The gRPC client, allowed only in [`GRPC_CLIENT_FILE`].
+const GRPC_CLIENT: &str = "tonic::";
+
+/// The one product file that may use the gRPC client: the `kosmonaut`
+/// memory provider in `mode: server`, to the server its settings name
+/// (`memory.kosmonaut.url`).
+const GRPC_CLIENT_FILE: &str = "crates/memory/src/kosmonaut/server.rs";
 
 /// The one product file that may use TCP (`web.forward`): it listens on
 /// this machine's loopback and connects to the host's, nothing else.
@@ -171,7 +184,9 @@ fn check_source(name: &str, text: &str) -> Vec<String> {
             }
         }
         let found = NETWORK.iter().find(|n| {
-            line.contains(**n) && !(HTTP_CLIENT_FILES.contains(&name) && **n == HTTP_CLIENT)
+            line.contains(**n)
+                && !(HTTP_CLIENT_FILES.contains(&name) && **n == HTTP_CLIENT)
+                && !(name == GRPC_CLIENT_FILE && **n == GRPC_CLIENT)
         });
         if let Some(api) = found {
             out.push(format!(
@@ -259,6 +274,29 @@ mod tests {
         assert_eq!(
             check_source("crates/server/src/memories.rs", client).len(),
             2
+        );
+    }
+
+    #[test]
+    fn only_kosmonaut_server_mode_uses_the_grpc_client() {
+        let client =
+            "use tonic::transport::{Channel, Endpoint};\nlet g = tonic::client::Grpc::new(c);\n";
+        assert!(check_source(GRPC_CLIENT_FILE, client).is_empty());
+        assert_eq!(
+            check_source(
+                GRPC_CLIENT_FILE,
+                "let s = std::net::TcpStream::connect(a);\n"
+            )
+            .len(),
+            1
+        );
+        assert_eq!(
+            check_source("crates/memory/src/kosmonaut.rs", client).len(),
+            2
+        );
+        assert_eq!(
+            check_source(GRPC_CLIENT_FILE, "let a = ureq::Agent::config_builder();\n").len(),
+            1
         );
     }
 

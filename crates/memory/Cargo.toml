@@ -8,9 +8,10 @@ license.workspace = true
 publish = false
 
 [features]
-# The `kosmonaut` provider: Kosmonaut embedded as a library. Off by default,
-# so a headless build can leave the engine out. See docs/memory.md.
-kosmonaut = ["dep:kosmonaut"]
+# The `kosmonaut` provider: Kosmonaut embedded as a library, or a Kosmonaut
+# server over gRPC (`mode: server`). Off by default, so a headless build can
+# leave the engine and the client out. See docs/memory.md.
+kosmonaut = ["dep:kosmonaut", "dep:tonic", "dep:tonic-prost", "dep:prost", "dep:tokio"]
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
@@ -19,6 +20,14 @@ serde_json = "1.0.154"
 # Pinned to a release tag; Cargo.lock records its commit. The repository is
 # private: see docs/dependency-baseline.md for how builds get access to it.
 kosmonaut = { git = "https://github.com/DeytaHQ/kosmonaut", tag = "v0.24.0", optional = true }
+# The server mode's gRPC client (src/kosmonaut/server.rs), with rustls/ring
+# and the webpki roots as the HTTP client has; messages are written out with
+# prost's derive, so no protoc or build script. See
+# docs/dependency-baseline.md.
+tonic = { version = "0.14", default-features = false, features = ["channel", "codegen", "tls-ring", "tls-webpki-roots"], optional = true }
+tonic-prost = { version = "0.14", optional = true }
+prost = { version = "0.14.5", optional = true }
+tokio = { version = "1.54.1", features = ["rt-multi-thread"], optional = true }
 
 [lints]
 workspace = true

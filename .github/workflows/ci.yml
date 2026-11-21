@@ -32,7 +32,8 @@ jobs:
   linux-x86_64:
     name: lint, build and test (linux x86-64)
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    # A cold Kosmonaut server build (once per pin, then cached) adds about 15.
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Cargo fetches every git source in Cargo.lock, optional ones too, so
@@ -90,8 +91,28 @@ jobs:
           path: target/snapshot-fixtures/
           if-no-files-found: ignore
       - run: cargo test --workspace --locked
-      - name: Test the Kosmonaut memory provider
+      # Server mode's tests run each against a kosmonaut-server of their
+      # own. No image is published, so the server is built from the pinned
+      # commit Cargo already fetched (Cargo.lock), with its gRPC feature,
+      # once per pin: the binary is cached under the commit.
+      - name: Cache the Kosmonaut server
+        id: kosmonaut-server
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/dreamer/kosmonaut-server
+          key: kosmonaut-server-dbd5af275a7efa3f2ff3ca45afc45b40a214430e-grpc-${{ runner.os }}-${{ runner.arch }}
+      - name: Build the Kosmonaut server
+        if: steps.kosmonaut-server.outputs.cache-hit != 'true'
         run: |
+          src=$(ls -d ~/.cargo/git/checkouts/kosmonaut-*/dbd5af2)
+          CARGO_TARGET_DIR="$RUNNER_TEMP/kosmonaut-target" cargo build --release --locked \
+            --manifest-path "$src/crates/kosmonaut-server/Cargo.toml" --features grpc --bin kosmonaut-server
+          mkdir -p ~/.cache/dreamer/kosmonaut-server
+          cp "$RUNNER_TEMP/kosmonaut-target/release/kosmonaut-server" ~/.cache/dreamer/kosmonaut-server/
+          rm -rf "$RUNNER_TEMP/kosmonaut-target"
+      - name: Test the Kosmonaut memory provider, embedded and on a server
+        run: |
+          export DREAMER_KOSMONAUT_SERVER="$HOME/.cache/dreamer/kosmonaut-server/kosmonaut-server"
           cargo test --locked -p memory --features kosmonaut
           cargo test --locked -p dreamer-server --features kosmonaut --test memory
           cargo test --locked -p dreamer-server --features kosmonaut --bin dreamerd memories::openai

@@ -130,7 +130,7 @@ pub enum MemoryProvider {
     /// Markdown files with frontmatter and a `MEMORY.md` index.
     #[default]
     Files,
-    /// Kosmonaut, a graph database, embedded in the daemon.
+    /// Kosmonaut, a graph database, embedded in the daemon or a server.
     Kosmonaut,
 }
 
@@ -143,14 +143,28 @@ impl MemoryProvider {
     }
 }
 
-/// `memory.kosmonaut`: the embedded database (the only mode so far).
+/// `memory.kosmonaut`: the embedded database, or a server.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct KosmonautSettings {
-    /// The database directory; `None`: `memory.kosmonaut` in Dreamer's
-    /// data directory.
+    /// The embedded database's directory; `None`: `memory.kosmonaut` in
+    /// Dreamer's data directory.
     pub path: Option<PathBuf>,
+    /// `mode: server`: the server to use instead of the embedded database.
+    pub server: Option<KosmonautServer>,
     /// `None`: no vectors; recall by words and the graph.
     pub embedder: Option<EmbedderSettings>,
+}
+
+/// `memory.kosmonaut` in `mode: server`: a Kosmonaut server over gRPC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KosmonautServer {
+    /// `grpc://host:port`, or `unix:/path` for a socket on this machine.
+    pub url: String,
+    /// TLS to the server. Off only to this machine.
+    pub tls: bool,
+    /// The environment variable that holds the token, read at each call;
+    /// `None`: no token (a server with authentication off).
+    pub token_env: Option<String>,
 }
 
 /// `memory.kosmonaut.embedder`: what turns memories into vectors.
@@ -563,6 +577,11 @@ struct MemoryFile {
 struct KosmonautFile {
     mode: Option<String>,
     path: Option<String>,
+    url: Option<String>,
+    tls: Option<bool>,
+    token_env: Option<String>,
+    /// Never accepted: read only to say where a token goes instead.
+    token: Option<serde_norway::Value>,
     embedder: Option<EmbedderFile>,
 }
 
@@ -598,21 +617,39 @@ fn absolute(at: &str, v: &str) -> Result<PathBuf, (String, String)> {
 }
 
 fn parse_kosmonaut(f: &KosmonautFile) -> Result<KosmonautSettings, (String, String)> {
-    match f.mode.as_deref() {
-        None | Some("embedded") => {}
+    let at = |k: &str| format!("memory.kosmonaut.{k}");
+    if f.token.is_some() {
+        return Err((
+            at("token"),
+            "a token is never kept in the settings: put it in an environment variable and name \
+             that variable in token_env"
+                .into(),
+        ));
+    }
+    // A url alone means a server.
+    let mode = f.mode.as_deref().or(f.url.as_ref().map(|_| "server"));
+    let server = match mode {
+        None | Some("embedded") => {
+            let set = [
+                ("url", f.url.is_some()),
+                ("tls", f.tls.is_some()),
+                ("token_env", f.token_env.is_some()),
+            ];
+            if let Some((k, _)) = set.iter().find(|(_, s)| *s) {
+                return Err((at(k), "used only with mode: server".into()));
+            }
+            None
+        }
         Some("server") => {
-            return Err((
-                "memory.kosmonaut.mode".into(),
-                "server is not available yet; embedded is".into(),
-            ));
+            if f.path.is_some() {
+                return Err((at("path"), "not used with mode: server".into()));
+            }
+            Some(parse_server(f)?)
         }
         Some(m) => {
-            return Err((
-                "memory.kosmonaut.mode".into(),
-                format!("`{m}` is not embedded"),
-            ));
+            return Err((at("mode"), format!("`{m}` is not embedded or server")));
         }
-    }
+    };
     let path = f
         .path
         .as_deref()
@@ -622,7 +659,89 @@ fn parse_kosmonaut(f: &KosmonautFile) -> Result<KosmonautSettings, (String, Stri
         None => None,
         Some(e) => Some(parse_embedder(e)?),
     };
-    Ok(KosmonautSettings { path, embedder })
+    Ok(KosmonautSettings {
+        path,
+        server,
+        embedder,
+    })
+}
+
+/// `mode: server`: a `grpc://host:port` URL with TLS unless `tls: false`,
+/// which only this machine may have, so a token never crosses the network
+/// in the clear; or `unix:/path`, a socket on this machine, without TLS.
+fn parse_server(f: &KosmonautFile) -> Result<KosmonautServer, (String, String)> {
+    let at = |k: &str| format!("memory.kosmonaut.{k}");
+    let url = f
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| {
+            (
+                at("url"),
+                "the server is required (grpc://host:port)".into(),
+            )
+        })?;
+    let token_env = match f.token_env.as_deref() {
+        None => None,
+        Some(k) if !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') => {
+            Some(k.to_owned())
+        }
+        Some(_) => {
+            return Err((
+                at("token_env"),
+                "the name of the environment variable that holds the token (KOSMONAUT_TOKEN)"
+                    .into(),
+            ));
+        }
+    };
+    if let Some(path) = url.strip_prefix("unix:") {
+        if !path.starts_with('/') {
+            return Err((
+                at("url"),
+                format!("`{url}`: a socket needs an absolute path"),
+            ));
+        }
+        if f.tls == Some(true) {
+            return Err((at("tls"), "a socket on this machine takes no TLS".into()));
+        }
+        return Ok(KosmonautServer {
+            url: url.to_owned(),
+            tls: false,
+            token_env,
+        });
+    }
+    let bad = || {
+        (
+            at("url"),
+            format!("`{url}` is not grpc://host:port or unix:/path"),
+        )
+    };
+    let rest = url.strip_prefix("grpc://").ok_or_else(bad)?;
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    if rest.is_empty() || rest.contains(['/', '@', '?', '#']) {
+        return Err(bad());
+    }
+    let (name, port) = match rest.strip_prefix('[') {
+        Some(v6) => v6.split_once(']').map(|(h, p)| (h, p.strip_prefix(':'))),
+        None => rest.rsplit_once(':').map(|(h, p)| (h, Some(p))),
+    }
+    .ok_or_else(bad)?;
+    if name.is_empty() || port.is_none_or(|p| p.parse::<u16>().is_err()) {
+        return Err(bad());
+    }
+    let tls = f.tls.unwrap_or(true);
+    if !tls && !matches!(name, "localhost" | "127.0.0.1" | "::1") {
+        return Err((
+            at("tls"),
+            format!("`{url}`: without TLS only to this machine (localhost)"),
+        ));
+    }
+    Ok(KosmonautServer {
+        url: format!("grpc://{rest}"),
+        tls,
+        token_env,
+    })
 }
 
 fn parse_embedder(e: &EmbedderFile) -> Result<EmbedderSettings, (String, String)> {
@@ -1270,6 +1389,52 @@ mod tests {
     }
 
     #[test]
+    fn kosmonaut_server_mode_names_the_token_variable_not_the_token() {
+        let server = |yaml: &str| {
+            parse_settings(
+                &format!("memory:\n  kosmonaut:\n    mode: server\n{yaml}"),
+                None,
+            )
+            .expect(yaml)
+            .memory
+            .kosmonaut
+            .server
+            .expect("server")
+        };
+        assert_eq!(
+            server("    url: grpc://memory.example:9432\n    token_env: KOSMONAUT_TOKEN\n"),
+            KosmonautServer {
+                url: "grpc://memory.example:9432".into(),
+                tls: true,
+                token_env: Some("KOSMONAUT_TOKEN".into()),
+            }
+        );
+        assert_eq!(
+            server("    url: grpc://127.0.0.1:7687\n    tls: false\n"),
+            KosmonautServer {
+                url: "grpc://127.0.0.1:7687".into(),
+                tls: false,
+                token_env: None,
+            }
+        );
+        assert_eq!(
+            server("    url: \"grpc://[::1]:7687\"\n    tls: false\n").url,
+            "grpc://[::1]:7687"
+        );
+        // A url alone means a server.
+        let s = parse_settings("memory:\n  kosmonaut:\n    url: grpc://h:1\n", None).expect("url");
+        assert_eq!(s.memory.kosmonaut.server.map(|k| k.tls), Some(true));
+        assert_eq!(
+            server("    url: unix:/run/kosmonaut.sock\n"),
+            KosmonautServer {
+                url: "unix:/run/kosmonaut.sock".into(),
+                tls: false,
+                token_env: None,
+            }
+        );
+    }
+
+    #[test]
     fn kosmonaut_is_embedded_and_its_embedder_is_optional() {
         let s = parse_settings("memory:\n  provider: kosmonaut\n", None).expect("kosmonaut");
         assert_eq!(s.memory.provider, MemoryProvider::Kosmonaut);
@@ -1333,7 +1498,35 @@ mod tests {
             })
         );
         for (bad, why) in [
-            ("    mode: server\n", "not available yet"),
+            ("    mode: server\n", "server is required"),
+            ("    mode: cloud\n", "not embedded or server"),
+            (
+                "    mode: embedded\n    url: grpc://h:1\n",
+                "only with mode: server",
+            ),
+            ("    token_env: KOSMONAUT_TOKEN\n", "only with mode: server"),
+            (
+                "    mode: server\n    url: grpc://h:1\n    token: abc\n",
+                "token_env",
+            ),
+            (
+                "    mode: server\n    url: grpc://h:1\n    path: /data/m\n",
+                "not used",
+            ),
+            ("    mode: server\n    url: grpc://h\n", "not grpc://"),
+            ("    mode: server\n    url: https://h:1\n", "not grpc://"),
+            (
+                "    mode: server\n    url: grpc://memory.example:9432\n    tls: false\n",
+                "only to this machine",
+            ),
+            (
+                "    mode: server\n    url: unix:/run/k.sock\n    tls: true\n",
+                "no TLS",
+            ),
+            (
+                "    mode: server\n    url: grpc://h:1\n    token_env: \"a b\"\n",
+                "environment variable",
+            ),
             ("    path: relative\n", "absolute"),
             (
                 "    embedder:\n      kind: openai\n      key_env: OPENAI_API_KEY\n",

@@ -42,6 +42,23 @@ pub fn format(unix_ms: u64) -> String {
     )
 }
 
+/// Microseconds since the epoch as RFC 3339 with six fraction digits
+/// (`2026-11-17T09:30:00.000123Z`), the form Kosmonaut's `timestamp()`
+/// reads.
+#[cfg(feature = "kosmonaut")]
+pub fn format_us(unix_us: i64) -> String {
+    let secs = unix_us.div_euclid(1_000_000);
+    let (y, mo, d) = civil(secs.div_euclid(86_400));
+    let s = secs.rem_euclid(86_400);
+    format!(
+        "{y:04}-{mo:02}-{d:02}T{:02}:{:02}:{:02}.{:06}Z",
+        s / 3600,
+        s % 3600 / 60,
+        s % 60,
+        unix_us.rem_euclid(1_000_000)
+    )
+}
+
 /// `YYYY-MM-DD`, or that with `THH:MM:SS`, optional fraction, and `Z`.
 pub fn parse(text: &str) -> Option<u64> {
     let t = text.trim();

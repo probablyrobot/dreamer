@@ -12,9 +12,10 @@ There are two providers:
 - `files` (the default): one markdown file per memory, which a person can
   read, edit, diff, and commit like any other file.
 - `kosmonaut`: one graph database for the user, Kosmonaut embedded in the
-  daemon, where memories are nodes linked to their project, session,
-  files, panes, and each other ([Kosmonaut](#kosmonaut)). It is in a
-  `dreamerd` built with the `kosmonaut` feature.
+  daemon or on a Kosmonaut server, where memories are nodes linked to
+  their project, session, files, panes, and each other
+  ([Kosmonaut](#kosmonaut)). It is in a `dreamerd` built with the
+  `kosmonaut` feature.
 
 `dream memory import` and `dream memory export` copy memories between the
 two, so the readable form is never lost.
@@ -160,7 +161,8 @@ says so.
 
 **One database per user.** Every scope lives in one database,
 `<data dir>/memory.kosmonaut/` (`~/.local/share/dreamer/memory.kosmonaut`
-by default, or `memory.kosmonaut.path`), opened on the first memory call.
+by default, or `memory.kosmonaut.path`), opened on the first memory call;
+or on a Kosmonaut server ([Server mode](#server-mode)).
 Each memory is tagged with its scope and owner: the project root for a
 project memory, the session id for a session memory. A request sees only
 the scopes its context reaches, so another project's memories never come
@@ -194,6 +196,63 @@ score below 500).
 **Collector rows and session summaries** have tables in the same
 database, linked to their pane, session, and project, so they can be
 found next to the memories they concern.
+
+### Server mode
+
+With `mode: server` the same graph is kept on a Kosmonaut server instead
+of in the daemon. Everything above holds unchanged: the tables, the
+queries, recall, embedders, import and export. Only where the statements
+run differs.
+
+```yaml
+memory:
+  provider: kosmonaut
+  kosmonaut:
+    mode: server
+    url: grpc://memory.example:7687
+    token_env: KOSMONAUT_TOKEN
+```
+
+- **The server** is a `kosmonaut-server` at the pinned release
+  ([dependency-baseline.md](dependency-baseline.md#kosmonaut)) built with
+  its `grpc` feature, which serves gRPC on its HTTP listeners. Dreamer
+  uses its `Query.ExecuteQuery`, `Sessions.Begin`, `Commit` and
+  `Rollback`, and `Catalog.ListTables`. A memory write is one session:
+  all of it commits, or none. Dreamer makes the tables it needs on the
+  first call, as it does in its own database. Use one server database
+  per user.
+- **`url`** is `grpc://host:port`, or `unix:/path` for the server's Unix
+  socket on this machine (a listener with `grpc_enabled: true`). A `url`
+  alone means `mode: server`.
+- **`tls`** is on by default for `grpc://`, with the server's
+  certificate checked against the Mozilla root certificates compiled
+  into Dreamer (a certificate from a private CA is refused). `tls: false`
+  is allowed only to this machine (`localhost`, `127.0.0.1`, `[::1]`), so
+  a token never crosses the network in the clear; a `unix:` socket takes
+  no TLS.
+- **The token** is read from the environment variable `token_env` names,
+  in `dreamerd`'s environment, at each call, and from nowhere else: it is
+  never in the settings (a `token:` key is refused), and Dreamer reads no
+  keychain. It is sent only as `Authorization: Bearer` and is never
+  logged or shown. Kosmonaut's tokens expire (its
+  `auth.token_ttl_seconds`); put a fresh one in the variable and restart
+  `dreamerd`. Without `token_env` no token is sent, for a server with
+  authentication off.
+- **Rate limits.** One memory call is several statements. When the
+  server says it is over its gRPC rate limit (`grpc.rate_limit`) or its
+  writer is busy, Dreamer pauses and sends the statement again, for up to
+  10 seconds. A server that serves memory for one user can raise
+  `per_principal_qps`.
+
+**When the server cannot be reached**, does not answer within 30 seconds
+(5 to connect), or refuses the token, every memory call fails with
+`UNAVAILABLE` and a message that starts `memory unavailable:` and says
+why (`memory unavailable: kosmonaut server grpc://memory.example:7687:
+tcp connect error: Connection refused`, or `... no token: the environment
+variable KOSMONAUT_TOKEN is not set`). Nothing else depends on memory:
+agent sessions start and hold their turns, without the index in the
+first prompt, and the agents' memory tools report the same message. When
+the server is back, the next call uses it; nothing needs restarting.
 
 ### Embedders
 
@@ -247,8 +306,9 @@ memory:
   problem in that recall, which still answers by words and the graph.
   Memories left without a vector are embedded at a later recall.
 
-Apart from app `fetch`, this embedder is the only part of Dreamer that
-opens a network connection of its own, and only when it is configured.
+Apart from app `fetch`, this embedder and the Kosmonaut
+[server mode](#server-mode) are the only parts of Dreamer that open a
+network connection of their own, and only when they are configured.
 
 ### Import and export
 
@@ -276,16 +336,19 @@ dream memory export --scope project
 memory:
   provider: files        # default; or kosmonaut
   kosmonaut:             # used when the provider is kosmonaut
-    mode: embedded       # default, and the only mode so far
-    path: ~/.local/share/dreamer/memory.kosmonaut   # default: <data dir>/memory.kosmonaut
+    mode: embedded       # default; or server
+    path: ~/.local/share/dreamer/memory.kosmonaut   # embedded; default: <data dir>/memory.kosmonaut
+    # url: grpc://memory.example:7687              # server: or unix:/path
+    # tls: true                                    # server: default true; false only to this machine
+    # token_env: KOSMONAUT_TOKEN                   # server: the variable that holds the token
     embedder:            # optional
       kind: static
       path: ~/models/words.vec
 ```
 
 A change applies to the next call, like other live settings
-([settings.md](settings.md)). `memory.kosmonaut.mode: server` is refused:
-only the embedded mode exists so far.
+([settings.md](settings.md)). `path` is refused with `mode: server`, and
+`url`, `tls`, and `token_env` without it.
 
 ## Grants
 
