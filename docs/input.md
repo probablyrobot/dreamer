@@ -260,7 +260,10 @@ interleave with other input.
 
 A paste larger than one request (the protocol's frames are at most 1 MiB)
 is sent in parts with the same `id`, with `more` set on all but the last.
-The daemon reassembles it, at most 64 MiB, and encodes it once.
+The daemon reassembles it, at most 64 MiB, and encodes it once. A paste
+whose sender stops before the last part is dropped after 60 s without a
+new part, and all unfinished pastes together hold at most 128 MiB: a part
+beyond that is refused (`UNAVAILABLE`) until others finish.
 `client::paste` does the splitting.
 
 With `generation` set, input is refused (`-32002`) if the pane's process

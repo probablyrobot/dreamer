@@ -22,6 +22,22 @@ pub struct EndpointConfig {
     pub socket: Socket,
 }
 
+/// Unfinished pastes by pane and paste id: the bytes so far, and when the
+/// last part came.
+pub type Pastes = std::collections::HashMap<(u32, u64), (Vec<u8>, std::time::Instant)>;
+
+/// An unfinished paste with no new part for this long is dropped.
+const PASTE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What all unfinished pastes may hold together: 128 MiB, or
+/// `DREAMER_TEST_PASTE_TOTAL` bytes in tests.
+fn pending_paste_limit() -> usize {
+    std::env::var("DREAMER_TEST_PASTE_TOTAL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(128 << 20)
+}
+
 impl EndpointConfig {
     fn describe(&self) -> String {
         match &self.socket {
@@ -75,7 +91,10 @@ pub struct State {
     /// (most recent last), so ownership can pass on disconnect.
     pub sizing: Mutex<std::collections::HashMap<u32, Sizing>>,
     /// Pastes arriving in parts, by (pane, paste id), until the last part.
-    pub pastes: Mutex<std::collections::HashMap<(u32, u64), Vec<u8>>>,
+    /// Pastes still arriving in parts, by pane and paste id, with when
+    /// their last part came. Bounded: see [`PASTE_IDLE`] and
+    /// [`pending_paste_limit`].
+    pub pastes: Mutex<Pastes>,
     /// Interaction leases for automated input.
     pub leases: crate::leases::Leases,
     /// Panes each connection created, and actions waiting for approval.
@@ -915,24 +934,44 @@ impl api::Service for DaemonService {
             Some(Event::Text(t)) => mirror::InputEvent::Text(t.text),
             Some(Event::Paste(v)) => {
                 // Gather parts; encode the whole paste once, on the last.
+                // A paste whose sender stopped (it left, or never sent the
+                // last part) is dropped after a while, and what all
+                // unfinished pastes hold together is capped.
                 const MAX_PASTE: usize = 64 << 20;
                 let mut pastes = self.0.pastes.lock().await;
-                let buf = pastes.entry((p.pane, v.id)).or_default();
-                if buf.len() + v.data.len() > MAX_PASTE {
-                    pastes.remove(&(p.pane, v.id));
+                let now = std::time::Instant::now();
+                pastes.retain(|_, (_, at)| now.duration_since(*at) < PASTE_IDLE);
+                let key = (p.pane, v.id);
+                let held: usize = pastes
+                    .iter()
+                    .filter(|(k, _)| **k != key)
+                    .map(|(_, (b, _))| b.len())
+                    .sum();
+                let mine = pastes.get(&key).map_or(0, |(b, _)| b.len());
+                if mine + v.data.len() > MAX_PASTE {
+                    pastes.remove(&key);
                     return Err(RpcError::new(
                         code::INVALID_PARAMS,
                         "a paste is limited to 64 MiB",
                     ));
                 }
-                buf.extend_from_slice(&v.data);
+                if held + mine + v.data.len() > pending_paste_limit() {
+                    pastes.remove(&key);
+                    return Err(RpcError::new(
+                        code::UNAVAILABLE,
+                        "too many pastes are still arriving; try again when they finish",
+                    ));
+                }
+                let entry = pastes.entry(key).or_insert_with(|| (Vec::new(), now));
+                entry.0.extend_from_slice(&v.data);
+                entry.1 = now;
                 if v.more {
                     return Ok(api::InputResult {
                         bytes: 0,
                         batches: 0,
                     });
                 }
-                mirror::InputEvent::Paste(pastes.remove(&(p.pane, v.id)).unwrap_or_default())
+                mirror::InputEvent::Paste(pastes.remove(&key).map(|(b, _)| b).unwrap_or_default())
             }
             Some(Event::Focus(f)) => mirror::InputEvent::Focus(f.gained),
             Some(Event::Mouse(m)) => {

@@ -167,6 +167,7 @@ demand.
 | `DREAMER_PI_LATEST_URL`, `DREAMER_PI_DOWNLOAD_URL` | Where pi releases are found; tests point them at `file://` stand-ins so nothing is downloaded |
 | `DREAMER_FORBID_DEFAULT_TMUX` | The daemon refuses to attach to the default tmux server. Test harnesses set it so no test can reach the user's own tmux, even if it forgets to name an isolated socket |
 | `DREAMER_TEST_ABORT_AFTER_DISPATCH` | Abort the process right after an action reaches tmux, to test crash recovery |
+| `DREAMER_TEST_PASTE_TOTAL` | What all unfinished pastes may hold together, in bytes (default 128 MiB), to test the limit |
 | `DREAMER_TEST_SLOW_PANE` | `PANE:MICROS`: sleep that long before applying each output chunk of that pane, so it outruns its mirror |
 | `DREAMER_MIRROR_WORKERS` | Number of mirror owner threads (default: cores, 1 to 4). The pressure test sets 1 so two panes share an owner |
 | `DREAMER_SSH` | The `ssh` program the coordinator runs (default `ssh` from `PATH`). Tests point it at a stand-in so no real SSH configuration is used |
