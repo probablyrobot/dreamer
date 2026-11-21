@@ -1,7 +1,13 @@
 //! The `kosmonaut` provider: Kosmonaut, a graph database, embedded in the
-//! daemon. One database per user holds every scope; each memory is a node
-//! tagged with its scope and owner (the project root or the session id),
-//! so a query only ever sees the scopes its context reaches.
+//! daemon or reached as a server over gRPC. One database per user holds
+//! every scope; each memory is a node tagged with its scope and owner (the
+//! project root or the session id), so a query only ever sees the scopes
+//! its context reaches.
+//!
+//! The Cypher here is the same for both: [`Store`] runs it against the
+//! embedded database ([`embedded`]) or the server ([`server`]), with
+//! parameters and result cells as JSON, the form Kosmonaut's server takes
+//! and gives.
 //!
 //! The graph:
 //!
@@ -27,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use kosmonaut::{Database, DatabaseConfig, QueryResult, Value};
+use serde_json::Value;
 
 use crate::embed::{Embedder, cosine};
 use crate::files::{one_line, slug, title_of};
@@ -35,6 +41,11 @@ use crate::{
     Change, Context, DEFAULT_LIMIT, Error, Found, Kind, MAX_LIMIT, Memory, New, Problem, Provider,
     Scope, search, split_id, time,
 };
+
+mod embedded;
+mod server;
+
+pub use server::Server;
 
 /// Bumped when the tables change shape.
 const SCHEMA: &str = "1";
@@ -76,9 +87,6 @@ const RELATIONS: [(&str, &str, &str); 5] = [
     ("LINKS_TO", "Memory", "key"),
 ];
 
-/// Memory the database may use for cached pages. A memory store is small.
-const BUFFER_POOL: usize = 16 * 1024 * 1024;
-
 /// Recall: a memory one edge from a match scores this, plus 10 for each
 /// further edge, below any word match (every word match scores 1000 or
 /// more; see [`crate::search`]).
@@ -112,11 +120,12 @@ pub struct Summary {
 }
 
 pub struct Kosmonaut {
-    path: PathBuf,
+    store: Store,
     embedder: Option<Arc<dyn Embedder>>,
-    /// Opened on first use and kept; tried again on the next call if
-    /// opening failed (another process holding the database, say).
-    db: Mutex<Option<Arc<Database>>>,
+    /// Whether the tables are known to be there: checked on first use, and
+    /// again on the next call if that failed (another process holding the
+    /// database, or a server that cannot be reached).
+    ready: Mutex<bool>,
     /// Writes in this process one at a time, so two never pick the same
     /// name.
     write: Mutex<()>,
@@ -126,13 +135,21 @@ pub struct Kosmonaut {
 impl std::fmt::Debug for Kosmonaut {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Kosmonaut")
-            .field("path", &self.path)
+            .field("store", &self.store.place())
             .field("embedder", &self.embedder.as_ref().map(|e| e.model()))
             .finish_non_exhaustive()
     }
 }
 
-type Params = HashMap<String, Value>;
+/// Statement parameters, as JSON values: a string binds a `STRING`, an
+/// integer an `INT64`, a number with a fraction a `DOUBLE`, an array a
+/// list. The mapping is Kosmonaut's server's; the embedded store applies
+/// the same one.
+type Params = BTreeMap<String, Value>;
+
+/// A result: rows of cells, each as Kosmonaut's server renders it in JSON
+/// (a `TIMESTAMP` is microseconds since the epoch, a vector an array).
+type Rows = Vec<Vec<Value>>;
 
 /// Vectors by memory key.
 type Vectors = HashMap<String, Vec<f32>>;
@@ -146,14 +163,16 @@ fn s(v: &str) -> Value {
 }
 
 fn int(v: u64) -> Value {
-    Value::Int64(i64::try_from(v).unwrap_or(i64::MAX))
+    Value::from(i64::try_from(v).unwrap_or(i64::MAX))
 }
 
 fn strings(v: &[String]) -> Value {
-    Value::List(
-        v.iter().map(|x| s(x)).collect(),
-        kosmonaut::LogicalType::String,
-    )
+    Value::Array(v.iter().map(|x| s(x)).collect())
+}
+
+/// A valid time, for `timestamp($p)`: parameters have no timestamp type.
+fn stamp(us: i64) -> Value {
+    Value::String(time::format_us(us))
 }
 
 fn db_error(e: impl std::fmt::Display) -> Error {
@@ -161,31 +180,23 @@ fn db_error(e: impl std::fmt::Display) -> Error {
 }
 
 fn text_of(v: Option<&Value>) -> String {
-    match v {
-        Some(Value::String(t)) => t.clone(),
-        _ => String::new(),
-    }
+    v.and_then(Value::as_str).unwrap_or_default().to_owned()
 }
 
 fn number_of(v: Option<&Value>) -> u64 {
-    match v {
-        Some(Value::Int64(n)) => u64::try_from(*n).unwrap_or(0),
-        _ => 0,
-    }
+    v.and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// A `TIMESTAMP` cell: microseconds since the epoch.
+fn micros_of(v: Option<&Value>) -> Option<i64> {
+    v.and_then(Value::as_i64)
 }
 
 fn floats_of(v: Option<&Value>) -> Option<Vec<f32>> {
-    match v {
-        Some(Value::List(items, _) | Value::Array(items, _, _)) => items
-            .iter()
-            .map(|x| match x {
-                Value::Float(f) => Some(*f),
-                Value::Double(d) => Some(*d as f32),
-                _ => None,
-            })
-            .collect(),
-        _ => None,
-    }
+    v?.as_array()?
+        .iter()
+        .map(|x| x.as_f64().map(|f| f as f32))
+        .collect()
 }
 
 /// Microseconds, for valid-time columns.
@@ -205,8 +216,8 @@ fn key(scope: Scope, owner: &str, name: &str) -> String {
 const COLUMNS: &str = "m.scope, m.name, m.kind, m.title, m.description, m.body, m.links, \
                        m.created, m.updated, m.key";
 
-fn memory(row: &kosmonaut::Row) -> Option<(String, Memory)> {
-    let v = |i| row.get_by_index(i);
+fn memory(row: &[Value]) -> Option<(String, Memory)> {
+    let v = |i| row.get(i);
     let scope = Scope::from_name(&text_of(v(0)))?;
     let name = text_of(v(1));
     let kind = Kind::from_name(&text_of(v(2)))?;
@@ -229,66 +240,110 @@ fn memory(row: &kosmonaut::Row) -> Option<(String, Memory)> {
     ))
 }
 
+/// Where the database is: embedded in this process, or a server.
+enum Store {
+    Embedded(embedded::Embedded),
+    Server(Server),
+}
+
+impl Store {
+    /// The database directory, or the server's URL: what a problem names.
+    fn place(&self) -> PathBuf {
+        match self {
+            Store::Embedded(e) => e.path().to_path_buf(),
+            Store::Server(s) => PathBuf::from(s.url()),
+        }
+    }
+
+    fn read(&self, cypher: &str, p: &Params) -> Result<Rows, Error> {
+        match self {
+            Store::Embedded(e) => e.read(cypher, p),
+            Store::Server(s) => s.read(cypher, p),
+        }
+    }
+
+    /// Run `f` in one write transaction: all of it commits, or none.
+    fn write<T>(&self, f: impl FnOnce(&mut Tx<'_>) -> Result<T, Error>) -> Result<T, Error> {
+        match self {
+            Store::Embedded(e) => e.write(|run| f(&mut Tx { run })),
+            Store::Server(s) => s.write(|run| f(&mut Tx { run })),
+        }
+    }
+
+    /// The names of the tables there are.
+    fn tables(&self) -> Result<BTreeSet<String>, Error> {
+        match self {
+            Store::Embedded(e) => e.tables(),
+            Store::Server(s) => s.tables(),
+        }
+    }
+
+    /// Run a schema statement on its own.
+    fn execute(&self, ddl: &str) -> Result<(), Error> {
+        match self {
+            Store::Embedded(e) => e.execute(ddl),
+            Store::Server(s) => s.execute(ddl),
+        }
+    }
+}
+
+/// Runs statements in one write transaction, whichever the store.
+trait Run {
+    fn run(&mut self, cypher: &str, p: &Params) -> Result<Rows, Error>;
+}
+
 impl Kosmonaut {
-    /// The provider over the database at `path` (a directory, made on first
-    /// use). With `embedder`, memories also get vectors and recall also
-    /// looks for memories near the query in meaning.
+    /// The provider over the embedded database at `path` (a directory, made
+    /// on first use). With `embedder`, memories also get vectors and recall
+    /// also looks for memories near the query in meaning.
     pub fn new(path: PathBuf, embedder: Option<Arc<dyn Embedder>>) -> Kosmonaut {
+        Kosmonaut::over(Store::Embedded(embedded::Embedded::new(path)), embedder)
+    }
+
+    /// The provider over a Kosmonaut server: the same graph, kept there.
+    pub fn server(server: Server, embedder: Option<Arc<dyn Embedder>>) -> Kosmonaut {
+        Kosmonaut::over(Store::Server(server), embedder)
+    }
+
+    fn over(store: Store, embedder: Option<Arc<dyn Embedder>>) -> Kosmonaut {
         Kosmonaut {
-            path,
+            store,
             embedder,
-            db: Mutex::new(None),
+            ready: Mutex::new(false),
             write: Mutex::new(()),
             rows: AtomicU64::new(0),
         }
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// The embedded database's directory; `None` for a server.
+    pub fn path(&self) -> Option<&Path> {
+        match &self.store {
+            Store::Embedded(e) => Some(e.path()),
+            Store::Server(_) => None,
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, ()> {
         self.write.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn db(&self) -> Result<Arc<Database>, Error> {
-        let mut slot = self.db.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(db) = slot.as_ref() {
-            return Ok(db.clone());
+    /// The store, with its tables made on first use.
+    fn db(&self) -> Result<&Store, Error> {
+        let mut ready = self.ready.lock().unwrap_or_else(|e| e.into_inner());
+        if !*ready {
+            schema(&self.store)?;
+            *ready = true;
         }
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| Error::Io(format!("{}: {e}", parent.display())))?;
-        }
-        let config = DatabaseConfig {
-            buffer_pool_size_bytes: BUFFER_POOL,
-            wal_preallocate: Some(false),
-            ..DatabaseConfig::default()
-        };
-        let db = Database::open_with_config(&self.path, config)
-            .map_err(|e| Error::Io(format!("{}: {e}", self.path.display())))?;
-        schema(&db)?;
-        let db = Arc::new(db);
-        *slot = Some(db.clone());
-        Ok(db)
+        Ok(&self.store)
     }
 
-    fn read(&self, cypher: &str, p: &Params) -> Result<QueryResult, Error> {
-        let db = self.db()?;
-        let mut conn = db.connect();
-        let mut tx = conn.begin_read_only().map_err(db_error)?;
-        tx.run_with_params(cypher, p).map_err(db_error)
+    fn read(&self, cypher: &str, p: &Params) -> Result<Rows, Error> {
+        self.db()?.read(cypher, p)
     }
 
     /// Run `f` in one write transaction: all of it commits, or none.
     fn write<T>(&self, f: impl FnOnce(&mut Tx<'_>) -> Result<T, Error>) -> Result<T, Error> {
-        let db = self.db()?;
-        let mut conn = db.connect();
-        let tx = conn.begin().map_err(db_error)?;
-        let mut w = Tx { tx };
-        let out = f(&mut w)?;
-        w.tx.commit().map_err(db_error)?;
-        Ok(out)
+        self.db()?.write(f)
     }
 
     /// The owner a scope's memories are kept under for `cx`.
@@ -315,7 +370,7 @@ impl Kosmonaut {
                 ),
                 &params([("scope", s(scope.name())), ("owner", s(&owner))]),
             )?;
-            out.extend(r.rows().iter().filter_map(memory));
+            out.extend(r.iter().map(Vec::as_slice).filter_map(memory));
         }
         out.sort_by(|(_, a), (_, b)| {
             b.updated_unix_ms
@@ -330,7 +385,7 @@ impl Kosmonaut {
             &format!("MATCH (m:Memory) WHERE m.key = $key RETURN {COLUMNS}"),
             &params([("key", s(k))]),
         )?;
-        Ok(r.rows().first().and_then(memory).map(|(_, m)| m))
+        Ok(r.first().and_then(|row| memory(row)).map(|(_, m)| m))
     }
 
     fn existing(&self, cx: &Context, id: &str) -> Result<(String, Memory), Error> {
@@ -419,7 +474,7 @@ impl Kosmonaut {
                 "MATCH (m:Memory) WHERE m.key = $key RETURN m.key",
                 &params([("key", s(k))]),
             )?;
-            if found.rows().is_empty() {
+            if found.is_empty() {
                 w.run(
                     "CREATE (:Memory {key: $key, scope: $scope, owner: $owner, name: $name, \
                      kind: $kind, title: $title, description: $description, body: $body, \
@@ -463,22 +518,12 @@ impl Kosmonaut {
         }
         let table = Kosmonaut::vector_table(e);
         let db = self.db()?;
-        {
-            let conn = db.connect();
-            let exists = conn
-                .list_tables()
-                .map_err(db_error)?
-                .iter()
-                .any(|(name, _)| *name == table);
-            if !exists {
-                let mut conn = db.connect();
-                conn.execute(&format!(
-                    "CREATE NODE TABLE {table}(key STRING, model STRING, v FLOAT[{}], \
-                     PRIMARY KEY(key))",
-                    e.dimension()
-                ))
-                .map_err(db_error)?;
-            }
+        if !db.tables()?.contains(&table) {
+            db.execute(&format!(
+                "CREATE NODE TABLE {table}(key STRING, model STRING, v FLOAT[{}], \
+                 PRIMARY KEY(key))",
+                e.dimension()
+            ))?;
         }
         self.write(|w| {
             for (k, v) in vs {
@@ -487,10 +532,7 @@ impl Kosmonaut {
                     ("model", s(e.model())),
                     (
                         "v",
-                        Value::List(
-                            v.iter().map(|x| Value::Float(*x)).collect(),
-                            kosmonaut::LogicalType::Float,
-                        ),
+                        Value::Array(v.iter().map(|x| Value::from(f64::from(*x))).collect()),
                     ),
                 ]);
                 w.run(
@@ -511,14 +553,7 @@ impl Kosmonaut {
             return Ok(());
         };
         let table = Kosmonaut::vector_table(e.as_ref());
-        let db = self.db()?;
-        let exists = db
-            .connect()
-            .list_tables()
-            .map_err(db_error)?
-            .iter()
-            .any(|(name, _)| *name == table);
-        if !exists {
+        if !self.db()?.tables()?.contains(&table) {
             return Ok(());
         }
         self.write(|w| {
@@ -542,14 +577,7 @@ impl Kosmonaut {
         let table = Kosmonaut::vector_table(e);
         let keys: Vec<String> = items.iter().map(|(k, _)| k.clone()).collect();
         let mut have = HashMap::new();
-        let exists = self
-            .db()?
-            .connect()
-            .list_tables()
-            .map_err(db_error)?
-            .iter()
-            .any(|(name, _)| *name == table);
-        if exists {
+        if self.db()?.tables()?.contains(&table) {
             let r = self.read(
                 &format!(
                     "MATCH (x:{table}) WHERE x.key IN $keys AND x.model = $model \
@@ -557,9 +585,9 @@ impl Kosmonaut {
                 ),
                 &params([("keys", strings(&keys)), ("model", s(e.model()))]),
             )?;
-            for row in r.rows() {
-                if let Some(v) = floats_of(row.get_by_index(1)) {
-                    have.insert(text_of(row.get_by_index(0)), v);
+            for row in &r {
+                if let Some(v) = floats_of(row.get(1)) {
+                    have.insert(text_of(row.first()), v);
                 }
             }
         }
@@ -598,8 +626,8 @@ impl Kosmonaut {
              WHERE a.key IN $keys AND r.valid_to IS NULL AND q.valid_to IS NULL RETURN b.key",
         ];
         for q in queries {
-            for row in self.read(q, &p)?.rows() {
-                *out.entry(text_of(row.get_by_index(0))).or_default() += 1;
+            for row in self.read(q, &p)? {
+                *out.entry(text_of(row.first())).or_default() += 1;
             }
         }
         Ok(out)
@@ -684,10 +712,9 @@ impl Kosmonaut {
         )?;
         let opt = |v: Option<&Value>| Some(text_of(v)).filter(|t| !t.is_empty());
         let mut rows: Vec<(String, CollectorRow)> = r
-            .rows()
             .iter()
             .map(|row| {
-                let v = |i| row.get_by_index(i);
+                let v = |i| row.get(i);
                 (
                     text_of(v(8)),
                     CollectorRow {
@@ -746,10 +773,10 @@ impl Kosmonaut {
             "MATCH (x:Summary) WHERE x.session = $session RETURN x.session, x.text, x.updated",
             &params([("session", s(session))]),
         )?;
-        Ok(r.rows().first().map(|row| Summary {
-            session: text_of(row.get_by_index(0)),
-            text: text_of(row.get_by_index(1)),
-            updated_unix_ms: number_of(row.get_by_index(2)),
+        Ok(r.first().map(|row| Summary {
+            session: text_of(row.first()),
+            text: text_of(row.get(1)),
+            updated_unix_ms: number_of(row.get(2)),
         }))
     }
 
@@ -774,17 +801,13 @@ impl Kosmonaut {
                 ),
                 &params([("key", s(&k))]),
             )?;
-            for row in r.rows() {
-                let from = match row.get_by_index(1) {
-                    Some(Value::Timestamp(t)) => *t,
-                    _ => continue,
+            for row in &r {
+                let Some(from) = micros_of(row.get(1)) else {
+                    continue;
                 };
-                let to = match row.get_by_index(2) {
-                    Some(Value::Timestamp(t)) => Some(*t),
-                    _ => None,
-                };
+                let to = micros_of(row.get(2));
                 if from <= at && to.is_none_or(|t| t > at) {
-                    out.push((rel.to_owned(), shown(rel, &text_of(row.get_by_index(0)))));
+                    out.push((rel.to_owned(), shown(rel, &text_of(row.first()))));
                 }
             }
         }
@@ -811,15 +834,8 @@ fn vector_text(m: &Memory) -> String {
 }
 
 /// Create the tables that are missing.
-fn schema(db: &Database) -> Result<(), Error> {
-    let have: BTreeSet<String> = db
-        .connect()
-        .list_tables()
-        .map_err(db_error)?
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    let mut conn = db.connect();
+fn schema(db: &Store) -> Result<(), Error> {
+    let have = db.tables()?;
     for ddl in TABLES {
         let name = ddl
             .split_whitespace()
@@ -827,37 +843,35 @@ fn schema(db: &Database) -> Result<(), Error> {
             .and_then(|n| n.split('(').next())
             .unwrap_or_default();
         if !have.contains(name) {
-            conn.execute(ddl).map_err(db_error)?;
+            db.execute(ddl)?;
         }
     }
-    let mut tx = conn.begin().map_err(db_error)?;
-    let p = params([("name", s("schema")), ("value", s(SCHEMA))]);
-    let r = tx
-        .run_with_params("MATCH (x:Meta) WHERE x.name = $name RETURN x.value", &p)
-        .map_err(db_error)?;
-    match r.rows().first().map(|row| text_of(row.get_by_index(0))) {
-        None => {
-            tx.run_with_params("CREATE (:Meta {name: $name, value: $value})", &p)
-                .map_err(db_error)?;
+    db.write(|w| {
+        let p = params([("name", s("schema")), ("value", s(SCHEMA))]);
+        let r = w.run("MATCH (x:Meta) WHERE x.name = $name RETURN x.value", &p)?;
+        match r.first().map(|row| text_of(row.first())) {
+            None => {
+                w.run("CREATE (:Meta {name: $name, value: $value})", &p)?;
+            }
+            Some(v) if v == SCHEMA => {}
+            Some(v) => {
+                return Err(Error::Io(format!(
+                    "kosmonaut: the memory database has schema {v}; this Dreamer reads {SCHEMA}"
+                )));
+            }
         }
-        Some(v) if v == SCHEMA => {}
-        Some(v) => {
-            return Err(Error::Io(format!(
-                "kosmonaut: the memory database has schema {v}; this Dreamer reads {SCHEMA}"
-            )));
-        }
-    }
-    tx.commit().map_err(db_error)
+        Ok(())
+    })
 }
 
 /// A write transaction.
 struct Tx<'t> {
-    tx: kosmonaut::Transaction<'t>,
+    run: &'t mut dyn Run,
 }
 
 impl Tx<'_> {
-    fn run(&mut self, cypher: &str, p: &Params) -> Result<QueryResult, Error> {
-        self.tx.run_with_params(cypher, p).map_err(db_error)
+    fn run(&mut self, cypher: &str, p: &Params) -> Result<Rows, Error> {
+        self.run.run(cypher, p)
     }
 
     /// Make sure a node exists.
@@ -867,7 +881,7 @@ impl Tx<'_> {
             &format!("MATCH (t:{table}) WHERE t.{field} = $v RETURN t.{field}"),
             &p,
         )?;
-        if found.rows().is_empty() {
+        if found.is_empty() {
             self.run(&format!("CREATE (:{table} {{{field}: $v}})"), &p)?;
         }
         Ok(())
@@ -886,12 +900,9 @@ impl Tx<'_> {
                 ),
                 &params([("key", s(k))]),
             )?;
-            for row in r.rows() {
-                let target = text_of(row.get_by_index(0));
-                let from = match row.get_by_index(1) {
-                    Some(Value::Timestamp(t)) => *t,
-                    _ => now,
-                };
+            for row in &r {
+                let target = text_of(row.first());
+                let from = micros_of(row.get(1)).unwrap_or(now);
                 current.insert((rel, target, from));
             }
         }
@@ -910,13 +921,10 @@ impl Tx<'_> {
             self.run(
                 &format!(
                     "MATCH (m:Memory)-[r:{rel}]->(t:{table}) WHERE m.key = $key \
-                     AND t.{field} = $target AND r.valid_to IS NULL SET r.valid_to = $to"
+                     AND t.{field} = $target AND r.valid_to IS NULL \
+                     SET r.valid_to = timestamp($to)"
                 ),
-                &params([
-                    ("key", s(k)),
-                    ("target", s(target)),
-                    ("to", Value::Timestamp(to)),
-                ]),
+                &params([("key", s(k)), ("target", s(target)), ("to", stamp(to))]),
             )?;
         }
         for (rel, target) in wanted {
@@ -934,13 +942,9 @@ impl Tx<'_> {
             self.run(
                 &format!(
                     "MATCH (m:Memory), (t:{table}) WHERE m.key = $key AND t.{field} = $target \
-                     CREATE (m)-[:{rel} {{valid_from: $from}}]->(t)"
+                     CREATE (m)-[:{rel} {{valid_from: timestamp($from)}}]->(t)"
                 ),
-                &params([
-                    ("key", s(k)),
-                    ("target", s(target)),
-                    ("from", Value::Timestamp(now)),
-                ]),
+                &params([("key", s(k)), ("target", s(target)), ("from", stamp(now))]),
             )?;
         }
         Ok(())
@@ -1151,7 +1155,7 @@ impl Provider for Kosmonaut {
                         }
                     }
                     Err(err) => problems.push(Problem {
-                        path: self.path.clone(),
+                        path: self.store.place(),
                         message: format!("recalled without vectors: embedder {}: {err}", e.model()),
                     }),
                 }

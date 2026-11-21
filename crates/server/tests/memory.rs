@@ -3,8 +3,9 @@
 //! directory, a project's in the project; hand edits seen at once; a bad
 //! file reported; agent grants that may remember but not forget below
 //! `own`; switching to the `kosmonaut` provider, with import from and
-//! export to the files; and its `openai` embedder against a stand-in for
-//! the API on the loopback (no request leaves the machine).
+//! export to the files; its `openai` embedder against a stand-in for
+//! the API on the loopback (no request leaves the machine); and its server
+//! mode against a Kosmonaut server of the test's own, stopped mid-way.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -627,4 +628,100 @@ async fn the_openai_embedder_gives_memories_vectors_and_recall_uses_them() {
         Some(deploys.id.as_str())
     );
     assert_eq!(api.seen.lock().expect("seen").len(), before);
+}
+
+#[cfg(feature = "kosmonaut")]
+#[path = "../../memory/tests/support/kosmonaut_server.rs"]
+mod kosmonaut_server;
+
+/// `mode: server`: memory kept on a Kosmonaut server of the test's own
+/// (`DREAMER_KOSMONAUT_SERVER`). When the server stops, memory calls fail
+/// with `UNAVAILABLE` and say "memory unavailable", and an agent session
+/// still starts and holds a turn, without the memory index.
+#[cfg(feature = "kosmonaut")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_kosmonaut_server_leaves_sessions_working_without_memory() {
+    use api::MemoryScope as S;
+    use api::agent_session_event::Kind as K;
+    let Some(mut server) = kosmonaut_server::TestServer::start("daemon", false) else {
+        return;
+    };
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/testdata/fake-acp");
+    let settings = format!(
+        "memory:\n  provider: kosmonaut\n  kosmonaut:\n    mode: server\n    url: {}\n    \
+         tls: false\nagents:\n  default: helper\n  helper:\n    protocol: acp\n    \
+         command: [/bin/sh, {}]\n",
+        server.url,
+        fake.display()
+    );
+    let s = Setup::start(Some(&settings), &[("DREAMER_DREAM", "/bin/echo")]);
+    let c = s.client().await;
+    let kept = remember(&c, &s, "Deploys go through staging first", S::Project).await;
+    let found = recall(&c, &s, "staging", S::Unspecified).await;
+    assert_eq!(found.provider, "kosmonaut");
+    assert_eq!(found.items.first().map(|m| &m.id), Some(&kept.id));
+    assert!(!s.root.join("data/memory.kosmonaut").exists());
+
+    server.stop();
+    let e = c
+        .call(Request::MemoryRecall(api::MemoryRecall {
+            query: "staging".into(),
+            context: s.context(),
+            ..api::MemoryRecall::default()
+        }))
+        .await
+        .expect_err("server stopped");
+    let client::ClientError::Rpc(e) = e else {
+        panic!("not an RPC error: {e}");
+    };
+    assert_eq!(e.code, api::code::UNAVAILABLE, "{e:?}");
+    assert!(e.message.starts_with("memory unavailable:"), "{e:?}");
+
+    // A session in the project: its first prompt would carry the index,
+    // which cannot be read; the turn goes on without it.
+    let created = c
+        .call(Request::AgentSessionsCreate(api::AgentSessionCreate {
+            cwd: Some(s.root.join("work/app").display().to_string()),
+            ..api::AgentSessionCreate::default()
+        }))
+        .await
+        .expect("create");
+    let Response::AgentSessionsCreate(session) = created else {
+        panic!("unexpected reply {created:?}");
+    };
+    c.call(Request::AgentSessionsSend(api::AgentSessionSend {
+        session: session.id.clone(),
+        text: "hello".into(),
+    }))
+    .await
+    .expect("send");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let ended = loop {
+        let r = c
+            .call(Request::AgentSessionsEvents(api::AgentSessionEventsQuery {
+                session: session.id.clone(),
+                after: Some(0),
+                ..api::AgentSessionEventsQuery::default()
+            }))
+            .await
+            .expect("events");
+        let Response::AgentSessionsEvents(r) = r else {
+            panic!("unexpected reply");
+        };
+        let end = r.events.iter().find_map(|e| match &e.kind {
+            Some(K::TurnEnd(t)) => Some(t.stop_reason),
+            _ => None,
+        });
+        if let Some(reason) = end {
+            break reason;
+        }
+        assert!(Instant::now() < deadline, "no turn end: {:?}", r.events);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(ended, api::AgentStopReason::EndTurn as i32);
+
+    // Back with the server.
+    server.restart();
+    let found = recall(&c, &s, "staging", S::Unspecified).await;
+    assert_eq!(found.items.first().map(|m| &m.id), Some(&kept.id));
 }

@@ -295,7 +295,7 @@ pub const SCHEMA: &[Key] = &[
         path: "memory.provider",
         kind: "files | kosmonaut",
         default: "files",
-        doc: "What keeps durable memory (dream memory, the memory.* API): files is one markdown file per memory and a MEMORY.md index, under <config dir>/memory/ for the user and .dreamer/memory/ in a project; kosmonaut is one graph database for the user, embedded in dreamerd (a build with the kosmonaut feature). dream memory import and export copy between them.",
+        doc: "What keeps durable memory (dream memory, the memory.* API): files is one markdown file per memory and a MEMORY.md index, under <config dir>/memory/ for the user and .dreamer/memory/ in a project; kosmonaut is one graph database for the user, embedded in dreamerd or on a Kosmonaut server (a build with the kosmonaut feature). dream memory import and export copy between them.",
         example: "files",
         live: true,
     },
@@ -333,17 +333,41 @@ pub const SCHEMA: &[Key] = &[
     },
     Key {
         path: "memory.kosmonaut.mode",
-        kind: "embedded",
-        default: "embedded",
-        doc: "How dreamerd reaches Kosmonaut: embedded runs it inside the daemon. The only mode so far.",
+        kind: "embedded | server",
+        default: "embedded, or server when url is set",
+        doc: "How dreamerd reaches Kosmonaut: embedded runs it inside the daemon; server uses a Kosmonaut server over gRPC (url, tls, token_env). When the server cannot be reached, memory calls fail with memory unavailable and agent sessions go on without memory.",
         example: "embedded",
+        live: true,
+    },
+    Key {
+        path: "memory.kosmonaut.url",
+        kind: "grpc://host:port | unix:/path",
+        default: "none (required with mode: server)",
+        doc: "The Kosmonaut server, with mode: server: grpc://host:port over the network, or unix:/path for a socket on this machine.",
+        example: "grpc://memory.example:7687",
+        live: true,
+    },
+    Key {
+        path: "memory.kosmonaut.tls",
+        kind: "boolean",
+        default: "true (false for unix:)",
+        doc: "TLS to the server, checked against the Mozilla root certificates. false is allowed only to this machine (localhost, 127.0.0.1, [::1]).",
+        example: "true",
+        live: true,
+    },
+    Key {
+        path: "memory.kosmonaut.token_env",
+        kind: "environment variable name",
+        default: "none (no token)",
+        doc: "The environment variable in dreamerd's environment that holds the server's bearer token, read at each call. The token itself is never in the settings. Without it, no token is sent (a server with authentication off).",
+        example: "KOSMONAUT_TOKEN",
         live: true,
     },
     Key {
         path: "memory.kosmonaut.path",
         kind: "absolute path or ~/path",
         default: "<data dir>/memory.kosmonaut",
-        doc: "The Kosmonaut database directory: one per user, every project's memories in it, each tagged with its project.",
+        doc: "The embedded Kosmonaut database directory: one per user, every project's memories in it, each tagged with its project. Not used with mode: server.",
         example: "~/.local/share/dreamer/memory.kosmonaut",
         live: true,
     },
@@ -461,7 +485,14 @@ mod tests {
         for k in SCHEMA {
             let parts: Vec<&str> = k.path.split('.').collect();
             let (last, parents) = parts.split_last().expect("path");
-            let mut line = format!("{last}: {}", k.example);
+            // Keys that apply only beside another.
+            let beside = match k.path {
+                "memory.kosmonaut.tls" | "memory.kosmonaut.token_env" => {
+                    "url: grpc://memory.example:7687, "
+                }
+                _ => "",
+            };
+            let mut line = format!("{beside}{last}: {}", k.example);
             for p in parents.iter().rev() {
                 line = format!("{p}: {{{line}}}");
             }

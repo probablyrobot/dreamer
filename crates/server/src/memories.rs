@@ -7,7 +7,10 @@
 //!   `<project root>/.dreamer/memory/`.
 //! - `kosmonaut` (a build with the `kosmonaut` feature): one database for
 //!   the user, `<data dir>/memory.kosmonaut` unless the settings name
-//!   another, opened on first use.
+//!   another, opened on first use; or, with `mode: server`, a Kosmonaut
+//!   server over gRPC. When the server cannot be reached, memory calls
+//!   fail with `UNAVAILABLE` ("memory unavailable: ...") and everything
+//!   else, agent sessions included, goes on without memory.
 //!
 //! `memory.import` and `memory.export` copy between `files` and the
 //! provider in force. Calls do I/O, so they run off the event loop.
@@ -76,32 +79,39 @@ fn kosmonaut(k: &KosmonautSettings) -> Arc<dyn memory::Provider> {
             }
         }
     };
-    Arc::new(memory::Kosmonaut::new(path, embedder))
+    match &k.server {
+        None => Arc::new(memory::Kosmonaut::new(path, embedder)),
+        Some(s) => match memory::Server::new(&s.url, s.tls, s.token_env.clone()) {
+            Ok(server) => Arc::new(memory::Kosmonaut::server(server, embedder)),
+            Err(e) => {
+                log::warn(format!("memory provider kosmonaut: {e}"));
+                Arc::new(Unavailable(e.to_string()))
+            }
+        },
+    }
 }
 
 #[cfg(not(feature = "kosmonaut"))]
 fn kosmonaut(_: &KosmonautSettings) -> Arc<dyn memory::Provider> {
     log::warn("memory provider kosmonaut: this dreamerd was built without the kosmonaut feature");
-    Arc::new(Unavailable)
+    Arc::new(Unavailable(
+        "memory.provider is kosmonaut, but this dreamerd was built without the kosmonaut \
+         feature: set memory.provider: files, or use a build that has it"
+            .into(),
+    ))
 }
 
-/// The `kosmonaut` provider in a build without it: every call says so.
-#[cfg(not(feature = "kosmonaut"))]
+/// A `kosmonaut` provider its settings or build cannot give: every call
+/// says why.
 #[derive(Debug)]
-struct Unavailable;
+struct Unavailable(String);
 
-#[cfg(not(feature = "kosmonaut"))]
 impl Unavailable {
-    fn error<T>() -> Result<T, memory::Error> {
-        Err(memory::Error::Invalid(
-            "memory.provider is kosmonaut, but this dreamerd was built without the kosmonaut \
-             feature: set memory.provider: files, or use a build that has it"
-                .into(),
-        ))
+    fn error<T>(&self) -> Result<T, memory::Error> {
+        Err(memory::Error::Invalid(self.0.clone()))
     }
 }
 
-#[cfg(not(feature = "kosmonaut"))]
 impl memory::Provider for Unavailable {
     fn name(&self) -> &'static str {
         "kosmonaut"
@@ -111,7 +121,7 @@ impl memory::Provider for Unavailable {
         _: &memory::Context,
         _: memory::New,
     ) -> Result<memory::Memory, memory::Error> {
-        Unavailable::error()
+        self.error()
     }
     fn list(
         &self,
@@ -119,10 +129,10 @@ impl memory::Provider for Unavailable {
         _: Option<memory::Scope>,
         _: Option<memory::Kind>,
     ) -> Result<memory::Found, memory::Error> {
-        Unavailable::error()
+        self.error()
     }
     fn get(&self, _: &memory::Context, _: &str) -> Result<memory::Memory, memory::Error> {
-        Unavailable::error()
+        self.error()
     }
     fn update(
         &self,
@@ -130,17 +140,17 @@ impl memory::Provider for Unavailable {
         _: &str,
         _: memory::Change,
     ) -> Result<memory::Memory, memory::Error> {
-        Unavailable::error()
+        self.error()
     }
     fn forget(&self, _: &memory::Context, _: &str) -> Result<memory::Memory, memory::Error> {
-        Unavailable::error()
+        self.error()
     }
     fn put(
         &self,
         _: &memory::Context,
         _: &memory::Memory,
     ) -> Result<memory::Memory, memory::Error> {
-        Unavailable::error()
+        self.error()
     }
 }
 
@@ -332,6 +342,7 @@ fn error(e: memory::Error) -> RpcError {
         memory::Error::Invalid(_) => code::INVALID_PARAMS,
         memory::Error::Malformed(_) => code::PRECONDITION,
         memory::Error::Io(_) => code::INTERNAL,
+        memory::Error::Unavailable(_) => code::UNAVAILABLE,
     };
     RpcError::new(c, e.to_string())
 }

@@ -1,6 +1,6 @@
 //! What every provider does the same way, run against `files` and, with
-//! the `kosmonaut` feature, the embedded Kosmonaut provider; and moving
-//! memories between them.
+//! the `kosmonaut` feature, the Kosmonaut provider, embedded and over a
+//! Kosmonaut server; and moving memories between them.
 
 use std::path::{Path, PathBuf};
 
@@ -293,48 +293,107 @@ fn files_to_files_copies_every_scope_byte_for_byte() {
     );
 }
 
+/// Each Kosmonaut test runs twice: on the embedded database (`embedded::`)
+/// and on a Kosmonaut server of its own over gRPC (`server::`, when
+/// `DREAMER_KOSMONAUT_SERVER` names the server program; see
+/// `support/kosmonaut_server.rs`). The provider's code is the same; only
+/// where the statements run differs.
+#[cfg(feature = "kosmonaut")]
+#[path = "support/kosmonaut_server.rs"]
+mod kosmonaut_server;
+
 #[cfg(feature = "kosmonaut")]
 mod kosmonaut {
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use super::*;
-    use memory::Kosmonaut;
-    use memory::embed::StaticVectors;
+    use memory::embed::{Embedder, StaticVectors};
+    use memory::{Kosmonaut, Server};
 
-    fn db(d: &Dirs) -> Kosmonaut {
-        Kosmonaut::new(d.root.join("data/memory.kosmonaut"), None)
+    use super::kosmonaut_server::TestServer;
+
+    /// Where a test's database is.
+    enum Db {
+        Embedded(PathBuf),
+        Server(TestServer),
     }
 
-    #[test]
-    fn kosmonaut_keeps_the_contract() {
-        let d = Dirs::new("kosmo");
-        contract(&db(&d), &d);
+    impl Db {
+        fn open(&self, embedder: Option<Arc<dyn Embedder>>) -> Kosmonaut {
+            match self {
+                Db::Embedded(path) => Kosmonaut::new(path.clone(), embedder),
+                Db::Server(s) => {
+                    Kosmonaut::server(Server::new(&s.url, false, None).expect("server"), embedder)
+                }
+            }
+        }
     }
 
-    #[test]
-    fn memories_last_across_a_reopen() {
-        let d = Dirs::new("kosmo-reopen");
+    fn db(at: &Db) -> Kosmonaut {
+        at.open(None)
+    }
+
+    macro_rules! on_both {
+        ($($name:ident),* $(,)?) => {
+            mod embedded {
+                $(
+                    #[test]
+                    fn $name() {
+                        let d = super::Dirs::new(concat!("kosmo-", stringify!($name)));
+                        let at = super::Db::Embedded(d.root.join("data/memory.kosmonaut"));
+                        super::$name(&d, &at);
+                    }
+                )*
+            }
+            mod server {
+                $(
+                    #[test]
+                    fn $name() {
+                        let Some(s) = super::TestServer::start(stringify!($name), false) else {
+                            return;
+                        };
+                        let d = super::Dirs::new(concat!("kserver-", stringify!($name)));
+                        super::$name(&d, &super::Db::Server(s));
+                    }
+                )*
+            }
+        };
+    }
+
+    on_both!(
+        keeps_the_contract,
+        memories_last_across_a_reopen,
+        import_from_files_and_export_back_round_trips_the_files,
+        links_are_edges_with_valid_times_and_recall_follows_them,
+        with_an_embedder_recall_also_finds_memories_near_in_meaning,
+        collector_rows_and_session_summaries_share_the_store,
+    );
+
+    fn keeps_the_contract(d: &Dirs, at: &Db) {
+        contract(&db(at), d);
+    }
+
+    fn memories_last_across_a_reopen(d: &Dirs, at: &Db) {
         let cx = d.cx();
         let id = {
-            let k = db(&d);
+            let k = db(at);
             k.remember(&cx, new("Deploys go through staging first", Scope::Project))
                 .expect("remember")
                 .id
         };
-        let k = db(&d);
+        let k = db(at);
         assert_eq!(
             k.get(&cx, &id).expect("get").text,
             "Deploys go through staging first"
         );
     }
 
-    #[test]
-    fn import_from_files_and_export_back_round_trips_the_files() {
-        let d = Dirs::new("kosmo-roundtrip");
+    fn import_from_files_and_export_back_round_trips_the_files(d: &Dirs, at: &Db) {
         let (a, b) = (d.files("a"), d.files("b"));
         let cx = d.cx();
         seed(&a, &cx);
-        let k = db(&d);
+        let k = db(at);
         let moved = memory::transfer(&a, &k, &cx, None).expect("import");
         assert_eq!(moved.ids.len(), 4);
         // Kosmonaut answers as the files did.
@@ -363,11 +422,9 @@ mod kosmonaut {
         assert_eq!(tree(&d.root.join("a")), tree(&d.root.join("b")));
     }
 
-    #[test]
-    fn links_are_edges_with_valid_times_and_recall_follows_them() {
-        let d = Dirs::new("kosmo-graph");
+    fn links_are_edges_with_valid_times_and_recall_follows_them(d: &Dirs, at: &Db) {
         let cx = d.cx();
-        let k = db(&d);
+        let k = db(at);
         let style = k
             .remember(
                 &cx,
@@ -458,9 +515,7 @@ mod kosmonaut {
             .as_millis() as u64
     }
 
-    #[test]
-    fn with_an_embedder_recall_also_finds_memories_near_in_meaning() {
-        let d = Dirs::new("kosmo-vectors");
+    fn with_an_embedder_recall_also_finds_memories_near_in_meaning(d: &Dirs, at: &Db) {
         let cx = d.cx();
         let vectors = StaticVectors::parse(
             "static:test",
@@ -468,15 +523,12 @@ mod kosmonaut {
         )
         .expect("vectors");
         // Written before the embedder was configured: recall embeds it.
-        let plain_k = db(&d);
+        let plain_k = db(at);
         let ship = plain_k
             .remember(&cx, new("We ship on Tuesdays", Scope::User))
             .expect("ship");
         drop(plain_k);
-        let k = Kosmonaut::new(
-            d.root.join("data/memory.kosmonaut"),
-            Some(Arc::new(vectors)),
-        );
+        let k = at.open(Some(Arc::new(vectors)));
         k.remember(&cx, new("Lunch is at noon", Scope::User))
             .expect("lunch");
         let found = k.recall(&cx, "release", None, None).expect("recall");
@@ -486,7 +538,7 @@ mod kosmonaut {
         // Without an embedder there is nothing near.
         drop(k);
         assert!(
-            db(&d)
+            db(at)
                 .recall(&cx, "release", None, None)
                 .expect("recall")
                 .items
@@ -494,10 +546,8 @@ mod kosmonaut {
         );
     }
 
-    #[test]
-    fn collector_rows_and_session_summaries_share_the_store() {
-        let d = Dirs::new("kosmo-rows");
-        let k = db(&d);
+    fn collector_rows_and_session_summaries_share_the_store(d: &Dirs, at: &Db) {
+        let k = db(at);
         let row = |at, pane: &str| memory::CollectorRow {
             collector: "test-failures".into(),
             at_unix_ms: at,
@@ -527,5 +577,61 @@ mod kosmonaut {
             Some("Fixed the lints; tests pass.".into())
         );
         assert!(k.set_summary("../x", "no").is_err());
+    }
+
+    /// A server that stops is "memory unavailable", promptly, and memory
+    /// is back when the server is.
+    #[test]
+    fn a_stopped_server_is_memory_unavailable_until_it_is_back() {
+        let Some(mut s) = TestServer::start("stopped", false) else {
+            return;
+        };
+        let d = Dirs::new("kserver-stopped");
+        let cx = d.cx();
+        let k = Kosmonaut::server(Server::new(&s.url, false, None).expect("server"), None);
+        let m = k
+            .remember(&cx, new("Deploys go through staging first", Scope::Project))
+            .expect("remember");
+        s.stop();
+        let asked = Instant::now();
+        let e = k.recall(&cx, "staging", None, None).expect_err("stopped");
+        assert!(matches!(e, Error::Unavailable(_)), "{e:?}");
+        assert!(
+            e.to_string()
+                .starts_with(&format!("memory unavailable: kosmonaut server {}", s.url)),
+            "{e}"
+        );
+        assert!(asked.elapsed() < Duration::from_secs(10));
+        assert!(matches!(
+            k.remember(&cx, new("Releases ship on Tuesdays", Scope::Project)),
+            Err(Error::Unavailable(_))
+        ));
+        s.restart();
+        assert_eq!(k.get(&cx, &m.id).expect("back").text, m.text);
+    }
+
+    /// The token comes from the environment variable the settings name;
+    /// with none there, or one the server refuses, memory is unavailable
+    /// and says why.
+    #[test]
+    fn a_missing_or_refused_token_is_memory_unavailable() {
+        let Some(s) = TestServer::start("token", true) else {
+            return;
+        };
+        let d = Dirs::new("kserver-token");
+        let cx = d.cx();
+        let var = "DREAMER_TEST_KOSMONAUT_TOKEN_NEVER_SET";
+        let k = Kosmonaut::server(
+            Server::new(&s.url, false, Some(var.into())).expect("server"),
+            None,
+        );
+        let e = k.list(&cx, None, None).expect_err("no token");
+        assert!(matches!(e, Error::Unavailable(_)), "{e:?}");
+        assert!(e.to_string().contains(&format!("{var} is not set")), "{e}");
+        // No token at all, which a server that requires one refuses.
+        let k = Kosmonaut::server(Server::new(&s.url, false, None).expect("server"), None);
+        let e = k.list(&cx, None, None).expect_err("refused");
+        assert!(matches!(e, Error::Unavailable(_)), "{e:?}");
+        assert!(e.to_string().contains("refused the token"), "{e}");
     }
 }

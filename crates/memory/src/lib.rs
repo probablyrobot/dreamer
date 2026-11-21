@@ -7,12 +7,14 @@
 //! provider can share ([`search`]), and the providers: [`Files`], one
 //! markdown file per memory plus a `MEMORY.md` index, the layout Claude
 //! Code's memory uses; and, with the `kosmonaut` feature, `Kosmonaut`, a
-//! graph database embedded in the daemon. [`transfer`] copies memories
-//! from one provider to another. See `docs/memory.md`.
+//! graph database embedded in the daemon or reached as a server over gRPC.
+//! [`transfer`] copies memories from one provider to another. See
+//! `docs/memory.md`.
 //!
-//! Headless: no GUI or async runtime, and no model unless an [`embed`]
-//! embedder is configured. Calls do blocking I/O; the daemon runs them off
-//! its event loop.
+//! Headless: no GUI, and no model unless an [`embed`] embedder is
+//! configured. Calls do blocking I/O; the daemon runs them off its event
+//! loop. Only the Kosmonaut server client runs an async runtime, a small
+//! one of its own.
 
 pub mod embed;
 mod files;
@@ -27,7 +29,7 @@ use std::path::{Path, PathBuf};
 pub use files::Files;
 pub use index::{INDEX_BYTES, INDEX_HEAD, INDEX_LINES, index};
 #[cfg(feature = "kosmonaut")]
-pub use kosmonaut::{CollectorRow, Kosmonaut, Summary};
+pub use kosmonaut::{CollectorRow, Kosmonaut, Server, Summary};
 
 /// Where a memory applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -163,6 +165,10 @@ pub enum Error {
     Malformed(Problem),
     /// The store failed.
     Io(String),
+    /// The store cannot be reached: a Kosmonaut server that is down, does
+    /// not answer in time, or refuses the token. Memory is unavailable
+    /// until it is back; nothing else depends on it.
+    Unavailable(String),
 }
 
 impl std::fmt::Display for Error {
@@ -170,6 +176,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::NotFound(id) => write!(f, "no memory `{id}`"),
             Error::Invalid(m) | Error::Io(m) => f.write_str(m),
+            Error::Unavailable(m) => write!(f, "memory unavailable: {m}"),
             Error::Malformed(p) => write!(f, "{}: {}", p.path.display(), p.message),
         }
     }

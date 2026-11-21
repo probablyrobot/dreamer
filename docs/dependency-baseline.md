@@ -177,6 +177,7 @@ framework, GPU, or font crate (`cargo xtask headless --check`).
 | Tag | `v0.24.0` |
 | Commit | `dbd5af275a7efa3f2ff3ca45afc45b40a214430e` (recorded in `Cargo.lock`) |
 | Used by | `memory` and `dreamer-server`, behind their `kosmonaut` feature: the embedded `kosmonaut` memory provider ([memory.md](memory.md#kosmonaut)) |
+| Server | `kosmonaut-server` from the same tag, built with its `grpc` feature: what [server mode](memory.md#server-mode) talks to, and what CI runs the memory tests against |
 | Kosmonaut toolchain | Rust 1.95 at least (its own pin 1.98.1); builds with our 1.99.1 |
 | Features | Default: no cloud backends, no Arrow; `object_store` with the local file system only |
 | License | Apache-2.0. What it adds to `Cargo.lock` (Tantivy, `object_store`, zstd, and others) is MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, Unlicense, or zlib, alone or as choices |
@@ -205,6 +206,41 @@ every build needs read access to it, with or without the feature:
   git in the container reads the repository's URL from the mirror
   (`url.<mirror>.insteadOf`). No token enters a container
   (`xtask/src/private_git.rs`).
+
+## gRPC client (Kosmonaut server mode)
+
+| Crate | Version | Used by | License |
+| --- | --- | --- | --- |
+| `tonic` (default features off; `channel`, `codegen`, `tls-ring`, `tls-webpki-roots`) | `0.14.9` | `memory` (with the `kosmonaut` feature): the Kosmonaut provider's `mode: server` | MIT |
+| `tonic-prost` | `0.14.9` | same: the protobuf codec | MIT |
+| `prost` | `0.14.5` | same: the messages | Apache-2.0 |
+| `hyper`, `hyper-util`, `h2`, `tower`, `tokio-rustls`, `tokio-stream`, and their small helpers (`http-body-util`, `hyper-timeout`, `sync_wrapper`, `tower-layer`, `tower-service`, `try-lock`, `want`) | as `Cargo.lock` records them | same: through `tonic` | MIT, or MIT OR Apache-2.0 (`sync_wrapper`: Apache-2.0) |
+
+`prost`, `rustls` (provider `ring`), `webpki-roots`, and Tokio were
+already in the lock; the rest are new, and only a build with the
+`kosmonaut` feature links them.
+
+Why these:
+
+- **gRPC is Kosmonaut's server protocol** at the pinned release, next to
+  an HTTP JSON API with the same statements and sessions. The design
+  names gRPC, and `tonic` is the client Kosmonaut's own server is built
+  on, at the same major version.
+- **No code generation.** The handful of messages Dreamer uses
+  (`QueryRequest`, `QueryResponse`, the session and table-listing
+  messages) are written out with `prost`'s derive, with the field
+  numbers of Kosmonaut's `.proto` files, so the build runs no `protoc`
+  and has no build script. Fields Dreamer does not use are skipped when a
+  reply is decoded.
+- **TLS as for the HTTP client**: rustls with `ring` and the
+  `webpki-roots` certificates, so nothing is read from the system and no
+  C library beyond `ring` is built.
+- **One small runtime.** Memory calls are synchronous and run on the
+  daemon's blocking threads; the client keeps a one-thread Tokio runtime
+  of its own and each call waits for its answer, bounded by a timeout.
+
+`cargo xtask policy` allows `tonic` in one product file,
+`crates/memory/src/kosmonaut/server.rs`.
 
 ## GPUI
 

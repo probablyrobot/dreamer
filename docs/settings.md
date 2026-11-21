@@ -386,15 +386,20 @@ web:
 default) keeps one markdown file per memory and a `MEMORY.md` index, under
 `<config dir>/memory/` for the user and `.dreamer/memory/` in a project.
 `provider: kosmonaut` keeps every memory in one graph database for the
-user, embedded in the daemon (a build with the `kosmonaut` feature).
-A change applies to the next memory call. See [memory.md](memory.md).
+user, embedded in the daemon or on a Kosmonaut server (a build with the
+`kosmonaut` feature). A change applies to the next memory call. See
+[memory.md](memory.md).
 
 ```yaml
 memory:
   provider: kosmonaut
   kosmonaut:
-    mode: embedded                       # default, and the only mode so far
-    path: ~/.local/share/dreamer/memory.kosmonaut   # default: <data dir>/memory.kosmonaut
+    mode: embedded                       # default; or server
+    path: ~/.local/share/dreamer/memory.kosmonaut   # embedded; default: <data dir>/memory.kosmonaut
+    # mode: server
+    # url: grpc://memory.example:7687    # server: grpc://host:port, or unix:/path
+    # tls: true                          # default; false only to localhost
+    # token_env: KOSMONAUT_TOKEN         # the variable holding the token, in dreamerd's environment
     embedder:                            # optional; without it, no vectors
       kind: static                       # static, local, or openai
       path: ~/models/words.vec           # static: word vectors, word2vec text format
@@ -412,8 +417,10 @@ memory:
 
 `path` and `embedder.path` are absolute or start with `~/`. The `openai`
 key is read only from the environment variable `key_env` names, never
-from a file or keychain. See [memory.md](memory.md#embedders) for what
-each embedder does.
+from a file or keychain, and so is the Kosmonaut server's token
+(`token_env`); a `token:` key is refused. See
+[memory.md](memory.md#embedders) for what each embedder does, and
+[memory.md](memory.md#server-mode) for server mode.
 
 ## Agent providers
 
