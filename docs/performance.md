@@ -10,12 +10,30 @@ no measurement here is not claimed.
 cargo xtask bench headless [--panes N] [--history LINES]  # this machine
 cargo xtask bench headless --panes 1000 --linux           # the gate's ARM64 Linux container
 cargo xtask bench busy [--panes N] [--idle M]             # typing under load, split by process
+cargo xtask bench report target/bench/headless-*.json     # result files as Markdown for this page
 ```
 
 The harness builds `dreamerd` and `dreamer-bench` in release mode. It runs
 them against a private tmux server and private daemon directories, never
-the user's. It prints a table and writes the results, with the machine they
-ran on, to `target/bench/<workload>-<time>.json`.
+the user's. It prints a table and writes the results to
+`target/bench/<workload>-<time>.json`. Every result file, the desktop's
+too, records:
+
+- **The machine:** model, CPU, cores, memory, and operating system.
+- **The revision:** commit, branch, whether tracked files had uncommitted
+  changes, the build profile, `rustc -V`, `tmux -V` of the tmux that ran,
+  and the pinned tmux and libghostty-vt from `deps/baseline.toml`.
+
+`bench report` prints one or more result files as the Markdown this page
+uses: the machine and revision, then a table with a column per file and a
+row per measure, p50 and p95 on one row. Copy the rows from it rather than
+typing numbers; the Target column is left for you to fill.
+
+`--debug` builds and runs the debug binaries instead. It checks that the
+harness works and is never a measurement; its results say so. Each pull
+request's CI job runs `cargo xtask bench headless --panes 4 --debug` and
+`bench report` on its result, on a shared x86-64 runner, and discards
+them. A broken harness fails the job.
 
 **What the headless workload does, in order:**
 

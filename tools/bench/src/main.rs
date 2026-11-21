@@ -6,6 +6,7 @@
 //! ```text
 //! dreamer-bench headless [--panes N] [--history LINES] [--json FILE]
 //! dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]
+//! dreamer-bench machine
 //! ```
 //!
 //! `busy` is the typing-under-load part of `headless` on its own, with the
@@ -16,7 +17,9 @@
 //!
 //! Each measure says what it timed. Results are printed as a table and,
 //! with `--json`, written for the record together with the machine they
-//! ran on.
+//! ran on and the revision they were built from. `cargo xtask bench`
+//! passes the revision in `DREAMER_BENCH_REVISION` (JSON). `machine` prints
+//! the machine alone, as JSON, for the GUI benchmark's results.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -33,8 +36,12 @@ fn main() {
     let r = match args.first().map(String::as_str) {
         Some("headless") => headless(&args[1..]),
         Some("busy") => busy(&args[1..]),
+        Some("machine") if args.len() == 1 => {
+            println!("{}", hardware());
+            Ok(())
+        }
         _ => Err(
-            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]"
+            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench machine"
                 .into(),
         ),
     };
@@ -453,7 +460,7 @@ fn busy(args: &[String]) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
     let result = rt.block_on(run_busy(panes, idle, &options))?;
-    let report = json!({ "workload": "busy", "panes": panes, "idle": idle, "tmux_options": options, "hardware": hardware(), "results": result });
+    let report = json!({ "workload": "busy", "panes": panes, "idle": idle, "tmux_options": options, "hardware": hardware(), "revision": revision(), "results": result });
     print_table(&report);
     if let Some(p) = json_out {
         write_json(&p, &report)?;
@@ -590,6 +597,16 @@ fn hardware() -> Value {
     })
 }
 
+/// The revision the binaries were built from, as `cargo xtask bench`
+/// recorded it: commit, branch, uncommitted changes, build profile,
+/// toolchain, tmux, and the pinned dependencies. Null when run directly.
+fn revision() -> Value {
+    std::env::var("DREAMER_BENCH_REVISION")
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null)
+}
+
 fn headless(args: &[String]) -> Result<(), String> {
     let mut panes = 1000usize;
     let mut history = 0usize;
@@ -618,7 +635,7 @@ fn headless(args: &[String]) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
     let result = rt.block_on(run_headless(panes, history))?;
-    let report = json!({ "workload": "headless", "panes": panes, "history": history, "hardware": hardware(), "results": result });
+    let report = json!({ "workload": "headless", "panes": panes, "history": history, "hardware": hardware(), "revision": revision(), "results": result });
     print_table(&report);
     if let Some(p) = json_out {
         write_json(&p, &report)?;
@@ -636,6 +653,7 @@ fn write_json(p: &Path, v: &Value) -> Result<(), String> {
 
 fn print_table(report: &Value) {
     println!("machine: {}", report["hardware"]);
+    println!("revision: {}", report["revision"]);
     println!("{:<52} {:>12}  unit", "measure", "value");
     if let Some(rows) = report["results"].as_array() {
         for r in rows {
