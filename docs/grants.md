@@ -41,7 +41,7 @@ authority (for example `dream mcp --pane %3`), never gain it.
 | `terminal.query` | The listed panes in scope; no panes (every pane) or any `hosts` needs `all_panes` |
 | `actions.submit` on a pane (split, resize, select, zoom, input, keys, kill) | That pane in scope |
 | `actions.submit` on a window or session (select, rename, kill, new window) | `all_panes` |
-| `terminal.mirrors`, `daemon.shutdown`, `tmux.prefix_key` (it runs whatever the user bound to the key), every `hosts.*` method | `all_panes` |
+| `terminal.mirrors`, `daemon.diagnostics`, `daemon.set_diagnostics`, `daemon.shutdown`, `tmux.prefix_key` (it runs whatever the user bound to the key), every `hosts.*` method | `all_panes` |
 | `hosts.forward`, `hosts.unforward` | `web.forward` in the grant (never the methods by name) and `all_panes`; see [Reaching a host's loopback](#reaching-a-hosts-loopback) |
 | `hosts.call` of `web.open` or `web.navigate` at a loopback address | Also `web.forward` |
 | `forward.open`, `forward.write`, `forward.ack`, `forward.close` | The owner grant: they are the coordinator's, on the host's daemon |

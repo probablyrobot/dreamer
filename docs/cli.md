@@ -53,6 +53,8 @@ refused (the output says why), and 3 when the outcome is unknown. See
 | --- | --- |
 | `dream ensure-running [tmux options]` | Start `dreamerd` unless it is running |
 | `dream status [--json]` | Process, socket, log, clients, heap in use, version, and tmux endpoint state |
+| `dream status --perf [--json]` | The same, then performance diagnostics: stage timings, traffic counters, and queue depths |
+| `dream diagnostics on\|off\|reset [--json]` | Turn performance diagnostics on or off, or zero them; see [performance.md](performance.md#path-timings-and-diagnostics) |
 | `dream version` | Client and daemon versions and build family |
 | `dream shutdown` | Stop `dreamerd`. tmux keeps running |
 | `dream doctor` | Diagnostics: directories and their permissions, socket, startup lock, ledger summary, daemon, and tmux link. Never starts the daemon |

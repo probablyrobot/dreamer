@@ -153,9 +153,11 @@ impl Replica {
     pub fn frame(
         &mut self,
     ) -> Option<Result<std::sync::Arc<terminal_ghostty::core::FrameSnapshot>, String>> {
-        self.engine
-            .as_mut()
-            .map(|e| e.frame().map_err(|e| e.to_string()))
+        let e = self.engine.as_mut()?;
+        let t = perf::start();
+        let frame = e.frame().map_err(|e| e.to_string());
+        perf::finish(perf::Stage::Frame, t);
+        Some(frame)
     }
 
     /// Move the local viewport through history. View state only: nothing
@@ -259,7 +261,10 @@ impl Replica {
             self.early.extend(b.records.iter().cloned());
             return Ok(Outcome::Buffered(b.records.len()));
         }
-        self.apply(b.records.clone()).map(Outcome::Applied)
+        let parse = perf::start();
+        let r = self.apply(b.records.clone()).map(Outcome::Applied);
+        perf::finish(perf::Stage::ReplicaParse, parse);
+        r
     }
 
     fn apply(&mut self, records: Vec<api::TerminalRecord>) -> Result<usize, ReplicaError> {

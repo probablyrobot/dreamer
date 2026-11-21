@@ -10,7 +10,10 @@
 //! dream workspace up <name|path> [-L socket] [--tmux PATH]
 //!                                       create the workspace's tmux session
 //! dream version                       client and daemon versions
-//! dream status [--json]                 daemon process, socket, log, tmux endpoint
+//! dream status [--perf] [--json]        daemon process, socket, log, tmux endpoint
+//!                                       (and performance diagnostics)
+//! dream diagnostics on|off|reset [--json]
+//!                                       turn performance diagnostics on or off, or zero them
 //! dream ensure-running [-L socket | --tmux-socket-path P] [--tmux PATH]
 //!                                       start dreamerd unless it is running
 //! dream shutdown                        stop dreamerd (tmux keeps running)
@@ -76,7 +79,8 @@ const USAGE: &str = "usage:
   dream workspace check <name|path>
   dream workspace up <name|path> [-L socket] [--tmux PATH]
   dream version
-  dream status [--json]
+  dream status [--perf] [--json]
+  dream diagnostics on|off|reset [--json]
   dream ensure-running [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream shutdown
   dream ls [--json] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
@@ -140,8 +144,16 @@ fn main() -> ExitCode {
         ["workspace", "check", target] => check(target),
         ["workspace", "up", target, rest @ ..] => up(target, rest),
         ["version"] => daemon::version(),
-        ["status"] => daemon::status(false),
-        ["status", "--json"] => daemon::status(true),
+        ["status"] => daemon::status(false, false),
+        ["status", "--json"] => daemon::status(true, false),
+        ["status", "--perf"] => daemon::status(false, true),
+        ["status", "--perf", "--json"] | ["status", "--json", "--perf"] => {
+            daemon::status(true, true)
+        }
+        ["diagnostics", what @ ("on" | "off" | "reset")] => daemon::diagnostics(what, false),
+        ["diagnostics", what @ ("on" | "off" | "reset"), "--json"] => {
+            daemon::diagnostics(what, true)
+        }
         ["shutdown"] => daemon::shutdown(),
         ["ls", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| match extra.as_slice() {

@@ -83,6 +83,10 @@ impl Flow {
     }
 }
 
+/// A pane's held output, in order. Each record keeps its decode time
+/// while diagnostics are on.
+type Held = std::collections::VecDeque<(Record, Option<std::time::Instant>)>;
+
 pub(crate) struct Router {
     conn: Connection,
     events: mpsc::Receiver<ConnEvent>,
@@ -95,7 +99,7 @@ pub(crate) struct Router {
     attaches: HashMap<TmuxPaneId, u32>,
     /// Output waiting for room in a full worker lane, in order, with its
     /// size: the router itself never waits on one pane.
-    backlog: HashMap<TmuxPaneId, (std::collections::VecDeque<Record>, usize)>,
+    backlog: HashMap<TmuxPaneId, (Held, usize)>,
     epoch: ConnectionEpoch,
     changes: watch::Sender<u64>,
     flows: HashMap<TmuxPaneId, Flow>,
@@ -111,6 +115,12 @@ pub(crate) struct Router {
     release_at: Option<tokio::time::Instant>,
     /// tmux's paste-buffer changes, for the host's followers.
     buffers: Option<watch::Sender<(u64, String)>>,
+    /// Diagnostics only: when the read the current notifications came
+    /// from returned, and when it was decoded.
+    read_at: Option<(std::time::Instant, std::time::Instant)>,
+    /// Diagnostics only: when input was last sent to each pane, until its
+    /// next output is read.
+    inputs: HashMap<TmuxPaneId, std::time::Instant>,
 }
 
 /// How long after the last demotion freed memory is released.
@@ -152,6 +162,8 @@ impl Router {
             queued: std::collections::VecDeque::new(),
             release_at: None,
             buffers: None,
+            read_at: None,
+            inputs: HashMap::new(),
         }
     }
 
@@ -212,6 +224,7 @@ impl Router {
                 e = self.events.recv() => match e {
                     Some(ConnEvent::Notification(n)) => self.on_notification(n).await,
                     Some(ConnEvent::LateOutcome { .. }) => {}
+                    Some(ConnEvent::Read { read, decoded }) => self.read_at = Some((read, decoded)),
                     // The connection is gone: stop, which stops the workers
                     // and ends every subscription as connection lost.
                     Some(ConnEvent::Closed { .. }) | None => {
@@ -343,6 +356,20 @@ impl Router {
                 };
                 let _ = reply.send(woke);
             }
+            Control::Input { pane, at } => {
+                if perf::on() {
+                    self.inputs.insert(pane, at);
+                }
+            }
+            Control::Queues { reply } => {
+                let _ = reply.send(crate::RouterQueues {
+                    events: self.events.len(),
+                    backlog_panes: self.backlog.len(),
+                    backlog_bytes: self.backlog.values().map(|(_, b)| *b).sum(),
+                    attaching: self.attaching.len(),
+                    attach_queue: self.queued.len(),
+                });
+            }
             Control::States { reply } => {
                 let _ = reply.send(
                     self.flows
@@ -455,7 +482,7 @@ impl Router {
             while !queue.is_empty() {
                 match worker.try_reserve() {
                     Ok(slot) => {
-                        let Some(record) = queue.pop_front() else {
+                        let Some((record, at)) = queue.pop_front() else {
                             break;
                         };
                         *bytes -= record_size(&record);
@@ -464,6 +491,7 @@ impl Router {
                             generation,
                             attach,
                             record,
+                            at,
                         });
                     }
                     Err(crate::worker::LaneError::Full) => break,
@@ -526,6 +554,17 @@ impl Router {
     }
 
     async fn record(&mut self, pane: TmuxPaneId, record: Record) {
+        // Diagnostics: when this record was decoded, for the owner to time
+        // its route; nothing while they are off.
+        let at = if perf::on() {
+            self.read_at.map(|(_, decoded)| decoded)
+        } else {
+            self.read_at = None;
+            if !self.inputs.is_empty() {
+                self.inputs.clear();
+            }
+            None
+        };
         match self.flows.get_mut(&pane) {
             Some(Flow::Buffering { records, .. }) => records.push(record),
             Some(Flow::Live { generation }) => {
@@ -544,16 +583,21 @@ impl Router {
                         generation,
                         attach,
                         record,
+                        at,
                     });
                     return;
                 }
                 let (queue, bytes) = self.backlog.entry(pane).or_default();
                 *bytes += record_size(&record);
-                queue.push_back(record);
+                queue.push_back((record, at));
                 if *bytes > BACKLOG_BYTES {
+                    perf::count(perf::Counter::Reattaches, 1);
                     self.start(pane, generation);
                     self.changed();
                 }
+            }
+            Some(Flow::Cold { .. }) => {
+                perf::count(perf::Counter::ColdDroppedBytes, record_size(&record) as u64);
             }
             // Pausing: already in the coming capture. Failed or unmirrored:
             // nothing to keep.
@@ -568,7 +612,15 @@ impl Router {
         match n {
             Notification::Output { pane, data }
             | Notification::ExtendedOutput { pane, data, .. } => {
-                self.record(TmuxPaneId(pane.0), Record::Bytes(data)).await;
+                let p = TmuxPaneId(pane.0);
+                if !self.inputs.is_empty()
+                    && let Some(sent) = self.inputs.remove(&p)
+                    && let Some((read, _)) = self.read_at
+                    && perf::on()
+                {
+                    perf::record(perf::Stage::Tmux, read.saturating_duration_since(sent));
+                }
+                self.record(p, Record::Bytes(data)).await;
             }
             Notification::Pause { pane } => {
                 let p = TmuxPaneId(pane.0);

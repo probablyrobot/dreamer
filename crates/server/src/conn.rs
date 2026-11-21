@@ -1815,6 +1815,7 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
     }
     let (tx, rx) = mpsc::channel(queues().0);
     let ended = Arc::new(AtomicU8::new(mirror::end::RUNNING));
+    let stamp = Arc::new(perf::Stamp::default());
     let started = match host
         .subscribe(
             pane,
@@ -1823,6 +1824,7 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
                 records: tx,
                 client: p.client,
                 ended: ended.clone(),
+                stamp: Some(stamp.clone()),
             },
         )
         .await
@@ -1877,6 +1879,7 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         wait,
         rx,
         ended,
+        stamp,
         host,
         sub,
         p.pane,
@@ -1911,6 +1914,11 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
                     chunk.iter().map(|(s, r)| to_api(*s, r)).collect(),
                     Vec::new(),
                 );
+                if perf::on() {
+                    let bytes: usize = b.records.iter().map(|r| r.data.len()).sum();
+                    perf::count(perf::Counter::TransferredBytes, bytes as u64);
+                    perf::count(perf::Counter::TransferredBatches, 1);
+                }
                 conn.event(TOPIC_RECORDS, b.encode_to_vec()).await;
             }
         }
@@ -1927,6 +1935,7 @@ async fn stream(
     go: tokio::sync::oneshot::Receiver<()>,
     mut rx: mpsc::Receiver<mirror::Live>,
     ended: Arc<AtomicU8>,
+    stamp: Arc<perf::Stamp>,
     host: mirror::MirrorHost,
     sub: u64,
     pane: u32,
@@ -1969,6 +1978,13 @@ async fn stream(
         if !conn.event(TOPIC_RECORDS, encode(records, effects)).await {
             return;
         }
+        // Diagnostics: from the oldest record of the batch being published
+        // to the batch reaching the connection's writer.
+        if let Some(d) = stamp.take() {
+            perf::record(perf::Stage::Transfer, d);
+        }
+        perf::count(perf::Counter::TransferredBytes, bytes as u64);
+        perf::count(perf::Counter::TransferredBatches, 1);
     }
     let reason = match ended.load(Ordering::SeqCst) {
         mirror::end::LAGGED => api::EndReason::Lagged,

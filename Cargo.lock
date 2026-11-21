@@ -671,6 +671,7 @@ version = "0.6.0"
 dependencies = [
  "api",
  "client",
+ "perf",
  "platform",
  "replica",
  "serde_json",
@@ -1883,6 +1884,7 @@ dependencies = [
  "matcher",
  "memory",
  "mirror",
+ "perf",
  "platform",
  "procreg",
  "prost",
@@ -4154,6 +4156,7 @@ name = "mirror"
 version = "0.6.0"
 dependencies = [
  "domain",
+ "perf",
  "platform",
  "terminal-ghostty",
  "tmux-backend",
@@ -5022,6 +5025,10 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "perf"
+version = "0.6.0"
 
 [[package]]
 name = "phf"
@@ -5995,6 +6002,7 @@ dependencies = [
  "async-channel",
  "client",
  "matcher",
+ "perf",
  "prost",
  "terminal-ghostty",
  "tokio",
@@ -7602,6 +7610,7 @@ name = "tmux-backend"
 version = "0.6.0"
 dependencies = [
  "domain",
+ "perf",
  "serde_json",
  "terminal-ghostty",
  "tmux-protocol",

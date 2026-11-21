@@ -136,6 +136,14 @@ pub enum ConnEvent {
         batch_id: u64,
         responses: Vec<Response>,
     },
+    /// Only while performance diagnostics are on (the `perf` crate): the
+    /// notifications that follow, up to the next `Read`, came from one read
+    /// of tmux's output, which returned at `read` and was decoded by
+    /// `decoded`.
+    Read {
+        read: std::time::Instant,
+        decoded: std::time::Instant,
+    },
     /// The connection ended; no more events follow.
     Closed {
         error: Option<String>,
@@ -284,7 +292,21 @@ async fn reader(
             Ok(n) => n,
             Err(e) => break Some(e.to_string()),
         };
+        let read = perf::start();
+        perf::count(perf::Counter::TmuxBytes, n as u64);
         let parsed: Result<(), ProtocolError> = parser.feed(&buf[..n], &mut out);
+        if let Some(read) = read {
+            let decoded = std::time::Instant::now();
+            perf::record(perf::Stage::Decode, decoded - read);
+            if out.iter().any(|e| matches!(e, Event::Notification(_)))
+                && events
+                    .send(ConnEvent::Read { read, decoded })
+                    .await
+                    .is_err()
+            {
+                return;
+            }
+        }
         for event in out.drain(..) {
             let delivered = match event {
                 Event::Response(r) if attached && r.guard.flags & 1 == 0 => true,
