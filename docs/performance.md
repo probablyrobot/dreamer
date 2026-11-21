@@ -11,6 +11,7 @@ cargo xtask bench headless [--panes N] [--history LINES]  # this machine
 cargo xtask bench headless --panes 1000 --linux           # the gate's ARM64 Linux container
 cargo xtask bench busy [--panes N] [--idle M]             # typing under load, split by process
 cargo xtask bench streams [--panes N] [--corpus NAME]... [--seconds S]  # replayed corpora
+cargo xtask bench tiers [--panes N] [--stream text|escape] [--rate KIB]  # a pane's cost in each tier
 cargo xtask bench report target/bench/headless-*.json     # result files as Markdown for this page
 ```
 
@@ -123,6 +124,38 @@ the pane's title (with `allow-set-title` on, the default), so in the
 includes that. This measures the daemon's side; images through tmux are
 not otherwise claimed (see
 [terminal-compatibility.md](terminal-compatibility.md)).
+
+**The tiers workload** measures what one pane costs the daemon in each
+tier, idle and busy. A Cold pane has no mirror, but tmux still sends its
+output and the daemon reads and decodes it before dropping it (see
+[mirrors.md](mirrors.md#tiers)). This workload measures that cost
+against a Warm and a Hot pane. In order:
+
+1. **Idle.** N idle shells (16 by default), measured Warm, then Cold,
+   then Hot, then closed. Hot means each pane is followed by a client
+   replica in the benchmark process, as a desktop view follows it, and
+   marked Hot.
+2. **Busy.** N panes writing output, measured Warm, then Cold, then Hot.
+3. **No daemon.** The daemon is stopped and tmux is measured alone with
+   the same busy panes.
+
+Each step samples over `--seconds S` (10 by default):
+
+- the daemon's CPU, tmux's CPU, and in the Hot steps the replicas' CPU;
+- the daemon's heap;
+- for Warm and Hot panes, the output their mirrors took in.
+
+Per-pane figures are the growth over the step before the panes existed,
+divided by N. The busy step ends with a busy Cold pane's daemon CPU as a
+share of a busy Warm pane's.
+
+The busy panes write `--rate KIB` KiB a second each (256 by default) in
+ten bursts of `yes` output a second, so every tier sees the same output.
+Check the "output into mirrors" rows against N times the rate: if tmux
+fell behind, the tiers are not comparable. `--rate 0` runs `yes` flat out
+instead, which measures the most tmux delivers rather than a fixed load.
+`--stream escape` writes lines full of colour, attribute, cursor, and
+erase sequences instead of plain text.
 
 **Memory** is reported two ways. Resident size (RSS) is what the system
 sees. It also counts freed memory the allocator keeps for reuse, so after
@@ -350,6 +383,8 @@ Revision: branch `m7-05-launch-and-tabs`.
 
 - **Stage timings on named hardware.** `bench headless` prints them; no
   run is recorded here yet.
+- **A pane's cost in each tier** (`bench tiers`): the workload exists, but
+  its results are not recorded here yet.
 - **Desktop workloads on Linux** (Wayland and X11), and on macOS with more
   than 16 visible panes.
 - **Image-heavy and escape-heavy streams:** the `streams` workload

@@ -4,7 +4,7 @@
 //! they ran on and the revision they were built from to `target/bench/`.
 //!
 //! ```text
-//! cargo xtask bench headless|busy|streams [OPTIONS] [--debug] [--linux]
+//! cargo xtask bench headless|busy|streams|tiers [OPTIONS] [--debug] [--linux]
 //! cargo xtask bench gui [--panes N]
 //! cargo xtask bench report FILE...
 //! ```
@@ -24,7 +24,8 @@ use std::process::Command;
 
 use serde_json::{Value, json};
 
-const USAGE: &str = "usage: cargo xtask bench headless|busy|streams [OPTIONS] [--debug] [--linux]
+const USAGE: &str =
+    "usage: cargo xtask bench headless|busy|streams|tiers [OPTIONS] [--debug] [--linux]
        cargo xtask bench gui [--panes N]
        cargo xtask bench report FILE...";
 
@@ -33,7 +34,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let (workload, rest) = match args {
         [w, rest @ ..] if w == "gui" => return gui(&root, rest),
         [w, rest @ ..] if w == "report" => return report(rest),
-        [w, rest @ ..] if ["headless", "busy", "streams"].contains(&w.as_str()) => {
+        [w, rest @ ..] if ["headless", "busy", "streams", "tiers"].contains(&w.as_str()) => {
             (w.as_str(), rest)
         }
         _ => return Err(USAGE.into()),
@@ -243,6 +244,13 @@ fn label(name: &str, v: &Value) -> String {
     }
     if let Some(i) = n("idle").filter(|i| *i > 0) {
         l += &format!(", {} idle", group(&i.to_string()));
+    }
+    if let Some(s) = v["stream"].as_str() {
+        l += &match n("rate_kib") {
+            Some(0) => format!(", {s} flat out"),
+            Some(r) => format!(", {s} at {} KiB/s a pane", group(&r.to_string())),
+            None => format!(", {s}"),
+        };
     }
     l
 }
