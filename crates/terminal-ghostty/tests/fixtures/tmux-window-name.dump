@@ -1,0 +1,7 @@
+$ printf x
+error[E1]
+ok
+
+
+
+-- 20x6 cursor 0,3 Block
