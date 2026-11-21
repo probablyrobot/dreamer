@@ -21,6 +21,9 @@
 //!    waits to be drawn.
 //!
 //! The results are written to the file as JSON, and the process exits.
+//! The harness passes the pane count, the machine, and the revision in
+//! `DREAMER_BENCH_PANES`, `DREAMER_BENCH_MACHINE`, and
+//! `DREAMER_BENCH_REVISION` (each JSON); the file carries them as given.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -552,7 +555,19 @@ pub(crate) async fn run(
     // 7. A streaming transcript.
     transcript(any, &ws, cx, &mut put).await;
 
-    let report = json!({ "workload": "gui", "results": results });
+    let given = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let report = json!({
+        "workload": "gui",
+        "panes": given("DREAMER_BENCH_PANES"),
+        "hardware": given("DREAMER_BENCH_MACHINE"),
+        "revision": given("DREAMER_BENCH_REVISION"),
+        "results": results,
+    });
     if let Err(e) = std::fs::write(
         &out,
         serde_json::to_string_pretty(&report).unwrap_or_default(),

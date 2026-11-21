@@ -33,9 +33,10 @@ usage: cargo xtask <command>
 commands:
   doctor                       check the local toolchain and native build prerequisites
   api [--check]                regenerate (or check) API artifacts from crates/api/schema
-  bench headless|busy [OPTIONS] [--linux]
+  bench headless|busy [OPTIONS] [--debug] [--linux]
                                the headless benchmark workloads, release build, results in target/bench
   bench gui [--panes N]        the desktop measuring itself (needs an awake, unlocked display)
+  bench report FILE...         result files as the Markdown docs/performance.md records
   build-report [--ci-run ID]   the release build report (spec 17.6) from target/package, the gate, and CI
   release vX.Y.Z               build both lanes' artifacts, tag, and fill a draft GitHub release with the report
   bindings [--check]           regenerate (or check) the libghostty-vt Rust bindings

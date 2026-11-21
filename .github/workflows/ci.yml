@@ -81,6 +81,15 @@ jobs:
       - name: Build the pinned tmux baseline
         run: echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
       - run: cargo build --workspace --all-targets --locked
+      # The benchmark harness still works: a few panes, debug binaries, on a
+      # shared runner. A correctness check only; the numbers are discarded
+      # and are not performance evidence.
+      - name: Benchmark harness smoke (not performance evidence)
+        run: |
+          rm -rf target/bench
+          cargo xtask bench headless --panes 4 --debug
+          cargo xtask bench report target/bench/headless-*.json
+          rm -rf target/bench
       - name: Generate snapshot fixtures
         run: cargo run --locked -p terminal-ghostty --bin snapshot-fixtures -- target/snapshot-fixtures
       - name: Upload this architecture's snapshot fixtures

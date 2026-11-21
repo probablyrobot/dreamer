@@ -165,7 +165,6 @@ See [settings.md](settings.md#pane-tiers).
 
 ## Not yet
 
-- **Automatic demotion** to Cold (an idle policy and per-host budgets).
 - **Scrollback depth:** a mirror keeps as much scrollback as tmux's
   `history-limit`.
 - **Pixel size:** the canonical cell pixel size is fixed (10×20) until
