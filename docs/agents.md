@@ -709,12 +709,16 @@ and `env` before `app-server`. Dreamer sends `initialize`, `initialized`,
 `account/read`, then `thread/start` (the session's directory,
 `approvalPolicy: on-request`, `sandbox: workspace-write`, and the model
 when set) or `thread/resume`. A prompt is `turn/start`; a cancel is
-`turn/interrupt`. Command and file-change approval requests become
+`turn/interrupt`. Codex starts Dreamer's tools with the thread but does
+not wait for them, so a prompt waits until Codex reports them ready
+(`mcpServer/startupStatus/updated`), or failed, which the transcript
+says, or for at most 30 seconds. Command and file-change approval requests become
 approval requests (`accept` or `decline`); requests for more permissions
 are granted nothing, and MCP elicitations are declined. Text, reasoning,
 command, file-change, MCP, and web search items, the plan, and token
 usage map to the events above. This adapter follows the app server's
-protocol as published with Codex 0.169.0; the per-turn `codex exec
+protocol as published with Codex 0.169.0, and was run with Codex
+0.170.0; the per-turn `codex exec
 --json` mode is used only for [delegation](#delegation-to-claude-code-and-codex).
 
 **ACP agents** run as their `command`, speaking the Agent Client

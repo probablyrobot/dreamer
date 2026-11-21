@@ -2,7 +2,8 @@
 # A scripted stand-in for `codex app-server` (its JSON-RPC protocol, version
 # 2, without the `jsonrpc` member), for tests that must run without a model
 # or a login. It answers initialize, account/read (a ChatGPT login),
-# thread/start, thread/resume, turn/start, and turn/interrupt, and a prompt
+# thread/start, thread/resume (each followed by its Dreamer tools being
+# ready, as Codex reports them), turn/start, and turn/interrupt, and a prompt
 # by what it says:
 #
 #   "use a tool"   text, a command item, then a command approval request;
@@ -56,11 +57,13 @@ while IFS= read -r line; do
 	*'"method":"thread/start"'*)
 		printf 'thread/start:%s\n' "$line" >>"$log"
 		emit "{\"id\":$id,\"result\":{\"thread\":{\"id\":\"$thread\"},\"model\":\"fake\",\"modelProvider\":\"openai\"}}"
+		note mcpServer/startupStatus/updated "{\"threadId\":\"$thread\",\"name\":\"dreamer\",\"status\":\"ready\",\"error\":null}"
 		;;
 	*'"method":"thread/resume"'*)
 		thread=$(printf '%s' "$line" | sed -n 's/.*"threadId":"\([^"]*\)".*/\1/p')
 		printf 'thread/resume:%s\n' "$thread" >>"$log"
 		emit "{\"id\":$id,\"result\":{\"thread\":{\"id\":\"$thread\"},\"model\":\"fake\",\"modelProvider\":\"openai\"}}"
+		note mcpServer/startupStatus/updated "{\"threadId\":\"$thread\",\"name\":\"dreamer\",\"status\":\"ready\",\"error\":null}"
 		;;
 	*'"method":"turn/interrupt"'*)
 		emit "{\"id\":$id,\"result\":{}}"
