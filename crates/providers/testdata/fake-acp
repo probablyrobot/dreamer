@@ -42,7 +42,11 @@ while IFS= read -r line; do
 		;;
 	*'"method":"session/new"'*)
 		printf 'new:%s\n' "$line" >>"$log"
-		emit "{\"jsonrpc\":\"2.0\",\"id\":$(num_id "$line"),\"result\":{\"sessionId\":\"$sid\"}}"
+		emit "{\"jsonrpc\":\"2.0\",\"id\":$(num_id "$line"),\"result\":{\"sessionId\":\"$sid\",\"modes\":{\"currentModeId\":\"auto\",\"availableModes\":[{\"id\":\"default\",\"name\":\"Ask\"},{\"id\":\"auto\",\"name\":\"Auto\"}]}}}"
+		;;
+	*'"method":"session/set_mode"'*)
+		printf 'set_mode:%s\n' "$(printf '%s' "$line" | sed -n 's/.*"modeId":"\([^"]*\)".*/\1/p')" >>"$log"
+		emit "{\"jsonrpc\":\"2.0\",\"id\":$(num_id "$line"),\"result\":{}}"
 		;;
 	*'"method":"session/load"'*)
 		sid=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')

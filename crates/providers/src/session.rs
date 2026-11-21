@@ -124,6 +124,8 @@ pub struct Spec {
     /// Dreamer's tools as an MCP server (`dream mcp`), for the harnesses
     /// that take one (Claude Code, Codex, ACP agents). It runs with `env`.
     pub tools: Option<crate::Tools>,
+    /// ACP agents: the session mode to set when the session starts.
+    pub mode: Option<String>,
 }
 
 /// How Dreamer talks to a harness.

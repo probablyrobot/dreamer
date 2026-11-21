@@ -40,6 +40,8 @@ use crate::log;
 const LIVE: usize = 1024;
 /// How long closing waits for the harness to end.
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
+/// How long a registration waits for its session to finish starting.
+const REGISTER_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_LIMIT: u32 = 1000;
 const MAX_LIMIT: u32 = 10_000;
 
@@ -468,6 +470,7 @@ fn spec(
                 model,
                 resume: info.s.harness_session.clone(),
                 tools,
+                mode: h.mode.clone(),
                 ..providers::session::Spec::default()
             },
         ));
@@ -984,8 +987,24 @@ impl Sessions {
             .ok()
             .and_then(|m| m.get(id).cloned())
             .ok_or_else(|| refuse("no such agent session"))?;
-        let expected = s.ticket.lock().ok().and_then(|t| t.clone());
-        let pid = s.info.lock().ok().and_then(|i| i.s.pid);
+        // An agent may start its MCP servers while its session is still
+        // being set up (an ACP agent during `session/new`), before the
+        // harness is recorded: wait for that, briefly.
+        let mut waited = Duration::ZERO;
+        let (expected, pid) = loop {
+            let expected = s.ticket.lock().ok().and_then(|t| t.clone());
+            let (pid, starting) = s
+                .info
+                .lock()
+                .ok()
+                .map(|i| (i.s.pid, i.s.state == St::Starting as i32))
+                .unwrap_or_default();
+            if (expected.is_some() && pid.is_some()) || !starting || waited >= REGISTER_WAIT {
+                break (expected, pid);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            waited += Duration::from_millis(100);
+        };
         let (Some(expected), Some(pid)) = (expected, pid) else {
             return Err(refuse("the agent session's harness is not running"));
         };

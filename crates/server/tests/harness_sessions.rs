@@ -271,7 +271,7 @@ async fn alive_for_a_moment(pid: u32) -> bool {
 async fn converse(harness: &str, fake_name: &str, resumed_marker: &str) {
     let yaml = match harness {
         "acp" => format!(
-            "agents:\n  default: helper\n  helper:\n    protocol: acp\n    command: [/bin/sh, {}]\n",
+            "agents:\n  default: helper\n  helper:\n    protocol: acp\n    mode: default\n    command: [/bin/sh, {}]\n",
             fake(fake_name).display()
         ),
         other => format!(
@@ -290,6 +290,14 @@ async fn converse(harness: &str, fake_name: &str, resumed_marker: &str) {
         .expect("create"),
     );
     assert_eq!(s.state, api::AgentSessionState::Idle as i32, "{s:?}");
+    if harness == "acp" {
+        // The mode in the settings is set before any prompt.
+        assert!(
+            setup.log(fake_name).contains("set_mode:default"),
+            "{}",
+            setup.log(fake_name)
+        );
+    }
     let pid = s.pid.expect("a harness process");
     let mut f = Follower::new(&setup, &s.id, 0).await;
 
