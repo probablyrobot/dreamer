@@ -20,6 +20,10 @@ struct Setup {
 
 impl Setup {
     fn new() -> Setup {
+        Setup::with_env(&[])
+    }
+
+    fn with_env(env: &[(&str, &str)]) -> Setup {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let root = PathBuf::from(format!(
             "/tmp/drm-in-{}-{}",
@@ -37,6 +41,7 @@ impl Setup {
             .env("DREAMER_RUNTIME_DIR", root.join("rt"))
             .env("DREAMER_STATE_DIR", root.join("st"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -209,6 +214,39 @@ async fn a_one_mib_paste_arrives_byte_for_byte() {
     let got = std::fs::read(&out).expect("pasted file");
     assert_eq!(got.len(), N);
     assert!(got == data, "the paste was reordered or corrupted");
+}
+
+/// Unfinished pastes (a sender that stopped before the last part) hold
+/// no more than a fixed total; finishing one makes room again.
+#[tokio::test]
+async fn unfinished_pastes_are_bounded() {
+    let s = Setup::with_env(&[("DREAMER_TEST_PASTE_TOTAL", "524288")]);
+    let c = s.client().await;
+    s.type_line("echo RE''ADY");
+    s.wait_mirror(&c, "READY").await;
+    let part =
+        |id: u64, data: Vec<u8>, more: bool| Event::Paste(api::PasteInput { data, more, id });
+    let quarter = vec![b'x'; 256 << 10];
+    input(&c, part(1, quarter.clone(), true), None)
+        .await
+        .expect("first");
+    input(&c, part(2, quarter.clone(), true), None)
+        .await
+        .expect("second");
+    let e = input(&c, part(3, vec![b'y'], true), None)
+        .await
+        .expect_err("over the total");
+    assert!(
+        matches!(e, ClientError::Rpc(ref r) if r.code == api::code::UNAVAILABLE),
+        "{e}"
+    );
+    // The first finishes: its bytes go to the pane and stop counting.
+    input(&c, part(1, Vec::new(), false), None)
+        .await
+        .expect("finish");
+    input(&c, part(3, vec![b'y'], true), None)
+        .await
+        .expect("room again");
 }
 
 #[tokio::test]
