@@ -35,6 +35,7 @@ agents:
   gemini:                     # any name: letters, digits, - and _
     protocol: acp             # required for a custom harness: pi, claude, codex, or acp
     command: [gemini, --experimental-acp]
+    mode: default             # optional, ACP only: the session mode to set
   claude-opus:                # a second configuration of a built-in harness
     protocol: claude
     model: opus
@@ -50,6 +51,12 @@ agents:
   must give one. With `acp` it also needs a `command`; with `pi`,
   `claude`, or `codex` and no `command`, it runs that program from `PATH`
   (pi: Dreamer's install).
+- `mode` (ACP agents only) is a session mode the agent offers, set with
+  `session/set_mode` when a session starts or resumes. Mode names are the
+  agent's own. Some agents start in a mode that decides permissions
+  themselves, so no approval ever reaches Dreamer; pick the mode that asks
+  (for Claude Code's ACP adapter, `default`). A mode the agent does not
+  offer stops the session from starting, with the modes it does offer.
 - `command` is a program and its arguments. A bare program name is looked
   up on `PATH`.
 - An unknown key, or a key that does not apply to that harness, is
@@ -718,6 +725,7 @@ Dreamer is the client:
 | --- | --- | --- |
 | To the agent | `initialize` | The start check: an agent of another protocol version is refused |
 | To the agent | `session/new`, `session/resume`, `session/load` | A session in the session's directory, with Dreamer's MCP server |
+| To the agent | `session/set_mode` | The `mode` in the settings, when given, before any prompt |
 | To the agent | `session/prompt` | A prompt; its answer's `stopReason` ends the turn |
 | To the agent | `session/cancel` | Cancelling; open permission requests are answered `cancelled` |
 | From the agent | `session/update` | `agent_message_chunk` and `agent_thought_chunk` as text and thinking, `tool_call` and `tool_call_update` as tool calls, `plan`, and the cost in `usage_update` |

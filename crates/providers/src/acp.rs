@@ -8,6 +8,7 @@
 //! | --- | --- | --- |
 //! | to the agent | `initialize` | the start check: protocol version, `loadSession`, `sessionCapabilities.resume` |
 //! | to the agent | `session/new`, `session/resume`, `session/load` | a new session, or the agent's own one again |
+//! | to the agent | `session/set_mode` | the configured mode (`agents.NAME.mode`), before any prompt |
 //! | to the agent | `session/prompt` | a prompt; its answer (`stopReason`) ends the turn |
 //! | to the agent | `session/cancel` (notification) | cancelling a turn |
 //! | from the agent | `session/update` (notification) | text, thought, tool calls, plan, usage |
@@ -39,6 +40,18 @@ const NOT_FOUND: i64 = -32601;
 const AUTH_REQUIRED: i64 = -32000;
 
 /// Start an ACP agent for a session. Must be called inside a Tokio runtime.
+/// The session modes an agent's `session/new` (or `load`) answer offers.
+fn offered_modes(result: &Value) -> Vec<String> {
+    result["modes"]["availableModes"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub async fn start(spec: &Spec) -> Result<Harness, String> {
     let version = crate::stdio::version(spec).await;
     let mut proc = Proc::spawn("the ACP agent", crate::stdio::command(spec, &[]))?;
@@ -102,6 +115,29 @@ pub async fn start(spec: &Spec) -> Result<Harness, String> {
         // the transcript, so not repeated.
         if method == "session/load" {
             early.retain(|v| v["method"] != "session/update");
+        }
+        if let Some(mode) = &spec.mode {
+            let offered = offered_modes(&r["result"]);
+            if !offered.is_empty() && !offered.iter().any(|m| m == mode) {
+                return Err(format!(
+                    "it has no session mode `{mode}` (it offers {})",
+                    offered.join(", ")
+                ));
+            }
+            let (id, req) = rpc.request(
+                "session/set_mode",
+                json!({ "sessionId": sid, "modeId": mode }),
+            );
+            let _ = tx.send(req);
+            let r = proc
+                .until("`session/set_mode`", &mut early, |v| is_response(v, id))
+                .await?;
+            if r.get("error").is_some() {
+                return Err(format!(
+                    "`session/set_mode` to `{mode}` failed: {}",
+                    error_text(&r).unwrap_or_default()
+                ));
+            }
         }
         Ok::<_, String>(sid)
     };

@@ -110,6 +110,9 @@ pub struct Harness {
     pub command: Option<Vec<String>>,
     /// The model to ask for; without one, the harness's own default.
     pub model: Option<String>,
+    /// ACP agents only: the session mode Dreamer sets when a session
+    /// starts (`session/set_mode`), such as one that asks before acting.
+    pub mode: Option<String>,
     /// pi only: the release to keep installed.
     pub version: Option<PiVersion>,
     /// pi only: the agent directory (`PI_CODING_AGENT_DIR`) instead of
@@ -160,6 +163,7 @@ impl Protocol {
 struct HarnessFile {
     command: Option<Vec<String>>,
     model: Option<String>,
+    mode: Option<String>,
     version: Option<Value>,
     agent_dir: Option<String>,
     protocol: Option<Protocol>,
@@ -244,6 +248,12 @@ pub fn parse(value: &Value) -> Result<AgentSettings, Problem> {
             }
             h.model = Some(m);
         }
+        if let Some(m) = file.mode {
+            if m.trim().is_empty() {
+                return Err(p(&at("mode"), "must not be empty".into()));
+            }
+            h.mode = Some(m);
+        }
         if let Some(v) = file.version {
             if name != "pi" {
                 return Err(p(
@@ -325,6 +335,9 @@ pub fn parse(value: &Value) -> Result<AgentSettings, Problem> {
                 }
                 _ => {}
             }
+        }
+        if h.mode.is_some() && h.protocol != Some(Protocol::Acp) {
+            return Err(p(&at("mode"), "applies to ACP agents only".into()));
         }
         out.harnesses.insert(name.to_owned(), h);
     }
@@ -415,6 +428,17 @@ mod tests {
         );
         assert_eq!(a.all().len(), 4);
         assert_eq!(a.protocol("gemini"), Some(Protocol::Acp));
+        let m = agents("gemini:\n  protocol: acp\n  command: [gemini]\n  mode: default\n")
+            .expect("mode");
+        assert_eq!(
+            m.harness("gemini").and_then(|h| h.mode.clone()).as_deref(),
+            Some("default")
+        );
+        let (at, why) = agents("claude:\n  mode: default\n").expect_err("not acp");
+        assert!(
+            at.ends_with("claude.mode") && why.contains("ACP agents only"),
+            "{at}: {why}"
+        );
         assert_eq!(a.protocol("codex"), Some(Protocol::Codex));
         assert_eq!(a.protocol("nothing"), None);
         let b = agents("claude: {protocol: claude}\nopus: {protocol: claude, model: opus}\n")
