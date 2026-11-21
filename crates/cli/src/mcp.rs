@@ -7,6 +7,7 @@
 //! connection first narrows its own grant (`grants.narrow`) to just that,
 //! before any tool runs; it can never widen afterwards. A refused or
 //! failed call is a tool error the agent can read, never a crash.
+//! `tools/list` holds only the tools that grant lets it call.
 //!
 //! The app tools (`app_*`) build packages with `dream app` in a directory
 //! inside the apps directory (appdir.rs), which needs no daemon; an image
@@ -41,6 +42,9 @@ struct Dreamer {
     install: Result<(), String>,
     /// The pane the agent runs in (`TMUX_PANE`): apps open beside it.
     own_pane: Option<u32>,
+    /// This connection's grant once narrowed (`grants.current`): the
+    /// tools it lists are those it may call.
+    grant: api::Grant,
 }
 
 #[derive(Default)]
@@ -840,7 +844,162 @@ impl Dreamer {
     }
 }
 
-#[tool_router(server_handler)]
+/// What a tool needs from the server's grant to be listed.
+enum Needs {
+    /// No daemon method: it works on files in the apps directory.
+    Nothing,
+    /// Installing, which this server allows when its grant launches apps.
+    Install,
+    /// Every one of these methods.
+    All(&'static [&'static str]),
+    /// One of these methods.
+    Any(&'static [&'static str]),
+    /// This method here, or `hosts.call` to reach a connected host.
+    OnHost(&'static str),
+    /// Managing filters: `filters.manage` and content read.
+    Filters,
+}
+
+/// What each tool calls. A tool missing here is never listed.
+fn needs(tool: &str) -> Option<Needs> {
+    use api::method as m;
+    Some(match tool {
+        "app_new" | "app_check" | "app_preview" | "app_test" => Needs::Nothing,
+        "app_install" => Needs::Install,
+        "list_panes" => Needs::OnHost(m::TMUX_TOPOLOGY),
+        "read_pane" => Needs::OnHost(m::TERMINAL_READ),
+        "check_job" => Needs::OnHost(m::JOBS_GET),
+        "list_jobs" => Needs::OnHost(m::JOBS_LIST),
+        "start_job" => Needs::OnHost(m::JOBS_START),
+        "list_hosts" => Needs::All(&[m::HOSTS_LIST]),
+        "list_runs" => Needs::All(&[m::AGENTS_RUNS]),
+        "terminals_list" => Needs::All(&[m::TERMINAL_LIST]),
+        "terminal_read" => Needs::All(&[m::TERMINAL_READ]),
+        "find_lines" | "terminal_search" => Needs::All(&[m::TERMINAL_QUERY]),
+        "terminal_watch" => Needs::All(&[m::TERMINAL_WATCH]),
+        "terminal_run" => Needs::All(&[m::TERMINAL_RUN]),
+        "send_input" | "terminal_send" => Needs::All(&[m::TERMINAL_INPUT]),
+        "create_pane" | "layout_split" | "layout_select" | "layout_rename" | "layout_move"
+        | "layout_zoom" | "layout_close" => Needs::All(&[m::ACTIONS_SUBMIT]),
+        "move_panes" => Needs::All(&[m::TMUX_TOPOLOGY, m::ACTIONS_SUBMIT]),
+        "check_action" => Needs::All(&[m::ACTIONS_GET]),
+        "cancel_job" => Needs::All(&[m::JOBS_CANCEL]),
+        "watch_lines" | "list_filters" | "stop_filter" => Needs::Filters,
+        "collector_create" => Needs::All(&[m::COLLECT_CREATE]),
+        "collector_query" => Needs::All(&[m::COLLECT_QUERY]),
+        "collector_list" => Needs::All(&[m::COLLECT_LIST]),
+        "collector_stop" => Needs::All(&[m::COLLECT_STOP]),
+        "memory_recall" => Needs::All(&[m::MEMORY_RECALL]),
+        "memory_remember" => Needs::All(&[m::MEMORY_REMEMBER]),
+        "memory_forget" => Needs::All(&[m::MEMORY_FORGET]),
+        "browser_open" => Needs::Any(&[m::WEB_OPEN, m::WEB_NAVIGATE]),
+        "web_read" => Needs::All(&[m::WEB_READ]),
+        "web_click" => Needs::All(&[m::WEB_CLICK]),
+        "web_type" => Needs::All(&[m::WEB_TYPE]),
+        "web_screenshot" => Needs::All(&[m::WEB_SCREENSHOT]),
+        "app_launch" => Needs::All(&[m::APPS_LAUNCH, m::TMUX_TOPOLOGY]),
+        _ => return None,
+    })
+}
+
+/// Methods that act on panes, which the `observe` level refuses.
+const ACTING: [&str; 10] = [
+    api::method::TERMINAL_INPUT,
+    api::method::TERMINAL_RUN,
+    api::method::ACTIONS_SUBMIT,
+    api::method::JOBS_START,
+    api::method::JOBS_CANCEL,
+    api::method::APPS_LAUNCH,
+    api::method::WEB_OPEN,
+    api::method::WEB_NAVIGATE,
+    api::method::WEB_CLICK,
+    api::method::WEB_TYPE,
+];
+
+/// Methods only an agent's grant at `own` or `elsewhere` may call, of
+/// the connections that are not the owner.
+const AGENT_ACTING: [&str; 5] = [
+    api::method::APPS_LAUNCH,
+    api::method::APPS_TREE,
+    api::method::APPS_CAPTURE,
+    api::method::WEB_OPEN,
+    api::method::WEB_NAVIGATE,
+];
+
+/// Whether `grant` allows `method`, as the daemon checks it: by name or
+/// `service.*`, the page methods through `web.inspect`, and the act level.
+fn may_call(grant: &api::Grant, method: &str) -> bool {
+    if grant.owner {
+        return true;
+    }
+    if AGENT_ACTING.contains(&method) && grant.level < api::ActLevel::Own as i32 {
+        return false;
+    }
+    if ACTING.contains(&method) && grant.level == api::ActLevel::Observe as i32 {
+        return false;
+    }
+    if api::INSPECT_METHODS.contains(&method) {
+        return lists(&grant.methods, api::INSPECT_WEB);
+    }
+    lists(&grant.methods, method)
+}
+
+/// Whether this server lists `tool`: its grant allows what it calls.
+fn offers(grant: &api::Grant, install: bool, tool: &str) -> bool {
+    match needs(tool) {
+        None => false,
+        Some(Needs::Nothing) => true,
+        Some(Needs::Install) => install,
+        Some(Needs::All(ms)) => ms.iter().all(|m| may_call(grant, m)),
+        Some(Needs::Any(ms)) => ms.iter().any(|m| may_call(grant, m)),
+        Some(Needs::OnHost(m)) => {
+            may_call(grant, m)
+                || (may_call(grant, api::method::HOSTS_CALL)
+                    && !(ACTING.contains(&m) && grant.level == api::ActLevel::Observe as i32))
+        }
+        Some(Needs::Filters) => {
+            grant.owner
+                || (lists(&grant.methods, api::MANAGE_FILTERS)
+                    && [
+                        api::method::TERMINAL_QUERY,
+                        api::method::TERMINAL_READ,
+                        api::method::TAPS_SUBSCRIBE,
+                    ]
+                    .iter()
+                    .any(|m| lists(&grant.methods, m)))
+        }
+    }
+}
+
+#[rmcp::tool_handler(router = Self::tool_router())]
+impl rmcp::ServerHandler for Dreamer {
+    /// Only the tools this server's grant lets it call; a call to another
+    /// is still refused, as before.
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+        let cache_hints = context
+            .protocol_version()
+            .is_some_and(|v| v >= rmcp::model::ProtocolVersion::V_2026_07_28);
+        let install = self.install.is_ok();
+        Ok(rmcp::model::ListToolsResult {
+            result_type: Some(rmcp::model::ResultType::COMPLETE),
+            tools: Self::tool_router()
+                .list_all()
+                .into_iter()
+                .filter(|t| offers(&self.grant, install, &t.name))
+                .collect(),
+            meta: None,
+            next_cursor: None,
+            ttl_ms: cache_hints.then_some(0),
+            cache_scope: cache_hints.then_some(rmcp::model::CacheScope::Public),
+        })
+    }
+}
+
+#[tool_router]
 impl Dreamer {
     #[tool(
         description = "List the tmux sessions, windows, and panes on this host, or on a connected host."
@@ -872,6 +1031,17 @@ impl Dreamer {
         Parameters(p): Parameters<JobOnHost>,
     ) -> Result<CallToolResult, ErrorData> {
         self.call_on(p.host, api::Request::JobsGet(api::JobRef { id: p.id }))
+            .await
+    }
+
+    #[tool(
+        description = "List the managed jobs on this host, or on a connected host: each one's id, program, state (running, succeeded, failed, killed, lost), exit status or signal, and pane."
+    )]
+    async fn list_jobs(
+        &self,
+        Parameters(p): Parameters<OnHost>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.call_on(p.host, api::Request::JobsList(api::Empty::default()))
             .await
     }
 
@@ -2016,16 +2186,36 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         } else {
             Ok(())
         };
+        // The grant this connection ends up with, as the daemon answers
+        // registering and narrowing; else (the user's own connection) as
+        // `grants.current` says, which a narrowed grant need not list.
+        let mut held = None;
         if let Some(register) = registered {
-            c.call(register)
+            let r = c
+                .call(register)
                 .await
                 .map_err(|e| format!("the agent session's grant: {e}"))?;
+            if let api::Response::AppsRegister(r) = r {
+                held = r.grant;
+            }
         }
         if narrow {
-            c.call(api::Request::GrantsNarrow(grant))
+            let r = c
+                .call(api::Request::GrantsNarrow(grant))
                 .await
                 .map_err(|e| format!("grants.narrow: {e}"))?;
+            if let api::Response::GrantsNarrow(g) = r {
+                held = Some(g);
+            }
         }
+        let grant = match held {
+            Some(g) => g,
+            // Without an answer, only the tools that need no daemon.
+            None => match c.call(api::Request::GrantsCurrent(api::Empty {})).await {
+                Ok(api::Response::GrantsCurrent(g)) => g,
+                _ => api::Grant::default(),
+            },
+        };
         let server = Dreamer {
             client: Arc::new(c),
             leases: Arc::default(),
@@ -2034,6 +2224,7 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
             own_pane: std::env::var("TMUX_PANE")
                 .ok()
                 .and_then(|p| p.trim_start_matches('%').parse().ok()),
+            grant,
         }
         .serve(rmcp::transport::stdio())
         .await
@@ -2042,4 +2233,16 @@ pub fn run(d: &DaemonArgs, args: &[String]) -> Result<(), String> {
         Ok::<(), String>(())
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_tool_says_what_it_calls() {
+        for tool in Dreamer::tool_router().list_all() {
+            assert!(needs(&tool.name).is_some(), "{}", tool.name);
+        }
+    }
 }

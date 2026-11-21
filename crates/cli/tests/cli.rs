@@ -2497,6 +2497,7 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
             "layout_zoom",
             "list_filters",
             "list_hosts",
+            "list_jobs",
             "list_panes",
             "list_runs",
             "memory_forget",
@@ -2662,6 +2663,161 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
     assert_ne!(stopped["isError"], true, "{stopped}");
 }
 
+/// The names a server's `tools/list` holds, sorted.
+fn tool_names(m: &mut Mcp) -> Vec<String> {
+    let tools = m.request("tools/list", serde_json::json!({}));
+    let mut names: Vec<String> = tools["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    names.sort();
+    names
+}
+
+/// A narrowed server lists only the tools its grant lets it call, so an
+/// agent does not spend turns on refusals; calling another is still
+/// refused. A monitor granted `jobs.list` finds the job that failed.
+#[test]
+fn a_narrowed_mcp_server_lists_only_the_tools_it_may_call() {
+    let cli = Cli::new();
+    cli.ok(&["ensure-running"]);
+    let mut owner = Mcp::start(cli.mcp(&[]));
+    let mut ids = Vec::new();
+    for code in [0, 3] {
+        let started = owner.call(
+            "start_job",
+            serde_json::json!({ "argv": ["sh", "-c", format!("exit {code}")] }),
+        );
+        assert_ne!(started["isError"], true, "{started}");
+        ids.push(
+            started["structuredContent"]["id"]
+                .as_str()
+                .expect("id")
+                .to_owned(),
+        );
+    }
+    drop(owner);
+
+    let mut monitor = Mcp::start(cli.mcp(&[
+        "--method",
+        "jobs.list",
+        "--method",
+        "terminal.query",
+        "--method",
+        "tmux.topology",
+        "--all-panes",
+    ]));
+    assert_eq!(
+        tool_names(&mut monitor),
+        [
+            "app_check",
+            "app_new",
+            "app_preview",
+            "app_test",
+            "find_lines",
+            "list_jobs",
+            "list_panes",
+            "terminal_search",
+        ]
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let jobs = loop {
+        let j = monitor.call("list_jobs", serde_json::json!({}));
+        assert_ne!(j["isError"], true, "{j}");
+        let ended = j["structuredContent"]["jobs"]
+            .as_array()
+            .is_some_and(|a| a.len() == 2 && a.iter().all(|x| x["state"] != "running"));
+        if ended {
+            break j;
+        }
+        assert!(Instant::now() < deadline, "the jobs never ended: {j}");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let failed: Vec<&serde_json::Value> = jobs["structuredContent"]["jobs"]
+        .as_array()
+        .expect("jobs")
+        .iter()
+        .filter(|x| x["state"] == "failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "{jobs}");
+    assert_eq!(failed[0]["id"], ids[1].as_str(), "{jobs}");
+    assert_eq!(failed[0]["exit_code"], 3, "{jobs}");
+    // A tool it does not list is still refused when called.
+    let read = monitor.call("read_pane", serde_json::json!({ "pane": 0 }));
+    assert_eq!(read["isError"], true, "{read}");
+    drop(monitor);
+
+    // At observe: the reading tools, none that act.
+    let mut observer = Mcp::start(cli.mcp(&["--level", "observe"]));
+    let names = tool_names(&mut observer);
+    for listed in [
+        "terminals_list",
+        "terminal_read",
+        "list_jobs",
+        "check_job",
+        "collector_create",
+        "memory_recall",
+    ] {
+        assert!(names.iter().any(|n| n == listed), "{listed}: {names:?}");
+    }
+    for hidden in [
+        "terminal_send",
+        "terminal_run",
+        "send_input",
+        "layout_split",
+        "start_job",
+        "cancel_job",
+        "collector_stop",
+        "memory_forget",
+        "browser_open",
+        "app_launch",
+        "app_install",
+        "web_read",
+        "watch_lines",
+        "list_hosts",
+    ] {
+        assert!(!names.iter().any(|n| n == hidden), "{hidden}: {names:?}");
+    }
+    drop(observer);
+
+    // Pages: reading at observe with web.inspect, clicking from own up.
+    let mut inspecting = Mcp::start(cli.mcp(&["--level", "observe", "--web-inspect"]));
+    let names = tool_names(&mut inspecting);
+    assert!(names.iter().any(|n| n == "web_read"), "{names:?}");
+    assert!(!names.iter().any(|n| n == "web_click"), "{names:?}");
+    drop(inspecting);
+    let mut acting = Mcp::start(cli.mcp(&["--level", "own", "--web-inspect"]));
+    let names = tool_names(&mut acting);
+    for listed in [
+        "web_click",
+        "terminal_send",
+        "start_job",
+        "browser_open",
+        "app_launch",
+        "app_install",
+    ] {
+        assert!(names.iter().any(|n| n == listed), "{listed}: {names:?}");
+    }
+    drop(acting);
+
+    // Reaching connected hosts: the host tools, through hosts.call.
+    let mut hosts = Mcp::start(cli.mcp(&["--method", "hosts.call", "--method", "hosts.list"]));
+    let names = tool_names(&mut hosts);
+    for listed in [
+        "list_hosts",
+        "list_panes",
+        "read_pane",
+        "check_job",
+        "list_jobs",
+        "start_job",
+    ] {
+        assert!(names.iter().any(|n| n == listed), "{listed}: {names:?}");
+    }
+    assert!(!names.iter().any(|n| n == "terminal_read"), "{names:?}");
+}
+
 /// An agent at the observe level keeps the test-failures preset over every
 /// pane; failing tests in another pane become rows, grouped by test.
 #[test]
@@ -2824,6 +2980,17 @@ exec /bin/sh -c "exec $3"
             assert_eq!(s["exit_code"], code, "{job}");
         }
     }
+    // The far host's jobs, listed there.
+    let far_jobs = m.call("list_jobs", serde_json::json!({ "host": "devbox" }));
+    assert_ne!(far_jobs["isError"], true, "{far_jobs}");
+    assert_eq!(
+        far_jobs["structuredContent"]["host"], "devbox",
+        "{far_jobs}"
+    );
+    assert_eq!(
+        far_jobs["structuredContent"]["jobs"][0]["exit_code"], 3,
+        "{far_jobs}"
+    );
     // A host that is not connected is a tool error naming it.
     let nowhere = m.call("list_panes", serde_json::json!({ "host": "nowhere" }));
     assert_eq!(nowhere["isError"], true, "{nowhere}");
