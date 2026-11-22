@@ -239,16 +239,24 @@ pub struct TierSettings {
     /// At most this many Warm panes that nothing follows; beyond it the
     /// quietest go Cold. `None`: no limit.
     pub warm_limit: Option<usize>,
+    /// At most this much memory, in bytes, held by every mirror on the
+    /// host together; beyond it the quietest panes that nothing follows go
+    /// Cold. `None`: no ceiling.
+    pub warm_memory: Option<u64>,
 }
 
 pub const DEFAULT_COLD_AFTER: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 pub const DEFAULT_WARM_LIMIT: usize = 128;
+/// 1 GiB: the 128 Warm panes `warm_limit` allows at about 8,000 lines of
+/// 120 columns each, or 512 panes at tmux's default 2,000 lines.
+pub const DEFAULT_WARM_MEMORY: u64 = 1 << 30;
 
 impl Default for TierSettings {
     fn default() -> Self {
         TierSettings {
             cold_after: Some(DEFAULT_COLD_AFTER),
             warm_limit: Some(DEFAULT_WARM_LIMIT),
+            warm_memory: Some(DEFAULT_WARM_MEMORY),
         }
     }
 }
@@ -905,6 +913,36 @@ struct TiersFile {
     cold_after: Option<serde_norway::Value>,
     /// A number, or `none`.
     warm_limit: Option<serde_norway::Value>,
+    /// `512MiB`, `2GiB`, or `none`.
+    warm_memory: Option<serde_norway::Value>,
+}
+
+/// `64MiB`, `2GiB` (also `KiB`); `none` is `None`.
+fn parse_size(v: &serde_norway::Value) -> Result<Option<u64>, String> {
+    let text = match v {
+        serde_norway::Value::String(t) => t.trim().to_owned(),
+        serde_norway::Value::Number(n) => format!("{n}"),
+        _ => String::new(),
+    };
+    if text == "none" {
+        return Ok(None);
+    }
+    let (n, unit) = text.split_at(
+        text.find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len()),
+    );
+    let scale: u64 = match unit.trim() {
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        _ => 0,
+    };
+    match n.parse::<u64>().ok().and_then(|n| n.checked_mul(scale)) {
+        Some(bytes) if bytes > 0 => Ok(Some(bytes)),
+        _ => Err(format!(
+            "{text:?} is not a size: write a number with KiB, MiB, or GiB (`512MiB`), or `none`"
+        )),
+    }
 }
 
 /// `90s`, `30m`, `2h`; `never` is `None`.
@@ -1172,6 +1210,9 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
                 ));
             }
         };
+    }
+    if let Some(v) = &file.tiers.warm_memory {
+        s.tiers.warm_memory = parse_size(v).map_err(|e| error(origin, "tiers.warm_memory", e))?;
     }
     if let Some(launch) = file.fallback.launch {
         let slots = launch.iter().filter(|a| *a == "{command}").count();
@@ -1570,16 +1611,25 @@ mod tests {
 
     #[test]
     fn tier_budgets_take_waits_counts_and_words() {
-        let s = parse_settings("tiers:\n  cold_after: 90s\n  warm_limit: 10\n", None).expect("ok");
+        let s = parse_settings(
+            "tiers:\n  cold_after: 90s\n  warm_limit: 10\n  warm_memory: 512MiB\n",
+            None,
+        )
+        .expect("ok");
         assert_eq!(s.tiers.cold_after, Some(std::time::Duration::from_secs(90)));
         assert_eq!(s.tiers.warm_limit, Some(10));
-        let s =
-            parse_settings("tiers:\n  cold_after: never\n  warm_limit: none\n", None).expect("ok");
+        assert_eq!(s.tiers.warm_memory, Some(512 << 20));
+        let s = parse_settings(
+            "tiers:\n  cold_after: never\n  warm_limit: none\n  warm_memory: none\n",
+            None,
+        )
+        .expect("ok");
         assert_eq!(
             s.tiers,
             TierSettings {
                 cold_after: None,
-                warm_limit: None
+                warm_limit: None,
+                warm_memory: None,
             }
         );
         for bad in [
@@ -1588,6 +1638,10 @@ mod tests {
             "cold_after: 0m",
             "warm_limit: -1",
             "warm_limit: lots",
+            "warm_memory: 512",
+            "warm_memory: 512MB",
+            "warm_memory: 0GiB",
+            "warm_memory: lots",
         ] {
             let e = parse_settings(&format!("tiers:\n  {bad}\n"), None).expect_err(bad);
             assert!(e.at.starts_with("tiers."), "{bad}: {e:?}");

@@ -253,6 +253,17 @@ pub struct LiveStats {
     /// queue's capacity (0 with no subscribers).
     pub subscriber_queued: usize,
     pub subscriber_capacity: usize,
+    /// What the mirror is estimated to hold, in bytes: its screen and
+    /// scrollback, and its journal. What going Cold gives back.
+    pub memory: usize,
+}
+
+/// A mirror line's estimated cost: 8 bytes a cell and 64 a line, which is
+/// the measured 1 KiB per 120-column line of history
+/// (`docs/performance.md`). Ghostty keeps its pages outside the allocator,
+/// so this is an estimate, not a reading.
+pub fn line_bytes(cols: u16) -> usize {
+    usize::from(cols) * 8 + 64
 }
 
 #[derive(Debug)]
@@ -489,7 +500,14 @@ impl Mirror {
                 .map(|s| s.records.max_capacity())
                 .max()
                 .unwrap_or(0),
+            memory: self.memory(),
         }
+    }
+
+    fn memory(&self) -> usize {
+        let s = self.engine.size();
+        let lines = self.engine.scrollback_rows().unwrap_or(0) + usize::from(s.rows);
+        lines * line_bytes(s.cols) + self.journal.bytes()
     }
 
     /// Apply one record to the engine and, once it is committed, journal it.
@@ -749,6 +767,7 @@ pub fn spawn(
                                         quiet: std::time::Duration::ZERO,
                                         subscriber_queued: 0,
                                         subscriber_capacity: 0,
+                                        memory: 0,
                                     },
                                 );
                                 continue;

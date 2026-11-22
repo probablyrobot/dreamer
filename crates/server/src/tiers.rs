@@ -1,7 +1,8 @@
 //! The tier policy (spec 16.6): panes that nothing follows go Cold on
 //! their own when they have been quiet for `tiers.cold_after`, or when
-//! there are more than `tiers.warm_limit` of them. One check for the whole
-//! host, never a timer per pane.
+//! there are more than `tiers.warm_limit` of them, or when the host's
+//! mirrors together hold more than `tiers.warm_memory`. One check for the
+//! whole host, never a timer per pane.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,7 +28,17 @@ pub fn describe(p: &mirror::TierPolicy) -> String {
         || "no Warm limit".to_owned(),
         |n| format!("at most {n} unfollowed Warm panes"),
     );
-    format!("{quiet}, {limit}")
+    let memory = p.warm_memory.map_or_else(
+        || "no Warm memory ceiling".to_owned(),
+        |b| {
+            if b >= 1 << 20 {
+                format!("mirrors within {} MiB", b >> 20)
+            } else {
+                format!("mirrors within {} KiB", b >> 10)
+            }
+        },
+    );
+    format!("{quiet}, {limit}, {memory}")
 }
 
 pub async fn run(state: Arc<State>) {
@@ -41,7 +52,10 @@ pub async fn run(state: Arc<State>) {
             return;
         }
         let policy = *state.tiers.lock().await;
-        if policy.cold_after.is_none() && policy.warm_limit.is_none() {
+        if policy.cold_after.is_none()
+            && policy.warm_limit.is_none()
+            && policy.warm_memory.is_none()
+        {
             continue;
         }
         let host = state.mirrors.read().await.clone();
@@ -67,11 +81,13 @@ pub async fn run(state: Arc<State>) {
             Err(_) => continue,
         };
         let d = host.apply_policy(policy, &keep).await;
-        if d.quiet + d.over_limit > 0 {
+        if d.quiet + d.over_limit + d.over_memory > 0 {
             log::info(format!(
-                "tiers: {} quiet and {} over the Warm limit went Cold ({})",
+                "tiers: {} quiet, {} over the Warm limit, and {} over the Warm memory went Cold; mirrors now hold about {} MiB ({})",
                 d.quiet,
                 d.over_limit,
+                d.over_memory,
+                d.memory >> 20,
                 describe(&policy)
             ));
         }

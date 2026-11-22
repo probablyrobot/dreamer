@@ -284,6 +284,14 @@ pub const SCHEMA: &[Key] = &[
         live: true,
     },
     Key {
+        path: "tiers.warm_memory",
+        kind: "a size (512MiB, 2GiB) | none",
+        default: "1GiB",
+        doc: "At most this much memory held by all the host's mirrors together, an estimate from each mirror's screen, history, and journal; beyond it the quietest panes that nothing follows go Cold. Followed panes are never demoted, so they alone can hold more.",
+        example: "512MiB",
+        live: true,
+    },
+    Key {
         path: "window.decorations",
         kind: "full | none",
         default: "full",

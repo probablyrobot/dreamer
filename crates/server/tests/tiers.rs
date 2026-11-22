@@ -22,7 +22,7 @@ struct Setup {
 
 /// Settings that turn the tier policy off, for tests that set tiers
 /// themselves.
-const NO_POLICY: &str = "tiers:\n  cold_after: never\n  warm_limit: none\n";
+const NO_POLICY: &str = "tiers:\n  cold_after: never\n  warm_limit: none\n  warm_memory: none\n";
 
 impl Setup {
     fn new() -> Setup {
@@ -400,6 +400,82 @@ async fn the_tier_policy_demotes_quiet_unfollowed_panes_and_keeps_followed_ones(
         &panes,
         &[Live, Cold, Cold, Cold, Cold],
         "quiet panes go Cold; the followed one stays",
+    )
+    .await;
+    drop(feed);
+}
+
+/// The Warm memory ceiling (`tiers.warm_memory`): while the host's mirrors
+/// together hold more, the quietest unfollowed panes go Cold, and no more
+/// than it takes; a followed pane stays Warm even when it alone is over.
+#[tokio::test]
+async fn the_warm_memory_ceiling_demotes_quiet_unfollowed_panes_and_never_followed_ones() {
+    use api::MirrorState::{Cold, Live};
+    let s = Setup::new();
+    let c = s.client().await;
+    s.tmux
+        .run_checked(&[
+            "new-window",
+            "-d",
+            "/bin/sh",
+            ";",
+            "new-window",
+            "-d",
+            "/bin/sh",
+            ";",
+            "new-window",
+            "-d",
+            "/bin/sh",
+        ])
+        .expect("windows");
+    let Ok(Response::TmuxTopology(t)) = c
+        .call(Request::TmuxTopology(api::TopologyParams::default()))
+        .await
+    else {
+        panic!("topology")
+    };
+    let mut panes: Vec<u32> = t.panes.iter().map(|p| p.id).collect();
+    panes.sort_unstable();
+    assert_eq!(panes.len(), 4);
+    until_states(&c, &panes, &[Live; 4], "all live").await;
+
+    // The first is followed by a view; the last two wrote just now, so the
+    // second is the quietest.
+    let feed = replica::feed::Feed::start(s.root.join("rt/dreamerd.sock"), Some(panes[0]), None)
+        .expect("feed");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while feed.take().is_none() {
+        assert!(Instant::now() < deadline, "the view never got a frame");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for p in &panes[2..] {
+        s.tmux
+            .run_checked(&["send-keys", "-t", &format!("%{p}"), "echo busy", "Enter"])
+            .expect("type");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Each pane holds a screen and no history: room for three and a half.
+    let m = mirror(&c, panes[0]).await.expect("mirror");
+    let screen = m.rows as usize * mirror::worker::line_bytes(m.cols as u16);
+    let ceiling = screen * 7 / 2 / 1024;
+    s.settings(&format!(
+        "tiers:\n  cold_after: never\n  warm_limit: none\n  warm_memory: {ceiling}KiB\n"
+    ));
+    until_states(
+        &c,
+        &panes,
+        &[Live, Cold, Live, Live],
+        "one pane over the ceiling: the quietest unfollowed one goes Cold",
+    )
+    .await;
+
+    s.settings("tiers:\n  cold_after: never\n  warm_limit: none\n  warm_memory: 1KiB\n");
+    until_states(
+        &c,
+        &panes,
+        &[Live, Cold, Cold, Cold],
+        "every unfollowed pane goes Cold; the followed one stays",
     )
     .await;
     drop(feed);

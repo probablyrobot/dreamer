@@ -28,6 +28,7 @@ pub fn tiers(t: &workspace_config::TierSettings) -> mirror::TierPolicy {
     mirror::TierPolicy {
         cold_after: t.cold_after,
         warm_limit: t.warm_limit,
+        warm_memory: t.warm_memory,
     }
 }
 

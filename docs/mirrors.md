@@ -181,6 +181,12 @@ no sequence or journal.
   `tiers.cold_after` (30 minutes by default).
 - It also goes Cold when there are more than `tiers.warm_limit` such panes
   (128 by default), quietest first.
+- And when all the host's mirrors together hold more than
+  `tiers.warm_memory` (1 GiB by default), quietest first, until they are
+  back under it. A mirror's memory is estimated from its screen and
+  scrollback (about 1 KiB per 120-column line) plus its journal. Followed
+  panes count toward the ceiling but are never demoted, so they alone can
+  go over it.
 - One check every 10 s covers the whole host; there is no timer per pane.
 - The daemon logs what it demoted.
 
@@ -197,6 +203,7 @@ See [settings.md](settings.md#pane-tiers).
 ## Not yet
 
 - **Scrollback depth:** a mirror keeps as much scrollback as tmux's
-  `history-limit`.
+  `history-limit`; Dreamer has no lower limit of its own. The Warm memory
+  ceiling bounds the total by demoting panes, not by trimming history.
 - **Pixel size:** the canonical cell pixel size is fixed (10×20) until
   clients negotiate geometry.

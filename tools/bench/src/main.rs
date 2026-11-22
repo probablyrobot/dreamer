@@ -94,7 +94,7 @@ impl Rig {
         std::fs::create_dir_all(root.join("config")).map_err(|e| e.to_string())?;
         std::fs::write(
             root.join("config/dreamer.yaml"),
-            "tiers:\n  cold_after: never\n  warm_limit: none\n",
+            "tiers:\n  cold_after: never\n  warm_limit: none\n  warm_memory: none\n",
         )
         .map_err(|e| e.to_string())?;
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;

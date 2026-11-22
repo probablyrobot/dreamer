@@ -22,6 +22,7 @@ const SETTINGS: &str = "agents:
 tiers:
   cold_after: never
   warm_limit: none
+  warm_memory: none
 ";
 
 struct Setup {
