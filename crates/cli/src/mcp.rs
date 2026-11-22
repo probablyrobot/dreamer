@@ -423,7 +423,7 @@ struct TerminalSearch {
     literal: bool,
     #[serde(default)]
     ignore_case: bool,
-    /// The panes to search; empty searches every pane.
+    /// The panes to search; empty searches every pane but your own.
     #[serde(default)]
     panes: Vec<u32>,
     /// How many of each pane's newest lines to search (default 200, at
@@ -842,6 +842,24 @@ impl Dreamer {
             Err(e) => CallToolResult::error(vec![ContentBlock::text(e.to_string())]),
         })
     }
+
+    /// A search of panes' output. One of every pane leaves out the pane
+    /// this agent runs in: it shows the question and the agent's own
+    /// answers, which would match. Naming that pane still searches it.
+    async fn search(&self, query: api::TerminalQuery) -> Result<CallToolResult, ErrorData> {
+        let own = self.own_pane.filter(|_| query.panes.is_empty());
+        Ok(
+            match self.client.call(api::Request::TerminalQuery(query)).await {
+                Ok(api::Response::TerminalQuery(mut r)) if own.is_some() => {
+                    r.matches
+                        .retain(|m| m.host.is_some() || Some(m.pane) != own);
+                    text(api::Response::TerminalQuery(r).to_json())
+                }
+                Ok(r) => text(r.to_json()),
+                Err(e) => CallToolResult::error(vec![ContentBlock::text(e.to_string())]),
+            },
+        )
+    }
 }
 
 /// What a tool needs from the server's grant to be listed.
@@ -1218,7 +1236,7 @@ impl Dreamer {
         &self,
         Parameters(p): Parameters<FindLines>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.call(api::Request::TerminalQuery(api::TerminalQuery {
+        self.search(api::TerminalQuery {
             pattern: p.text,
             literal: !p.regex,
             ignore_case: true,
@@ -1227,7 +1245,7 @@ impl Dreamer {
             hosts: p.hosts,
             max_matches: Some(100),
             ..api::TerminalQuery::default()
-        }))
+        })
         .await
     }
 
@@ -1358,7 +1376,7 @@ impl Dreamer {
         &self,
         Parameters(p): Parameters<TerminalSearch>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.call(api::Request::TerminalQuery(api::TerminalQuery {
+        self.search(api::TerminalQuery {
             pattern: p.pattern,
             literal: p.literal,
             ignore_case: p.ignore_case,
@@ -1368,7 +1386,7 @@ impl Dreamer {
             max_bytes: p.max_bytes,
             timeout_ms: p.timeout_ms,
             ..api::TerminalQuery::default()
-        }))
+        })
         .await
     }
 

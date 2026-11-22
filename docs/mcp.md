@@ -24,7 +24,7 @@ acting tool goes through the act level of the server's grant
 | --- | --- | --- |
 | `terminals_list` | Every pane: session, window, command, directory, title, size, tier, time since its last output, and whether this session created it | `terminal.list` |
 | `terminal_read` | A pane's screen as text, or with `lines` the last N lines of history and screen | `terminal.read` |
-| `terminal_search` | A regular expression (or plain text) over one pane's or every pane's newest lines, bounded in lines, matches, bytes, and time | `terminal.query` |
+| `terminal_search` | A regular expression (or plain text) over one pane's or every pane's newest lines (every pane but the one the server runs in, `TMUX_PANE`, which shows the agent's own question and answers; name it in `panes` to search it), bounded in lines, matches, bytes, and time | `terminal.query` |
 | `terminal_watch` | Wait until a pattern appears in a pane's new output, the pane goes quiet for `quiet_ms`, or (`exit`) its program ends, or the timeout (default 30 s, at most 10 min). Returns `matched`, `quiet`, `exited`, `closed`, or `timeout`, the matching line, and a job's exit status | `terminal.watch` |
 | `terminal_run` | Run a command (`argv`, or `command` through `/bin/sh -c`) as a job in a new window, or a pane split from `split`, which this session then owns; wait for it (default 60 s) and return its exit status and output. A run that outlasts the wait keeps going | `terminal.run` |
 | `terminal_send` | Type `text`, paste `paste`, and press `enter` in a pane, under this session's interaction lease on it. Once a person types into that pane, the session refuses to type there again | `leases.acquire`, `terminal.input` |
@@ -177,7 +177,7 @@ Recall and remember are in an agent's grant at every level; forget from
 | `start_job` | Run an exact program as a job in its own window | `jobs.start` |
 | `send_input` | Type text into a pane, exactly as given, under the session's interaction lease on it. Once a person types into that pane, the session refuses to type there again | `leases.acquire`, `terminal.input` |
 | `move_panes` | Gather panes into one window with a given name, existing or new; one action record per move | `tmux.topology`, `actions.submit` |
-| `find_lines` | Which panes' recent lines contain some text, with the lines, here and on connected hosts (`hosts`) | `terminal.query` |
+| `find_lines` | Which panes' recent lines contain some text, with the lines, here and on connected hosts (`hosts`). Like `terminal_search`, it leaves out the server's own pane unless `panes` names it | `terminal.query` |
 | `check_action` | An action's record and outcome | `actions.get` |
 | `cancel_job` | Stop a managed job | `jobs.cancel` |
 | `watch_lines` | Install a filter that reports (and optionally marks) lines matching some text in panes, from now on | `filters.manage`, content read |
