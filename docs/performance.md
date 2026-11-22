@@ -431,16 +431,41 @@ the daemon, with tmux at 100 % of a core.
 
 ### Desktop, macOS (M3 Max, as above)
 
-`cargo xtask bench gui --panes N` creates an isolated tmux server with N
-panes, at most 16 to a tab, the first tab visible. It starts the daemon
-first, then a release `dreamer`, which measures itself
+```sh
+cargo xtask bench gui [--panes N] [--visible N] [--load text|escape|image] [--backend wayland|x11]
+```
+
+`bench gui` creates an isolated tmux server with N panes (16 by default).
+The first tab holds `--visible` of them (16 by default, at most 64),
+tiled and shown; the rest go 16 to a tab. It starts the daemon first,
+then a release `dreamer`, which measures itself
 (`crates/app/src/bench_gui.rs`):
 - **Ends at a paint.** Each measure stops when the pane's new frame has
   been painted, not when it arrived.
 - **Load.** Under load, every other visible pane prints a line every
-  20 ms.
+  20 ms. With `--load`, they replay a streams corpus nonstop with `cat`
+  instead: `text`, `sgr` for `escape`, or `images` for `image`. The
+  corpora are written for 120x40 panes; tiled panes are smaller, so
+  lines wrap and images are clipped. The results record which corpus,
+  with its size and hash.
+- **The frame, split.** For each window frame under load, from the
+  workspace's render to its last element painted: the whole frame build
+  (render, layout, and paint), the terminal panes' paint, the shaping of
+  rows the cache did not hold, the conversion of new images for the GPU,
+  and the rest (layout, chrome, building the element tree). GPU
+  submission and present are not in it: GPUI times them only with its
+  `profiler` feature, which Dreamer does not build. The results say so.
+- **Display backend.** On Linux it runs on Wayland when the session
+  offers it, else X11; `--backend` picks one (`x11` runs through
+  XWayland on a Wayland session). The results record the backend the app
+  drew on.
 - **Needs a display.** It must be awake and unlocked, with the window in
-  front.
+  front. When it is not, the results file says `"not_run": true` with the
+  reason and holds no results, and the command exits 5, as the gate's
+  smoke runs do. That happens when the screen is locked (macOS), there
+  is no display server or not the one asked for (Linux), or the window
+  does not draw when asked: after launch, after the idle count, under
+  load, or when a wait runs out. `bench report` refuses such a file.
 
 Revision: branch `m7-05-launch-and-tabs`.
 
@@ -531,7 +556,7 @@ Revision: branch `m7-05-launch-and-tabs`.
 - **A pane's cost in each tier** (`bench tiers`): the workload exists, but
   its results are not recorded here yet.
 - **Desktop workloads on Linux** (Wayland and X11), and on macOS with more
-  than 16 visible panes.
+  than 16 visible panes, with corpus loads, or with the frame split.
 - **Image-heavy and escape-heavy streams:** the `streams` workload
   exists, but no results are recorded here yet.
 - **Remote latency and jitter:** the `remote` workload exists, but no

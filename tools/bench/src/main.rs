@@ -13,6 +13,7 @@
 //! dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH]
 //!                      [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]
 //! dreamer-bench machine
+//! dreamer-bench corpus NAME FILE
 //! ```
 //!
 //! `busy` is the typing-under-load part of `headless` on its own, with the
@@ -37,7 +38,9 @@
 //! with `--json`, written for the record together with the machine they
 //! ran on and the revision they were built from. `cargo xtask bench`
 //! passes the revision in `DREAMER_BENCH_REVISION` (JSON). `machine` prints
-//! the machine alone, as JSON, for the GUI benchmark's results.
+//! the machine alone, as JSON, for the GUI benchmark's results. `corpus`
+//! writes one of the streams corpora to `FILE`, for the GUI benchmark's
+//! busy panes to replay, and prints what it wrote as JSON.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -70,8 +73,9 @@ fn main() {
             println!("{}", hardware());
             Ok(())
         }
+        Some("corpus") if args.len() == 3 => write_corpus(&args[1], Path::new(&args[2])),
         _ => Err(
-            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]\n       dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH] [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]\n       dreamer-bench machine"
+            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]\n       dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH] [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]\n       dreamer-bench machine\n       dreamer-bench corpus NAME FILE"
                 .into(),
         ),
     };
@@ -79,6 +83,23 @@ fn main() {
         eprintln!("dreamer-bench: {e}");
         std::process::exit(1);
     }
+}
+
+/// `corpus NAME FILE`: the corpus's bytes to `FILE`, and what they are.
+fn write_corpus(name: &str, file: &Path) -> Result<(), String> {
+    let bytes = corpus::generate(name)
+        .ok_or_else(|| format!("no corpus {name}; there are {}", corpus::NAMES.join(", ")))?;
+    std::fs::write(file, &bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+    println!(
+        "{}",
+        json!({
+            "corpus": name,
+            "what": corpus::describe(name),
+            "bytes": bytes.len(),
+            "fnv1a64": format!("{:016x}", corpus::fnv(&bytes)),
+        })
+    );
+    Ok(())
 }
 
 /// An isolated tmux server and daemon.

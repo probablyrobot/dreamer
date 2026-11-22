@@ -6,7 +6,7 @@
 //! ```text
 //! cargo xtask bench headless|busy|extensions|memory|streams|tiers [OPTIONS] [--debug] [--linux]
 //! cargo xtask bench remote [OPTIONS] [--container [--netem SPEC]] [--debug]
-//! cargo xtask bench gui [--panes N]
+//! cargo xtask bench gui [--panes N] [--visible N] [--load text|escape|image] [--backend wayland|x11]
 //! cargo xtask bench report FILE...
 //! ```
 //!
@@ -33,7 +33,7 @@ mod remote;
 const USAGE: &str =
     "usage: cargo xtask bench headless|busy|extensions|memory|streams|tiers [OPTIONS] [--debug] [--linux]
        cargo xtask bench remote [OPTIONS] [--container [--netem SPEC]] [--debug]
-       cargo xtask bench gui [--panes N]
+       cargo xtask bench gui [--panes N] [--visible N] [--load text|escape|image] [--backend wayland|x11]
        cargo xtask bench report FILE...";
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -238,6 +238,12 @@ fn report(files: &[String]) -> Result<(), String> {
     for f in files {
         let text = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
         let v: Value = serde_json::from_str(&text).map_err(|e| format!("{f}: {e}"))?;
+        if v["not_run"] == json!(true) {
+            return Err(format!(
+                "{f}: not run: {}",
+                v["reason"].as_str().unwrap_or("no reason recorded")
+            ));
+        }
         if v["results"].as_array().is_none_or(Vec::is_empty) {
             return Err(format!("{f}: no results"));
         }
@@ -280,6 +286,17 @@ fn label(name: &str, v: &Value) -> String {
             Some(r) => format!(", {s} at {} KiB/s a pane", group(&r.to_string())),
             None => format!(", {s}"),
         };
+    }
+    if v["workload"] == "gui" {
+        if let Some(s) = n("visible") {
+            l += &format!(", {s} visible");
+        }
+        if let Some(load) = v["load"]["name"].as_str().filter(|n| *n != "lines") {
+            l += &format!(", {load} load");
+        }
+        if let Some(b) = v["backend"].as_str().filter(|b| !b.starts_with("macOS")) {
+            l += &format!(", {b}");
+        }
     }
     l
 }
@@ -488,29 +505,101 @@ fn group(digits: &str) -> String {
 /// Each shell prints `READY`, which the GUI benchmark waits for.
 const READY_SHELL: &str = "/bin/sh -c 'printf READY\\n; exec /bin/sh'";
 
-/// `cargo xtask bench gui [--panes N]`: the desktop measuring itself
-/// (`crates/app/src/bench_gui.rs`) against an isolated tmux server with N
-/// panes, at most 16 to a window (tab), the first window visible, and a
-/// daemon already running. Needs a display that is awake and unlocked,
-/// with the app's window in front.
-fn gui(root: &std::path::Path, rest: &[String]) -> Result<(), String> {
-    let mut panes = 16usize;
+/// Most panes `--visible` tiles in the shown tab: at the default window
+/// size, 64 panes keep a few lines each.
+const MAX_VISIBLE: usize = 64;
+
+/// What `bench gui` runs.
+#[derive(Debug, PartialEq)]
+struct GuiOptions {
+    panes: usize,
+    /// Panes in the first, shown tab; the rest go 16 to a tab.
+    visible: usize,
+    /// `text`, `escape`, or `image`, and the streams corpus it replays;
+    /// `None` paces a line every 20 ms.
+    load: Option<(&'static str, &'static str)>,
+    /// `wayland` or `x11`, Linux only.
+    backend: Option<String>,
+}
+
+fn gui_options(rest: &[String]) -> Result<GuiOptions, String> {
+    let mut o = GuiOptions {
+        panes: 16,
+        visible: 16,
+        load: None,
+        backend: None,
+    };
     let mut it = rest.iter();
+    let number = |it: &mut std::slice::Iter<String>, what: &str| {
+        it.next()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n >= 1)
+            .ok_or(format!("{what} needs a number of at least 1"))
+    };
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--panes" => {
-                panes = it
-                    .next()
-                    .and_then(|v| v.parse().ok())
-                    .filter(|n| *n >= 1)
-                    .ok_or("--panes needs a number")?;
+            "--panes" => o.panes = number(&mut it, "--panes")?,
+            "--visible" => {
+                o.visible = number(&mut it, "--visible")?;
+                if o.visible > MAX_VISIBLE {
+                    return Err(format!("--visible is at most {MAX_VISIBLE}"));
+                }
             }
+            "--load" => {
+                o.load = Some(match it.next().map(String::as_str) {
+                    Some("text") => ("text", "text"),
+                    Some("escape") => ("escape", "sgr"),
+                    Some("image") => ("image", "images"),
+                    _ => return Err("--load is text, escape, or image".into()),
+                });
+            }
+            "--backend" => match it.next().map(String::as_str) {
+                Some(b @ ("wayland" | "x11")) => o.backend = Some(b.to_owned()),
+                _ => return Err("--backend is wayland or x11".into()),
+            },
             other => return Err(format!("unknown option {other}")),
         }
     }
-    if crate::package::screen_locked() == Some(true) {
-        return Err("the screen is locked: the window would not be drawn".into());
+    o.visible = o.visible.min(o.panes);
+    Ok(o)
+}
+
+/// The display the app will draw on, as it names it, or why there is
+/// none. On Linux, Wayland when the session offers it, else X11, unless
+/// `requested` picks one.
+fn gui_backend(
+    macos: bool,
+    requested: Option<&str>,
+    wayland: bool,
+    x11: bool,
+) -> Result<Result<&'static str, String>, String> {
+    if macos {
+        return match requested {
+            Some(_) => Err("--backend is for Linux".into()),
+            None => Ok(Ok("macOS (Metal)")),
+        };
     }
+    Ok(match (requested, wayland, x11) {
+        (Some("wayland") | None, true, _) => Ok("Wayland"),
+        (Some("x11") | None, _, true) => Ok("X11"),
+        (Some("wayland"), false, _) => Err("Wayland: WAYLAND_DISPLAY is not set".into()),
+        (Some("x11"), _, false) => Err("X11: DISPLAY is not set".into()),
+        _ => Err("no display server: neither WAYLAND_DISPLAY nor DISPLAY is set".into()),
+    })
+}
+
+/// `cargo xtask bench gui`: the desktop measuring itself
+/// (`crates/app/src/bench_gui.rs`) against an isolated tmux server with
+/// `--panes` panes (16 by default). The first window (tab) holds
+/// `--visible` of them (16 by default, at most 64), tiled and shown; the
+/// rest go 16 to a window. A daemon is already running. `--load` makes
+/// the busy panes replay a streams corpus instead of printing a line
+/// every 20 ms. Needs a display that is awake and unlocked, with the
+/// app's window in front; without one the results file says
+/// `"not_run": true` with the reason, and this exits 5.
+fn gui(root: &std::path::Path, rest: &[String]) -> Result<(), String> {
+    let o = gui_options(rest)?;
+    let panes = o.panes;
     let built = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .args([
             "build",
@@ -535,6 +624,49 @@ fn gui(root: &std::path::Path, rest: &[String]) -> Result<(), String> {
         .output()
         .map_err(|e| format!("dreamer-bench machine: {e}"))?;
     let machine = String::from_utf8_lossy(&machine.stdout).trim().to_owned();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let out = root.join(format!("target/bench/gui-{panes}-{stamp}.json"));
+    std::fs::create_dir_all(out.parent().unwrap_or(root)).map_err(|e| e.to_string())?;
+    let revision = revision(root, "release");
+    let load_name = o.load.map(|(name, _)| name);
+    let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    let backend = gui_backend(
+        cfg!(target_os = "macos"),
+        o.backend.as_deref(),
+        set("WAYLAND_DISPLAY"),
+        set("DISPLAY"),
+    )?;
+    let not_run = match &backend {
+        Err(why) => Some(why.clone()),
+        Ok(_) if crate::package::screen_locked() == Some(true) => {
+            Some("the screen is locked: the window would not be drawn".into())
+        }
+        Ok(_) => None,
+    };
+    if let Some(why) = not_run {
+        let report = json!({
+            "workload": "gui",
+            "panes": panes,
+            "visible": o.visible,
+            "load": load_name.map(|n| json!({ "name": n })),
+            "backend": backend.ok(),
+            "hardware": serde_json::from_str::<Value>(&machine).ok(),
+            "revision": revision,
+            "not_run": true,
+            "reason": why,
+            "results": [],
+        });
+        std::fs::write(
+            &out,
+            serde_json::to_string_pretty(&report).unwrap_or_default(),
+        )
+        .map_err(|e| format!("{}: {e}", out.display()))?;
+        println!("not run: {why}\nresults: {}", out.display());
+        std::process::exit(5);
+    }
+    let backend = backend.unwrap_or_default();
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
     let socket = format!("dreamer-bench-gui-{}", std::process::id());
     let dir = std::path::PathBuf::from(format!("/tmp/drm-bgui-{}", std::process::id()));
@@ -565,11 +697,12 @@ fn gui(root: &std::path::Path, rest: &[String]) -> Result<(), String> {
             Err(format!("tmux {args:?} failed"))
         }
     };
-    // Windows of up to 16 panes, tiled.
+    // The shown window with `visible` panes, then windows of up to 16,
+    // tiled.
     let mut left = panes;
     let mut window = 0usize;
     while left > 0 {
-        let here = left.min(16);
+        let here = left.min(if window == 0 { o.visible } else { 16 });
         let target = format!("main:{window}");
         if window == 0 {
             t(&[
@@ -596,6 +729,24 @@ fn gui(root: &std::path::Path, rest: &[String]) -> Result<(), String> {
         window += 1;
     }
     t(&["select-window", "-t", "main:0"])?;
+    // The busy panes' corpus, written where the shells can read it.
+    let load = match o.load {
+        None => json!({ "name": "lines", "what": "a line every 20 ms" }),
+        Some((name, corpus)) => {
+            let file = dir.join("load.bin");
+            let wrote = Command::new(bin.join("dreamer-bench"))
+                .arg("corpus")
+                .arg(corpus)
+                .arg(&file)
+                .output()
+                .map_err(|e| format!("dreamer-bench corpus: {e}"))?;
+            let mut v: Value = serde_json::from_slice(&wrote.stdout)
+                .map_err(|_| format!("dreamer-bench corpus {corpus} wrote nothing"))?;
+            v["name"] = json!(name);
+            v["file"] = json!(file);
+            v
+        }
+    };
     let env = |c: &mut Command| {
         c.env("DREAMER_RUNTIME_DIR", dir.join("rt"))
             .env("DREAMER_STATE_DIR", dir.join("st"))
@@ -613,20 +764,17 @@ fn gui(root: &std::path::Path, rest: &[String]) -> Result<(), String> {
     let mut daemon = d.spawn().map_err(|e| format!("dreamerd: {e}"))?;
     std::thread::sleep(std::time::Duration::from_secs(3 + panes as u64 / 100));
 
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let out = root.join(format!("target/bench/gui-{panes}-{stamp}.json"));
-    std::fs::create_dir_all(out.parent().unwrap_or(root)).map_err(|e| e.to_string())?;
     let mut app = Command::new(bin.join("dreamer"));
     app.args(["--workspace", "-L", &socket, "--tmux", &tmux])
         .env("DREAMER_BENCH_GUI", &out)
         .env("DREAMER_BENCH_PANES", panes.to_string())
+        .env("DREAMER_BENCH_VISIBLE", o.visible.to_string())
+        .env("DREAMER_BENCH_LOAD", load.to_string())
         .env("DREAMER_BENCH_MACHINE", &machine)
-        .env(
-            "DREAMER_BENCH_REVISION",
-            revision(root, "release").to_string(),
-        );
+        .env("DREAMER_BENCH_REVISION", revision.to_string());
+    if backend == "X11" {
+        app.env_remove("WAYLAND_DISPLAY");
+    }
     env(&mut app);
     let status = app.status().map_err(|e| format!("dreamer: {e}"));
 
@@ -641,8 +789,27 @@ fn gui(root: &std::path::Path, rest: &[String]) -> Result<(), String> {
     let _ = daemon.wait();
     let _ = t(&["kill-server"]);
     let _ = std::fs::remove_dir_all(&dir);
-    if !status?.success() {
+    let status = status?;
+    let written = std::fs::read_to_string(&out)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    if status.code() == Some(5) {
+        let why = written
+            .as_ref()
+            .and_then(|v| v["reason"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| "the window was not being drawn".into());
+        println!("not run: {why}\nresults: {}", out.display());
+        std::process::exit(5);
+    }
+    if !status.success() {
         return Err("the GUI benchmark failed".into());
+    }
+    let drew = written.as_ref().and_then(|v| v["backend"].as_str());
+    if drew != Some(backend) {
+        return Err(format!(
+            "the app drew on {}, not {backend}",
+            drew.unwrap_or("nothing recorded")
+        ));
     }
     println!("results: {}", out.display());
     Ok(())
@@ -683,6 +850,54 @@ mod tests {
              | Key to echo, 1 pane, p50 / p95 | 0.22 / 0.28 ms | 13.7 / 14.6 ms |  |\n\
              | Daemon RSS, 400 Warm panes | 1,888 MiB | 1,888 MiB |  |\n"
         );
+    }
+
+    #[test]
+    fn gui_options_tile_the_visible_set_and_name_the_corpus() {
+        let args = |a: &str| a.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            gui_options(&args("--panes 80 --visible 64 --load escape --backend x11")),
+            Ok(GuiOptions {
+                panes: 80,
+                visible: 64,
+                load: Some(("escape", "sgr")),
+                backend: Some("x11".into()),
+            })
+        );
+        // No more visible than there are panes.
+        assert_eq!(gui_options(&args("--panes 4")).map(|o| o.visible), Ok(4));
+        assert!(gui_options(&args("--visible 65")).is_err());
+        assert!(gui_options(&args("--load video")).is_err());
+    }
+
+    #[test]
+    fn without_the_display_asked_for_the_gui_bench_is_not_run() {
+        assert_eq!(
+            gui_backend(true, None, false, false),
+            Ok(Ok("macOS (Metal)"))
+        );
+        assert!(gui_backend(true, Some("x11"), false, false).is_err());
+        assert_eq!(gui_backend(false, None, true, true), Ok(Ok("Wayland")));
+        assert_eq!(gui_backend(false, None, false, true), Ok(Ok("X11")));
+        assert_eq!(gui_backend(false, Some("x11"), true, true), Ok(Ok("X11")));
+        assert!(matches!(
+            gui_backend(false, Some("wayland"), false, true),
+            Ok(Err(_))
+        ));
+        assert!(matches!(gui_backend(false, None, false, false), Ok(Err(_))));
+    }
+
+    #[test]
+    fn a_gui_column_names_its_visible_set_load_and_backend() {
+        let v = json!({ "workload": "gui", "panes": 80, "visible": 64,
+                        "load": { "name": "image" }, "backend": "Wayland" });
+        assert_eq!(
+            label("x", &v),
+            "gui, 80 panes, 64 visible, image load, Wayland"
+        );
+        let v = json!({ "workload": "gui", "panes": 16, "visible": 16,
+                        "load": { "name": "lines" }, "backend": "macOS (Metal)" });
+        assert_eq!(label("x", &v), "gui, 16 panes, 16 visible");
     }
 
     #[test]

@@ -2098,18 +2098,55 @@ const HIDDEN_VIEWS: usize = 48;
 /// How long a clicked tab is shown before tmux confirms it.
 const SELECT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Each window frame's start and the terminal paint time so far, while
-/// the GUI benchmark records them (`crate::bench_gui`).
-pub(crate) static FRAME_LOG: std::sync::Mutex<Option<Vec<(std::time::Instant, u64)>>> =
-    std::sync::Mutex::new(None);
+/// Where a window frame stood: when, and the terminal paint, shaping,
+/// and image time so far. The GUI benchmark (`crate::bench_gui`) logs one
+/// as the workspace starts rendering a frame and one as the last of its
+/// elements paints.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FrameMark {
+    pub(crate) at: std::time::Instant,
+    /// The frame's last element painted (else its render began).
+    pub(crate) end: bool,
+    pub(crate) paint: u64,
+    pub(crate) shape: u64,
+    pub(crate) image: u64,
+}
+
+impl FrameMark {
+    fn now(end: bool) -> FrameMark {
+        FrameMark {
+            at: std::time::Instant::now(),
+            end,
+            paint: terminal_render::paint_nanos(),
+            shape: terminal_render::shape_nanos(),
+            image: terminal_render::image_nanos(),
+        }
+    }
+}
+
+/// Each window frame's marks while the GUI benchmark records them.
+pub(crate) static FRAME_LOG: std::sync::Mutex<Option<Vec<FrameMark>>> = std::sync::Mutex::new(None);
+
+fn log_frame(end: bool) -> bool {
+    match FRAME_LOG.lock() {
+        Ok(mut log) => log.as_mut().map(|l| l.push(FrameMark::now(end))).is_some(),
+        Err(_) => false,
+    }
+}
+
+/// Frames the workspace has rendered. One that stops moving when asked to
+/// draw means the window is not being drawn (a locked or sleeping
+/// display, or a window the system has stopped refreshing).
+static DRAWS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn draws() -> u64 {
+    DRAWS.load(Ordering::Relaxed)
+}
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Ok(mut log) = FRAME_LOG.lock()
-            && let Some(log) = log.as_mut()
-        {
-            log.push((std::time::Instant::now(), terminal_render::paint_nanos()));
-        }
+        DRAWS.fetch_add(1, Ordering::Relaxed);
+        let frame_logged = log_frame(false);
         self.sync_title(window, cx);
         // Chromium's views sit above everything drawn here: a page shows
         // only while its pane is on screen, and its snapshot while an
@@ -2730,6 +2767,19 @@ impl Render for Workspace {
             .children(menu.map(|m| m.when(!overlay_clear, |d| d.opacity(0.0))))
             .when(bare && !cfg!(target_os = "macos"), |d| {
                 d.children(resize_edges())
+            })
+            // Painted last: the end of the frame's paint, for the benchmark.
+            .when(frame_logged, |d| {
+                d.child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        |_, _, _, _| {
+                            log_frame(true);
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
+                )
             })
     }
 }
