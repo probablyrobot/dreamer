@@ -1,6 +1,7 @@
 //! The daemon's implementation of the API (one `Service`, reached through
 //! the wire protocol now and JSON-RPC later).
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -181,16 +182,16 @@ impl State {
             }
             let out = cfg
                 .command()
-                .args(["list-sessions", "-F", "#{session_id}"])
+                .args(["list-sessions", "-F", ATTACH_FORMAT])
                 .output()
                 .await
                 .map_err(|e| unavailable(format!("cannot run {}: {e}", cfg.program.display())))?;
-            let first = String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .next()
-                .map(str::to_owned)
-                .filter(|_| out.status.success());
-            let Some(session) = first else {
+            let chosen = out
+                .status
+                .success()
+                .then(|| attach_session(&String::from_utf8_lossy(&out.stdout)))
+                .flatten();
+            let Some(session) = chosen else {
                 return Err(unavailable(format!(
                     "no tmux server with sessions on endpoint `{}` (tmux {})",
                     cfg.name,
@@ -237,6 +238,90 @@ impl State {
             });
         }
         Ok(guard)
+    }
+}
+
+/// One `list-sessions` row: id, attached clients, last activity (Unix
+/// seconds), then the name, which may hold spaces and so comes last.
+const ATTACH_FORMAT: &str = "#{session_id} #{session_attached} #{session_activity} #{session_name}";
+
+/// Sessions Dreamer keeps for itself, such as the drawer holding session.
+const OWN_SESSION_PREFIX: &str = "_dreamer_";
+
+/// The session the daemon's control client attaches to, from
+/// [`ATTACH_FORMAT`] rows. tmux sends output only for panes in that
+/// session, so it should be the one the user works in: never one of
+/// Dreamer's own while another exists, then one a client is attached to,
+/// then the most recently active, then the lowest id.
+fn attach_session(rows: &str) -> Option<String> {
+    let mut best: Option<(bool, bool, u64, std::cmp::Reverse<u32>, &str)> = None;
+    for row in rows.lines() {
+        let mut f = row.splitn(4, ' ');
+        let (Some(id), Some(attached), Some(activity), name) =
+            (f.next(), f.next(), f.next(), f.next())
+        else {
+            continue;
+        };
+        let Some(n) = id.strip_prefix('$').and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        let key = (
+            !name.unwrap_or("").starts_with(OWN_SESSION_PREFIX),
+            attached.parse::<u32>().is_ok_and(|a| a > 0),
+            activity.parse::<u64>().unwrap_or(0),
+            std::cmp::Reverse(n),
+            id,
+        );
+        if best.as_ref().is_none_or(|b| key > *b) {
+            best = Some(key);
+        }
+    }
+    best.map(|b| b.4.to_owned())
+}
+
+/// The panes tmux sends output for to the daemon's control client, which
+/// are those in the session it is attached to, and that session's id.
+/// `None` if tmux could not say.
+async fn streamed_panes(conn: &Connection) -> Option<(u32, BTreeSet<u32>)> {
+    let cmd = tmux_backend::TmuxCommand::new("list-panes")
+        .flag("-s")
+        .opt_format("-F", "#{session_id} #{pane_id}");
+    let r = conn.execute(cmd).await.ok()?;
+    let r = r.first().filter(|r| r.ok)?;
+    let mut session = None;
+    let mut panes = BTreeSet::new();
+    for line in &r.body {
+        let line = String::from_utf8_lossy(line);
+        let (s, p) = line.split_once(' ')?;
+        session.get_or_insert(s.strip_prefix('$')?.parse::<u32>().ok()?);
+        panes.insert(p.strip_prefix('%')?.parse().ok()?);
+    }
+    Some((session?, panes))
+}
+
+/// Why a pane's mirror does not stream: the `detail` of a `not_streaming`
+/// mirror.
+fn not_streaming(pane: u32, attached: u32, inv: &tmux_backend::Inventory) -> String {
+    let label = |s: u32| match inv.sessions.get(&domain::TmuxSessionId(s)) {
+        Some(i) => format!("${s} ({})", i.name),
+        None => format!("${s}"),
+    };
+    let attached = label(attached);
+    let sessions: Vec<String> = inv
+        .panes
+        .get(&domain::TmuxPaneId(pane))
+        .and_then(|p| inv.windows.get(&p.window))
+        .map(|w| w.sessions.iter().map(|s| label(s.0)).collect())
+        .unwrap_or_default();
+    if sessions.is_empty() {
+        format!(
+            "outside session {attached}, which the daemon is attached to; tmux sends it output only for panes in that session"
+        )
+    } else {
+        format!(
+            "in session {}; the daemon is attached to {attached}, and tmux sends it output only for panes in that session",
+            sessions.join(", ")
+        )
     }
 }
 
@@ -830,19 +915,33 @@ impl api::Service for DaemonService {
 
     async fn terminal_mirrors(&self, p: api::TopologyParams) -> Result<api::MirrorList, RpcError> {
         self.check_endpoint(p.endpoint.as_deref())?;
-        drop(self.0.endpoint().await?);
+        let (conn, inventory) = {
+            let guard = self.0.endpoint().await?;
+            let ep = guard
+                .as_ref()
+                .ok_or_else(|| unavailable("endpoint not connected".into()))?;
+            (ep.conn.clone(), ep.tracker.inventory().clone())
+        };
         let host = self.0.mirrors.read().await.clone();
         let Some(host) = host else {
             return Ok(api::MirrorList::default());
         };
-        let mut mirrors: Vec<api::MirrorStatus> = host
-            .status()
-            .await
+        // Status first: every pane it lists already existed when tmux is
+        // asked which panes it streams.
+        let status = host.status().await;
+        let streamed = streamed_panes(&conn).await;
+        let mut mirrors: Vec<api::MirrorStatus> = status
             .into_iter()
             .map(|m| {
                 let (state, detail) = match &m.state {
                     mirror::MirrorState::Attaching => (api::MirrorState::Attaching, None),
-                    mirror::MirrorState::Live => (api::MirrorState::Live, None),
+                    mirror::MirrorState::Live => match &streamed {
+                        Some((attached, panes)) if !panes.contains(&m.pane.0) => (
+                            api::MirrorState::NotStreaming,
+                            Some(not_streaming(m.pane.0, *attached, &inventory)),
+                        ),
+                        _ => (api::MirrorState::Live, None),
+                    },
                     mirror::MirrorState::Failed(e) => (api::MirrorState::Failed, Some(e.clone())),
                     mirror::MirrorState::Cold => (api::MirrorState::Cold, None),
                 };
@@ -2029,4 +2128,31 @@ impl DaemonService {
 
 pub fn started_now() -> (Instant, u64) {
     (Instant::now(), now_ms())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::attach_session;
+
+    #[test]
+    fn the_daemon_attaches_where_the_user_works() {
+        // Dreamer's own session never wins while another exists, even
+        // attached and sorting first.
+        let rows = "$1 1 900 _dreamer_drawers\n$0 0 100 main\n";
+        assert_eq!(attach_session(rows).as_deref(), Some("$0"));
+        // Alone, it is still better than no session.
+        assert_eq!(
+            attach_session("$1 0 900 _dreamer_drawers\n").as_deref(),
+            Some("$1")
+        );
+        // A session a client is attached to, then the most recent, then
+        // the lowest id.
+        let rows = "$0 0 500 main\n$2 1 100 work in progress\n$3 0 900 logs\n";
+        assert_eq!(attach_session(rows).as_deref(), Some("$2"));
+        let rows = "$0 0 500 main\n$3 0 900 logs\n";
+        assert_eq!(attach_session(rows).as_deref(), Some("$3"));
+        let rows = "$4 0 500 b\n$3 0 500 a\n";
+        assert_eq!(attach_session(rows).as_deref(), Some("$3"));
+        assert_eq!(attach_session(""), None);
+    }
 }

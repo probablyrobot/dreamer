@@ -23,6 +23,20 @@ is open.
    - closed panes are dropped;
    - a respawned pane gets a new mirror with the next generation.
 
+## Panes that do not stream
+
+The daemon has one control client, attached to one session (see
+[daemon.md](daemon.md#which-session-it-attaches-to)), and tmux sends a
+control client output only for panes in its own session. A pane in any
+other session still gets a mirror from its cold attach, but no output
+follows. Its mirror keeps the captured content, and nothing reaches its
+journal or subscribers.
+
+`dream mirrors` and `terminal.mirrors` report such a pane with state
+`not_streaming`, never `live`, with a detail such as
+`in session $1 (work); the daemon is attached to $0 (main), ...`. The
+daemon does not poll captures in place of the stream.
+
 ## Ownership and ordering
 
 - One router task reads the control connection's events in order. It never
