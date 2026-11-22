@@ -213,6 +213,10 @@ checkpoint and matches the remote mirror. Killing the remote daemon then
 ends the subscription with `host_restarted`. A second test keeps a host's
 topology updating across a cut.
 
+`cargo xtask bench remote` times key to echo in a host's pane through
+this path, split into the link, the host's processing, and the rest
+([performance.md](performance.md)).
+
 ## Forwards
 
 A web pane in a host's window shows a page on that host's own loopback

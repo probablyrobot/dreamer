@@ -5,9 +5,13 @@
 //!
 //! ```text
 //! cargo xtask bench headless|busy|extensions|memory|streams|tiers [OPTIONS] [--debug] [--linux]
+//! cargo xtask bench remote [OPTIONS] [--container [--netem SPEC]] [--debug]
 //! cargo xtask bench gui [--panes N]
 //! cargo xtask bench report FILE...
 //! ```
+//!
+//! `remote --container` reaches a host daemon in that ARM64 Linux
+//! container through real OpenSSH (see `bench/remote.rs`).
 //!
 //! `--linux` runs the same workload in an ARM64 Linux container (the one
 //! the gate's `arm64` stage uses), which has the ptys for 1,000 panes:
@@ -24,8 +28,11 @@ use std::process::Command;
 
 use serde_json::{Value, json};
 
+mod remote;
+
 const USAGE: &str =
     "usage: cargo xtask bench headless|busy|extensions|memory|streams|tiers [OPTIONS] [--debug] [--linux]
+       cargo xtask bench remote [OPTIONS] [--container [--netem SPEC]] [--debug]
        cargo xtask bench gui [--panes N]
        cargo xtask bench report FILE...";
 
@@ -34,6 +41,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let (workload, rest) = match args {
         [w, rest @ ..] if w == "gui" => return gui(&root, rest),
         [w, rest @ ..] if w == "report" => return report(rest),
+        [w, rest @ ..] if w == "remote" && rest.iter().any(|a| a == "--container") => {
+            return remote::container(&root, rest);
+        }
+        [w, rest @ ..] if w == "remote" => (w.as_str(), rest),
         [w, rest @ ..]
             if [
                 "headless",
@@ -61,8 +72,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
     if !debug {
         build.arg("--release");
     }
+    build.args(["-p", "dreamer-server", "-p", "bench"]);
+    // The host's bridge.
+    if workload == "remote" {
+        build.args(["-p", "dreamer-cli"]);
+    }
     let built = build
-        .args(["-p", "dreamer-server", "-p", "bench"])
         .current_dir(&root)
         .status()
         .map_err(|e| format!("cargo build: {e}"))?;
@@ -239,6 +254,10 @@ fn report(files: &[String]) -> Result<(), String> {
 fn label(name: &str, v: &Value) -> String {
     let n = |k: &str| v[k].as_u64();
     let mut l = match (v["workload"].as_str(), n("panes")) {
+        (Some("remote"), _) => match v["link"].as_str() {
+            Some(link) => format!("remote, {link}"),
+            None => "remote, stand-in".into(),
+        },
         (Some(w @ ("busy" | "streams")), Some(p)) => {
             format!("{w}, {} busy panes", group(&p.to_string()))
         }
