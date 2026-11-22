@@ -456,6 +456,63 @@ spends more of that core on them, so less output reaches the daemon
 (its CPU falls) and keys take longer. Up to 10 sessions the cost is
 within noise.
 
+### Tiers, memory, and extensions (M3 Max, as above)
+
+Revision `d2c668ac90ae` (branch `main`), release build, each workload
+with its defaults, one after another while nothing else ran.
+
+**A pane's cost in each tier** (`bench tiers`: 16 panes, `yes` at the
+workload's rate):
+
+| Measure | Cold | Warm | Hot |
+| --- | --- | --- | --- |
+| Daemon heap per idle pane | 3.2 KiB | 19.9 KiB | 102 KiB |
+| Daemon CPU per busy pane | 0.11 % | 0.41 % | 0.69 % |
+| Daemon heap per busy pane | 3.3 KiB | 4,903 KiB | 4,698 KiB |
+| Client replica CPU, 16 busy panes | — | — | 18.5 % (5.3 % per MiB/s) |
+| Client replica RSS per pane, idle / busy | — | — | 771 / 2,934 KiB |
+
+A busy Cold pane costs the daemon 26 % of a busy Warm pane's CPU: tmux
+still sends its output, which the daemon reads and drops. tmux's own CPU
+is the same in every tier (14 % for the 16 panes).
+
+**Memory under pressure** (`bench memory`, 300 s a scenario):
+
+| Scenario | Peak RSS | Stated bound | Heap in use, peak | Bound |
+| --- | --- | --- | --- | --- |
+| Sustained output, 64 panes | 1,332 MiB | 910 MiB | 319 MiB | **not met** |
+| Lagging viewer, 64 busy panes | 1,438 MiB | 998 MiB | 370 MiB | **not met** |
+| Paste of 10 MiB | 43 MiB | 47 MiB | 12 MiB | met |
+| Extension crash loop (382 crashes) | 8.8 MiB | 40 MiB | 0.6 MiB | met |
+
+- The journal stayed at its 256 MiB host limit, and the heap in use
+  stayed bounded. Every stalled subscription ended as `lagged`, and every
+  resume from its start was answered with a checkpoint.
+- The overrun is outside the Rust heap: about 15.6 MiB a pane against the
+  2 MiB the bound allows for a 2,000-line mirror, and RSS was still
+  growing in the second half (75 MiB in the output scenario). A 90 s run
+  with 16 panes stayed within its bound (218 MiB against 312 MiB), at
+  about 5 MiB a pane outside the heap, so this memory grows with time.
+  It is in the malloc zones, where libghostty-vt allocates its pages;
+  why it outgrows the history limit is not known yet.
+- The paste is delivered at 0.36 MiB/s into a program that reads and
+  discards it.
+
+**Slow and stalled extensions** (`bench extensions`: 63 busy panes, a
+quiet pane typed into):
+
+| Measure | Quiet | 63 busy panes | Busy, monitor open | Busy, every slow extension |
+| --- | --- | --- | --- | --- |
+| Key to echo, p50 / p95 | 0.17 / 0.23 ms | 6.78 / 7.15 ms | 6.81 / 7.83 ms | 6.73 / 7.51 ms |
+| Daemon CPU | 0.1 % | 124 % | 125 % | 227 % |
+| Busy pane-seconds with no mirror progress, of 630 | — | 0 | 0 | 0 |
+
+Key to echo with every slow extension stays within the one-pane budget
+plus 10 ms (7.5 ms against 40 ms), and within this run's quiet p95 plus
+10 ms. The monitor adds 1.5 % of a core and 1.2 MiB of daemon heap under
+load, and nothing measurable when quiet. The slow extensions add 102 % of
+a core, most of it the Luau scripts.
+
 ### Desktop, macOS (M3 Max, as above)
 
 ```sh
@@ -606,12 +663,8 @@ TCP adds to the 20 ms it puts on each round trip.
 
 - **Stage timings on named hardware.** `bench headless` prints them; no
   run is recorded here yet.
-- **A pane's cost in each tier** (`bench tiers`): the workload exists, but
-  its results are not recorded here yet.
 - **Desktop workloads on Linux** (Wayland and X11), and on macOS with more
   than 16 visible panes, with corpus loads, or with the frame split.
 - **Image-heavy and escape-heavy streams:** the `streams` workload
   exists, but no results are recorded here yet.
-- **Memory under pressure.** The memory workload exists; no run is
-  recorded here yet.
 - **The same workloads in reference terminals.**
