@@ -560,3 +560,35 @@ fn a_programs_own_background_survives_a_scheme_change() {
         second.background
     );
 }
+
+#[test]
+fn the_tail_text_is_the_end_of_the_screen_text() {
+    let tail_of = |e: &Engine, n: usize| {
+        let all = e.screen_text().expect("text");
+        let lines: Vec<&str> = all.split('\n').collect();
+        lines[lines.len().saturating_sub(n)..].join("\n")
+    };
+    let mut cfg = EngineConfig::new(SIZE);
+    cfg.scrollback_lines = Some(500);
+    let mut e = Engine::new(cfg).expect("engine");
+    // Scrollback, a wrapped row, blank rows, wide characters and styles.
+    for i in 0..120 {
+        e.feed(format!("line {i}\r\n").as_bytes()).expect("feed");
+    }
+    e.feed(b"a row long enough to wrap past twenty columns\r\n\r\n\r\n")
+        .expect("feed");
+    e.feed("\x1b[1mbold\x1b[0m 日本語 end\r\nlast".as_bytes())
+        .expect("feed");
+    for n in [1, 3, 6, 7, 20, 50, 200, 10_000] {
+        assert_eq!(e.tail_text(n).expect("tail"), tail_of(&e, n), "{n} lines");
+    }
+    // The alternate screen has no scrollback.
+    e.feed(b"\x1b[?1049halt one\r\nalt two").expect("feed");
+    for n in [1, 6, 30] {
+        assert_eq!(
+            e.tail_text(n).expect("tail"),
+            tail_of(&e, n),
+            "alt, {n} lines"
+        );
+    }
+}
