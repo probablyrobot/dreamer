@@ -8,6 +8,7 @@
 //! dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]
 //! dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]
 //! dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]
+//! dreamer-bench memory [OPTIONS]   (see memory.rs)
 //! dreamer-bench machine
 //! ```
 //!
@@ -40,6 +41,7 @@ use tmux_backend::TmuxServer;
 use tmux_backend::server::tmux_program;
 
 mod corpus;
+mod memory;
 mod streams;
 mod tiers;
 
@@ -48,6 +50,7 @@ fn main() {
     let r = match args.first().map(String::as_str) {
         Some("headless") => headless(&args[1..]),
         Some("busy") => busy(&args[1..]),
+        Some("memory") => memory::run(&args[1..]),
         Some("streams") => streams::streams(&args[1..]),
         Some("tiers") => tiers::run(&args[1..]),
         Some("machine") if args.len() == 1 => {
@@ -55,7 +58,7 @@ fn main() {
             Ok(())
         }
         _ => Err(
-            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench machine"
+            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench machine"
                 .into(),
         ),
     };

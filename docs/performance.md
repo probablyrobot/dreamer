@@ -12,6 +12,7 @@ cargo xtask bench headless --panes 1000 --linux           # the gate's ARM64 Lin
 cargo xtask bench busy [--panes N] [--idle M]             # typing under load, split by process
 cargo xtask bench streams [--panes N] [--corpus NAME]... [--seconds S]  # replayed corpora
 cargo xtask bench tiers [--panes N] [--stream text|escape] [--rate KIB]  # a pane's cost in each tier
+cargo xtask bench memory [--scenario NAME]... [--seconds S]  # memory under pressure, see below
 cargo xtask bench report target/bench/headless-*.json     # result files as Markdown for this page
 ```
 
@@ -169,6 +170,44 @@ After a demotion the daemon hands freed memory back to the system:
 `malloc_trim` on Linux, and malloc pressure relief on macOS. macOS takes the
 pages back only under memory pressure, so the Cold RSS figure there stays
 high. On Linux it falls to near the heap figure.
+
+**The memory workload** runs four scenarios, each against a fresh daemon,
+one after another. `--scenario` picks some of them; by default all four
+run.
+
+| Scenario | Load |
+| --- | --- |
+| `output` | `--panes N` panes (64 by default) run `yes` |
+| `lagging` | The same load, and one client subscribes to every busy pane, then stops reading. At the end it reads again. Each subscription must have ended as `lagged`, and a resume from where it started must be answered with a checkpoint: the journal no longer holds that point |
+| `paste` | A paste of `--paste-mib M` MiB (10 by default) of text lines, through `terminal.input`, into a pane whose program reads and discards it without echo |
+| `extension` | A supervised extension answers `extension.hello`, subscribes to events, and exits with an error. The daemon restarts it and parks it after 8 failures; the workload then restarts it again |
+
+`--backoff-ms B` sets the extension's first restart delay through
+`DREAMER_TEST_EXTENSION_BACKOFF_MS`. It is 50 ms by default, so the
+extension crashes many times a minute; the daemon's own delay is 500 ms.
+
+Each scenario runs for `--seconds S` (300 by default; the paste at least
+until it is delivered). Once a second it samples the daemon's RSS, its
+heap in use, and the host's journal. The result file keeps these curves
+under `curves`. The table gives the values before the load, at the peak,
+and at the end, and the RSS change over the second half, which shows
+whether memory was still growing.
+
+Each scenario also states a bound on RSS, built from the daemon's
+budgets, and records under `bounds` whether the peak stayed under it:
+
+| Scenario | Bound on RSS |
+| --- | --- |
+| `output` | RSS before, plus the journal budget (the host limit, or the pane limit times the panes, whichever is smaller), plus 10 MiB per pane: up to 8 MiB of output held for a busy mirror and about 2 MiB of mirror for 2,000 lines of history |
+| `lagging` | The `output` bound, plus the stalled connection's queue (256 messages of up to 256 KiB) and, per subscription, 4,096 queued records of the average retained size |
+| `paste` | RSS before, plus 4 times the paste: its gathered parts, the encoded copy, and parts in flight |
+| `extension` | RSS before, plus 32 MiB |
+
+The journal limits come from the daemon (`DREAMER_JOURNAL_PANE_BYTES`,
+`DREAMER_JOURNAL_HOST_BYTES`), so a run with other limits states its bound
+from them. The limits count record payload bytes, not the memory a record
+takes in the daemon. The `output` and `lagging` scenarios report the heap
+growth per byte the journal counts, which shows the difference.
 
 ## Path timings and diagnostics
 
@@ -390,4 +429,6 @@ Revision: branch `m7-05-launch-and-tabs`.
 - **Image-heavy and escape-heavy streams:** the `streams` workload
   exists, but no results are recorded here yet.
 - **Remote latency and jitter.**
+- **Memory under pressure.** The memory workload exists; no run is
+  recorded here yet.
 - **The same workloads in reference terminals.**
