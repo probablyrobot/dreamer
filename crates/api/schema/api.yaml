@@ -401,7 +401,7 @@ types:
       - { n: 2, name: live }
       - { n: 3, name: failed }
       - { n: 4, name: cold, doc: "The Cold tier: no mirror and no output from tmux for this client; asking for its content attaches it again." }
-      - { n: 5, name: not_streaming, doc: "Mirrored from a capture, but tmux sends no output for it: the pane is outside the session the daemon's control client is attached to. Its content is the capture and does not change; detail names both sessions." }
+      - { n: 5, name: not_streaming, doc: "Reserved. Meant a mirror tmux sends no output for. API 1.64 reported it for panes outside the session the daemon's control client was attached to; the daemon now keeps a control client per tmux session, so every pane streams and nothing reports this state." }
 
   - message: MirrorStatus
     fields:

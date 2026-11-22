@@ -1,8 +1,8 @@
-//! Panes outside the session the daemon's control client attached to: a
-//! user's `tmux new -s work` on the same server must stream like any other
-//! pane. tmux sends `%output` to a control client only for panes whose
-//! window is in that client's session, so this pins the daemon covering the
-//! rest of the server too.
+//! Panes outside the session the daemon's main control client attached
+//! to: a user's `tmux new -s work` on the same server must stream like any
+//! other pane. tmux sends `%output` to a control client only for panes
+//! whose window is in that client's session, so the daemon keeps a client
+//! per session and takes each pane's output from exactly one of them.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -203,7 +203,6 @@ async fn streams(s: &Setup, c: &Client, pane: u32, tag: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a control client per session (#461)"]
 async fn panes_in_a_session_the_daemon_did_not_attach_to_stream_live() {
     let s = Setup::new(&[]);
     let c = s.client().await;
@@ -235,34 +234,168 @@ async fn the_drawer_holding_session_does_not_take_the_user_s_panes_offline() {
     streams(&s, &c, main, "MAIN").await;
 }
 
-/// Until the daemon has a control client per session, a pane in a session
-/// it did not attach to is reported as not streaming, never as Live.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_pane_the_daemon_gets_no_output_for_is_not_reported_live() {
+/// The mirror's lines that are `<tag>-<n>`, as numbers, in screen order.
+async fn numbered(c: &Client, pane: u32, tag: &str) -> Vec<u32> {
+    match c
+        .call(Request::TerminalRead(api::ReadParams {
+            pane,
+            history: Some(500),
+            endpoint: None,
+        }))
+        .await
+    {
+        Ok(Response::TerminalRead(t)) => t
+            .lines
+            .iter()
+            .filter_map(|l| {
+                l.trim_end()
+                    .strip_prefix(tag)?
+                    .strip_prefix('-')?
+                    .parse()
+                    .ok()
+            })
+            .collect(),
+        other => panic!("read: {other:?}"),
+    }
+}
+
+/// Print `<tag>-1` to `<tag>-<n>` in the pane, then wait until its mirror
+/// shows exactly those lines, once each and in order.
+async fn count_once(s: &Setup, c: &Client, pane: u32, tag: &str, n: u32) {
+    // `$i` keeps the command line itself from matching.
+    s.type_line(
+        pane,
+        &format!("i=1; while [ $i -le {n} ]; do echo {tag}-$i; i=$((i+1)); done"),
+    );
+    s.wait_tmux(pane, &format!("{tag}-{n}"));
+    let want: Vec<u32> = (1..=n).collect();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let got = numbered(c, pane, tag).await;
+        if got == want {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the mirror of %{pane} shows {tag} lines {got:?}, not 1..={n} once each; status {:?}",
+            mirror(c, pane).await
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// `main`, with the daemon attached to it, then `work` and `more`.
+async fn two_more_sessions() -> Setup {
     let s = Setup::new(&[]);
     let c = s.client().await;
-    let main = s.pane_of("main:");
-    wait_live(&c, main).await;
+    wait_live(&c, s.pane_of("main:")).await;
+    for name in ["work", "more"] {
+        s.tmux
+            .run_checked(&["new-session", "-d", "-s", name, "/bin/sh"])
+            .expect("session");
+    }
+    s
+}
+
+/// A window linked into several sessions is in several clients' sessions,
+/// and tmux sends its output to each of them: the mirror takes it from one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_linked_into_two_sessions_streams_once_and_in_order() {
+    let s = two_more_sessions().await;
+    let c = s.client().await;
+    let pane = s.pane_of("work:");
     s.tmux
-        .run_checked(&["new-session", "-d", "-s", "work", "/bin/sh"])
-        .expect("session");
-    let other = s.pane_of("work:");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let m = loop {
-        let m = mirror(&c, other).await;
-        let state = m.as_ref().map(|m| m.state);
-        assert_ne!(state, Some(api::MirrorState::Live as i32), "{m:?}");
-        if state == Some(api::MirrorState::NotStreaming as i32) {
-            break m.expect("mirror");
+        .run_checked(&["link-window", "-d", "-s", "work:0", "-t", "more:9"])
+        .expect("link");
+    wait_live(&c, pane).await;
+    count_once(&s, &c, pane, "TWO", 40).await;
+
+    // Linked into the main session as well: the pane moves to that
+    // session's client, and still nothing arrives twice.
+    s.tmux
+        .run_checked(&["link-window", "-d", "-s", "work:0", "-t", "main:9"])
+        .expect("link");
+    count_once(&s, &c, pane, "THREE", 40).await;
+    streams(&s, &c, pane, "LINK").await;
+}
+
+/// The session a pane streams from is killed while its window stays linked
+/// into another session: the pane moves to that session's client, and its
+/// mirror is rebuilt from a capture, so output written meanwhile is kept.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_killed_session_hands_its_linked_panes_to_another_client() {
+    let s = two_more_sessions().await;
+    let c = s.client().await;
+    let pane = s.pane_of("work:");
+    s.tmux
+        .run_checked(&["link-window", "-d", "-s", "work:0", "-t", "more:9"])
+        .expect("link");
+    streams(&s, &c, pane, "BEFORE").await;
+    s.tmux
+        .run_checked(&["kill-session", "-t", "work"])
+        .expect("kill");
+    // Straight away, before the daemon can have noticed.
+    s.type_line(pane, "echo DUR''ING");
+    s.wait_tmux(pane, "DURING");
+    wait_mirror(&c, pane, "DURING").await;
+    wait_mirror(&c, pane, "BEFORE-OUT").await;
+    streams(&s, &c, pane, "AFTER").await;
+}
+
+fn daemon_clients(s: &Setup) -> usize {
+    s.tmux
+        .run_checked(&["list-clients", "-F", "#{client_name}"])
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+fn sessions(s: &Setup) -> usize {
+    s.tmux
+        .run_checked(&["list-sessions", "-F", "#{session_id}"])
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+/// Sessions made and killed leave no control client behind: the daemon
+/// has one per session, no more.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_churn_leaves_one_client_per_session() {
+    let s = Setup::new(&[]);
+    let c = s.client().await;
+    wait_live(&c, s.pane_of("main:")).await;
+    for round in 0..4 {
+        let names: Vec<String> = (0..3).map(|i| format!("churn{round}x{i}")).collect();
+        for n in &names {
+            s.tmux
+                .run_checked(&["new-session", "-d", "-s", n, "/bin/sh"])
+                .expect("session");
         }
-        assert!(Instant::now() < deadline, "%{other} never settled: {m:?}");
+        // Each new session streams.
+        let last = s.pane_of(&format!("{}:", names[2]));
+        wait_live(&c, last).await;
+        for n in &names[..2] {
+            s.tmux
+                .run_checked(&["kill-session", "-t", n])
+                .expect("kill");
+        }
+    }
+    // Left: `main` and the last session of each round.
+    assert_eq!(sessions(&s), 5);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while daemon_clients(&s) != sessions(&s) {
+        assert!(
+            Instant::now() < deadline,
+            "{} clients for {} sessions:\n{}",
+            daemon_clients(&s),
+            sessions(&s),
+            s.tmux
+                .run_checked(&["list-clients", "-F", "#{client_name} #{session_name}"])
+                .unwrap_or_default()
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    let detail = m.detail.unwrap_or_default();
-    assert!(
-        detail.contains("(work)") && detail.contains("(main)"),
-        "{detail}"
-    );
-    // The pane in the attached session still streams.
-    streams(&s, &c, main, "MAIN").await;
+    }
+    let survivor = s.pane_of("churn3x2:");
+    streams(&s, &c, survivor, "LAST").await;
 }

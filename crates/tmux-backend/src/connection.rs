@@ -254,23 +254,42 @@ impl Connection {
 
     /// Run a batch and return one response per command, in order.
     pub async fn execute(&self, batch: impl Into<Batch>) -> Result<Vec<Response>, CommandError> {
+        self.submit(batch).await
+    }
+
+    /// Queue a batch now and return its responses when they come. Batches
+    /// run in the order they were submitted, so a caller that must order
+    /// two batches on this client submits both before awaiting either.
+    /// Dropping the returned future does not withdraw the batch.
+    pub fn submit(
+        &self,
+        batch: impl Into<Batch>,
+    ) -> impl std::future::Future<Output = Result<Vec<Response>, CommandError>> + Send + 'static
+    {
         let batch = batch.into();
-        if batch.is_empty() {
-            return Ok(Vec::new());
-        }
-        let (reply, rx) = oneshot::channel();
-        let request = Request {
-            id: self.next_id.fetch_add(1, Ordering::Relaxed),
-            line: batch.encode(),
-            expected: batch.len(),
-            reply,
+        let queued = if batch.is_empty() {
+            None
+        } else {
+            let (reply, rx) = oneshot::channel();
+            let request = Request {
+                id: self.next_id.fetch_add(1, Ordering::Relaxed),
+                line: batch.encode(),
+                expected: batch.len(),
+                reply,
+            };
+            Some(match self.requests.try_send(request) {
+                Ok(()) => Ok(rx),
+                Err(mpsc::error::TrySendError::Full(_)) => Err(CommandError::Busy),
+                Err(mpsc::error::TrySendError::Closed(_)) => Err(CommandError::Closed),
+            })
         };
-        match self.requests.try_send(request) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => return Err(CommandError::Busy),
-            Err(mpsc::error::TrySendError::Closed(_)) => return Err(CommandError::Closed),
+        async move {
+            match queued {
+                None => Ok(Vec::new()),
+                Some(Err(e)) => Err(e),
+                Some(Ok(rx)) => rx.await.unwrap_or(Err(CommandError::Closed)),
+            }
         }
-        rx.await.unwrap_or(Err(CommandError::Closed))
     }
 }
 

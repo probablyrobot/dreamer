@@ -23,25 +23,39 @@ is open.
    - closed panes are dropped;
    - a respawned pane gets a new mirror with the next generation.
 
-## Panes that do not stream
+## Every session streams
 
-The daemon has one control client, attached to one session (see
-[daemon.md](daemon.md#which-session-it-attaches-to)), and tmux sends a
-control client output only for panes in its own session. A pane in any
-other session still gets a mirror from its cold attach, but no output
-follows. Its mirror keeps the captured content, and nothing reaches its
-journal or subscribers.
+tmux sends a control client output only for panes in its own session, so
+the daemon keeps one control client per tmux session (see
+[daemon.md](daemon.md#control-clients)): its main client, and one more for
+every other session, started and stopped as sessions come and go. Panes in
+your own second session, in sessions made by `workspace apply`, and in
+hidden harness drawers stream like any other.
 
-`dream mirrors` and `terminal.mirrors` report such a pane with state
-`not_streaming`, never `live`, with a detail such as
-`in session $1 (work); the daemon is attached to $0 (main), ...`. The
-daemon does not poll captures in place of the stream.
+- **One source per pane.** Each pane's output is taken from exactly one
+  client: that of the lowest session id whose session holds the pane's
+  window. Every other client holding the window turns the pane's output
+  off (`refresh-client -A '%N:off'`). A window linked into several
+  sessions therefore arrives once, in order.
+- **A new source means a fresh attach.** When a pane's source changes (its
+  window is moved, linked, or unlinked, a drawer is hidden or shown, or the
+  source's session is killed), the mirror is attached again from a capture
+  through the new client, as for a respawned pane. Output written
+  meanwhile is in that capture; the two streams are never spliced.
+- A pane whose session's client has not attached yet reports `attaching`.
+  If a client cannot attach, the pane reports `failed` with the reason,
+  and the next change tmux reports tries again.
+
+The `not_streaming` mirror state is reserved: API 1.64 reported it for
+panes outside the session the daemon was attached to, and nothing reports
+it now.
 
 ## Ownership and ordering
 
-- One router task reads the control connection's events in order. It never
-  waits on tmux itself; capture commands run as separate tasks and report
-  back.
+- One router task reads every control client's events, each client's in
+  order, and takes a pane's events only from that pane's source. It never
+  waits on tmux itself; capture commands run as separate tasks, on the
+  pane's source, and report back.
 - Engines live on a fixed pool of VT worker threads (up to 4). Each pane has
   exactly one owning worker and one ordered channel to it, so its records
   are applied in stream order. A full channel makes the router wait, which
