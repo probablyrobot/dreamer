@@ -277,21 +277,22 @@ impl Holds {
         }
     }
 
-    fn remove(&mut self, id: u64) {
-        let Some(h) = self.holds.remove(&id) else {
-            return;
-        };
-        if let Some(l) = self.listeners.get_mut(&h.key) {
-            l.holds -= 1;
-            if l.holds == 0 {
-                l.task.abort();
-                crate::log::info(format!(
-                    "forward: closed 127.0.0.1:{} to `{}` port {}",
-                    l.local_port, h.key.0, h.key.1
-                ));
-                self.listeners.remove(&h.key);
-            }
+    /// Drop hold `id`. With the last hold of a port its listener task is
+    /// aborted and returned: the port is closed once that task has ended.
+    fn remove(&mut self, id: u64) -> Option<JoinHandle<()>> {
+        let h = self.holds.remove(&id)?;
+        let l = self.listeners.get_mut(&h.key)?;
+        l.holds -= 1;
+        if l.holds > 0 {
+            return None;
         }
+        let l = self.listeners.remove(&h.key)?;
+        l.task.abort();
+        crate::log::info(format!(
+            "forward: closed 127.0.0.1:{} to `{}` port {}",
+            l.local_port, h.key.0, h.key.1
+        ));
+        Some(l.task)
     }
 }
 
@@ -350,16 +351,24 @@ impl Forwards {
         Ok(h.add(key, conn))
     }
 
-    /// Give up hold `id` of connection `conn`.
-    pub fn release(&self, id: u64, conn: u64) -> Result<(), RpcError> {
-        let mut h = lock(&self.inner);
-        if h.holds.get(&id).is_none_or(|x| x.conn != conn) {
-            return Err(RpcError::new(
-                code::NOT_FOUND,
-                format!("this connection holds no forward {id}"),
-            ));
+    /// Give up hold `id` of connection `conn`. Returns once the port is
+    /// closed, when this was its last hold.
+    pub async fn release(&self, id: u64, conn: u64) -> Result<(), RpcError> {
+        let closing = {
+            let mut h = lock(&self.inner);
+            if h.holds.get(&id).is_none_or(|x| x.conn != conn) {
+                return Err(RpcError::new(
+                    code::NOT_FOUND,
+                    format!("this connection holds no forward {id}"),
+                ));
+            }
+            h.remove(id)
+        };
+        if let Some(task) = closing {
+            // Aborted: ends with a cancellation error once the listener
+            // is dropped.
+            let _ = task.await;
         }
-        h.remove(id);
         Ok(())
     }
 

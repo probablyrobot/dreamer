@@ -226,7 +226,8 @@ existing SSH connection ([desktop.md](desktop.md#pages-of-a-remote-host)).
 - **Holds.** The forward is held by the calling connection until
   `hosts.unforward` `{forward}` or until that connection closes. Holds of
   one host port share one listener, which closes, with every connection
-  through it, when its last hold goes.
+  through it, when its last hold goes. `hosts.unforward` of the last hold
+  returns once the port is closed.
 - **Streams.** Each connection accepted on the local port becomes a
   stream on the host's link: `forward.open` `{port}` on the host's daemon
   connects there, `forward.write` carries the browser's bytes (with `eof`
