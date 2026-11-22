@@ -418,7 +418,13 @@ tiers:
         };
         let state = |p: u32| l.mirrors.iter().find(|m| m.pane == p).map(|m| m.state);
         if state(other) == Some(api::MirrorState::Cold as i32) {
-            assert_eq!(state(pane), Some(api::MirrorState::Live as i32), "{l:?}");
+            // While hidden, the drawer sits in the holding session, which
+            // the daemon is not attached to, so it does not stream (#461).
+            assert_eq!(
+                state(pane),
+                Some(api::MirrorState::NotStreaming as i32),
+                "{l:?}"
+            );
             break;
         }
         assert!(Instant::now() < deadline, "nothing went Cold: {l:?}");

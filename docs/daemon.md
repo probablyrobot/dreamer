@@ -29,6 +29,30 @@ only ever attaches to a server that is already running; it never starts
 one. It connects on the first request that needs tmux and reconnects
 after the link drops.
 
+### Which session it attaches to
+
+The daemon drives tmux through one control client, attached to one
+session. It chooses that session each time it connects:
+
+1. never a session of Dreamer's own (names starting with `_dreamer_`, such
+   as the drawer holding session) while any other session exists;
+2. then a session a client is attached to;
+3. then the most recently active session;
+4. then the lowest session id.
+
+When its session is killed, tmux ends the control client, and the daemon
+connects again on the next request and chooses again.
+
+**Limitation:** tmux sends a control client output only for panes in its
+own session. Panes in any other session, including your own second
+session (`tmux new -s work`), sessions made by `workspace apply`, and
+hidden harness drawers, are mirrored from a capture but do not stream:
+their content does not change, and their output never reaches the journal,
+subscribers, or replicas. Input still reaches them. `dream mirrors` and
+`terminal.mirrors` report these panes as `not_streaming`, and the detail
+names the pane's session and the attached one. See
+[mirrors.md](mirrors.md#panes-that-do-not-stream).
+
 ### PATH
 
 tmux, harness CLIs (`claude`, `codex`), jobs, and extensions given by
