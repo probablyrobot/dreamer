@@ -28,22 +28,33 @@ impl Default for Retention {
     }
 }
 
-/// Bytes a record costs in the journal.
+/// Memory a record costs in the journal, which the limits count: its slot
+/// in the journal (sequence, time, record) plus the allocation holding its
+/// bytes. Small records cost mostly overhead, and decoded output often has
+/// spare capacity, so counting only the payload let memory run at a
+/// multiple of the limits.
 pub fn cost(r: &Record) -> usize {
+    std::mem::size_of::<(u64, Instant, Record)>() + heap_size(r)
+}
+
+/// Heap a record's bytes hold: their capacity, rounded up to the 16-byte
+/// granule an allocator hands out.
+pub(crate) fn heap_size(r: &Record) -> usize {
     match r {
-        Record::Bytes(b) => b.len().max(1),
-        Record::Resize { .. } => 8,
+        Record::Bytes(b) => b.capacity().next_multiple_of(16),
+        Record::Resize { .. } => 0,
     }
 }
 
 #[derive(Debug)]
 pub struct Journal {
     records: VecDeque<(u64, Instant, Record)>,
+    /// Memory the retained records cost (see [`cost`]).
     bytes: usize,
     /// Sequence the next record gets.
     next: u64,
     retention: Retention,
-    /// Journal bytes of every pane on this host.
+    /// Journal memory of every pane on this host.
     host: Arc<AtomicUsize>,
 }
 
@@ -155,18 +166,19 @@ mod tests {
     #[test]
     fn sequences_are_contiguous_and_trimming_advances_the_first_exactly() {
         let host = Arc::new(AtomicUsize::new(0));
-        let mut j = Journal::new(1, retention(100, 1000), host.clone());
+        let c = cost(&bytes(30));
+        let mut j = Journal::new(1, retention(3 * c + c / 2, 100 * c), host.clone());
         let t = Instant::now();
         for i in 0..10 {
             assert_eq!(j.push(bytes(30), t), 1 + i);
         }
-        // 10 records of 30 bytes, at most 100 kept: the last 3.
+        // 10 records, room for 3 and a half: the last 3.
         assert_eq!(j.len(), 3);
-        assert_eq!(j.bytes(), 90);
+        assert_eq!(j.bytes(), 3 * c);
         assert_eq!(j.first_sequence(), 8);
         assert_eq!(j.next_sequence(), 11);
         assert_eq!(j.first_sequence() + j.len() as u64, j.next_sequence());
-        assert_eq!(host.load(Ordering::Relaxed), 90);
+        assert_eq!(host.load(Ordering::Relaxed), 3 * c);
         let seqs: Vec<u64> = j.since(9).expect("retained").map(|(s, _)| s).collect();
         assert_eq!(seqs, [9, 10]);
         assert!(
@@ -185,20 +197,22 @@ mod tests {
     #[test]
     fn the_host_limit_holds_across_panes() {
         let host = Arc::new(AtomicUsize::new(0));
-        let mut a = Journal::new(1, retention(1000, 250), host.clone());
-        let mut b = Journal::new(1, retention(1000, 250), host.clone());
+        let c = cost(&bytes(20));
+        let limit = 12 * c + c / 2;
+        let mut a = Journal::new(1, retention(100 * c, limit), host.clone());
+        let mut b = Journal::new(1, retention(100 * c, limit), host.clone());
         let t = Instant::now();
         for _ in 0..10 {
             a.push(bytes(20), t);
         }
-        assert_eq!(host.load(Ordering::Relaxed), 200);
+        assert_eq!(host.load(Ordering::Relaxed), 10 * c);
         for _ in 0..10 {
             b.push(bytes(20), t);
-            assert!(host.load(Ordering::Relaxed) <= 250);
+            assert!(host.load(Ordering::Relaxed) <= limit);
         }
         // The writer gave up its own records; the other pane kept its own.
-        assert_eq!(a.bytes(), 200);
-        assert_eq!(b.bytes(), 40);
+        assert_eq!(a.bytes(), 10 * c);
+        assert_eq!(b.bytes(), 2 * c);
         assert_eq!(b.first_sequence(), 9);
     }
 
@@ -222,5 +236,36 @@ mod tests {
         j.trim(t0 + Duration::from_secs(30));
         assert!(j.is_empty());
         assert_eq!(j.first_sequence(), 4);
+    }
+
+    /// Many small records: what the journal holds in memory, slots and
+    /// allocations, stays within the budget, not just their payload.
+    #[test]
+    fn small_records_stay_within_the_budget_in_memory() {
+        let budget = 64 << 10;
+        let host = Arc::new(AtomicUsize::new(0));
+        let mut j = Journal::new(1, retention(budget, 1 << 30), host);
+        let t = Instant::now();
+        for i in 0..100_000u32 {
+            // As decoded from tmux: room for the escaped form, one byte used.
+            let mut b = Vec::with_capacity(4);
+            b.push(b'0' + (i % 10) as u8);
+            j.push(Record::Bytes(b), t);
+        }
+        let held: usize = j
+            .since(j.first_sequence())
+            .expect("retained")
+            .map(|(_, r)| {
+                std::mem::size_of::<(u64, Instant, Record)>()
+                    + match r {
+                        Record::Bytes(b) => b.capacity(),
+                        Record::Resize { .. } => 0,
+                    }
+            })
+            .sum();
+        assert!(j.bytes() <= budget, "counted {}", j.bytes());
+        assert!(held <= budget, "{} records hold {held} bytes", j.len());
+        // Most of what a small record costs is not its payload.
+        assert!(j.len() < budget / 32, "{} records retained", j.len());
     }
 }

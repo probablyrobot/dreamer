@@ -16,8 +16,9 @@ use tokio::sync::{mpsc, watch};
 use crate::worker::{Record, WorkerHandle, WorkerMsg};
 use crate::{Control, MirrorState, SessionClients, worker_of};
 
-/// Output held for a pane whose worker lane is full, before the pane is
-/// declared overrun and re-attached. Absorbs bursts without a re-capture.
+/// Memory of output held for a pane whose worker lane is full (see
+/// [`held_cost`]), before the pane is declared overrun and re-attached.
+/// Absorbs bursts without a re-capture.
 const BACKLOG_BYTES: usize = 8 << 20;
 
 /// Attaches in progress at once; more wait their turn. Each attach is a
@@ -131,8 +132,8 @@ pub(crate) struct Router {
     /// Each pane's current attach; output is tagged with it so a worker can
     /// drop output queued before a re-attach.
     attaches: HashMap<TmuxPaneId, u32>,
-    /// Output waiting for room in a full worker lane, in order, with its
-    /// size: the router itself never waits on one pane.
+    /// Output waiting for room in a full worker lane, in order, with the
+    /// memory it holds: the router itself never waits on one pane.
     backlog: HashMap<TmuxPaneId, (Held, usize)>,
     epoch: ConnectionEpoch,
     changes: watch::Sender<u64>,
@@ -877,7 +878,7 @@ impl Router {
                     let Some((record, at)) = queue.pop_front() else {
                         break;
                     };
-                    *bytes -= record_size(&record);
+                    *bytes -= held_cost(&record);
                     slot.send(WorkerMsg::Apply {
                         pane,
                         generation,
@@ -979,7 +980,7 @@ impl Router {
                     return;
                 }
                 let (queue, bytes) = self.backlog.entry(pane).or_default();
-                *bytes += record_size(&record);
+                *bytes += held_cost(&record);
                 queue.push_back((record, at));
                 // Behind what is held, in order; whatever the lane has room
                 // for goes now, so a pane that was held once (a look took
@@ -1121,6 +1122,12 @@ impl Router {
             _ => {}
         }
     }
+}
+
+/// Memory a held record costs: its slot in the pane's queue plus the
+/// allocation holding its bytes, as the journal counts it.
+fn held_cost(r: &Record) -> usize {
+    std::mem::size_of::<(Record, Option<std::time::Instant>)>() + crate::journal::heap_size(r)
 }
 
 fn record_size(r: &Record) -> usize {

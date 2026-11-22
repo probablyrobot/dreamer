@@ -188,7 +188,7 @@ demand.
 
 | Variable | Effect |
 | --- | --- |
-| `DREAMER_JOURNAL_PANE_BYTES`, `DREAMER_JOURNAL_HOST_BYTES` | Journal retention per pane and per host (defaults 8 MiB and 256 MiB); see [mirrors.md](mirrors.md) |
+| `DREAMER_JOURNAL_PANE_BYTES`, `DREAMER_JOURNAL_HOST_BYTES` | Journal retention per pane and per host, in bytes of memory (defaults 8 MiB and 256 MiB); see [mirrors.md](mirrors.md) |
 | `DREAMER_DIAGNOSTICS` | `1`: performance diagnostics on from the start, as after `dream diagnostics on` |
 
 ## Environment for tests
@@ -221,10 +221,12 @@ One busy pane must not slow down another (spec 16.3, 16.5):
 - **A pane that outruns its mirror.** The router reads every pane's
   output from the one tmux connection, and it never waits on a single
   pane. Output the pane's worker has no room for is held in order, up to
-  8 MiB per pane. Held output goes to the worker as soon as its lane has
-  room: whenever more of that pane's output arrives, and every 5 ms when
-  none does. This absorbs bursts without a re-capture. Once a pane's held output passes 8 MiB, it has outrun its
-  mirror, and the router rebuilds that mirror:
+  8 MiB of memory per pane (counted as the journal counts it; see
+  [mirrors.md](mirrors.md)). Held output goes to the worker as soon as its
+  lane has room: whenever more of that pane's output arrives, and every
+  5 ms when none does. This absorbs bursts without a re-capture. Once a
+  pane's held output passes 8 MiB, it has outrun its mirror, and the router
+  rebuilds that mirror:
   1. It pauses the pane in tmux and captures it fresh. Output between the
      overflow and the pause is part of that capture, so nothing is lost
      silently.

@@ -261,9 +261,9 @@ budgets, and records under `bounds` whether the peak stayed under it:
 
 The journal limits come from the daemon (`DREAMER_JOURNAL_PANE_BYTES`,
 `DREAMER_JOURNAL_HOST_BYTES`), so a run with other limits states its bound
-from them. The limits count record payload bytes, not the memory a record
-takes in the daemon. The `output` and `lagging` scenarios report the heap
-growth per byte the journal counts, which shows the difference.
+from them. The limits count what records take in memory (see
+[mirrors.md](mirrors.md)). The `output` and `lagging` scenarios report the
+heap growth per byte the journal counts, which checks that estimate.
 
 ## Path timings and diagnostics
 
