@@ -64,7 +64,7 @@ commands:
   remote-acceptance            section 18.2 remote cases through a private, unprivileged sshd
   scenes [NAME]                open the design review's reference scenes in both skins, to capture
   screenshot [--scene NAME] [--skin dark|light] [--settings YAML]
-                               capture Dreamer's own window in a reference scene (macOS)
+                               capture Dreamer's own window in a reference scene (macOS; Linux under Hyprland)
   gate linux-desktop [--allow-missing wayland|x11]
                                real-display smoke on a Linux desktop (second machine)
   gate [mac|linux] [--staged|--full]

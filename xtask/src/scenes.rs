@@ -356,7 +356,7 @@ Opens a reference scene (default single-pane) against an isolated tmux
 server and saves a PNG of the app's own window, at device resolution, to
 DIR (default target/screenshots). --settings is appended to the scene's
 dreamer.yaml, e.g. --settings 'font: {size: 15, letter_spacing: -0.3}'.
-Only Dreamer's window is captured. macOS only for now.
+Only Dreamer's window is captured: on macOS with screencapture, on Linux\nunder Hyprland (Wayland or XWayland) with grim.
 
 --switch opens the theme-switch scene in the dark scheme, captures it,
 changes terminal.theme to THEME in the running window's dreamer.yaml (as
@@ -401,8 +401,11 @@ pub fn screenshot(args: &[String]) -> Result<(), String> {
             other => return Err(format!("unknown argument `{other}`\n\n{SCREENSHOT_USAGE}")),
         }
     }
-    if !cfg!(target_os = "macos") {
-        return Err("screenshot: only macOS is supported so far".into());
+    if !cfg!(target_os = "macos") && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        return Err("screenshot: on Linux, only Hyprland is supported so far".into());
+    }
+    if display_asleep() {
+        return Err("screenshot: the display is asleep, so the window is not drawn".into());
     }
     if !["dark", "light"].contains(&skin.as_str()) {
         return Err(format!("--skin {skin}: use dark or light"));
@@ -440,6 +443,21 @@ pub fn screenshot(args: &[String]) -> Result<(), String> {
     let result = capture_window(running.app.id(), &path, settle);
     running.finish();
     result?;
+    // A capture that is mostly not the skin's background did not get
+    // Dreamer's window: a locked session draws its lock surface over it,
+    // and Hyprland does not report the lock.
+    let background = if skin == "dark" {
+        0x14_16_1a
+    } else {
+        0xf6_f6_f4
+    };
+    // Within 3 per channel: a dark wallpaper comes within 12 of it.
+    if share_near(&path, background, 3)? < 0.2 {
+        let _ = std::fs::remove_file(&path);
+        return Err("screenshot: the capture does not show Dreamer's window \
+             (a locked session or another surface over it); nothing saved"
+            .into());
+    }
     println!("screenshot: {}", path.display());
     Ok(())
 }
@@ -729,7 +747,9 @@ pub fn check_capture(path: &Path, background: u32, ink: u32) -> Result<String, S
 }
 
 /// The on-screen, normal-layer window owned by `pid`, if any.
-fn window_of(pid: u32) -> Option<u32> {
+/// The app's window: its window number on macOS.
+#[cfg(target_os = "macos")]
+fn window_of(pid: u32) -> Option<String> {
     let script = format!(
         "ObjC.import('CoreGraphics');\
          const all = ObjC.deepUnwrap(ObjC.castRefToObject(\
@@ -741,7 +761,70 @@ fn window_of(pid: u32) -> Option<u32> {
         .args(["-l", "JavaScript", "-e", &script])
         .output()
         .ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    id.parse::<u32>().ok().map(|_| id)
+}
+
+/// The app's window on Linux: its rectangle in the compositor's layout,
+/// as `grim -g` takes it (`x,y wxh`). Hyprland only: it lists windows
+/// with their process, for Wayland and XWayland clients alike.
+#[cfg(not(target_os = "macos"))]
+fn window_of(pid: u32) -> Option<String> {
+    let out = Command::new("hyprctl")
+        .args(["clients", "-j"])
+        .output()
+        .ok()?;
+    let clients: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let w = clients.as_array()?.iter().find(|c| {
+        c["pid"].as_u64() == Some(u64::from(pid))
+            && c["mapped"].as_bool() == Some(true)
+            && c["hidden"].as_bool() != Some(true)
+    })?;
+    let (at, size) = (w["at"].as_array()?, w["size"].as_array()?);
+    Some(format!(
+        "{},{} {}x{}",
+        at.first()?.as_i64()?,
+        at.get(1)?.as_i64()?,
+        size.first()?.as_i64()?,
+        size.get(1)?.as_i64()?
+    ))
+}
+
+/// Save the window `id` (from [`window_of`]) as a PNG at `path`.
+#[cfg(target_os = "macos")]
+fn grab(id: &str, path: &Path) -> Result<(), String> {
+    let status = Command::new("screencapture")
+        .args(["-x", "-o", &format!("-l{id}")])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("screencapture: {e}"))?;
+    if !path.is_file() {
+        return Err(format!(
+            "screencapture could not capture window {id}: {} \
+             (allow screen recording for this terminal in System Settings > \
+             Privacy & Security > Screen & System Audio Recording)",
+            String::from_utf8_lossy(&status.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Save the window's rectangle as a PNG at `path`, at the output's scale.
+/// Windows tile on Hyprland, so the rectangle holds only Dreamer's window.
+#[cfg(not(target_os = "macos"))]
+fn grab(rect: &str, path: &Path) -> Result<(), String> {
+    let status = Command::new("grim")
+        .args(["-g", rect])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("grim: {e}"))?;
+    if !path.is_file() {
+        return Err(format!(
+            "grim could not capture window {rect}: {}",
+            String::from_utf8_lossy(&status.stderr).trim()
+        ));
+    }
+    Ok(())
 }
 
 fn capture_window(pid: u32, path: &Path, settle: f64) -> Result<(), String> {
@@ -758,18 +841,31 @@ fn capture_window(pid: u32, path: &Path, settle: f64) -> Result<(), String> {
     // Let the panes draw what the scene typed.
     std::thread::sleep(std::time::Duration::from_secs_f64(settle.max(0.0)));
     let _ = std::fs::remove_file(path);
-    let status = Command::new("screencapture")
-        .args(["-x", "-o", &format!("-l{id}")])
-        .arg(path)
-        .output()
-        .map_err(|e| format!("screencapture: {e}"))?;
-    if !path.is_file() {
-        return Err(format!(
-            "screencapture could not capture window {id}: {} \
-             (allow screen recording for this terminal in System Settings > \
-             Privacy & Security > Screen & System Audio Recording)",
-            String::from_utf8_lossy(&status.stderr).trim()
-        ));
+    // The window may have moved while it settled (a tiling compositor
+    // places it after its first frame).
+    let id = window_of(pid).unwrap_or(id);
+    grab(&id, path)
+}
+
+/// Every output is off (DPMS), so nothing is drawn: Linux under Hyprland.
+/// macOS reports a locked screen instead (`package::screen_locked`).
+fn display_asleep() -> bool {
+    if cfg!(target_os = "macos") {
+        return false;
     }
-    Ok(())
+    let Some(out) = Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .output()
+        .ok()
+    else {
+        return false;
+    };
+    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .ok()
+        .and_then(|v| {
+            v.as_array().map(|m| {
+                !m.is_empty() && m.iter().all(|o| o["dpmsStatus"].as_bool() == Some(false))
+            })
+        })
+        .unwrap_or(false)
 }

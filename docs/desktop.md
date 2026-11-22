@@ -1154,11 +1154,18 @@ Chromium stops drawing frames, or when the window is not the key window
 
 The macOS gate's `screens` step captures the `single-pane` reference
 scene in both of Dreamer's schemes (`cargo xtask screenshot` does the same
-by hand) and checks the pixels:
+by hand; on Linux it works under Hyprland, on Wayland or XWayland, with
+`grim`) and checks the pixels:
 - the main color is the scheme's background, so the theme reached the
   terminals and the chrome alike;
 - the scheme's green, which the scene prints, is drawn;
 - the image is not flat.
+
+`cargo xtask screenshot` refuses to save a capture where less than a fifth
+of the pixels are the scheme's background: that is not Dreamer's window,
+but a lock screen or another surface drawn over it. On macOS it also
+refuses while the screen is locked, and on Linux while every display is
+asleep.
 
 It captures the `app-components` scene in both schemes too: the
 reference app with every text, input, and status component
