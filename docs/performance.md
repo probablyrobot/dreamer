@@ -480,6 +480,32 @@ Revision: branch `m7-05-launch-and-tabs`.
 | Time between frames, 15 busy panes, p95 | — | 17 ms | 25 ms | 25 ms | — |
 | Tab switch to every pane painted, p50 / p95 | — | — | 8.9 / 12.8 ms | 8.7 / 9.9 ms | p95 under 50 ms: met |
 
+### Remote latency, through OpenSSH to an ARM64 Linux container
+
+`cargo xtask bench remote --container`, and again with `--netem 'delay
+20ms 5ms'`: the desktop side on the Mac above, the host in the gate's
+ARM64 Linux container (Linux 6.8 under Colima), reached through
+OpenSSH 10.5p1 on a published loopback port. 200 keystrokes each.
+Revision `8e9dd7ade6d5` (branch `main`).
+
+| Measure | No added delay | netem delay 20 ms ± 5 ms |
+| --- | --- | --- |
+| Connect to the host (SSH, bridge, handshake) | 0.19 s | 0.48 s |
+| Link round trip (`hosts.call daemon.version`), p50 / p95 | 1.24 / 2.51 ms | 28.6 / 36.1 ms |
+| Link round trip, jitter | 0.13 ms | 5.57 ms |
+| Key to echo through the host, p50 / p95 | 1.06 / 1.73 ms | 29.1 / 32.5 ms |
+| Key to echo through the host, jitter | 0.14 ms | 2.55 ms |
+| Host processing (sum of its stage p50s) | 0.45 ms | 1.78 ms |
+| Link, relay and replica (end-to-end p50 less host processing) | 0.96 ms | 27.5 ms |
+| Key to echo, local pane in the same run, p50 / p95 | 0.27 / 0.43 ms | 0.28 / 0.38 ms |
+
+Host processing is mostly the host's `input` and `tmux` stages (238 and
+156 µs p50 without delay); the daemon's own stages after tmux take under
+60 µs together. With the delay, every host stage took about four times
+as long, the container being idle between keystrokes. Even so, the link
+is nearly all of the end-to-end time. netem's jitter reorders packets, so
+TCP adds to the 20 ms it puts on each round trip.
+
 ## Findings
 
 - **Typing under load is bounded by tmux, not the daemon.**
@@ -559,8 +585,6 @@ Revision: branch `m7-05-launch-and-tabs`.
   than 16 visible panes, with corpus loads, or with the frame split.
 - **Image-heavy and escape-heavy streams:** the `streams` workload
   exists, but no results are recorded here yet.
-- **Remote latency and jitter:** the `remote` workload exists, but no
-  results are recorded here yet.
 - **Memory under pressure.** The memory workload exists; no run is
   recorded here yet.
 - **The same workloads in reference terminals.**
