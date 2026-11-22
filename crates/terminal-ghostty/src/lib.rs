@@ -20,6 +20,7 @@ mod effects;
 mod features;
 mod frame;
 pub mod input;
+mod rename;
 /// Limits applied to effects the engine reports.
 pub mod effects_limits {
     pub use crate::effects::MAX_CLIPBOARD_BYTES;
@@ -137,6 +138,10 @@ pub struct Engine {
     image_iter: GhosttyRenderStateImageIterator,
     /// Owned image pixels and the placements last read.
     images: frame::Images,
+    /// Drops tmux's window-name sequence before parsing ([`rename`]). A
+    /// snapshot taken inside one does not carry it; the rest of the name
+    /// would then be printed.
+    rename: rename::Rename,
     /// Boxed so its address, registered as callback userdata, never moves.
     callbacks: Box<CallbackState>,
     size: GridSize,
@@ -371,6 +376,7 @@ impl Engine {
             row_cells: ptr::null_mut(),
             image_iter: ptr::null_mut(),
             images: frame::Images::default(),
+            rename: rename::Rename::default(),
             callbacks: Box::new(CallbackState::new(
                 config.capture_replies,
                 config.capture_clipboard,
@@ -521,6 +527,8 @@ impl Engine {
         if self.callbacks.panicked {
             return Err(EngineError::CallbackPanicked);
         }
+        // tmux's window-name sequence is tmux's, not the terminal's.
+        let bytes = self.rename.strip(bytes);
         // SAFETY: `term` is live; the slice is valid for its length. Callbacks
         // only touch `callbacks`, which outlives this call.
         unsafe { ghostty_terminal_vt_write(self.term, bytes.as_ptr(), bytes.len()) };

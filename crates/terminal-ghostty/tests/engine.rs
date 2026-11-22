@@ -52,6 +52,8 @@ fn golden_frames() {
         "altscreen-exit",
         "cursor",
         "wrap-scroll",
+        // zsh in tmux: `ESC k name ST` names the window; nothing is printed.
+        "tmux-window-name",
     ] {
         check_golden(name, &[&format!("{name}.vt")]);
     }
