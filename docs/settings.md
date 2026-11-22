@@ -65,6 +65,7 @@ terminal:
 tiers:
   cold_after: 30m                        # default; a wait (90s, 30m, 2h) or never
   warm_limit: 128                        # default; a number of panes or none
+  warm_memory: 1GiB                      # default; a size (512MiB, 2GiB) or none
 drawer:
   side: bottom                           # bottom (default), right, or left
   size: 35                               # default; percent of the window, 10 to 90
@@ -254,15 +255,21 @@ milliseconds when something asks for it ([mirrors.md](mirrors.md#tiers),
 tiers:
   cold_after: 30m      # quiet this long, and nothing follows it: Cold
   warm_limit: 128      # at most this many Warm panes that nothing follows
+  warm_memory: 1GiB    # at most this much held by all mirrors together
 ```
 
 - **Followed** means a window shows the pane, or a tap or filter reads
   it. A followed pane is never demoted.
 - **Over the limit,** the quietest panes go Cold first.
+- **Over the memory ceiling,** the quietest panes that nothing follows go
+  Cold until the mirrors are back under it. The figure is an estimate:
+  about 1 KiB per 120-column line of screen and history, plus the pane's
+  journal. Followed panes count but stay Warm, so they alone can hold
+  more. Sizes take `KiB`, `MiB`, or `GiB`.
 - **Each daemon applies its own host's file,** so the budgets are per
   host.
-- **Turning it off:** `cold_after: never` and `warm_limit: none` keep
-  every pane Warm.
+- **Turning it off:** `cold_after: never`, `warm_limit: none`, and
+  `warm_memory: none` keep every pane Warm.
 
 ## Agent harnesses
 

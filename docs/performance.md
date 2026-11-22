@@ -441,7 +441,9 @@ Revision: branch `m7-05-launch-and-tabs`.
   for any pane with a screenful of content.
 - **Warm panes with long histories are expensive.** 1,000 Warm panes with
   2,000 lines each take 1.9 GB. Demoting panes nobody watches to Cold is
-  what keeps a large daemon small.
+  what keeps a large daemon small: `tiers.warm_memory` (1 GiB by default)
+  caps what all mirrors hold together, and the benchmark turns it off to
+  measure Warm panes.
 - **Launch: 1.33 s, then 0.2 s, now about 185 ms.**
   - **Fonts.** Choosing the terminal font asked GPUI for every installed
     font name, twice, at about 0.6 s each on macOS. It now resolves the

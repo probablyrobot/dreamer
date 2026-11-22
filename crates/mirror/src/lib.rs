@@ -110,6 +110,11 @@ pub struct TierPolicy {
     /// At most this many Warm panes that nothing follows; beyond it the
     /// quietest go Cold. `None`: no limit.
     pub warm_limit: Option<usize>,
+    /// At most this many bytes held by every live mirror together
+    /// ([`LiveStats::memory`]); beyond it the quietest panes that nothing
+    /// follows go Cold. Followed panes still count but are never demoted.
+    /// `None`: no ceiling.
+    pub warm_memory: Option<u64>,
 }
 
 /// What one pass of a [`TierPolicy`] demoted.
@@ -119,6 +124,10 @@ pub struct Demoted {
     pub quiet: usize,
     /// Over `warm_limit`.
     pub over_limit: usize,
+    /// Over `warm_memory`.
+    pub over_memory: usize,
+    /// Bytes every live mirror is estimated to hold after the pass.
+    pub memory: u64,
 }
 
 /// Where a pane's mirror stands.
@@ -461,44 +470,59 @@ impl MirrorHost {
 
     /// Apply a tier policy once: the Warm panes that nothing follows go
     /// Cold, quietest first, while they are quiet for longer than
-    /// `cold_after` or there are more than `warm_limit` of them. A pane
-    /// that gains a follower meanwhile is refused and stays Warm. Panes in
-    /// `keep` count as followed (a harness drawer while it is hidden).
+    /// `cold_after`, there are more than `warm_limit` of them, or all
+    /// mirrors together hold more than `warm_memory`. A pane that gains a
+    /// follower meanwhile is refused and stays Warm. Panes in `keep` count
+    /// as followed (a harness drawer while it is hidden).
     pub async fn apply_policy(
         &self,
         policy: TierPolicy,
         keep: &std::collections::HashSet<TmuxPaneId>,
     ) -> Demoted {
-        let mut unfollowed: Vec<(TmuxPaneId, Duration)> = self
+        let live: Vec<MirrorStatus> = self
             .status()
             .await
             .into_iter()
-            .filter(|m| m.state == MirrorState::Live && !keep.contains(&m.pane))
+            .filter(|m| m.state == MirrorState::Live)
+            .collect();
+        let mut memory: u64 = live
+            .iter()
+            .filter_map(|m| m.live.as_ref())
+            .map(|l| l.memory as u64)
+            .sum();
+        let mut unfollowed: Vec<(TmuxPaneId, Duration, u64)> = live
+            .into_iter()
+            .filter(|m| !keep.contains(&m.pane))
             .filter_map(|m| {
                 m.live
                     .filter(|l| l.followers == 0 && l.tier == Tier::Warm && l.error.is_none())
-                    .map(|l| (m.pane, l.quiet))
+                    .map(|l| (m.pane, l.quiet, l.memory as u64))
             })
             .collect();
         unfollowed.sort_by_key(|a| std::cmp::Reverse(a.1));
         let mut left = unfollowed.len();
         let mut out = Demoted::default();
-        for (pane, quiet) in unfollowed {
+        for (pane, quiet, held) in unfollowed {
             let is_quiet = policy.cold_after.is_some_and(|d| quiet >= d);
             let over = policy.warm_limit.is_some_and(|n| left > n);
-            // Quietest first: once neither holds, neither holds for the rest.
-            if !is_quiet && !over {
+            let heavy = policy.warm_memory.is_some_and(|b| memory > b);
+            // Quietest first: once none holds, none holds for the rest.
+            if !is_quiet && !over && !heavy {
                 break;
             }
             if self.set_cold(pane).await.is_ok() {
                 left -= 1;
+                memory = memory.saturating_sub(held);
                 if is_quiet {
                     out.quiet += 1;
-                } else {
+                } else if over {
                     out.over_limit += 1;
+                } else {
+                    out.over_memory += 1;
                 }
             }
         }
+        out.memory = memory;
         out
     }
 

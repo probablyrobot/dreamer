@@ -17,7 +17,7 @@ use tmux_backend::server::tmux_program;
 const EXE: &str = env!("CARGO_BIN_EXE_dreamerd");
 
 /// No tier policy unless a test sets one.
-const NO_POLICY: &str = "tiers:\n  cold_after: never\n  warm_limit: none\n";
+const NO_POLICY: &str = "tiers:\n  cold_after: never\n  warm_limit: none\n  warm_memory: none\n";
 
 struct Setup {
     root: PathBuf,

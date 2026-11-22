@@ -523,7 +523,7 @@ fn gui(root: &std::path::Path, rest: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(dir.join("config")).map_err(|e| e.to_string())?;
     std::fs::write(
         dir.join("config/dreamer.yaml"),
-        "tiers:\n  cold_after: never\n  warm_limit: none\n",
+        "tiers:\n  cold_after: never\n  warm_limit: none\n  warm_memory: none\n",
     )
     .map_err(|e| e.to_string())?;
     // A large window, so 16 tiled panes keep a few lines each.
