@@ -1804,7 +1804,11 @@ impl api::Service for DaemonService {
 
     async fn hosts_unforward(&self, p: api::HostForwardRef) -> Result<api::Empty, RpcError> {
         let caller = crate::leases::caller().ok_or_else(|| for_a_connection("hosts.unforward"))?;
-        self.0.hosts.forwards.release(p.forward, caller.conn)?;
+        self.0
+            .hosts
+            .forwards
+            .release(p.forward, caller.conn)
+            .await?;
         Ok(api::Empty {})
     }
 
