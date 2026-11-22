@@ -9,7 +9,7 @@ no measurement here is not claimed.
 ```sh
 cargo xtask bench headless [--panes N] [--history LINES]  # this machine
 cargo xtask bench headless --panes 1000 --linux           # the gate's ARM64 Linux container
-cargo xtask bench busy [--panes N] [--idle M]             # typing under load, split by process
+cargo xtask bench busy [--panes N] [--idle M [--sessions S]]  # typing under load, split by process
 cargo xtask bench streams [--panes N] [--corpus NAME]... [--seconds S]  # replayed corpora
 cargo xtask bench tiers [--panes N] [--stream text|escape] [--rate KIB]  # a pane's cost in each tier
 cargo xtask bench memory [--scenario NAME]... [--seconds S]  # memory under pressure, see below
@@ -71,7 +71,11 @@ harness fails the job.
 
 **The busy workload** repeats step 6 on its own, first unloaded and then
 with N panes (63 by default) running `yes`, after `M` idle shells with
-`--idle M`. Each time it also measures:
+`--idle M`. `--sessions S` puts those shells in `S` sessions of their
+own, so the daemon runs a control client in each; the busy and typed
+panes stay in the first session. It records the number of tmux clients,
+the daemon's and tmux's memory and idle CPU once the shells are
+mirrored. Each time it also measures:
 
 - tmux's own key to echo: `send-keys` into a `cat` pane, then
   `capture-pane` until the key is in tmux's grid;
@@ -428,6 +432,29 @@ Machine and container as above, with `cargo xtask bench busy --idle M
 
 On the Mac with 400 idle panes, the same run gave 13.7 / 14.3 ms through
 the daemon, with tmux at 100 % of a core.
+
+### One control client per session
+
+`cargo xtask bench busy --panes 15 --idle 200 --sessions S` on the Mac
+above: 200 idle shells, in the first session (one client) or spread over
+`S` more sessions, then 15 panes running `yes`. Revision: branch
+`m461-bench-sessions`, release build.
+
+| Measure | 1 session | 10 more | 50 more | 200 more |
+| --- | --- | --- | --- | --- |
+| tmux clients (the daemon's) | 1 | 11 | 51 | 201 |
+| Daemon memory (RSS), idle | 16.2 MiB | 17.1 MiB | 18.8 MiB | 28.0 MiB |
+| tmux memory (RSS), idle | 6.0 MiB | 6.8 MiB | 11.0 MiB | 26.8 MiB |
+| tmux CPU, idle | 0.2 % | 0.0 % | 0.6 % | 7.8 % |
+| Key to echo, no load, p50 / p95 | 0.49 / 0.60 ms | 0.61 / 0.70 ms | 1.37 / 1.52 ms | 5.79 / 6.14 ms |
+| Key to echo, 15 busy panes, p50 / p95 | 1.89 / 2.24 ms | 1.95 / 2.12 ms | 2.60 / 3.17 ms | 9.09 / 10.7 ms |
+| Daemon CPU, 15 busy panes | 53 % | 51 % | 32 % | 9 % |
+| tmux CPU, 15 busy panes | 100 % | 100 % | 100 % | 100 % |
+
+tmux is at a full core under load in every column. With more clients it
+spends more of that core on them, so less output reaches the daemon
+(its CPU falls) and keys take longer. Up to 10 sessions the cost is
+within noise.
 
 ### Desktop, macOS (M3 Max, as above)
 

@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! dreamer-bench headless [--panes N] [--history LINES] [--json FILE]
-//! dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]
+//! dreamer-bench busy [--panes N] [--idle M [--sessions S]] [--set OPTION VALUE]... [--json FILE]
 //! dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]
 //! dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]
 //! dreamer-bench memory [OPTIONS]   (see memory.rs)
@@ -20,7 +20,9 @@
 //! time split between tmux and the daemon: `N` panes (63 by default) run
 //! `yes` while a `cat` pane is typed into, timed both through the daemon
 //! and through tmux alone. `--idle M` adds `M` idle shells first;
-//! `--set` sets a global tmux option before anything starts.
+//! `--sessions S` puts them in `S` sessions of their own instead (the
+//! daemon then runs a control client in each); `--set` sets a global tmux
+//! option before anything starts.
 //!
 //! `streams` replays fixed corpora (`corpus.rs`) in `N` panes (16 by
 //! default) and measures throughput, CPU, memory, a replica's frames, and
@@ -75,7 +77,7 @@ fn main() {
         }
         Some("corpus") if args.len() == 3 => write_corpus(&args[1], Path::new(&args[2])),
         _ => Err(
-            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]\n       dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH] [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]\n       dreamer-bench machine\n       dreamer-bench corpus NAME FILE"
+            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M [--sessions S]] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]\n       dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH] [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]\n       dreamer-bench machine\n       dreamer-bench corpus NAME FILE"
                 .into(),
         ),
     };
@@ -196,6 +198,11 @@ impl Rig {
     /// `n` more windows, each running `command`, in batches of one tmux
     /// invocation each.
     fn windows(&self, n: usize, command: &str) -> Result<(), String> {
+        self.windows_in(None, n, command)
+    }
+
+    /// Like [`Rig::windows`], in the session `target` when given.
+    fn windows_in(&self, target: Option<&str>, n: usize, command: &str) -> Result<(), String> {
         let mut left = n;
         while left > 0 {
             let k = left.min(16);
@@ -204,7 +211,11 @@ impl Rig {
                 if i > 0 {
                     args.push(";");
                 }
-                args.extend(["new-window", "-d", command]);
+                args.extend(["new-window", "-d"]);
+                if let Some(t) = target {
+                    args.extend(["-t", t]);
+                }
+                args.push(command);
             }
             self.tmux(&args)?;
             left -= k;
@@ -570,6 +581,7 @@ fn cpu_during<T>(pids: &[u32], f: impl FnOnce() -> T) -> (T, Vec<f64>) {
 fn busy(args: &[String]) -> Result<(), String> {
     let mut panes = 63usize;
     let mut idle = 0usize;
+    let mut sessions = 0usize;
     let mut options: Vec<(String, String)> = Vec::new();
     let mut json_out: Option<PathBuf> = None;
     let mut it = args.iter();
@@ -592,6 +604,12 @@ fn busy(args: &[String]) -> Result<(), String> {
                     .and_then(|v| v.parse().ok())
                     .ok_or("--idle needs a number")?;
             }
+            "--sessions" => {
+                sessions = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--sessions needs a number")?;
+            }
             "--json" => json_out = Some(PathBuf::from(it.next().ok_or("--json needs a file")?)),
             other => return Err(format!("unknown option {other}")),
         }
@@ -600,8 +618,11 @@ fn busy(args: &[String]) -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let result = rt.block_on(run_busy(panes, idle, &options))?;
-    let report = json!({ "workload": "busy", "panes": panes, "idle": idle, "tmux_options": options, "hardware": hardware(), "revision": revision(), "results": result });
+    if sessions > idle {
+        return Err("--sessions needs at least as many --idle shells".into());
+    }
+    let result = rt.block_on(run_busy(panes, idle, sessions, &options))?;
+    let report = json!({ "workload": "busy", "panes": panes, "idle": idle, "sessions": sessions, "tmux_options": options, "hardware": hardware(), "revision": revision(), "results": result });
     print_table(&report);
     if let Some(p) = json_out {
         write_json(&p, &report)?;
@@ -612,6 +633,7 @@ fn busy(args: &[String]) -> Result<(), String> {
 async fn run_busy(
     panes: usize,
     idle: usize,
+    sessions: usize,
     options: &[(String, String)],
 ) -> Result<Vec<Value>, String> {
     let mut out = Vec::new();
@@ -632,14 +654,49 @@ async fn run_busy(
         .trim()
         .parse()
         .map_err(|_| "no tmux pid")?;
-    if idle > 0 {
+    // The first session, where the typed and busy panes go.
+    let home = rig.tmux(&["display-message", "-p", "#{session_id}"])?;
+    let home = home.trim();
+    if sessions > 0 {
+        // One window to each new session, the rest spread across them.
+        for i in 0..idle {
+            if i < sessions {
+                rig.tmux(&["new-session", "-d", "/bin/sh"])?;
+            } else {
+                let target = format!("${}", 1 + i % sessions);
+                rig.windows_in(Some(&target), 1, "/bin/sh")?;
+            }
+        }
+        wait_live(&c, idle + 1, Duration::from_secs(600)).await?;
+    } else if idle > 0 {
         rig.windows(idle, "/bin/sh")?;
         wait_live(&c, idle + 1, Duration::from_secs(600)).await?;
     }
+    let clients = rig.tmux(&["list-clients", "-F", "#{client_name}"])?;
+    put(
+        "tmux clients (the daemon's)",
+        clients.lines().count() as f64,
+        "",
+    );
+    // Memory once the idle shells are mirrored and settled.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    put("daemon RSS, no load", rss_kib(pid)? as f64 / 1024.0, "MiB");
+    put(
+        "tmux RSS, no load",
+        rss_kib(tmux_pid)? as f64 / 1024.0,
+        "MiB",
+    );
+    let (_, idle_cpu) = cpu_during(&[pid, tmux_pid], || {
+        std::thread::sleep(Duration::from_secs(5));
+        Ok::<(), String>(())
+    });
+    put("daemon CPU, idle", idle_cpu[0], "% of a core");
+    put("tmux CPU, idle", idle_cpu[1], "% of a core");
     let base = idle + 1;
     for load in [0usize, panes] {
         if load > 0 {
-            rig.windows(
+            rig.windows_in(
+                Some(home),
                 load,
                 "yes 'busy output for the benchmark, one line after another'",
             )?;

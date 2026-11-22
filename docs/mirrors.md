@@ -34,9 +34,14 @@ hidden harness drawers stream like any other.
 
 - **One source per pane.** Each pane's output is taken from exactly one
   client: that of the lowest session id whose session holds the pane's
-  window. Every other client holding the window turns the pane's output
-  off (`refresh-client -A '%N:off'`). A window linked into several
-  sessions therefore arrives once, in order.
+  window. Every other client turns the pane's output off
+  (`refresh-client -A '%N:off'`). A window linked into several sessions
+  therefore arrives once, in order.
+- **tmux's flow control still holds.** tmux stops reading a pane only
+  when every control client attached has it off or is behind on it; a
+  client never told about the pane counts as wanting more. So every
+  client but the source has every pane off, and a pane that outruns the
+  daemon is held back by tmux as with a single client.
 - **A new source means a fresh attach.** When a pane's source changes (its
   window is moved, linked, or unlinked, a drawer is hidden or shown, or the
   source's session is killed), the mirror is attached again from a capture

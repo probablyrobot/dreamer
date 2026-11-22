@@ -747,12 +747,21 @@ impl Router {
 
     /// Give every mirrored pane the source it should have: a pane whose
     /// lowest session changed is attached again through that session's
-    /// client (or waits for it), and every other client holding the pane's
-    /// window turns its output off, so each byte arrives once.
+    /// client (or waits for it), and every other client turns its output
+    /// off. Each byte then arrives once, and tmux's flow control still
+    /// works: tmux keeps reading a pane while any client that was never
+    /// told about it is attached, so a busy pane would outrun its source
+    /// unless every other client has it off.
     fn rehome(&mut self) {
         if self.sessions.is_none() {
             return;
         }
+        let clients: Vec<u32> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| matches!(c, Client::Up { .. }))
+            .map(|(s, _)| *s)
+            .collect();
         let panes: Vec<(TmuxPaneId, PaneGeneration)> = self
             .flows
             .iter()
@@ -790,11 +799,8 @@ impl Router {
             let Some(source) = self.sources.get(&p).copied() else {
                 continue;
             };
-            for s in self.homes.get(&p).into_iter().flatten() {
-                if *s != source
-                    && self.conn_of(*s).is_some()
-                    && self.muted.entry(*s).or_default().insert(p)
-                {
+            for s in &clients {
+                if *s != source && self.muted.entry(*s).or_default().insert(p) {
                     mute.entry(*s).or_default().push(p);
                 }
             }

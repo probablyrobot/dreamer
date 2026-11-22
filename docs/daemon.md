@@ -58,6 +58,13 @@ daemon's clients), so `destroy-unattached` never fires and hooks on
 `client-attached` run for them. `tmux list-clients` shows one
 `control-mode` client per session.
 
+What the extra clients cost, from `cargo xtask bench busy --sessions S`
+([performance.md](performance.md#one-control-client-per-session)): with up
+to 10 sessions, nothing measurable; with 50, key to echo grows by about
+1 ms; with 200, tmux uses about 8 % of a core while idle, and key to echo
+takes 6 to 9 ms. tmux does some work for every client on each pane's
+output, so the cost grows with the number of sessions.
+
 ### PATH
 
 tmux, harness CLIs (`claude`, `codex`), jobs, and extensions given by
