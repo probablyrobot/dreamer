@@ -30,6 +30,7 @@
 //! of colour, attribute, and cursor sequences instead of plain text.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use api::Request;
@@ -205,12 +206,16 @@ async fn set_tier(c: &Client, pane: u32, tier: api::Tier) -> Result<(), String> 
 
 /// Follow every pane with a client replica, as a desktop view does, and
 /// mark it Hot. A Cold pane is attached again by the subscription.
-async fn follow(rig: &Rig, c: &Client, panes: &[u32]) -> Result<Vec<replica::feed::Feed>, String> {
+async fn follow(
+    rig: &Rig,
+    c: &Client,
+    panes: &[u32],
+) -> Result<Vec<Arc<replica::feed::Feed>>, String> {
     let mut feeds = Vec::with_capacity(panes.len());
     for p in panes {
-        feeds.push(
+        feeds.push(Arc::new(
             replica::feed::Feed::start(rig.socket(), Some(*p), None).map_err(|e| e.to_string())?,
-        );
+        ));
     }
     let deadline = Instant::now() + Duration::from_secs(30);
     for (f, p) in feeds.iter().zip(panes) {
@@ -221,7 +226,30 @@ async fn follow(rig: &Rig, c: &Client, panes: &[u32]) -> Result<Vec<replica::fee
     for p in panes {
         set_tier(c, *p, api::Tier::Hot).await?;
     }
+    // Take every frame on its wake, as a desktop view does; a frame
+    // nobody takes is never presented.
+    for f in &feeds {
+        let wake = f.wake.clone();
+        let f = Arc::downgrade(f);
+        tokio::spawn(async move {
+            while wake.recv().await.is_ok() {
+                let Some(f) = f.upgrade() else { return };
+                drop(f.take());
+            }
+        });
+    }
     Ok(feeds)
+}
+
+/// Frames the feeds built and wakeups their owners took, so far.
+fn feed_counts(feeds: &[Arc<replica::feed::Feed>]) -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    feeds.iter().fold((0, 0), |(f, w), feed| {
+        (
+            f + feed.stats.frames.load(Relaxed),
+            w + feed.stats.owner_wakeups.load(Relaxed),
+        )
+    })
 }
 
 /// Demote every pane to Cold. A follower that has just gone may still be
@@ -332,6 +360,9 @@ async fn measure(o: &Options) -> Result<Vec<Value>, String> {
                 }
                 _ => None,
             };
+            let counted = feeds
+                .as_ref()
+                .map(|(f, _)| (feed_counts(f), Instant::now()));
             let s = sample(&c, pids, &panes, over).await?;
             let tag = format!("{n} {what} {tier} panes");
             put(&format!("daemon CPU, {tag}"), s.daemon, "% of a core");
@@ -352,6 +383,27 @@ async fn measure(o: &Options) -> Result<Vec<Value>, String> {
                     s.replicas,
                     "% of a core",
                 );
+                if let Some(((frames, wakeups), t)) = counted {
+                    let (f, w) = feed_counts(&feeds);
+                    let secs = t.elapsed().as_secs_f64();
+                    put(
+                        &format!("frames built per Hot replica, {tag}"),
+                        (f - frames) as f64 / secs / n as f64,
+                        "per second",
+                    );
+                    put(
+                        &format!("owner wakeups per Hot replica, {tag}"),
+                        (w - wakeups) as f64 / secs / n as f64,
+                        "per second",
+                    );
+                }
+                if busy && let Some(m) = s.ingested.filter(|m| *m > 0.0) {
+                    put(
+                        &format!("client replicas CPU per MiB/s, {tag}"),
+                        s.replicas / m,
+                        "% of a core",
+                    );
+                }
                 let grown = rss_kib(std::process::id())?.saturating_sub(rss);
                 put(
                     &format!("client replica RSS per {what} Hot pane"),

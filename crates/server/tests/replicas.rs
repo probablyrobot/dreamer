@@ -398,6 +398,38 @@ async fn a_feed_publishes_on_change_coalesces_and_never_wakes_when_idle() {
 }
 
 #[tokio::test]
+async fn a_streaming_pane_builds_frames_only_as_the_view_takes_them() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let s = Setup::new(&[]);
+    drop(s.client().await);
+    let feed = replica::feed::Feed::start(s.socket(), Some(0), None).expect("feed");
+    s.type_line("echo READY");
+    feed_until(&feed, |t| t.contains("\nREADY")).await;
+
+    // The view stops taking frames while the pane streams: the replica
+    // keeps applying records but builds no frames nobody would show.
+    let before = feed.stats.frames.load(Relaxed);
+    s.type_line("seq 1 100000; echo STREAM-DONE");
+    s.wait_tmux("STREAM-DONE");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !feed
+        .text()
+        .await
+        .is_some_and(|t| t.contains("\nSTREAM-DONE"))
+    {
+        assert!(Instant::now() < deadline, "the replica never caught up");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let built = feed.stats.frames.load(Relaxed) - before;
+    assert!(built <= 2, "{built} frames built with none taken");
+
+    // Taking the waiting frame lets the next one show everything, in order.
+    let text = feed_until(&feed, |t| t.contains("\nSTREAM-DONE")).await;
+    assert!(text.contains("99999\n100000\nSTREAM-DONE"), "{text}");
+    assert!(feed.stats.frames.load(Relaxed) - before <= 4);
+}
+
+#[tokio::test]
 async fn a_synchronized_output_hold_is_shown_after_the_limit() {
     use std::sync::atomic::Ordering::Relaxed;
     let s = Setup::new(&[]);

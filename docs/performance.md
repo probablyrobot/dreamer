@@ -143,7 +143,10 @@ against a Warm and a Hot pane. In order:
 
 Each step samples over `--seconds S` (10 by default):
 
-- the daemon's CPU, tmux's CPU, and in the Hot steps the replicas' CPU;
+- the daemon's CPU, tmux's CPU, and in the Hot steps the replicas' CPU,
+  the frames each replica built, and (busy) the replicas' CPU per MiB/s
+  of output. Each replica's frames are taken as they are woken, as a
+  desktop view takes them;
 - the daemon's heap;
 - for Warm and Hot panes, the output their mirrors took in.
 
