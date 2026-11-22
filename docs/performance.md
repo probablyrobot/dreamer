@@ -13,6 +13,7 @@ cargo xtask bench busy [--panes N] [--idle M]             # typing under load, s
 cargo xtask bench streams [--panes N] [--corpus NAME]... [--seconds S]  # replayed corpora
 cargo xtask bench tiers [--panes N] [--stream text|escape] [--rate KIB]  # a pane's cost in each tier
 cargo xtask bench memory [--scenario NAME]... [--seconds S]  # memory under pressure, see below
+cargo xtask bench extensions [--panes N] [--without PART]  # typing next to slow and stalled extensions
 cargo xtask bench report target/bench/headless-*.json     # result files as Markdown for this page
 ```
 
@@ -157,6 +158,58 @@ fell behind, the tiers are not comparable. `--rate 0` runs `yes` flat out
 instead, which measures the most tmux delivers rather than a fixed load.
 `--stream escape` writes lines full of colour, attribute, cursor, and
 erase sequences instead of plain text.
+
+**The extensions workload** types into a quiet pane while extensions
+misbehave next to N busy panes (63 by default). The extensions are the
+harness's own stand-ins, never anything from your configuration:
+
+- **Slow filter:** a filter on the busy panes records each match as an
+  event, and a Luau script spends 45 ms of its 50 ms budget on each one.
+- **Overrunning filter:** a second script runs past its budget on every
+  match. The daemon stops it each time, and the harness reloads it when
+  it is parked.
+- **Stalled raw tap:** a client follows every busy pane at the `raw`
+  level and never reads.
+- **Stalled extension:** a supervised extension follows every pane at the
+  `raw` level and the event log, then stops reading its input and
+  answering heartbeats. The daemon kills it after a missed heartbeat, and
+  it stalls again after each restart.
+- **Crashing extension:** a supervised extension that exits with an error
+  after its hello. It runs with a 100 ms first restart delay and is
+  restarted whenever it is parked.
+- **Monitor:** a supervised extension that does what a monitor pane does.
+  It follows every pane at the `text` level and the event log, and reads
+  the topology once a second.
+
+It runs five phases on one daemon: quiet; quiet with the monitor open;
+busy; busy with the monitor open; busy with every extension above. Each
+phase measures:
+
+- the daemon's CPU, resident size, and heap in use, and the busy panes'
+  output ingested, over `--seconds` (10 by default);
+- once a second, whether every busy pane's mirror sequence advanced (the
+  daemon's reader never waits for an extension);
+- key to echo in a fresh `cat` pane, 200 keystrokes, as in step 2;
+- Ctrl-C in a quiet shell, timed until the shell's trap has redrawn the
+  pane: the cancellation path.
+
+The difference between phases is reported as the cost of opening the
+monitor (idle and busy) and of the slow extensions, apart from the busy
+panes' own cost. The daemon's figure includes the Luau scripts, which run
+on the daemon's script threads, but not the supervised extensions'
+processes; the monitor's own CPU and memory are reported beside it.
+Selection happens in the desktop, not the daemon, so it is not part of
+this workload. Three checks close the run:
+
+- key to echo p95 with every extension running is within the one-pane
+  budget plus 10 ms (40 ms);
+- it is within the same run's quiet p95 plus 10 ms;
+- every busy pane's mirror advanced in every second.
+
+`--without PART` leaves one stand-in out (`monitor`, `filter`, `scripts`,
+`raw-tap`, `stalled`, or `crasher`; `filter` takes the scripts with it),
+to find which one a cost comes from. Without the monitor, its two phases
+are skipped.
 
 **Memory** is reported two ways. Resident size (RSS) is what the system
 sees. It also counts freed memory the allocator keeps for reuse, so after
