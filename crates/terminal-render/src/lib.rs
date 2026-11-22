@@ -179,6 +179,8 @@ impl Element for TerminalElement {
 
 static PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PAINT_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SHAPE_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static IMAGE_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 thread_local! {
     /// The frames painted lately, by address (the benchmark asks whether a
@@ -202,6 +204,18 @@ pub fn was_painted(frame: &Arc<FrameSnapshot>) -> bool {
 /// in nanoseconds (the benchmark's frame work).
 pub fn paint_nanos() -> u64 {
     PAINT_NANOS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Of [`paint_nanos`], the time spent shaping rows the shape cache did
+/// not hold, in nanoseconds.
+pub fn shape_nanos() -> u64 {
+    SHAPE_NANOS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Of [`paint_nanos`], the time spent turning new or changed images into
+/// GPU-ready textures, in nanoseconds.
+pub fn image_nanos() -> u64 {
+    IMAGE_NANOS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Terminal elements painted since the process started. A static view
@@ -249,7 +263,13 @@ impl TextureCache {
         if let Some(t) = self.entries.get(&key) {
             return Some(Arc::clone(t));
         }
-        let t = rgba_image(img.width, img.height, img.rgba.to_vec())?;
+        let started = std::time::Instant::now();
+        let t = rgba_image(img.width, img.height, img.rgba.to_vec());
+        IMAGE_NANOS.fetch_add(
+            started.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let t = t?;
         stats.image_uploads += 1;
         self.entries.insert(key, Arc::clone(&t));
         Some(t)
@@ -699,7 +719,12 @@ fn paint_frame(
                 lines
             }
             None => {
+                let started = std::time::Instant::now();
                 let lines = std::rc::Rc::new(shape_row(row, el, m, colors, window));
+                SHAPE_NANOS.fetch_add(
+                    started.elapsed().as_nanos() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 stats.shaped_lines += lines.len();
                 SHAPES.with(|c| c.borrow_mut().insert(row, colors, key, lines.clone()));
                 lines

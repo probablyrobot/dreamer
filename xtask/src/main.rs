@@ -37,7 +37,8 @@ commands:
                                the headless benchmark workloads, release build, results in target/bench
   bench remote [OPTIONS] [--container [--netem SPEC]]
                                key to echo through a connected host, split into link and host
-  bench gui [--panes N]        the desktop measuring itself (needs an awake, unlocked display)
+  bench gui [OPTIONS]          the desktop measuring itself (needs an awake, unlocked display;
+                               exits 5, not run, without one)
   bench report FILE...         result files as the Markdown docs/performance.md records
   build-report [--ci-run ID]   the release build report (spec 17.6) from target/package, the gate, and CI
   release vX.Y.Z               build both lanes' artifacts, tag, and fill a draft GitHub release with the report

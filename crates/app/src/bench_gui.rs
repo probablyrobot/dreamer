@@ -10,8 +10,9 @@
 //! 3. **Key to echo, idle:** a key sent through the pane's input path until
 //!    a paint shows the cursor moved.
 //! 4. **Frame work under load:** every other visible pane prints a line
-//!    every 20 ms; for 5 s, each window frame's terminal paint time and the
-//!    time between frames.
+//!    every 20 ms, or replays a byte corpus nonstop (`DREAMER_BENCH_LOAD`);
+//!    for 5 s, each window frame split into its parts (see
+//!    [`frame_results`]) and the time between frames.
 //! 5. **Key to echo under that load.**
 //! 6. **Tab switch:** selecting the other tab until each of its panes has
 //!    painted its content.
@@ -21,21 +22,101 @@
 //!    waits to be drawn.
 //!
 //! The results are written to the file as JSON, and the process exits.
-//! The harness passes the pane count, the machine, and the revision in
-//! `DREAMER_BENCH_PANES`, `DREAMER_BENCH_MACHINE`, and
-//! `DREAMER_BENCH_REVISION` (each JSON); the file carries them as given.
+//! The harness passes the pane count, the visible pane count, the load,
+//! the machine, and the revision in `DREAMER_BENCH_PANES`,
+//! `DREAMER_BENCH_VISIBLE`, `DREAMER_BENCH_LOAD`, `DREAMER_BENCH_MACHINE`,
+//! and `DREAMER_BENCH_REVISION` (each JSON); the file carries them as
+//! given, with the display backend.
+//!
+//! **Not run.** A wait that runs out while the window does not draw when
+//! asked (a locked or sleeping display, a window the system stopped
+//! refreshing) proves nothing. So does an idle count of zero paints from a
+//! window that is not drawing. Then the file says `"not_run": true` with
+//! the reason, holds no results, and the process exits 5, as the gate's
+//! smoke runs do.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use gpui::{AnyWindowHandle, AppContext as _, AsyncApp, WeakEntity};
 use serde_json::json;
 
-use crate::workspace::{FRAME_LOG, Workspace};
+use crate::workspace::{FRAME_LOG, FrameMark, Workspace};
+
+/// The results file.
+static OUT: OnceLock<PathBuf> = OnceLock::new();
 
 fn fail(why: &str) -> ! {
     eprintln!("bench: {why}");
     std::process::exit(3)
+}
+
+/// A value the harness passed in, as JSON.
+fn given(name: &str) -> serde_json::Value {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// The results file's contents: what ran, where, and the results, or
+/// that nothing could be measured and why.
+fn report(results: Vec<serde_json::Value>, not_run: Option<&str>) -> serde_json::Value {
+    let mut r = json!({
+        "workload": "gui",
+        "panes": given("DREAMER_BENCH_PANES"),
+        "visible": given("DREAMER_BENCH_VISIBLE"),
+        "load": given("DREAMER_BENCH_LOAD"),
+        "backend": crate::display_backend(),
+        "hardware": given("DREAMER_BENCH_MACHINE"),
+        "revision": given("DREAMER_BENCH_REVISION"),
+        "not_measured": [NOT_MEASURED],
+        "results": results,
+    });
+    if let Some(why) = not_run {
+        // Whatever was measured before is not evidence.
+        r["results"] = json!([]);
+        r["not_run"] = json!(true);
+        r["reason"] = json!(why);
+    }
+    r
+}
+
+fn write(report: &serde_json::Value) {
+    let Some(out) = OUT.get() else { return };
+    if let Err(e) = std::fs::write(
+        out,
+        serde_json::to_string_pretty(report).unwrap_or_default(),
+    ) {
+        fail(&format!("{}: {e}", out.display()));
+    }
+}
+
+/// Nothing this run measured is evidence: record why and exit 5.
+fn not_run(why: &str) -> ! {
+    println!("bench: not run: {why}");
+    write(&report(Vec::new(), Some(why)));
+    std::process::exit(crate::INCONCLUSIVE)
+}
+
+/// Whether the window draws a frame when asked within half a second.
+async fn drawing(any: AnyWindowHandle, cx: &mut AsyncApp) -> bool {
+    let before = crate::workspace::draws();
+    let _ = cx.update_window(any, |_, window, _| window.refresh());
+    sleep(cx, Duration::from_millis(500)).await;
+    crate::workspace::draws() != before
+}
+
+const NOT_DRAWING: &str = "the window did not draw when asked (screen locked, display asleep, or the window hidden or behind another app)";
+
+/// A wait for `what` ran out: not run if the window is not drawing, else
+/// a failure.
+async fn stalled(any: AnyWindowHandle, cx: &mut AsyncApp, what: &str) -> ! {
+    if !drawing(any, cx).await {
+        not_run(&format!("never saw {what}, and {NOT_DRAWING}"));
+    }
+    fail(&format!("never saw: {what}"))
 }
 
 fn read<T>(
@@ -68,7 +149,7 @@ async fn until(
             return Instant::now();
         }
         if Instant::now() > deadline {
-            fail(&format!("never saw: {what}"));
+            stalled(any, cx, what).await;
         }
         sleep(cx, Duration::from_millis(1)).await;
     }
@@ -155,7 +236,7 @@ async fn key_to_echo(
             ws,
             cx,
             "the echo painted",
-            Duration::from_secs(5),
+            Duration::from_secs(20),
             |w, cx| {
                 w.pane_shell(pane).is_some_and(|s| {
                     let f = &s.read(cx).frame;
@@ -340,6 +421,81 @@ async fn transcript(
     });
 }
 
+/// What the frame split cannot show, said in every results file.
+const NOT_MEASURED: &str = "GPU submission and present: GPUI times them only with its `profiler` feature, which this build does not enable; each frame's time ends when its last element has painted";
+
+/// The command each busy pane runs: a line every 20 ms, or a corpus the
+/// harness wrote (`DREAMER_BENCH_LOAD`) replayed nonstop with `cat`.
+fn load_command(load: &serde_json::Value) -> String {
+    match load["file"].as_str() {
+        Some(file) => format!("while :; do cat '{file}'; done"),
+        None => "i=0; while :; do i=$((i+1)); echo \"line $i the quick brown fox jumps over the lazy dog\"; sleep 0.02; done".into(),
+    }
+}
+
+/// One window frame: when its render began, and from then until its last
+/// element painted, all of it (`build`) and the terminal paint, shaping,
+/// and image conversion within it, in nanoseconds.
+#[derive(Debug, PartialEq)]
+struct FrameSplit {
+    at: Instant,
+    build: u64,
+    paint: u64,
+    shape: u64,
+    image: u64,
+}
+
+/// Each frame whose render start and paint end were both logged.
+fn split_frames(marks: &[FrameMark]) -> Vec<FrameSplit> {
+    marks
+        .windows(2)
+        .filter(|w| !w[0].end && w[1].end)
+        .map(|w| FrameSplit {
+            at: w[0].at,
+            build: (w[1].at - w[0].at).as_nanos() as u64,
+            paint: w[1].paint - w[0].paint,
+            shape: w[1].shape - w[0].shape,
+            image: w[1].image - w[0].image,
+        })
+        .collect()
+}
+
+/// The frame split as results. Per frame, from the workspace's render to
+/// its last element painted:
+/// - **frame build:** all of it (render, layout, prepaint, paint);
+/// - **terminal paint:** painting terminal panes, including
+/// - **shaping:** rows the shape cache did not hold, and
+/// - **image conversion:** new or changed images made GPU-ready;
+/// - **other frame work:** the build less terminal paint (layout, chrome,
+///   building the element tree).
+fn frame_results(frames: &[FrameSplit], put: &mut impl FnMut(&str, f64, &str)) {
+    let ns = |f: fn(&FrameSplit) -> u64| -> Vec<f64> {
+        frames.iter().map(|x| f(x) as f64 / 1e6).collect()
+    };
+    type Percentiles = &'static [(&'static str, f64)];
+    const ALL: Percentiles = &[("p50", 0.5), ("p95", 0.95), ("max", 1.0)];
+    const MOST: Percentiles = &[("p50", 0.5), ("p95", 0.95)];
+    let parts: [(&str, Vec<f64>, Percentiles); 5] = [
+        ("frame build per frame", ns(|f| f.build), ALL),
+        ("terminal paint time per frame", ns(|f| f.paint), ALL),
+        ("shaping per frame", ns(|f| f.shape), MOST),
+        ("image conversion per frame", ns(|f| f.image), MOST),
+        (
+            "other frame work per frame",
+            ns(|f| f.build.saturating_sub(f.paint)),
+            MOST,
+        ),
+    ];
+    for (what, mut v, ps) in parts {
+        for (name, p) in ps {
+            put(&format!("{what}, {name}"), pct(&mut v, *p), "ms");
+        }
+    }
+    let mut gaps: Vec<f64> = frames.windows(2).map(|w| ms(w[1].at - w[0].at)).collect();
+    put("time between frames, p50", pct(&mut gaps, 0.5), "ms");
+    put("time between frames, p95", pct(&mut gaps, 0.95), "ms");
+}
+
 pub(crate) async fn run(
     any: AnyWindowHandle,
     ws: WeakEntity<Workspace>,
@@ -348,6 +504,7 @@ pub(crate) async fn run(
     cx: &mut AsyncApp,
 ) {
     let started = *crate::STARTED.get_or_init(Instant::now);
+    let _ = OUT.set(out);
     let mut results = Vec::new();
     let mut put = |measure: &str, value: f64, unit: &str| {
         println!("bench: {measure}: {value:.2} {unit}");
@@ -404,6 +561,11 @@ pub(crate) async fn run(
     .await;
     let visible = read(any, &ws, cx, |w, _| w.pane_ids()).unwrap_or_default();
     put("visible panes", visible.len() as f64, "panes");
+    // A first frame can be drawn on a locked screen; what follows needs a
+    // window that keeps drawing.
+    if !drawing(any, cx).await {
+        not_run(NOT_DRAWING);
+    }
     put(
         "launch to every visible pane painted (daemon running)",
         ms(first - started),
@@ -414,11 +576,12 @@ pub(crate) async fn run(
     sleep(cx, Duration::from_secs(1)).await;
     let before = terminal_render::paint_count();
     sleep(cx, Duration::from_secs(3)).await;
-    put(
-        "terminal paints over 3 s idle",
-        (terminal_render::paint_count() - before) as f64,
-        "paints",
-    );
+    let idle = terminal_render::paint_count() - before;
+    // No paints proves nothing from a window that is not drawing.
+    if idle == 0 && !drawing(any, cx).await {
+        not_run(&format!("idle: {NOT_DRAWING}"));
+    }
+    put("terminal paints over 3 s idle", idle as f64, "paints");
 
     // 3. Key to echo, idle: the first visible pane.
     let typing = *visible.first().unwrap_or_else(|| fail("no pane"));
@@ -435,17 +598,12 @@ pub(crate) async fn run(
     );
 
     // 4. Load on every other visible pane.
+    let load = load_command(&given("DREAMER_BENCH_LOAD"));
     let busy: Vec<u32> = visible.iter().copied().filter(|p| *p != typing).collect();
     for p in &busy {
         tmux(
             &daemon,
-            &[
-                "send-keys",
-                "-t",
-                &format!("%{p}"),
-                "i=0; while :; do i=$((i+1)); echo \"line $i the quick brown fox jumps over the lazy dog\"; sleep 0.02; done",
-                "Enter",
-            ],
+            &["send-keys", "-t", &format!("%{p}"), &load, "Enter"],
         );
     }
     sleep(cx, Duration::from_secs(2)).await;
@@ -453,38 +611,24 @@ pub(crate) async fn run(
         *log = Some(Vec::new());
     }
     sleep(cx, Duration::from_secs(5)).await;
-    let frames = FRAME_LOG
+    let marks = FRAME_LOG
         .lock()
         .ok()
         .and_then(|mut l| l.take())
         .unwrap_or_default();
-    let mut work: Vec<f64> = frames
-        .windows(2)
-        .map(|w| (w[1].1 - w[0].1) as f64 / 1e6)
-        .collect();
-    let mut gaps: Vec<f64> = frames.windows(2).map(|w| ms(w[1].0 - w[0].0)).collect();
+    let frames = split_frames(&marks);
+    if frames.len() < 2 && !busy.is_empty() {
+        if !drawing(any, cx).await {
+            not_run(&format!("frames under load: {NOT_DRAWING}"));
+        }
+        fail("busy panes drew fewer than two frames in 5 s");
+    }
     put(
         &format!("frames in 5 s with {} busy panes", busy.len()),
         frames.len() as f64,
         "frames",
     );
-    put(
-        "terminal paint time per frame, p50",
-        pct(&mut work, 0.5),
-        "ms",
-    );
-    put(
-        "terminal paint time per frame, p95",
-        pct(&mut work, 0.95),
-        "ms",
-    );
-    put(
-        "terminal paint time per frame, max",
-        pct(&mut work, 1.0),
-        "ms",
-    );
-    put("time between frames, p50", pct(&mut gaps, 0.5), "ms");
-    put("time between frames, p95", pct(&mut gaps, 0.95), "ms");
+    frame_results(&frames, &mut put);
 
     // 5. Key to echo under that load.
     let mut echo = key_to_echo(any, &ws, typing, 100, cx).await;
@@ -555,24 +699,82 @@ pub(crate) async fn run(
     // 7. A streaming transcript.
     transcript(any, &ws, cx, &mut put).await;
 
-    let given = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .unwrap_or(serde_json::Value::Null)
-    };
-    let report = json!({
-        "workload": "gui",
-        "panes": given("DREAMER_BENCH_PANES"),
-        "hardware": given("DREAMER_BENCH_MACHINE"),
-        "revision": given("DREAMER_BENCH_REVISION"),
-        "results": results,
-    });
-    if let Err(e) = std::fs::write(
-        &out,
-        serde_json::to_string_pretty(&report).unwrap_or_default(),
-    ) {
-        fail(&format!("{}: {e}", out.display()));
-    }
+    write(&report(results, None));
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mark(at: Instant, ms_in: u64, end: bool, paint: u64, shape: u64, image: u64) -> FrameMark {
+        FrameMark {
+            at: at + Duration::from_millis(ms_in),
+            end,
+            paint,
+            shape,
+            image,
+        }
+    }
+
+    #[test]
+    fn a_frame_is_its_render_start_to_its_last_paint() {
+        let t = Instant::now();
+        let marks = [
+            // A paint end logged before any start (the log began mid-frame).
+            mark(t, 0, true, 5, 1, 0),
+            mark(t, 10, false, 5, 1, 0),
+            mark(t, 13, true, 2_000_005, 500_001, 0),
+            // A render whose frame never painted, then a full one.
+            mark(t, 20, false, 2_000_005, 500_001, 0),
+            mark(t, 30, false, 2_000_005, 500_001, 0),
+            mark(t, 34, true, 3_000_005, 500_001, 700_000),
+        ];
+        let frames = split_frames(&marks);
+        assert_eq!(
+            frames,
+            vec![
+                FrameSplit {
+                    at: t + Duration::from_millis(10),
+                    build: 3_000_000,
+                    paint: 2_000_000,
+                    shape: 500_000,
+                    image: 0,
+                },
+                FrameSplit {
+                    at: t + Duration::from_millis(30),
+                    build: 4_000_000,
+                    paint: 1_000_000,
+                    shape: 0,
+                    image: 700_000,
+                },
+            ]
+        );
+        let mut got = Vec::new();
+        frame_results(&frames, &mut |m: &str, v: f64, _: &str| {
+            got.push((m.to_owned(), v))
+        });
+        let get = |m: &str| got.iter().find(|(n, _)| n == m).map(|(_, v)| *v);
+        assert_eq!(get("frame build per frame, max"), Some(4.0));
+        assert_eq!(get("other frame work per frame, p95"), Some(3.0));
+        assert_eq!(get("time between frames, p50"), Some(20.0));
+    }
+
+    #[test]
+    fn a_corpus_load_replays_its_file_and_no_load_paces_lines() {
+        assert_eq!(
+            load_command(&json!({ "name": "escape", "corpus": "sgr", "file": "/tmp/x/load.bin" })),
+            "while :; do cat '/tmp/x/load.bin'; done"
+        );
+        assert!(load_command(&serde_json::Value::Null).contains("sleep 0.02"));
+    }
+
+    #[test]
+    fn a_run_that_could_not_measure_says_so_and_holds_no_results() {
+        let r = report(vec![json!({ "measure": "m", "value": 1.0 })], Some("why"));
+        assert_eq!(r["not_run"], json!(true));
+        assert_eq!(r["reason"], json!("why"));
+        assert_eq!(r["results"], json!([]));
+        assert_eq!(report(Vec::new(), None)["not_run"], serde_json::Value::Null);
+    }
 }

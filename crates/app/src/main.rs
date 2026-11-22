@@ -1620,7 +1620,7 @@ fn monotonic_ns() -> u64 {
 /// The display backend GPUI will use, by its own selection rule: Wayland
 /// when `WAYLAND_DISPLAY` is set, else X11 when `DISPLAY` is set, else a
 /// headless platform that draws nothing.
-fn display_backend() -> &'static str {
+pub(crate) fn display_backend() -> &'static str {
     if cfg!(target_os = "macos") {
         return "macOS (Metal)";
     }
