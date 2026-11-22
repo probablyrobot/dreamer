@@ -15,8 +15,15 @@
 //!
 //! ```text
 //! dreamer-bench memory [--scenario output|lagging|paste|extension]...
-//!     [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]
+//!     [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B]
+//!     [--warm-memory MIB] [--json FILE]
 //! ```
+//!
+//! `--warm-memory` sets `tiers.warm_memory` (1 GiB by default). In the
+//! output scenario a client replica then follows the first busy pane, as
+//! a desktop view does, and the run records how many panes went Cold,
+//! whether the followed one did, and what the daemon says its mirrors
+//! hold against the ceiling.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -58,6 +65,8 @@ struct Options {
     panes: usize,
     paste_mib: usize,
     backoff_ms: u64,
+    /// `tiers.warm_memory` in MiB; the daemon's default when `None`.
+    warm_memory: Option<u64>,
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -67,6 +76,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         panes: 64,
         paste_mib: 10,
         backoff_ms: 50,
+        warm_memory: None,
     };
     let mut json_out: Option<PathBuf> = None;
     let mut it = args.iter();
@@ -87,6 +97,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "--panes" => o.panes = number(it.next(), "--panes")?.max(1) as usize,
             "--paste-mib" => o.paste_mib = number(it.next(), "--paste-mib")?.max(1) as usize,
             "--backoff-ms" => o.backoff_ms = number(it.next(), "--backoff-ms")?,
+            "--warm-memory" => o.warm_memory = Some(number(it.next(), "--warm-memory")?.max(1)),
             "--json" => json_out = Some(PathBuf::from(it.next().ok_or("--json needs a file")?)),
             other => return Err(format!("unknown option {other}")),
         }
@@ -122,6 +133,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "seconds": o.seconds,
         "paste_mib": o.paste_mib,
         "extension_backoff_ms": o.backoff_ms,
+        "warm_memory_mib": o.warm_memory,
         "scenarios": o.scenarios,
         "hardware": hardware(),
         "revision": revision(),
@@ -159,16 +171,22 @@ struct Outcome {
 
 /// A rig like [`Rig::start`], with extra daemon environment and an
 /// `extensions.yaml`.
-fn rig(n: usize, env: &[(&str, String)], extensions: Option<&str>) -> Result<Rig, String> {
+fn rig(
+    n: usize,
+    env: &[(&str, String)],
+    extensions: Option<&str>,
+    warm_mib: Option<u64>,
+) -> Result<Rig, String> {
     let root = PathBuf::from(format!("/tmp/drm-bmem-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("config")).map_err(|e| e.to_string())?;
     let tmux = TmuxServer::start(120, 40, "/bin/sh").map_err(|e| format!("tmux: {e}"))?;
     tmux.run_checked(&["set-option", "-g", "history-limit", "2000"])
         .map_err(|e| e.to_string())?;
+    let warm = warm_mib.map_or(String::new(), |m| format!("  warm_memory: {m}MiB\n"));
     std::fs::write(
         root.join("config/dreamer.yaml"),
-        "tiers:\n  cold_after: never\n  warm_limit: none\n",
+        format!("tiers:\n  cold_after: never\n  warm_limit: none\n{warm}"),
     )
     .map_err(|e| e.to_string())?;
     if let Some(x) = extensions {
@@ -337,7 +355,7 @@ async fn at_rest(rig: &Rig, c: &Client) -> Result<(u32, (f64, f64)), String> {
 /// Sustained output on N panes; with `lagging`, also a client that
 /// subscribes to every busy pane and then stops reading.
 async fn output(o: &Options, n: usize, lagging: bool) -> Result<Outcome, String> {
-    let rig = rig(n, &[], None)?;
+    let rig = rig(n, &[], None, o.warm_memory)?;
     let c = rig.client().await?;
     let (pid, before) = at_rest(&rig, &c).await?;
     let first: Vec<u32> = super::mirrors(&c).await?.iter().map(|m| m.pane).collect();
@@ -396,10 +414,25 @@ async fn output(o: &Options, n: usize, lagging: bool) -> Result<Outcome, String>
         viewer = Some((v, rx, subs));
     }
 
+    // With a Warm memory ceiling, a view follows the first busy pane: the
+    // policy may demote the others, never it.
+    let followed = match (o.warm_memory, lagging, busy.first()) {
+        (Some(_), false, Some(p)) => Some((*p, follow(&rig, *p).await?)),
+        _ => None,
+    };
+    let mut followed_cold = false;
+    let mut cold_max = 0usize;
+
     let mut curve = Curve::new(pid);
     let end = Instant::now() + Duration::from_secs(o.seconds);
     while Instant::now() < end {
         curve.tick(&c).await?;
+        if let Some((p, _)) = &followed {
+            let list = journal(&c).await?;
+            let cold = |m: &&api::MirrorStatus| m.tier == api::Tier::Cold as i32;
+            cold_max = cold_max.max(list.mirrors.iter().filter(cold).count());
+            followed_cold |= list.mirrors.iter().filter(cold).any(|m| m.pane == *p);
+        }
     }
     let list = journal(&c).await?;
     let reattaches: u32 = list.mirrors.iter().map(|m| m.reattaches).sum();
@@ -514,12 +547,82 @@ async fn output(o: &Options, n: usize, lagging: bool) -> Result<Outcome, String>
             bound = 0.0;
         }
     }
+    if let (Some((_, feed)), Some(ceiling)) = (&followed, o.warm_memory) {
+        let cold = list
+            .mirrors
+            .iter()
+            .filter(|m| m.tier == api::Tier::Cold as i32)
+            .count();
+        rows.put("panes Cold at the end", cold as f64, "");
+        rows.put("panes Cold, most at once", cold_max as f64, "");
+        rows.put(
+            "followed pane went Cold (1: yes)",
+            f64::from(u8::from(followed_cold)),
+            "",
+        );
+        rows.put(
+            "frames the follower took",
+            feed.stats.frames.load(std::sync::atomic::Ordering::Relaxed) as f64,
+            "",
+        );
+        // What the daemon estimates its mirrors hold, as its tier policy
+        // logs it after each demotion round.
+        let held = policy_estimates(&rig);
+        rows.put("Warm memory ceiling", ceiling as f64, "MiB");
+        rows.put(
+            "mirrors' memory after a demotion round, largest (daemon's estimate)",
+            held.iter().copied().fold(f64::NAN, f64::max),
+            "MiB",
+        );
+        rows.put(
+            "mirrors' memory after the last demotion round (daemon's estimate)",
+            held.last().copied().unwrap_or(f64::NAN),
+            "MiB",
+        );
+        basis += &format!("; Warm memory ceiling {ceiling} MiB");
+        if followed_cold {
+            basis += "; the followed pane went Cold";
+            bound = 0.0;
+        }
+    }
     Ok(rows.finish(before, &curve, bound, &basis))
+}
+
+/// Follow a pane with a client replica that takes every frame, as a
+/// desktop view does.
+async fn follow(rig: &Rig, pane: u32) -> Result<std::sync::Arc<replica::feed::Feed>, String> {
+    let feed = std::sync::Arc::new(
+        replica::feed::Feed::start(rig.socket(), Some(pane), None).map_err(|e| e.to_string())?,
+    );
+    super::next_frame(&feed, Instant::now() + Duration::from_secs(30))
+        .await
+        .ok_or(format!("pane %{pane} never showed a frame"))?;
+    let wake = feed.wake.clone();
+    let weak = std::sync::Arc::downgrade(&feed);
+    tokio::spawn(async move {
+        while wake.recv().await.is_ok() {
+            let Some(f) = weak.upgrade() else { return };
+            drop(f.take());
+        }
+    });
+    Ok(feed)
+}
+
+/// The "mirrors now hold about N MiB" figures the daemon's tier policy
+/// logged, in order.
+fn policy_estimates(rig: &Rig) -> Vec<f64> {
+    let log = std::fs::read_to_string(rig.root.join("st/dreamerd.log")).unwrap_or_default();
+    log.lines()
+        .filter_map(|l| {
+            let rest = l.split("mirrors now hold about ").nth(1)?;
+            rest.split(' ').next()?.parse().ok()
+        })
+        .collect()
 }
 
 /// A large paste into one pane, whose program reads and discards it.
 async fn paste(o: &Options, n: usize) -> Result<Outcome, String> {
-    let rig = rig(n, &[], None)?;
+    let rig = rig(n, &[], None, o.warm_memory)?;
     let c = rig.client().await?;
     let (pid, before) = at_rest(&rig, &c).await?;
     let pane = rig
@@ -606,6 +709,7 @@ async fn extension(o: &Options, n: usize) -> Result<Outcome, String> {
             o.backoff_ms.to_string(),
         )],
         Some(&yaml),
+        o.warm_memory,
     );
     let r = async {
         let rig = rig?;

@@ -12,7 +12,7 @@ cargo xtask bench headless --panes 1000 --linux           # the gate's ARM64 Lin
 cargo xtask bench busy [--panes N] [--idle M [--sessions S]]  # typing under load, split by process
 cargo xtask bench streams [--panes N] [--corpus NAME]... [--seconds S]  # replayed corpora
 cargo xtask bench tiers [--panes N] [--stream text|escape] [--rate KIB]  # a pane's cost in each tier
-cargo xtask bench memory [--scenario NAME]... [--seconds S]  # memory under pressure, see below
+cargo xtask bench memory [--scenario NAME]... [--seconds S] [--warm-memory M]  # memory under pressure, see below
 cargo xtask bench extensions [--panes N] [--without PART]  # typing next to slow and stalled extensions
 cargo xtask bench remote [--samples N]                   # key to echo through a host (stand-in, no SSH)
 cargo xtask bench remote --container [--netem SPEC]      # through OpenSSH to the ARM64 Linux container
@@ -294,6 +294,13 @@ run.
 `DREAMER_TEST_EXTENSION_BACKOFF_MS`. It is 50 ms by default, so the
 extension crashes many times a minute; the daemon's own delay is 500 ms.
 
+`--warm-memory M` sets `tiers.warm_memory` to M MiB in the daemon's
+configuration. In the `output` scenario, a replica then follows the first
+busy pane and takes frames throughout, and the workload adds rows for the
+ceiling: how many panes were Cold, whether the followed pane ever went
+Cold (the bound fails if it did), and the daemon's own estimate of what
+the mirrors hold after each demotion round.
+
 Each scenario runs for `--seconds S` (300 by default; the paste at least
 until it is delivered). Once a second it samples the daemon's RSS, its
 heap in use, and the host's journal. The result file keeps these curves
@@ -493,10 +500,29 @@ is the same in every tier (14 % for the 16 panes).
   growing in the second half (75 MiB in the output scenario). A 90 s run
   with 16 panes stayed within its bound (218 MiB against 312 MiB), at
   about 5 MiB a pane outside the heap, so this memory grows with time.
-  It is in the malloc zones, where libghostty-vt allocates its pages;
-  why it outgrows the history limit is not known yet.
+  It is in the malloc zones; why it outgrows the history limit is not
+  known yet.
 - The paste is delivered at 0.36 MiB/s into a program that reads and
   discards it.
+
+**With a Warm memory ceiling** (`bench memory --scenario output
+--warm-memory 64`: the same 64 busy panes, `tiers.warm_memory: 64MiB`,
+one pane followed by a replica that takes frames throughout; the daemon
+as above, with the bench's `--warm-memory` option added):
+
+| Measure | Result |
+| --- | --- |
+| Panes Cold, most at once / at the end | 59 / 59 |
+| Followed pane went Cold | no (32,950 frames taken) |
+| Mirrors' memory, daemon's estimate, largest after a demotion round | 62 MiB |
+| Daemon RSS, peak / at the end | 577 / 97 MiB |
+| Heap in use, peak / at the end | 319 / 60 MiB |
+
+The ceiling held: demotion kept the daemon's estimate under 64 MiB, the
+followed pane stayed Warm, and peak RSS stayed within the 910 MiB bound.
+RSS fell by 220 MiB over the second half once the quiet panes were Cold,
+so the memory outside the heap belongs to Warm mirrors and goes with
+them.
 
 **Slow and stalled extensions** (`bench extensions`: 63 busy panes, a
 quiet pane typed into):
