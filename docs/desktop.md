@@ -929,6 +929,11 @@ are reported as not run and the step as `not_run`.
 - **Owner thread.** A background thread per pane owns the replica's engine
   and waits on the daemon connection with no timeout. It builds a frame only
   when records were applied or a checkpoint was restored.
+- **Pacing.** Frames follow what the window shows, not what arrives.
+  While the window has not taken the last frame, no new one is built, and
+  frames are at least 8.3 ms apart (120 a second). Records are still
+  applied as they arrive, so the next frame shows all of them. The first
+  frame after a pause, and the echo of typed input, are built at once.
 - **Coalescing.** The newest frame replaces any unpainted one, and the
   window is woken through a channel that holds at most one signal. A burst
   of output becomes as few repaints as the window can take.

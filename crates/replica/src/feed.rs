@@ -4,6 +4,11 @@
 //! - A frame is built only when records were applied or a checkpoint was
 //!   restored. An idle pane costs no wakeups: the owner waits on the
 //!   connection with no timeout and the view waits on its wake channel.
+//! - Frames are paced by presentation, not by the records that arrive:
+//!   while the view has not taken the last frame no new one is built, and
+//!   frames are at most [`FRAME_INTERVAL`] apart. Records keep being
+//!   applied in between, so the next frame shows all of them. The first
+//!   frame after a pause, and the one after typed input, are built at once.
 //! - Frames coalesce: the newest replaces any unpainted one in a
 //!   latest-value slot, and the wake channel holds at most one signal.
 //! - A synchronized-output hold delays publishing for at most
@@ -26,6 +31,10 @@ use terminal_ghostty::core::FrameSnapshot;
 use crate::{FollowError, FollowState, Follower, RetryPolicy};
 
 pub const HOLD_LIMIT: Duration = Duration::from_secs(1);
+
+/// The shortest time between two frames while output streams: a 120 Hz
+/// display's refresh.
+pub const FRAME_INTERVAL: Duration = Duration::from_micros(8_333);
 
 pub use terminal_ghostty::Scroll;
 pub use terminal_ghostty::links::Link;
@@ -119,6 +128,10 @@ pub struct Feed {
     local: bool,
     /// One signal means "a newer frame is waiting"; never more than one.
     pub wake: async_channel::Receiver<()>,
+    /// Signalled when the view takes a frame: the owner may build the next.
+    taken: Arc<tokio::sync::Notify>,
+    /// Input was typed since the last frame: its echo is shown at once.
+    typed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Feed {
@@ -157,6 +170,8 @@ impl Feed {
             client: client_id(),
             ..Target::default()
         });
+        let taken = Arc::new(tokio::sync::Notify::new());
+        let typed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let sender = InputSender {
             socket: socket.clone(),
             via: via.clone(),
@@ -175,6 +190,8 @@ impl Feed {
             status: status.clone(),
             stats: stats.clone(),
             wake: wake_tx,
+            taken: taken.clone(),
+            typed: typed.clone(),
         };
         std::thread::Builder::new()
             .name(format!(
@@ -207,6 +224,8 @@ impl Feed {
             target,
             local,
             wake,
+            taken,
+            typed,
         })
     }
 
@@ -218,6 +237,7 @@ impl Feed {
         use api::terminal_input::Event;
         if matches!(event, Event::Key(_) | Event::Text(_) | Event::Paste(_)) {
             let _ = self.view.send(ViewCommand::Follow);
+            self.typed.store(true, Ordering::Release);
         }
         if let Event::Focus(f) = &event {
             self.target
@@ -302,9 +322,14 @@ impl Feed {
         self.bells.swap(0, Ordering::Relaxed)
     }
 
-    /// The newest unpainted frame, if any.
+    /// The newest unpainted frame, if any. Taking it lets the owner build
+    /// the next one.
     pub fn take(&self) -> Option<Arc<FrameSnapshot>> {
-        self.latest.lock().ok().and_then(|mut l| l.take())
+        let frame = self.latest.lock().ok().and_then(|mut l| l.take());
+        if frame.is_some() {
+            self.taken.notify_one();
+        }
+        frame
     }
 
     pub fn status(&self) -> FeedStatus {
@@ -412,6 +437,61 @@ struct Owner {
     status: Arc<Mutex<FeedStatus>>,
     stats: Arc<FeedStats>,
     wake: async_channel::Sender<()>,
+    taken: Arc<tokio::sync::Notify>,
+    typed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// When the owner builds its next frame (see the module notes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Next {
+    /// Nothing new to show.
+    Idle,
+    Now,
+    At(tokio::time::Instant),
+    /// When the view takes the frame it has not taken yet.
+    WhenTaken,
+}
+
+/// Paces frame building by presentation: the records applied since the
+/// last frame are shown by one frame, built when the view can use it.
+#[derive(Debug, Default)]
+struct Pacer {
+    /// Records were applied, or a checkpoint restored, since the last frame.
+    dirty: bool,
+    restored: bool,
+    last: Option<tokio::time::Instant>,
+}
+
+impl Pacer {
+    fn changed(&mut self, restored: bool) {
+        self.dirty = true;
+        self.restored |= restored;
+    }
+
+    /// A frame was built; returns whether it shows a restored checkpoint.
+    fn built(&mut self, at: tokio::time::Instant) -> bool {
+        self.dirty = false;
+        self.last = Some(at);
+        std::mem::take(&mut self.restored)
+    }
+
+    /// `unpresented`: the view has not taken the last published frame.
+    /// `typed`: input was sent since the last frame.
+    fn next(&self, now: tokio::time::Instant, unpresented: bool, typed: bool) -> Next {
+        if !self.dirty {
+            return Next::Idle;
+        }
+        if typed {
+            return Next::Now;
+        }
+        if unpresented {
+            return Next::WhenTaken;
+        }
+        match self.last.map(|t| t + FRAME_INTERVAL) {
+            Some(at) if at > now => Next::At(at),
+            _ => Next::Now,
+        }
+    }
 }
 
 impl Owner {
@@ -432,6 +512,33 @@ impl Owner {
         if let Ok(mut st) = self.status.lock() {
             *st = s;
         }
+    }
+
+    /// The view has not taken the last published frame.
+    fn unpresented(&self) -> bool {
+        self.latest.lock().is_ok_and(|l| l.is_some())
+    }
+
+    /// Build a frame showing everything applied so far and publish it,
+    /// unless a synchronized-output hold keeps it back.
+    fn present(
+        &self,
+        f: &mut Follower,
+        pacer: &mut Pacer,
+        held_since: &mut Option<tokio::time::Instant>,
+    ) {
+        let now = tokio::time::Instant::now();
+        let restored = pacer.built(now);
+        self.typed.store(false, Ordering::Release);
+        let Some(Ok(frame)) = f.frame() else { return };
+        self.stats.frames.fetch_add(1, Ordering::Relaxed);
+        if frame.render_hold && !restored {
+            // Not shown yet; a later frame or the limit shows it.
+            held_since.get_or_insert(now);
+            return;
+        }
+        *held_since = None;
+        self.publish(frame);
     }
 
     fn publish(&self, frame: Arc<FrameSnapshot>) {
@@ -640,17 +747,28 @@ impl Owner {
         self.target.pane.store(u64::from(pane), Ordering::Release);
         let mut held_since: Option<tokio::time::Instant> = None;
         let mut autoscroll: Option<CellPos> = None;
+        let mut pacer = Pacer::default();
         enum Wake {
             Pushed(Result<Option<client::Pushed>, FollowError>),
             View(ViewCommand),
             HoldExpired,
             Autoscroll(CellPos),
+            Pace,
         }
         loop {
             // The view dropped its feed (a pane no longer shown): stop, and
             // with this thread its subscription and connections.
             if view_rx.is_closed() {
                 return;
+            }
+            let next = pacer.next(
+                tokio::time::Instant::now(),
+                self.unpresented(),
+                self.typed.load(Ordering::Acquire),
+            );
+            if next == Next::Now {
+                self.present(&mut f, &mut pacer, &mut held_since);
+                continue;
             }
             let step = if matches!(f.state, FollowState::Following) {
                 let hold = async {
@@ -668,6 +786,13 @@ impl Owner {
                         None => std::future::pending().await,
                     }
                 };
+                let pace = async {
+                    match next {
+                        Next::At(t) => tokio::time::sleep_until(t).await,
+                        Next::WhenTaken => self.taken.notified().await,
+                        Next::Idle | Next::Now => std::future::pending().await,
+                    }
+                };
                 // `recv` is cancel-safe: losing the race drops nothing.
                 let wake = tokio::select! {
                     r = f.recv() => Wake::Pushed(r),
@@ -678,6 +803,7 @@ impl Owner {
                     },
                     () = hold => Wake::HoldExpired,
                     at = tick => Wake::Autoscroll(at),
+                    () = pace => Wake::Pace,
                 };
                 match wake {
                     Wake::Pushed(Ok(first)) => f.apply(first).await,
@@ -695,11 +821,14 @@ impl Owner {
                         // The application held output too long: show it.
                         self.stats.holds_expired.fetch_add(1, Ordering::Relaxed);
                         held_since = None;
+                        pacer.built(tokio::time::Instant::now());
                         if let Some(Ok(frame)) = f.frame() {
                             self.publish(frame);
                         }
                         continue;
                     }
+                    // Time for the next frame, or the view took the last.
+                    Wake::Pace => continue,
                 }
             } else {
                 f.step().await
@@ -726,7 +855,9 @@ impl Owner {
                     wake_view = true;
                 }
             }
+            // A pending frame wakes the view anyway.
             if wake_view
+                && !pacer.dirty
                 && let Ok(s) = &step
                 && s.records == 0
                 && !s.restored
@@ -734,24 +865,27 @@ impl Owner {
             {
                 self.publish(frame);
             }
-            match step {
-                Ok(s) if s.records > 0 || s.restored => {
-                    if let Some((_, generation, _)) = f.replica().position() {
-                        self.target.generation.store(generation, Ordering::Release);
-                        if !self.target.known.swap(true, Ordering::AcqRel) {
-                            self.report_focus();
-                        }
+            if let Ok(s) = &step
+                && (s.records > 0 || s.restored)
+            {
+                if let Some((_, generation, _)) = f.replica().position() {
+                    self.target.generation.store(generation, Ordering::Release);
+                    if !self.target.known.swap(true, Ordering::AcqRel) {
+                        self.report_focus();
                     }
-                    let Some(Ok(frame)) = f.frame() else { continue };
-                    self.stats.frames.fetch_add(1, Ordering::Relaxed);
-                    if frame.render_hold && !s.restored {
-                        // Not shown yet; a later frame or the limit shows it.
-                        held_since.get_or_insert_with(tokio::time::Instant::now);
-                        continue;
-                    }
-                    held_since = None;
-                    self.publish(frame);
                 }
+                // Built when the view can show it (top of the loop).
+                pacer.changed(s.restored);
+            }
+            let following = matches!(&f.state, FollowState::Following);
+            if !following || step.is_err() {
+                // Whatever was applied is shown before the feed stops or
+                // waits to reconnect.
+                if pacer.dirty {
+                    self.present(&mut f, &mut pacer, &mut held_since);
+                }
+            }
+            match step {
                 Ok(_) => match &f.state {
                     FollowState::Following => {}
                     FollowState::PaneClosed => {
@@ -798,4 +932,64 @@ fn client_id() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
     (u64::from(std::process::id()) << 32) ^ nanos ^ (N.fetch_add(1, Ordering::Relaxed) << 48)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::Instant;
+
+    /// Records arriving faster than frames can be shown: at most one frame
+    /// per interval, and none while the view has not taken the last.
+    #[test]
+    fn frames_follow_presentation_not_the_records_that_arrive() {
+        let start = Instant::now();
+        let mut p = Pacer::default();
+        assert_eq!(p.next(start, false, false), Next::Idle);
+
+        // The first change after a pause is shown at once.
+        p.changed(false);
+        assert_eq!(p.next(start, false, false), Next::Now);
+        p.built(start);
+
+        // A thousand batches within one interval: no frame until it ends.
+        let mut built = 0;
+        for i in 0..1000u32 {
+            let now = start + FRAME_INTERVAL * i / 1000;
+            p.changed(false);
+            if p.next(now, false, false) == Next::Now {
+                p.built(now);
+                built += 1;
+            }
+        }
+        assert_eq!(built, 0);
+        assert_eq!(
+            p.next(start, false, false),
+            Next::At(start + FRAME_INTERVAL)
+        );
+
+        // An untaken frame holds the next back, however long it waits.
+        let later = start + FRAME_INTERVAL * 100;
+        assert_eq!(p.next(later, true, false), Next::WhenTaken);
+        assert_eq!(p.next(later, false, false), Next::Now);
+        p.built(later);
+        assert_eq!(p.next(later, false, false), Next::Idle);
+    }
+
+    #[test]
+    fn typed_input_and_restores_are_not_held_back() {
+        let start = Instant::now();
+        let mut p = Pacer::default();
+        p.changed(false);
+        p.built(start);
+        // The echo of a keystroke is shown at once, even mid-interval and
+        // with a frame still untaken.
+        p.changed(false);
+        assert_eq!(p.next(start, true, true), Next::Now);
+        // A restore is remembered until the frame that shows it.
+        p.changed(true);
+        p.changed(false);
+        assert!(p.built(start));
+        assert!(!p.built(start));
+    }
 }
