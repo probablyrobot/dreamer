@@ -1,11 +1,17 @@
 //! Canonical pane mirrors in the daemon (spec 5.2, 8, 11.5).
 //!
-//! One router task reads a tmux control connection's events in order. For
-//! each mirrored pane it runs the cold-attach protocol (pause, capture in
-//! one non-yielding line, continue; see `docs/tmux-bootstrap.md`) and then
+//! One router task reads the events of the tmux control clients in order.
+//! tmux sends a control client output only for panes in its own session,
+//! so with [`SessionClients`] the router keeps one client per session and
+//! takes each pane's output from exactly one of them, the pane's source:
+//! the lowest session id whose session holds the pane's window. The other
+//! clients turn that pane's output off. For each mirrored pane the router
+//! runs the cold-attach protocol on the source (pause, capture in one
+//! non-yielding line, continue; see `docs/tmux-bootstrap.md`) and then
 //! forwards the pane's output, and size changes from `%layout-change`, to
 //! the pane's single owner on a fixed worker pool. Nothing is reordered:
-//! one stream in, one ordered channel per worker out.
+//! one stream per pane in, one ordered channel per worker out. When a
+//! pane's source changes, its mirror is attached again from a capture.
 //!
 //! The router never waits on tmux itself; capture commands run as separate
 //! tasks and report back, so the event stream keeps flowing meanwhile.
@@ -36,6 +42,31 @@ pub struct MirrorConfig {
     pub retention: Retention,
     /// Colors and cursor every mirror starts with (canonical state).
     pub terminal: TerminalDefaults,
+    /// One control client per tmux session, so panes outside the main
+    /// connection's session stream too. `None`: only the main
+    /// connection's session streams.
+    pub sessions: Option<SessionClients>,
+}
+
+/// How the router attaches a control client to each tmux session.
+#[derive(Debug, Clone)]
+pub struct SessionClients {
+    /// The template for each client; its `session` is replaced with the
+    /// session's id. Give it `ignore-size` so the clients never size a
+    /// window.
+    pub connection: tmux_backend::ConnectionConfig,
+    /// The session the main connection is attached to: its events come
+    /// from the main connection, and no second client is made for it.
+    pub primary: u32,
+}
+
+/// Where panes live, for [`MirrorHost::sync_placed`].
+#[derive(Debug, Clone, Default)]
+pub struct Placement {
+    /// Every session on the server, by id (`$N` is `N`).
+    pub sessions: std::collections::BTreeSet<u32>,
+    /// The sessions holding each pane's window.
+    pub homes: std::collections::HashMap<TmuxPaneId, std::collections::BTreeSet<u32>>,
 }
 
 /// A terminal's configured defaults: the color scheme and the cursor a
@@ -66,6 +97,7 @@ impl Default for MirrorConfig {
             worker_queue: 1024,
             retention: Retention::default(),
             terminal: TerminalDefaults::default(),
+            sessions: None,
         }
     }
 }
@@ -120,16 +152,25 @@ pub(crate) enum Control {
     Sync {
         tmux: TmuxServerRef,
         panes: Vec<(TmuxPaneId, PaneGeneration)>,
+        placement: Option<Placement>,
         done: oneshot::Sender<()>,
+    },
+    /// A session's control client attached (or could not).
+    ClientUp {
+        session: u32,
+        serial: u64,
+        conn: Result<Connection, String>,
     },
     Phase1 {
         pane: TmuxPaneId,
         generation: PaneGeneration,
+        attach: u32,
         result: Result<bool, String>,
     },
     Phase2 {
         pane: TmuxPaneId,
         generation: PaneGeneration,
+        attach: u32,
         result: Result<
             Box<(
                 tmux_backend::bootstrap::PaneState,
@@ -164,7 +205,7 @@ pub(crate) enum Control {
 /// The router's queues at one moment.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RouterQueues {
-    /// Events from tmux waiting for the router.
+    /// Events from tmux waiting for the router, from every client.
     pub events: usize,
     /// Panes with output held because their owner's queue was full, and
     /// the bytes held.
@@ -282,7 +323,8 @@ impl MirrorHost {
                 changes_tx,
             )
             .with_cold(cold.clone())
-            .with_buffers(buffers_tx),
+            .with_buffers(buffers_tx)
+            .with_sessions(config.sessions),
         )
         .await;
         Ok((
@@ -546,10 +588,37 @@ impl MirrorHost {
     /// pane whose generation changed (respawned), and drop the rest.
     /// `tmux` identifies the server for the pane keys mirrors report.
     pub async fn sync(&self, tmux: TmuxServerRef, panes: Vec<(TmuxPaneId, PaneGeneration)>) {
+        self.sync_with(tmux, panes, None).await
+    }
+
+    /// [`MirrorHost::sync`], and where each pane lives: with
+    /// [`SessionClients`], the router keeps a control client for each
+    /// session in `placement`, drops the rest, and moves a pane to another
+    /// client (attaching it again) when its windows' sessions change.
+    pub async fn sync_placed(
+        &self,
+        tmux: TmuxServerRef,
+        panes: Vec<(TmuxPaneId, PaneGeneration)>,
+        placement: Placement,
+    ) {
+        self.sync_with(tmux, panes, Some(placement)).await
+    }
+
+    async fn sync_with(
+        &self,
+        tmux: TmuxServerRef,
+        panes: Vec<(TmuxPaneId, PaneGeneration)>,
+        placement: Option<Placement>,
+    ) {
         let (done, wait) = oneshot::channel();
         if self
             .control
-            .send(Control::Sync { tmux, panes, done })
+            .send(Control::Sync {
+                tmux,
+                panes,
+                placement,
+                done,
+            })
             .await
             .is_ok()
         {

@@ -1,7 +1,6 @@
 //! The daemon's implementation of the API (one `Service`, reached through
 //! the wire protocol now and JSON-RPC later).
 
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -198,9 +197,20 @@ impl State {
                     cfg.describe()
                 )));
             };
+            let primary = session
+                .strip_prefix('$')
+                .and_then(|n| n.parse::<u32>().ok())
+                .ok_or_else(|| unavailable(format!("tmux named a session `{session}`")))?;
             let mut config =
                 ConnectionConfig::new(cfg.program.clone(), cfg.socket.clone(), session);
             config.config_file = None;
+            // tmux sends a control client output only for panes in its
+            // session, so the mirrors keep a client on every other session
+            // too. They never size a window (`ignore-size`); `read-only`
+            // is not used, as tmux 3.8 then sends a control client no
+            // pane output at all.
+            let mut each = config.clone();
+            each.attach_flags = Some("ignore-size".into());
             let (conn, events) = Connection::spawn(config).await.map_err(|e| {
                 unavailable(format!("cannot attach to tmux {}: {e}", cfg.describe()))
             })?;
@@ -211,6 +221,10 @@ impl State {
             // The terminal defaults in force: from the configuration when
             // the daemon started, or as a later valid change left them.
             mc.terminal = *self.terminal.lock().await;
+            mc.sessions = Some(mirror::SessionClients {
+                connection: each,
+                primary,
+            });
             let (host, changes) = mirror::MirrorHost::start(conn.clone(), events, epoch, mc)
                 .await
                 .map_err(|e| unavailable(format!("cannot start mirror workers: {e}")))?;
@@ -226,8 +240,12 @@ impl State {
                 cfg.name,
                 cfg.describe()
             ));
-            host.sync(tracker.inventory().server.clone(), mirrored_panes(&tracker))
-                .await;
+            host.sync_placed(
+                tracker.inventory().server.clone(),
+                mirrored_panes(&tracker),
+                placement(tracker.inventory()),
+            )
+            .await;
             *self.mirrors.write().await = Some(host.clone());
             tokio::spawn(follow_buffers(Arc::downgrade(self), host.clone()));
             tokio::spawn(reconcile(Arc::downgrade(self), host, changes));
@@ -248,11 +266,12 @@ const ATTACH_FORMAT: &str = "#{session_id} #{session_attached} #{session_activit
 /// Sessions Dreamer keeps for itself, such as the drawer holding session.
 const OWN_SESSION_PREFIX: &str = "_dreamer_";
 
-/// The session the daemon's control client attaches to, from
-/// [`ATTACH_FORMAT`] rows. tmux sends output only for panes in that
-/// session, so it should be the one the user works in: never one of
-/// Dreamer's own while another exists, then one a client is attached to,
-/// then the most recently active, then the lowest id.
+/// The session the daemon's main control client (the one commands go
+/// through) attaches to, from [`ATTACH_FORMAT`] rows. The link fails when
+/// that session is killed, so it should be the one the user works in:
+/// never one of Dreamer's own while another exists, then one a client is
+/// attached to, then the most recently active, then the lowest id. Every
+/// other session gets a control client of its own for the mirrors.
 fn attach_session(rows: &str) -> Option<String> {
     let mut best: Option<(bool, bool, u64, std::cmp::Reverse<u32>, &str)> = None;
     for row in rows.lines() {
@@ -277,52 +296,6 @@ fn attach_session(rows: &str) -> Option<String> {
         }
     }
     best.map(|b| b.4.to_owned())
-}
-
-/// The panes tmux sends output for to the daemon's control client, which
-/// are those in the session it is attached to, and that session's id.
-/// `None` if tmux could not say.
-async fn streamed_panes(conn: &Connection) -> Option<(u32, BTreeSet<u32>)> {
-    let cmd = tmux_backend::TmuxCommand::new("list-panes")
-        .flag("-s")
-        .opt_format("-F", "#{session_id} #{pane_id}");
-    let r = conn.execute(cmd).await.ok()?;
-    let r = r.first().filter(|r| r.ok)?;
-    let mut session = None;
-    let mut panes = BTreeSet::new();
-    for line in &r.body {
-        let line = String::from_utf8_lossy(line);
-        let (s, p) = line.split_once(' ')?;
-        session.get_or_insert(s.strip_prefix('$')?.parse::<u32>().ok()?);
-        panes.insert(p.strip_prefix('%')?.parse().ok()?);
-    }
-    Some((session?, panes))
-}
-
-/// Why a pane's mirror does not stream: the `detail` of a `not_streaming`
-/// mirror.
-fn not_streaming(pane: u32, attached: u32, inv: &tmux_backend::Inventory) -> String {
-    let label = |s: u32| match inv.sessions.get(&domain::TmuxSessionId(s)) {
-        Some(i) => format!("${s} ({})", i.name),
-        None => format!("${s}"),
-    };
-    let attached = label(attached);
-    let sessions: Vec<String> = inv
-        .panes
-        .get(&domain::TmuxPaneId(pane))
-        .and_then(|p| inv.windows.get(&p.window))
-        .map(|w| w.sessions.iter().map(|s| label(s.0)).collect())
-        .unwrap_or_default();
-    if sessions.is_empty() {
-        format!(
-            "outside session {attached}, which the daemon is attached to; tmux sends it output only for panes in that session"
-        )
-    } else {
-        format!(
-            "in session {}; the daemon is attached to {attached}, and tmux sends it output only for panes in that session",
-            sessions.join(", ")
-        )
-    }
 }
 
 /// Report each change to tmux's paste buffers as a `clipboard.tmux_buffer`
@@ -376,6 +349,26 @@ fn mirrored_panes(tracker: &InventoryTracker) -> Vec<(domain::TmuxPaneId, domain
         .collect()
 }
 
+/// Where every pane lives: the sessions holding its window. Each session's
+/// control client streams the panes the mirrors take from it.
+fn placement(inv: &tmux_backend::Inventory) -> mirror::Placement {
+    mirror::Placement {
+        sessions: inv.sessions.keys().map(|s| s.0).collect(),
+        homes: inv
+            .panes
+            .iter()
+            .map(|(p, info)| {
+                let sessions = inv
+                    .windows
+                    .get(&info.window)
+                    .map(|w| w.sessions.iter().map(|s| s.0).collect())
+                    .unwrap_or_default();
+                (*p, sessions)
+            })
+            .collect(),
+    }
+}
+
 /// Keep the mirrors in step with tmux: whenever tmux reports a structural
 /// change (windows, layouts, pane processes), re-read the inventory and
 /// attach, re-attach, or drop mirrors. Ends with its connection.
@@ -401,8 +394,9 @@ async fn reconcile(
         publish_topology(&state, ep);
         let tmux = ep.tracker.inventory().server.clone();
         let panes = mirrored_panes(&ep.tracker);
+        let placed = placement(ep.tracker.inventory());
         drop(guard);
-        host.sync(tmux, panes).await;
+        host.sync_placed(tmux, panes, placed).await;
     }
 }
 
@@ -915,33 +909,19 @@ impl api::Service for DaemonService {
 
     async fn terminal_mirrors(&self, p: api::TopologyParams) -> Result<api::MirrorList, RpcError> {
         self.check_endpoint(p.endpoint.as_deref())?;
-        let (conn, inventory) = {
-            let guard = self.0.endpoint().await?;
-            let ep = guard
-                .as_ref()
-                .ok_or_else(|| unavailable("endpoint not connected".into()))?;
-            (ep.conn.clone(), ep.tracker.inventory().clone())
-        };
+        drop(self.0.endpoint().await?);
         let host = self.0.mirrors.read().await.clone();
         let Some(host) = host else {
             return Ok(api::MirrorList::default());
         };
-        // Status first: every pane it lists already existed when tmux is
-        // asked which panes it streams.
-        let status = host.status().await;
-        let streamed = streamed_panes(&conn).await;
-        let mut mirrors: Vec<api::MirrorStatus> = status
+        let mut mirrors: Vec<api::MirrorStatus> = host
+            .status()
+            .await
             .into_iter()
             .map(|m| {
                 let (state, detail) = match &m.state {
                     mirror::MirrorState::Attaching => (api::MirrorState::Attaching, None),
-                    mirror::MirrorState::Live => match &streamed {
-                        Some((attached, panes)) if !panes.contains(&m.pane.0) => (
-                            api::MirrorState::NotStreaming,
-                            Some(not_streaming(m.pane.0, *attached, &inventory)),
-                        ),
-                        _ => (api::MirrorState::Live, None),
-                    },
+                    mirror::MirrorState::Live => (api::MirrorState::Live, None),
                     mirror::MirrorState::Failed(e) => (api::MirrorState::Failed, Some(e.clone())),
                     mirror::MirrorState::Cold => (api::MirrorState::Cold, None),
                 };

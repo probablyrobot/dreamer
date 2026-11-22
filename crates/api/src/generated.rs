@@ -172,7 +172,7 @@ pub enum MirrorState {
     Failed = 3,
     /// The Cold tier: no mirror and no output from tmux for this client; asking for its content attaches it again.
     Cold = 4,
-    /// Mirrored from a capture, but tmux sends no output for it: the pane is outside the session the daemon's control client is attached to. Its content is the capture and does not change; detail names both sessions.
+    /// Reserved. Meant a mirror tmux sends no output for. API 1.64 reported it for panes outside the session the daemon's control client was attached to; the daemon now keeps a control client per tmux session, so every pane streams and nothing reports this state.
     NotStreaming = 5,
 }
 

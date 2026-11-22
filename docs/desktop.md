@@ -163,10 +163,9 @@ Enter.
 - **Hiding** moves the pane to a holding session, `_dreamer_drawers`. The
   harness keeps running there. Showing it again brings back the same pane
   with everything in it. Tabs, the sidebar, and the session chosen at
-  startup leave the holding session out. While hidden, the drawer does not
-  stream to the daemon, which is attached to another session, so output
-  the harness writes then is not mirrored (see
-  [mirrors.md](mirrors.md#panes-that-do-not-stream)).
+  startup leave the holding session out. The drawer keeps streaming while
+  hidden, so what the harness writes then is in its mirror when it comes
+  back (see [mirrors.md](mirrors.md#every-session-streams)).
 - **In another window,** the key brings the drawer to the window you are
   looking at.
 - **The pane you came from** is the pane that had focus when the drawer

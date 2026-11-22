@@ -29,10 +29,11 @@ only ever attaches to a server that is already running; it never starts
 one. It connects on the first request that needs tmux and reconnects
 after the link drops.
 
-### Which session it attaches to
+### Control clients
 
-The daemon drives tmux through one control client, attached to one
-session. It chooses that session each time it connects:
+The daemon drives tmux through a main control client, attached to one
+session. Every command goes through it. It chooses that session each time
+it connects:
 
 1. never a session of Dreamer's own (names starting with `_dreamer_`, such
    as the drawer holding session) while any other session exists;
@@ -40,18 +41,22 @@ session. It chooses that session each time it connects:
 3. then the most recently active session;
 4. then the lowest session id.
 
-When its session is killed, tmux ends the control client, and the daemon
+When that session is killed, tmux ends the main client, and the daemon
 connects again on the next request and chooses again.
 
-**Limitation:** tmux sends a control client output only for panes in its
-own session. Panes in any other session, including your own second
-session (`tmux new -s work`), sessions made by `workspace apply`, and
-hidden harness drawers, are mirrored from a capture but do not stream:
-their content does not change, and their output never reaches the journal,
-subscribers, or replicas. Input still reaches them. `dream mirrors` and
-`terminal.mirrors` report these panes as `not_streaming`, and the detail
-names the pane's session and the attached one. See
-[mirrors.md](mirrors.md#panes-that-do-not-stream).
+tmux sends a control client output only for panes in its own session, so
+the daemon also attaches one control client to every other session, and
+stops it when the session goes. These clients attach with `ignore-size`,
+so they never size a window. They are not `read-only`: tmux 3.8 sends a
+read-only control client no pane output. How the mirrors take each pane's
+output from exactly one client is in
+[mirrors.md](mirrors.md#every-session-streams).
+
+What you see in tmux: every session counts as attached while the daemon
+runs (`tmux ls` says `(attached)`, `#{session_attached}` counts the
+daemon's clients), so `destroy-unattached` never fires and hooks on
+`client-attached` run for them. `tmux list-clients` shows one
+`control-mode` client per session.
 
 ### PATH
 

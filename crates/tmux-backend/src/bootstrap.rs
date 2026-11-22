@@ -397,6 +397,15 @@ pub fn resume_command(pane: PaneId) -> TmuxCommand {
     TmuxCommand::new("refresh-client").opt("-A", format!("{pane}:continue"))
 }
 
+/// Turn this control client's output for a pane on or off
+/// (`refresh-client -A '%N:on'` / `'%N:off'`). While off, tmux skips the
+/// pane for this client; it keeps reading the pane as long as another
+/// client still takes its output.
+pub fn pane_output_command(pane: PaneId, on: bool) -> TmuxCommand {
+    let state = if on { "on" } else { "off" };
+    TmuxCommand::new("refresh-client").opt("-A", format!("{pane}:{state}"))
+}
+
 /// Turn phase 2's six responses into the pane state and its captures.
 pub fn parse_captures(responses: &[Response]) -> Result<(PaneState, Captures), BootstrapError> {
     if responses.len() < 5 {
