@@ -32,6 +32,15 @@ is gone. End a tap with `taps.unsubscribe`.
 produced output, so an idle pane costs nothing and a busy one a bounded
 amount. `raw` follows the record stream.
 
+A look is answered by the worker that applies the pane's output, between
+two of its records, and ahead of output waiting for that worker. It
+formats only the rows it returns (the screen and up to 200 history
+lines), so its cost does not grow with the scrollback. Output that
+arrives during a look is held in order and handed to the mirror as soon
+as the look is done, while the pane keeps writing: a look delays the
+mirror by its own cost, never drops or reorders output, and does not
+make a busy pane fall behind its mirror.
+
 A `text` tap finds which lines are new by comparing the newest history
 lines with those of its last look, by content: the history is limited in
 bytes, so its length says nothing once it is full. A run of identical

@@ -406,3 +406,79 @@ async fn journal_retention_holds_per_pane_and_per_host_under_load() {
     assert_eq!(tier(panes[0]), Some(Tier::Hot));
     assert_eq!(tier(panes[1]), Some(Tier::Warm));
 }
+
+/// Looks (a `text` tap's reads) go ahead of output on the pane's worker,
+/// so output that arrives meanwhile can find the worker's lane full and be
+/// held. Held output must go on as soon as there is room, even while the
+/// pane keeps writing: a busy pane that is looked at all the time keeps
+/// reaching its mirror, and is never rebuilt for falling behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_busy_pane_that_is_looked_at_all_the_time_keeps_reaching_its_mirror() {
+    // A one-slot lane: every look's wake-up fills it, so output is held
+    // from the first look on.
+    let h = start_with(
+        1,
+        MirrorConfig {
+            workers: 1,
+            worker_queue: 1,
+            ..MirrorConfig::default()
+        },
+    )
+    .await;
+    let pane = h.panes()[0];
+    let t = format!("%{}", pane.0);
+    // Output without pauses (a line every 0.1 ms or so), at a rate any build
+    // of the mirror keeps up with.
+    h.server
+        .run_checked(&[
+            "send-keys",
+            "-t",
+            &t,
+            "-l",
+            "perl -e 'use Time::HiRes; $|=1; for ($i = 0; ; $i++) { print qq(busy line $i\\n); Time::HiRes::usleep(100) }'",
+        ])
+        .expect("type");
+    h.server
+        .run_checked(&["send-keys", "-t", &t, "Enter"])
+        .expect("enter");
+    let host = h.host.clone();
+    let looking = tokio::spawn(async move {
+        loop {
+            let _ = host.tail(pane, 200, None).await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    let live = |h: &Harness| {
+        let host = h.host.clone();
+        async move {
+            host.status()
+                .await
+                .into_iter()
+                .find(|s| s.pane == pane)
+                .and_then(|s| s.live)
+                .expect("live")
+        }
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut last = live(&h).await.ingested;
+    let mut stalled = 0;
+    for _ in 0..12 {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let now = live(&h).await.ingested;
+        if now <= last {
+            stalled += 1;
+        }
+        last = now;
+    }
+    looking.abort();
+    h.server
+        .run_checked(&["send-keys", "-t", &t, "C-c"])
+        .expect("interrupt");
+    let reattaches = live(&h).await.reattaches;
+    assert_eq!(
+        (stalled, reattaches),
+        (0, 0),
+        "of 12 quarter seconds, {stalled} without output reaching the mirror; {reattaches} rebuilds"
+    );
+    assert!(last > 0);
+}

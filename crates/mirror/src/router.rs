@@ -25,7 +25,8 @@ const BACKLOG_BYTES: usize = 8 << 20;
 /// bounded: hundreds of new panes at once would overflow it.
 const MAX_ATTACHES: usize = 16;
 
-/// How often held output is offered to its worker again.
+/// How often held output is offered to its worker again when no more of
+/// that pane's output arrives (which offers it at once).
 const BACKLOG_TICK: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// Subscription that reports pane process changes (respawns) as
@@ -284,10 +285,15 @@ impl Router {
 
     async fn run(mut self) {
         tokio::spawn(self.conn.submit(pid_subscription()));
+        // One ticker for the whole run: a sleep made afresh on each turn
+        // would never end while events arrive faster than the tick, and held
+        // output would wait for a lull in every pane's output.
+        let mut tick = tokio::time::interval(BACKLOG_TICK);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let held = !self.backlog.is_empty();
             tokio::select! {
-                () = tokio::time::sleep(BACKLOG_TICK), if held => self.drain(),
+                _ = tick.tick(), if held => self.drain(),
                 () = tokio::time::sleep_until(self.release_at.unwrap_or_else(tokio::time::Instant::now)),
                     if self.release_at.is_some() =>
                 {
@@ -848,38 +854,44 @@ impl Router {
     fn drain(&mut self) {
         let panes: Vec<TmuxPaneId> = self.backlog.keys().copied().collect();
         for pane in panes {
-            let Some(Flow::Live { generation }) = self.flows.get(&pane) else {
-                self.backlog.remove(&pane);
-                continue;
-            };
-            let generation = *generation;
-            let attach = self.attaches.get(&pane).copied().unwrap_or_default();
-            let worker = &self.workers[worker_of(pane, self.workers.len())];
-            let Some((queue, bytes)) = self.backlog.get_mut(&pane) else {
-                continue;
-            };
-            while !queue.is_empty() {
-                match worker.try_reserve() {
-                    Ok(slot) => {
-                        let Some((record, at)) = queue.pop_front() else {
-                            break;
-                        };
-                        *bytes -= record_size(&record);
-                        slot.send(WorkerMsg::Apply {
-                            pane,
-                            generation,
-                            attach,
-                            record,
-                            at,
-                        });
-                    }
-                    Err(crate::worker::LaneError::Full) => break,
-                    Err(crate::worker::LaneError::Gone) => queue.clear(),
+            self.drain_pane(pane);
+        }
+    }
+
+    /// Hand as much of one pane's held output to its worker as its lane
+    /// has room for, oldest first.
+    fn drain_pane(&mut self, pane: TmuxPaneId) {
+        let Some(Flow::Live { generation }) = self.flows.get(&pane) else {
+            self.backlog.remove(&pane);
+            return;
+        };
+        let generation = *generation;
+        let attach = self.attaches.get(&pane).copied().unwrap_or_default();
+        let worker = &self.workers[worker_of(pane, self.workers.len())];
+        let Some((queue, bytes)) = self.backlog.get_mut(&pane) else {
+            return;
+        };
+        while !queue.is_empty() {
+            match worker.try_reserve() {
+                Ok(slot) => {
+                    let Some((record, at)) = queue.pop_front() else {
+                        break;
+                    };
+                    *bytes -= record_size(&record);
+                    slot.send(WorkerMsg::Apply {
+                        pane,
+                        generation,
+                        attach,
+                        record,
+                        at,
+                    });
                 }
+                Err(crate::worker::LaneError::Full) => break,
+                Err(crate::worker::LaneError::Gone) => queue.clear(),
             }
-            if queue.is_empty() {
-                self.backlog.remove(&pane);
-            }
+        }
+        if queue.is_empty() {
+            self.backlog.remove(&pane);
         }
     }
 
@@ -969,7 +981,13 @@ impl Router {
                 let (queue, bytes) = self.backlog.entry(pane).or_default();
                 *bytes += record_size(&record);
                 queue.push_back((record, at));
-                if *bytes > BACKLOG_BYTES {
+                // Behind what is held, in order; whatever the lane has room
+                // for goes now, so a pane that was held once (a look took
+                // its worker for a moment) catches up at its worker's pace
+                // instead of waiting for the next tick.
+                self.drain_pane(pane);
+                let held = self.backlog.get(&pane).map_or(0, |(_, b)| *b);
+                if held > BACKLOG_BYTES {
                     perf::count(perf::Counter::Reattaches, 1);
                     self.start(pane, generation);
                     self.changed();
