@@ -79,6 +79,13 @@ up from a checkpoint (M2-02).
 | Per host | 256 MiB | On every append; over the limit, the pane that is writing gives up its own oldest records |
 | Age | 10 minutes | On every append, and for idle panes whenever status is read |
 
+The size limits count memory, not payload. Each record costs its bytes'
+allocation (capacity, rounded up to 16 bytes) plus its slot in the
+journal, 40 bytes on macOS and 48 on Linux. A stream of small records,
+such as the output of `yes`, therefore retains fewer payload bytes than
+the limit, but the journal's memory stays near it. `dream mirrors`
+reports journal sizes counted the same way.
+
 Trimming never touches the engine; it only limits how far back a client
 can replay. The retained records are always exactly
 `journal_first_sequence..=sequence`. A client that needs an older record
