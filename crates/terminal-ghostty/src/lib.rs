@@ -637,6 +637,69 @@ impl Engine {
         }
     }
 
+    /// The last `lines` rows of [`Engine::screen_text`] (scrollback, then
+    /// the screen), formatted on their own: the cost follows `lines`, not
+    /// the scrollback.
+    pub fn tail_text(&self, lines: usize) -> Result<String, EngineError> {
+        let size = self.size;
+        let total = self.scrollback_rows()? + size.rows as usize;
+        let start = total.saturating_sub(lines);
+        let point = |x: u16, y: usize| GhosttyPoint {
+            tag: GhosttyPointTag::GHOSTTY_POINT_TAG_SCREEN,
+            value: GhosttyPointValue {
+                coordinate: GhosttyPointCoordinate {
+                    x,
+                    y: u32::try_from(y).unwrap_or(u32::MAX),
+                },
+            },
+        };
+        let mut sel = GhosttySelection::default();
+        let mut fmt: GhosttyFormatter = ptr::null_mut();
+        // SAFETY: `term` is live and not mutated while the grid references
+        // and the formatter are in use; the formatter is freed on every path
+        // and its output is copied and freed with the default allocator.
+        unsafe {
+            check(
+                "ghostty_terminal_grid_ref(start)",
+                ghostty_terminal_grid_ref(self.term, point(0, start), &mut sel.start),
+            )?;
+            check(
+                "ghostty_terminal_grid_ref(end)",
+                ghostty_terminal_grid_ref(
+                    self.term,
+                    point(size.cols.saturating_sub(1), total.saturating_sub(1)),
+                    &mut sel.end,
+                ),
+            )?;
+            check(
+                "ghostty_formatter_terminal_new",
+                ghostty_formatter_terminal_new(ptr::null(), &mut fmt, self.term),
+            )?;
+            let set = check(
+                "ghostty_formatter_set(selection)",
+                ghostty_formatter_set(
+                    fmt,
+                    GhosttyFormatterOption::GHOSTTY_FORMATTER_OPT_SELECTION,
+                    (&raw const sel).cast(),
+                ),
+            );
+            if let Err(e) = set {
+                ghostty_formatter_free(fmt);
+                return Err(e);
+            }
+            let mut out: *mut u8 = ptr::null_mut();
+            let mut len = 0usize;
+            let rc = ghostty_formatter_format_alloc(fmt, ptr::null(), &mut out, &mut len);
+            let text = borrowed_str(out, len);
+            if !out.is_null() {
+                ghostty_free(ptr::null(), out, len);
+            }
+            ghostty_formatter_free(fmt);
+            check("ghostty_formatter_format_alloc", rc)?;
+            Ok(text)
+        }
+    }
+
     /// Move the viewport through history. Local view state only: it never
     /// changes what the terminal holds, and new output keeps a scrolled
     /// viewport where it is.

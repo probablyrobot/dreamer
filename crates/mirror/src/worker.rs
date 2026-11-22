@@ -585,9 +585,14 @@ impl Mirror {
 
     fn read(&self, history: usize) -> Result<ReadResult, String> {
         let size = self.engine.size();
-        let text = self.engine.screen_text().map_err(|e| e.to_string())?;
-        let all: Vec<&str> = text.split('\n').collect();
         let rows = size.rows as usize;
+        // Only the rows wanted are formatted: a look's cost follows its
+        // window, not the scrollback (this runs on the ingest worker).
+        let text = self
+            .engine
+            .tail_text(rows + history)
+            .map_err(|e| e.to_string())?;
+        let all: Vec<&str> = text.split('\n').collect();
         let take = (rows + history).min(all.len());
         let lines: Vec<String> = all[all.len() - take..]
             .iter()
