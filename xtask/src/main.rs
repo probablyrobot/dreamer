@@ -33,7 +33,7 @@ usage: cargo xtask <command>
 commands:
   doctor                       check the local toolchain and native build prerequisites
   api [--check]                regenerate (or check) API artifacts from crates/api/schema
-  bench headless|busy|streams [OPTIONS] [--debug] [--linux]
+  bench headless|busy|streams|tiers [OPTIONS] [--debug] [--linux]
                                the headless benchmark workloads, release build, results in target/bench
   bench gui [--panes N]        the desktop measuring itself (needs an awake, unlocked display)
   bench report FILE...         result files as the Markdown docs/performance.md records
