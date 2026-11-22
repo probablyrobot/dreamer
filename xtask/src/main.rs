@@ -35,6 +35,8 @@ commands:
   api [--check]                regenerate (or check) API artifacts from crates/api/schema
   bench headless|busy|extensions|memory|streams|tiers [OPTIONS] [--debug] [--linux]
                                the headless benchmark workloads, release build, results in target/bench
+  bench remote [OPTIONS] [--container [--netem SPEC]]
+                               key to echo through a connected host, split into link and host
   bench gui [--panes N]        the desktop measuring itself (needs an awake, unlocked display)
   bench report FILE...         result files as the Markdown docs/performance.md records
   build-report [--ci-run ID]   the release build report (spec 17.6) from target/package, the gate, and CI

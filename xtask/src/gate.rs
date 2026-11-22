@@ -1266,7 +1266,7 @@ fn arm64_image_tag(dockerfile: &str) -> String {
 
 /// The gate's ARM64 image, built on first use (or when its Dockerfile
 /// changed); older builds of it are removed.
-fn ensure_arm64_image() -> Result<String, String> {
+pub(crate) fn ensure_arm64_image() -> Result<String, String> {
     use std::io::Write as _;
     let dockerfile = arm64_dockerfile();
     let tag = arm64_image_tag(&dockerfile);

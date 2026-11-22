@@ -14,6 +14,8 @@ cargo xtask bench streams [--panes N] [--corpus NAME]... [--seconds S]  # replay
 cargo xtask bench tiers [--panes N] [--stream text|escape] [--rate KIB]  # a pane's cost in each tier
 cargo xtask bench memory [--scenario NAME]... [--seconds S]  # memory under pressure, see below
 cargo xtask bench extensions [--panes N] [--without PART]  # typing next to slow and stalled extensions
+cargo xtask bench remote [--samples N]                   # key to echo through a host (stand-in, no SSH)
+cargo xtask bench remote --container [--netem SPEC]      # through OpenSSH to the ARM64 Linux container
 cargo xtask bench report target/bench/headless-*.json     # result files as Markdown for this page
 ```
 
@@ -35,9 +37,10 @@ typing numbers; the Target column is left for you to fill.
 
 `--debug` builds and runs the debug binaries instead. It checks that the
 harness works and is never a measurement; its results say so. Each pull
-request's CI job runs `cargo xtask bench headless --panes 4 --debug` and
-`bench report` on its result, on a shared x86-64 runner, and discards
-them. A broken harness fails the job.
+request's CI job runs `cargo xtask bench headless --panes 4 --debug`,
+`cargo xtask bench remote --samples 20 --debug`, and `bench report` on
+their results, on a shared x86-64 runner, and discards them. A broken
+harness fails the job.
 
 **What the headless workload does, in order:**
 
@@ -117,6 +120,51 @@ For each corpus in turn, with a fresh tmux server and daemon:
      because the output outran it. Zero means no pane lost its stream.
    - **Memory:** the daemon's RSS and heap growth under load, and the heap
      still held 3 s after the busy panes are closed.
+
+**The remote workload** types into a pane on a host connected through
+the daemon ([remote.md](remote.md)), the path the desktop takes to a
+remote pane: the replica sends each key with `hosts.call`, the
+coordinator relays it over the host's link to the host's daemon, and the
+echo comes back through `hosts.subscribe`. It reports three things
+separately, each with its p50, p95, and jitter (the mean difference
+between consecutive samples, in the order taken):
+
+1. **End to end.** 200 keystrokes (`--samples N`) into `cat` in a new
+   window on the host, timed as in the headless workload, beside the same
+   measure in a local pane of the same run.
+2. **The link.** A `hosts.call` round trip of `daemon.version`, which
+   the host's daemon answers at once, beside the same call to the local
+   daemon. It also times the connection itself: SSH, the bridge, starting
+   the host's daemon if needed, and the handshake.
+3. **The host's processing.** The keystrokes again with the host's
+   diagnostics on: each of the host daemon's stages (`input` through
+   `transfer`, [below](#path-timings-and-diagnostics)) and the local
+   replica's, then the sum of the host's stage p50s, and the end-to-end
+   p50 less that sum (the link, the coordinator's relay, and the replica).
+
+The host is reached one of two ways:
+
+- **Stand-in** (the default). A shell on this machine takes the place of
+  `ssh` and runs the remote command as sshd would, with a second tmux
+  server and private daemon directories. There is no SSH and no network,
+  so it shows what the bridge and the relay cost alone.
+- **`--container`.** This machine is the desktop side; the host is the
+  gate's ARM64 Linux container, reached through real OpenSSH. The
+  container builds `dreamerd`, `dream`, and the pinned tmux from this
+  checkout and runs `sshd` on a port published on this machine's
+  127.0.0.1 only, with a generated host key and client key and private
+  daemon directories. `ssh` here runs with its own config file,
+  `known_hosts`, and key, and no agent: nothing of your SSH setup is read
+  or changed. `--netem SPEC` (for example `--netem 'delay 20ms 5ms'`)
+  adds `tc netem` to the container's network interface. It delays what
+  the container sends, so each round trip gains the delay once. The
+  container is removed afterwards. It needs an ARM64 host with a running
+  container runtime, and it shares the gate's cargo caches, so run it
+  while no gate is running.
+
+The result file records the route, the link (OpenSSH version, the host's
+`uname`, and the netem setting), and the host daemon's version and
+platform.
 
 **Kitty graphics and tmux.** tmux does not interpret Kitty graphics. It
 passes the pane's bytes unchanged to the daemon, whose mirror stores and
@@ -486,7 +534,8 @@ Revision: branch `m7-05-launch-and-tabs`.
   than 16 visible panes.
 - **Image-heavy and escape-heavy streams:** the `streams` workload
   exists, but no results are recorded here yet.
-- **Remote latency and jitter.**
+- **Remote latency and jitter:** the `remote` workload exists, but no
+  results are recorded here yet.
 - **Memory under pressure.** The memory workload exists; no run is
   recorded here yet.
 - **The same workloads in reference terminals.**

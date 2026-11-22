@@ -89,6 +89,8 @@ jobs:
           rm -rf target/bench
           cargo xtask bench headless --panes 4 --debug
           cargo xtask bench report target/bench/headless-*.json
+          cargo xtask bench remote --samples 20 --debug
+          cargo xtask bench report target/bench/remote-*.json
           rm -rf target/bench
       - name: Generate snapshot fixtures
         run: cargo run --locked -p terminal-ghostty --bin snapshot-fixtures -- target/snapshot-fixtures

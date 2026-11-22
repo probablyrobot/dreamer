@@ -10,6 +10,8 @@
 //! dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]
 //! dreamer-bench memory [OPTIONS]   (see memory.rs)
 //! dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]
+//! dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH]
+//!                      [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]
 //! dreamer-bench machine
 //! ```
 //!
@@ -26,6 +28,10 @@
 //! [`tiers`]).
 //! `extensions` is typing next to slow, stalled, and crashing extensions,
 //! and what opening a monitor costs (see [`extensions`]).
+//!
+//! `remote` types into a pane on a host connected through the daemon (the
+//! desktop's path to a remote pane) and splits key to echo into the link,
+//! the host's processing, and the rest; see `remote.rs`.
 //!
 //! Each measure says what it timed. Results are printed as a table and,
 //! with `--json`, written for the record together with the machine they
@@ -46,6 +52,7 @@ use tmux_backend::server::tmux_program;
 mod corpus;
 mod extensions;
 mod memory;
+mod remote;
 mod streams;
 mod tiers;
 
@@ -58,12 +65,13 @@ fn main() {
         Some("streams") => streams::streams(&args[1..]),
         Some("tiers") => tiers::run(&args[1..]),
         Some("extensions") => extensions::run(&args[1..]),
+        Some("remote") => remote::remote(&args[1..]),
         Some("machine") if args.len() == 1 => {
             println!("{}", hardware());
             Ok(())
         }
         _ => Err(
-            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]\n       dreamer-bench machine"
+            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]\n       dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH] [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]\n       dreamer-bench machine"
                 .into(),
         ),
     };
@@ -82,6 +90,12 @@ struct Rig {
 
 impl Rig {
     fn start() -> Result<Rig, String> {
+        Rig::start_with(&[])
+    }
+
+    /// Like [`Rig::start`], with these variables in the daemon's
+    /// environment too.
+    fn start_with(env: &[(&str, &Path)]) -> Result<Rig, String> {
         let root = PathBuf::from(format!("/tmp/drm-bench-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
@@ -114,6 +128,7 @@ impl Rig {
             .env("DREAMER_STATE_DIR", root.join("st"))
             .env("DREAMER_CONFIG_DIR", root.join("config"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -323,8 +338,15 @@ async fn next_frame(
 /// replica, the daemon encoding it, tmux delivering it, the pty echoing
 /// it (`cat` in a fresh window), tmux sending the echo, the daemon's
 /// mirror, and the replica's frame. Each sample waits for the cursor to
-/// move past the typed character.
+/// move past the typed character. Sorted.
 async fn key_to_echo(rig: &Rig, c: &Client, samples: usize) -> Result<Vec<f64>, String> {
+    let mut out = key_to_echo_in_order(rig, c, samples).await?;
+    out.sort_by(f64::total_cmp);
+    Ok(out)
+}
+
+/// [`key_to_echo`]'s samples in the order typed.
+async fn key_to_echo_in_order(rig: &Rig, c: &Client, samples: usize) -> Result<Vec<f64>, String> {
     let before: Vec<u32> = mirrors(c).await?.iter().map(|m| m.pane).collect();
     rig.windows(1, "cat")?;
     let pane = loop {
@@ -339,26 +361,41 @@ async fn key_to_echo(rig: &Rig, c: &Client, samples: usize) -> Result<Vec<f64>, 
     };
     let feed =
         replica::feed::Feed::start(rig.socket(), Some(pane), None).map_err(|e| e.to_string())?;
-    // The first frame.
-    let first = next_frame(&feed, Instant::now() + Duration::from_secs(10))
+    let mut cursor = first_cursor(&feed).await?;
+    echo_times(&feed, &mut cursor, samples).await
+}
+
+/// The cursor of a new feed's first frame.
+async fn first_cursor(feed: &replica::feed::Feed) -> Result<(u16, u16), String> {
+    let first = next_frame(feed, Instant::now() + Duration::from_secs(10))
         .await
         .ok_or("the pane never showed a frame")?;
-    let mut cursor = (first.cursor.x, first.cursor.y);
+    Ok((first.cursor.x, first.cursor.y))
+}
+
+/// `samples` keystrokes typed into a feed's `cat` pane, each timed until
+/// the cursor moves, in the order typed. `cursor` is where it stands
+/// before and after.
+async fn echo_times(
+    feed: &replica::feed::Feed,
+    cursor: &mut (u16, u16),
+    samples: usize,
+) -> Result<Vec<f64>, String> {
     let mut out = Vec::with_capacity(samples);
     for i in 0..samples {
         // A fresh line every 40 characters, untimed.
-        if i > 0 && i % 40 == 0 {
+        if cursor.0 >= 40 {
             feed.send(api::terminal_input::Event::Text(api::TextInput {
                 text: "\r".into(),
             }));
             let deadline = Instant::now() + Duration::from_secs(5);
-            while let Some(f) = next_frame(&feed, deadline).await {
-                cursor = (f.cursor.x, f.cursor.y);
+            while let Some(f) = next_frame(feed, deadline).await {
+                *cursor = (f.cursor.x, f.cursor.y);
                 if f.cursor.x == 0 && f.text_dump().lines().count() > 0 {
                     // cat printed the line back; wait for that too.
                     tokio::time::sleep(Duration::from_millis(30)).await;
                     if let Some(f) = feed.take() {
-                        cursor = (f.cursor.x, f.cursor.y);
+                        *cursor = (f.cursor.x, f.cursor.y);
                     }
                     break;
                 }
@@ -370,18 +407,23 @@ async fn key_to_echo(rig: &Rig, c: &Client, samples: usize) -> Result<Vec<f64>, 
         }));
         let deadline = sent + Duration::from_secs(5);
         loop {
-            let Some(f) = next_frame(&feed, deadline).await else {
-                return Err(format!("no echo for keystroke {i}"));
+            let Some(f) = next_frame(feed, deadline).await else {
+                return Err(format!(
+                    "no echo for keystroke {i} (inputs sent {}, dropped {}, status {:?})",
+                    feed.inputs_sent.load(std::sync::atomic::Ordering::Relaxed),
+                    feed.inputs_dropped
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    feed.status()
+                ));
             };
             let now = (f.cursor.x, f.cursor.y);
-            if now != cursor {
+            if now != *cursor {
                 out.push(ms(sent.elapsed()));
-                cursor = now;
+                *cursor = now;
                 break;
             }
         }
     }
-    out.sort_by(f64::total_cmp);
     Ok(out)
 }
 
