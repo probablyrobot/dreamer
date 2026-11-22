@@ -9,6 +9,7 @@
 //! dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]
 //! dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]
 //! dreamer-bench memory [OPTIONS]   (see memory.rs)
+//! dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]
 //! dreamer-bench machine
 //! ```
 //!
@@ -23,6 +24,8 @@
 //! key to echo in a quiet pane alongside; see `streams.rs`.
 //! `tiers` is what a pane costs in each tier, idle and busy (see
 //! [`tiers`]).
+//! `extensions` is typing next to slow, stalled, and crashing extensions,
+//! and what opening a monitor costs (see [`extensions`]).
 //!
 //! Each measure says what it timed. Results are printed as a table and,
 //! with `--json`, written for the record together with the machine they
@@ -41,6 +44,7 @@ use tmux_backend::TmuxServer;
 use tmux_backend::server::tmux_program;
 
 mod corpus;
+mod extensions;
 mod memory;
 mod streams;
 mod tiers;
@@ -53,12 +57,13 @@ fn main() {
         Some("memory") => memory::run(&args[1..]),
         Some("streams") => streams::streams(&args[1..]),
         Some("tiers") => tiers::run(&args[1..]),
+        Some("extensions") => extensions::run(&args[1..]),
         Some("machine") if args.len() == 1 => {
             println!("{}", hardware());
             Ok(())
         }
         _ => Err(
-            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench machine"
+            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]\n       dreamer-bench machine"
                 .into(),
         ),
     };
