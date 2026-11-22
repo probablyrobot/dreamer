@@ -2082,6 +2082,27 @@ impl Cli {
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", Self::daemon())
             .env("DREAMER_CONFIG_DIR", self.root.join("config"))
+            .env_remove("TMUX_PANE")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .expect("dream mcp")
+    }
+
+    /// `dream mcp <args>` as an agent in pane `pane` (`%N`) starts it.
+    fn mcp_in_pane(&self, pane: &str, args: &[&str]) -> std::process::Child {
+        let program = tmux_program().display().to_string();
+        Command::new(DREAM)
+            .arg("mcp")
+            .args(args)
+            .args(["-L", self.tmux.socket(), "--tmux", program.as_str()])
+            .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
+            .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+            .env("DREAMER_DAEMON", Self::daemon())
+            .env("DREAMER_CONFIG_DIR", self.root.join("config"))
+            .env("TMUX_PANE", pane)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
@@ -2540,6 +2561,26 @@ fn an_mcp_client_uses_the_tools_and_a_narrowed_server_stays_narrow() {
         found["structuredContent"]["matches"][0]["pane"], 0,
         "{found}"
     );
+    // An agent in %0 searching every pane does not find its own lines
+    // there; naming its pane does.
+    let mut inside = Mcp::start(cli.mcp_in_pane("%0", &[]));
+    let mine = inside.call("find_lines", serde_json::json!({ "text": "VIA-MCP" }));
+    assert_eq!(
+        mine["structuredContent"]["matches"]
+            .as_array()
+            .map(Vec::len),
+        Some(0),
+        "{mine}"
+    );
+    let named = inside.call(
+        "terminal_search",
+        serde_json::json!({ "pattern": "via-mcp", "panes": [0] }),
+    );
+    assert_eq!(
+        named["structuredContent"]["matches"][0]["pane"], 0,
+        "{named}"
+    );
+    drop(inside);
     let moved = m.call(
         "move_panes",
         serde_json::json!({ "panes": [1], "window": "gathered" }),
