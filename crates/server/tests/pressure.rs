@@ -302,3 +302,55 @@ async fn a_pane_that_outruns_its_mirror_is_reattached_without_stalling_others() 
         "the follower did not restart from a checkpoint"
     );
 }
+
+#[tokio::test]
+async fn busy_panes_stay_under_tmux_flow_control_with_other_sessions_attached() {
+    // The daemon runs a control client in every session. tmux keeps
+    // reading a pane while any attached control client was never told
+    // about it, so unless every client but the pane's own has it off, a
+    // flood outruns the client carrying it: tmux's replies wait behind
+    // the backlog, and input to a quiet pane stalls.
+    let s = Setup::new(&[]);
+    for _ in 0..4 {
+        s.tmux
+            .run_checked(&["new-session", "-d", "/bin/sh"])
+            .expect("session");
+    }
+    let c = s.client().await;
+    s.type_into(1, "echo B''READY");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !s.mirror_shows(&c, 1, "BREADY").await {
+        assert!(Instant::now() < deadline, "pane %1 never came up");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let quiet = round_trips(&s, &c, 1, 10).await;
+    s.type_into(
+        0,
+        "yes 0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz",
+    );
+    for _ in 0..7 {
+        s.tmux
+            .run_checked(&[
+                "new-window",
+                "-d",
+                "-t",
+                "main",
+                "yes 0123456789abcdefghijklmnopqrstuvwxyz",
+            ])
+            .expect("busy window");
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let busy = round_trips(&s, &c, 1, 20).await;
+    s.type_into(0, "\u{3}");
+    println!(
+        "sessions: pane %1 input round trip p95 {:?} quiet, {:?} with 8 busy panes and 4 more sessions attached",
+        p95(&quiet),
+        p95(&busy)
+    );
+    assert!(
+        p95(&busy) < Duration::from_millis(250).max(p95(&quiet) * 5),
+        "input to a quiet pane stalled behind busy ones: p95 {:?} (quiet {:?})",
+        p95(&busy),
+        p95(&quiet)
+    );
+}
