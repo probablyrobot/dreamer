@@ -104,14 +104,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     match platform.as_str() {
         "arch" => return arch_package(&repo_root(), source_only, nodeps),
-        "linux" => return linux_tarball(&repo_root()),
+        "linux" => return linux_tarball(&repo_root()).map(drop),
+        "deb" => return deb_package(&repo_root()).map(drop),
+        "rpm" => return rpm_package(&repo_root()).map(drop),
         "server" => return server_archive(&repo_root(), target).map(drop),
         "macos" => {}
         "current" if cfg!(target_os = "macos") => {}
-        "current" => return Err("on Linux, choose a package: --platform arch".into()),
+        "current" => {
+            return Err("on Linux, choose a package: --platform linux, deb, rpm, or arch".into());
+        }
         other => {
             return Err(format!(
-                "unknown platform `{other}` (macos, arch, linux, server)"
+                "unknown platform `{other}` (macos, arch, linux, deb, rpm, server)"
             ));
         }
     }
@@ -259,7 +263,8 @@ fn sha256_of(path: &Path) -> Result<String, String> {
 
 /// A self-contained release tarball for any Linux distribution, installed
 /// by `packaging/install.sh` (see docs/packaging.md for the layout).
-fn linux_tarball(root: &Path) -> Result<(), String> {
+/// Returns the staged tree it was made from, the version, and the target.
+fn linux_tarball(root: &Path) -> Result<(PathBuf, String, &'static str), String> {
     if !cfg!(target_os = "linux") {
         return Err(
             "the Linux tarball is built on Linux (CI builds it on every pull request)".into(),
@@ -386,7 +391,167 @@ fn linux_tarball(root: &Path) -> Result<(), String> {
         "package: install with `sh packaging/install.sh --from {}`",
         tarball.display()
     );
+    Ok((stage, version, triple))
+}
+
+/// The files a system package installs, under `dest/usr`, from the
+/// tarball's staged tree: the executables, Dreamer's own copy of its font
+/// (found beside the executables, as in the tarball), the launcher entry
+/// and icons, the systemd user unit, the documents, and the licenses.
+fn usr_tree(stage: &Path, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        std::fs::remove_dir_all(dest).map_err(|e| e.to_string())?;
+    }
+    let usr = dest.join("usr");
+    let copy_tree = |from: &Path, to: &Path| -> Result<(), String> {
+        std::fs::create_dir_all(to.parent().unwrap_or(to)).map_err(|e| e.to_string())?;
+        run_checked(Command::new("cp").arg("-R").arg(from).arg(to), "cp").map(drop)
+    };
+    copy_tree(&stage.join("bin"), &usr.join("bin"))?;
+    for dir in ["dreamer", "applications", "icons", "doc"] {
+        copy_tree(&stage.join("share").join(dir), &usr.join("share").join(dir))?;
+    }
+    copy_tree(
+        &stage.join("share/systemd/user"),
+        &usr.join("lib/systemd/user"),
+    )?;
+    let licenses = usr.join("share/licenses/dreamer");
+    std::fs::create_dir_all(&licenses).map_err(|e| e.to_string())?;
+    for f in ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"] {
+        std::fs::copy(stage.join(f), licenses.join(f)).map_err(|e| format!("{f}: {e}"))?;
+    }
     Ok(())
+}
+
+const PACKAGE_SUMMARY: &str = "Native terminal on tmux with live pane mirrors";
+const PACKAGE_DESCRIPTION: &str = "Dreamer draws every tmux pane as its own surface. Its server keeps \
+working when the window closes, and panes can host scripted apps and agents that watch and \
+query other terminals.";
+
+/// Write `file`'s SHA-256 beside it, as `<file>.sha256`.
+fn write_sha256(file: &Path) -> Result<(), String> {
+    let sum = crate::util::sha256_file(file)?;
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    std::fs::write(
+        file.with_file_name(format!("{name}.sha256")),
+        format!("{sum}  {name}\n"),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// `.deb` for Ubuntu 24.04 and later and Debian 13, from the tarball's
+/// build (glibc 2.39): `target/package/linux/dreamer-<version>-<target>.deb`.
+fn deb_package(root: &Path) -> Result<PathBuf, String> {
+    let (stage, version, triple) = linux_tarball(root)?;
+    let arch = match triple {
+        "x86_64-unknown-linux-gnu" => "amd64",
+        "aarch64-unknown-linux-gnu" => "arm64",
+        other => return Err(format!("no Debian architecture for {other}")),
+    };
+    let out = root.join("target/package/linux");
+    let tree = out.join("deb-root");
+    usr_tree(&stage, &tree)?;
+    // Debian keeps the license with the documents, as `copyright`.
+    std::fs::copy(
+        stage.join("LICENSE"),
+        tree.join("usr/share/doc/dreamer/copyright"),
+    )
+    .map_err(|e| e.to_string())?;
+    let kib = run_checked(Command::new("du").args(["-sk"]).arg(tree.join("usr")), "du")?
+        .split_whitespace()
+        .next()
+        .unwrap_or("0")
+        .to_owned();
+    std::fs::create_dir_all(tree.join("DEBIAN")).map_err(|e| e.to_string())?;
+    std::fs::write(
+        tree.join("DEBIAN/control"),
+        format!(
+            "Package: dreamer\nVersion: {version}\nArchitecture: {arch}\n\
+             Maintainer: Dreamer developers <noreply@github.com>\nInstalled-Size: {kib}\n\
+             Depends: tmux, libc6 (>= 2.39), libgcc-s1, libstdc++6, libxcb1, libxkbcommon0, \
+             libxkbcommon-x11-0, libwayland-client0, libvulkan1, libfontconfig1\n\
+             Recommends: mesa-vulkan-drivers\nSection: x11\nPriority: optional\n\
+             Homepage: https://github.com/probablyrobot/dreamer\n\
+             Description: {PACKAGE_SUMMARY}\n {PACKAGE_DESCRIPTION}\n"
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    let deb = out.join(format!("dreamer-{version}-{triple}.deb"));
+    run_checked(
+        Command::new("dpkg-deb")
+            .args(["--root-owner-group", "-Zxz", "--build"])
+            .arg(&tree)
+            .arg(&deb),
+        "dpkg-deb",
+    )?;
+    std::fs::remove_dir_all(&tree).map_err(|e| e.to_string())?;
+    write_sha256(&deb)?;
+    println!("package: {}", deb.display());
+    Ok(deb)
+}
+
+/// `.rpm` for Fedora 40 and later and RHEL 10 (Alma, Rocky), from the
+/// tarball's build (glibc 2.39):
+/// `target/package/linux/dreamer-<version>-<target>.rpm`. Libraries the
+/// executables link are found by rpm; those loaded at run time (Wayland,
+/// Vulkan, fontconfig) and tmux are named.
+fn rpm_package(root: &Path) -> Result<PathBuf, String> {
+    let (stage, version, triple) = linux_tarball(root)?;
+    let arch = match triple {
+        "x86_64-unknown-linux-gnu" => "x86_64",
+        "aarch64-unknown-linux-gnu" => "aarch64",
+        other => return Err(format!("no RPM architecture for {other}")),
+    };
+    let out = root.join("target/package/linux");
+    let top = out.join("rpmbuild");
+    if top.exists() {
+        std::fs::remove_dir_all(&top).map_err(|e| e.to_string())?;
+    }
+    let payload = top.join("payload");
+    usr_tree(&stage, &payload)?;
+    let spec = top.join("dreamer.spec");
+    std::fs::write(
+        &spec,
+        format!(
+            "Name: dreamer\nVersion: {version}\nRelease: 1\nSummary: {PACKAGE_SUMMARY}\n\
+             License: Apache-2.0\nURL: https://github.com/probablyrobot/dreamer\n\
+             Requires: tmux, libwayland-client, vulkan-loader, fontconfig, libxkbcommon-x11\n\
+             Recommends: mesa-vulkan-drivers\n\
+             # Built and stripped by cargo already.\n\
+             %global debug_package %{{nil}}\n%global __os_install_post %{{nil}}\n\
+             %define _build_id_links none\n%define _binary_payload w19.zstdio\n\n\
+             %description\n{PACKAGE_DESCRIPTION}\n\n\
+             %install\ncp -a {payload}/. %{{buildroot}}/\n\n\
+             %files\n/usr/bin/dreamer\n/usr/bin/dreamerd\n/usr/bin/dream\n/usr/bin/dreamer-termapp\n\
+             /usr/share/dreamer\n/usr/share/applications/dev.dreamer.Dreamer.desktop\n\
+             /usr/share/icons/hicolor/*/apps/dev.dreamer.Dreamer.*\n\
+             /usr/lib/systemd/user/dreamerd.service\n%doc /usr/share/doc/dreamer\n\
+             %license /usr/share/licenses/dreamer\n",
+            payload = payload.display()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    run_checked(
+        Command::new("rpmbuild")
+            .arg("--define")
+            .arg(format!("_topdir {}", top.display()))
+            .args(["--target", arch, "-bb"])
+            .arg(&spec),
+        "rpmbuild",
+    )?;
+    let built = top
+        .join("RPMS")
+        .join(arch)
+        .join(format!("dreamer-{version}-1.{arch}.rpm"));
+    let rpm = out.join(format!("dreamer-{version}-{triple}.rpm"));
+    std::fs::rename(&built, &rpm).map_err(|e| format!("{}: {e}", built.display()))?;
+    std::fs::remove_dir_all(&top).map_err(|e| e.to_string())?;
+    write_sha256(&rpm)?;
+    println!("package: {}", rpm.display());
+    Ok(rpm)
 }
 
 /// Executables of the headless server archive.

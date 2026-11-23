@@ -102,7 +102,10 @@ fn artifacts(out: &Path) -> Result<Vec<PathBuf>, String> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            if n.ends_with(".zip") || n.ends_with(".tar.gz") {
+            if [".zip", ".tar.gz", ".deb", ".rpm"]
+                .iter()
+                .any(|ext| n.ends_with(ext))
+            {
                 found.push(p);
             }
         }

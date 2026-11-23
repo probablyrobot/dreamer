@@ -27,6 +27,11 @@ use crate::util::repo_root;
 /// in step with `docs/packaging.md`.
 pub const DESKTOP_RUNTIME: &str = "libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libvulkan1 mesa-vulkan-drivers libfontconfig1";
 
+/// The RPM families the `.rpm` is checked on: Fedora, and RHEL 10's
+/// rebuild AlmaLinux.
+const FEDORA: &str = "fedora:44";
+const EL: &str = "almalinux:10";
+
 fn triple(arch: &str) -> Result<&'static str, String> {
     match arch {
         "arm64" => Ok("aarch64-unknown-linux-gnu"),
@@ -36,9 +41,13 @@ fn triple(arch: &str) -> Result<&'static str, String> {
 }
 
 fn docker(args: &[&str], script: &str, what: &str) -> Result<(), String> {
+    docker_on("ubuntu:24.04", args, script, what)
+}
+
+fn docker_on(image: &str, args: &[&str], script: &str, what: &str) -> Result<(), String> {
     let status = Command::new("docker")
         .args(args)
-        .args(["ubuntu:24.04", "bash", "-c", script])
+        .args([image, "bash", "-c", script])
         .status()
         .map_err(|e| format!("docker run: {e}"))?;
     if status.success() {
@@ -57,11 +66,13 @@ pub fn build_in_container(arch: &str) -> Result<(), String> {
           build-essential pkg-config curl ca-certificates xz-utils git libclang-dev \
           libevent-dev libncurses-dev bison python3 \
           libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
-          libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev >/dev/null; \
+          libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev rpm >/dev/null; \
         command -v rustup >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none; \
         . \"$HOME/.cargo/env\"; \
         cargo xtask deps prepare --locked; \
         cargo xtask package --platform linux; \
+        cargo xtask package --platform deb; \
+        cargo xtask package --platform rpm; \
         cargo xtask package --platform server";
     let platform = format!("linux/{arch}");
     let src = format!("{}:/src", root.display());
@@ -152,21 +163,92 @@ pub fn fresh_check(arch: &str) -> Result<(), String> {
         ),
         "the desktop tarball",
     )?;
+    // The system packages, where they were built, installed by each
+    // family's own package manager on its fresh image.
+    let version = crate::package::version(&root)?;
+    let deb = format!("linux/dreamer-{version}-{triple}.deb");
+    let rpm = format!("linux/dreamer-{version}-{triple}.rpm");
+    let mut packages: Vec<(String, &str, String)> = Vec::new();
+    // As an unprivileged user, after the package: the CLIs, then a frame.
+    let run_as_user = "useradd -m u; \
+        su u -c 'dream --version; dreamer-termapp --version; dreamerd --self-check'";
+    if out.join(&deb).is_file() {
+        println!("fresh: {deb} installed with apt on ubuntu:24.04, then a frame on X11");
+        docker_on(
+            "ubuntu:24.04",
+            &mounts,
+            &format!(
+                "set -e; export DEBIAN_FRONTEND=noninteractive; apt-get update -qq; \
+                 apt-get install -y -qq /pkg/{deb} xvfb xauth >/dev/null; {run_as_user}; \
+                 su u -c \"mkdir -p -m 700 /tmp/xrt-u; XDG_RUNTIME_DIR=/tmp/xrt-u timeout 120 \
+                   xvfb-run -a -s '-screen 0 1280x800x24' dreamer --smoke\""
+            ),
+            "the .deb",
+        )?;
+        packages.push((deb.clone(), "ubuntu:24.04", "apt install with its dependencies; the CLIs and dreamer --smoke presented a frame on X11 (Xvfb, Mesa software Vulkan)".into()));
+    }
+    if out.join(&rpm).is_file() {
+        println!("fresh: {rpm} installed with dnf on {FEDORA}, then a frame on X11");
+        docker_on(
+            FEDORA,
+            &mounts,
+            &format!(
+                "set -e; dnf install -y -q /pkg/{rpm} xorg-x11-server-Xvfb mesa-vulkan-drivers \
+                   shadow-utils util-linux >/dev/null; {run_as_user}; \
+                 su u -c \"mkdir -p -m 700 /tmp/xrt-u; Xvfb :99 -screen 0 1280x800x24 & \
+                   sleep 1; DISPLAY=:99 XDG_RUNTIME_DIR=/tmp/xrt-u timeout 120 dreamer --smoke\""
+            ),
+            "the .rpm",
+        )?;
+        packages.push((rpm.clone(), FEDORA, "dnf install with its dependencies; the CLIs and dreamer --smoke presented a frame on X11 (Xvfb, Mesa software Vulkan)".into()));
+        // RHEL 10 ships no X server, Xvfb included: the install and the
+        // command-line tools only.
+        println!("fresh: {rpm} installed with dnf on {EL} (no Xvfb there: no frame)");
+        docker_on(
+            EL,
+            &mounts,
+            &format!(
+                "set -e; dnf install -y -q /pkg/{rpm} shadow-utils util-linux >/dev/null; \
+                 {run_as_user}; test -x /usr/bin/dreamer"
+            ),
+            "the .rpm",
+        )?;
+        packages.push((rpm.clone(), EL, "dnf install with its dependencies; the CLIs ran (RHEL 10 has no Xvfb, so no frame was drawn)".into()));
+    }
     println!("fresh: both archives ran on fresh {arch} containers");
     // For the build report: which archives, by checksum, passed.
-    let record = format!(
-        "{{\n  \"arch\": \"{arch}\",\n  \"image\": \"ubuntu:24.04\",\n  \"unix_time\": {},\n  \
-         \"checked\": [\n    {{ \"artifact\": \"{}\", \"sha256\": \"{}\", \"check\": \"bare image; dreamerd --self-check, dream and dreamer-termapp --version\" }},\n    \
-         {{ \"artifact\": \"{}\", \"sha256\": \"{}\", \"check\": \"install.sh for a new user with the documented runtime packages; dreamer --smoke presented a frame on X11 (Xvfb, Mesa software Vulkan)\" }}\n  ]\n}}\n",
-        std::time::SystemTime::now()
+    let mut checked = vec![
+        serde_json::json!({
+            "artifact": server,
+            "sha256": crate::util::sha256_file(&out.join("server").join(&server))?,
+            "check": "bare image; dreamerd --self-check, dream and dreamer-termapp --version",
+        }),
+        serde_json::json!({
+            "artifact": desktop.trim_start_matches("linux/"),
+            "sha256": crate::util::sha256_file(&out.join(&desktop))?,
+            "check": "install.sh for a new user with the documented runtime packages; dreamer --smoke presented a frame on X11 (Xvfb, Mesa software Vulkan)",
+        }),
+    ];
+    for (file, image, check) in &packages {
+        checked.push(serde_json::json!({
+            "artifact": file.trim_start_matches("linux/"),
+            "sha256": crate::util::sha256_file(&out.join(file))?,
+            "check": format!("{check} ({image})"),
+        }));
+    }
+    let record = serde_json::json!({
+        "arch": arch,
+        "image": "ubuntu:24.04",
+        "unix_time": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),
-        server,
-        crate::util::sha256_file(&out.join("server").join(&server))?,
-        desktop.trim_start_matches("linux/"),
-        crate::util::sha256_file(&out.join(&desktop))?,
-    );
-    std::fs::write(out.join(format!("fresh-{arch}.json")), record).map_err(|e| e.to_string())
+        "checked": checked,
+    });
+    std::fs::write(
+        out.join(format!("fresh-{arch}.json")),
+        serde_json::to_string_pretty(&record).map_err(|e| e.to_string())? + "\n",
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// macOS: the release's Dreamer Web zip added the way a user adds it,
