@@ -41,17 +41,20 @@ commands:
                                exits 5, not run, without one)
   bench report FILE...         result files as the Markdown docs/performance.md records
   build-report [--ci-run ID]   the release build report (spec 17.6) from target/package, the gate, and CI
-  release vX.Y.Z               build both lanes' artifacts, tag, and fill a draft GitHub release with the report
+  release vX.Y.Z [--sign ID] [--notarize PROFILE]
+                               build both lanes' artifacts, tag, and fill a draft GitHub release with the report
   bindings [--check]           regenerate (or check) the libghostty-vt Rust bindings
   deps prepare|path [--target <triple>]
                                fetch, verify, and build pinned native dependencies
   deps web                     fetch and verify the web engine's (CEF, cmake, Ninja; macOS)
   web bundle [--release] [--install]
                                the desktop with web panes and the Dreamer Web component beside it (macOS)
+  web smoke [--packaged]       draw web panes in that bundle, or in target/package's app and component
   headless [--cargo-args]      list the packages of the headless build
   hooks install|status         use the versioned git hooks in .githooks/
   package --platform macos|arch|linux|server|current [--debug] [--source-only] [--nodeps] [--target T]
-                               build a package (macOS: ad hoc signed zips of the app and of Dreamer Web, with signing records)
+          [--sign ID [--notarize PROFILE]]
+                               build a package (macOS: zips of the app and of Dreamer Web, with signing records; ad hoc unless signed with Developer ID)
   package --platform linux --container [--arch arm64|amd64]
                                the Linux archives built in an ubuntu:24.04 container
   package --fresh [--arch arm64|amd64]

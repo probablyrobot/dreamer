@@ -3,8 +3,9 @@
 //! - `cargo xtask package --platform macos [--debug]` (or `current` on a
 //!   Mac) writes `target/package/Dreamer.app` with `dreamer`, `dreamerd`,
 //!   `dream`, and `dreamer-termapp`, plus `dreamer-<version>-aarch64-apple-darwin.zip` and its
-//!   `.sha256`. Bundles are ad hoc signed; Developer ID signing and
-//!   notarization are a separate release step (spec 3.2, 17.5). The app is
+//!   `.sha256`. Bundles are ad hoc signed; with `--sign IDENTITY` they
+//!   are Developer ID signed under the hardened runtime, and with
+//!   `--notarize PROFILE` notarized and stapled (spec 3.2, 17.5). The app is
 //!   built with web panes, but Chromium is not in it: beside it go
 //!   `target/package/dreamer-web/` and
 //!   `dreamer-web-<version>-aarch64-apple-darwin.zip` (with `.sha256` and
@@ -54,6 +55,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut container = false;
     let mut fresh = false;
     let mut arch = crate::fresh::native_arch().to_owned();
+    let mut signing = Signing::default();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -65,8 +67,28 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "--container" => container = true,
             "--fresh" => fresh = true,
             "--arch" => arch = iter.next().ok_or("--arch needs a value")?.clone(),
+            "--sign" => {
+                signing.identity = Some(iter.next().ok_or("--sign needs an identity")?.clone());
+            }
+            "--notarize" => {
+                signing.notary = Some(
+                    iter.next()
+                        .ok_or("--notarize needs a notarytool keychain profile")?
+                        .clone(),
+                );
+            }
             other => return Err(format!("unknown package argument `{other}`")),
         }
+    }
+    if signing.notary.is_some() && signing.identity.is_none() {
+        return Err(
+            "--notarize needs --sign: only a Developer ID signed build can be notarized".into(),
+        );
+    }
+    if signing.identity.is_some()
+        && (fresh || container || !matches!(platform.as_str(), "macos" | "current"))
+    {
+        return Err("--sign and --notarize apply to the macOS packages".into());
     }
     if fresh {
         if platform == "macos" {
@@ -99,7 +121,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let root = repo_root();
     let out = root.join("target").join("package");
     let web = crate::deps::ensure_web(&crate::manifest::Manifest::load()?)?;
-    let made = macos_packages(&root, profile, &out, &web)?;
+    let made = macos_packages(&root, profile, &out, &web, &signing)?;
     println!("package: {}", made.app.display());
     println!("package: {} ({})", made.zip.display(), size(&made.zip));
     println!("package: {}", made.component.display());
@@ -124,21 +146,54 @@ pub struct MacPackages {
     pub component_zip: PathBuf,
 }
 
+/// How the macOS packages are signed. The default is ad hoc, which needs
+/// no credentials (the gate's builds); a release passes a Developer ID
+/// identity and, to notarize, a `notarytool` keychain profile.
+#[derive(Debug, Clone, Default)]
+pub struct Signing {
+    /// A Developer ID Application identity, as `codesign --sign` takes it
+    /// (its name or SHA-1).
+    pub identity: Option<String>,
+    /// A keychain profile made with `xcrun notarytool store-credentials`.
+    pub notary: Option<String>,
+}
+
 /// The macOS release artifacts in `out`: the base app (built with web
 /// panes, Chromium not in it) and its zip, and the Dreamer Web component
-/// and its zip, each verified.
+/// and its zip, each signed as `signing` says and verified.
 pub fn macos_packages(
     root: &Path,
     profile: Profile,
     out: &Path,
     web: &crate::deps::WebDeps,
+    signing: &Signing,
 ) -> Result<MacPackages, String> {
     let app = build_bundle_with(root, profile, out, Some(web))?;
+    if let Some(id) = &signing.identity {
+        developer_id_sign_app(&app, id)?;
+    }
     verify_bundle(&app)?;
+    if let Some(profile) = &signing.notary {
+        notarize(&app, out, profile)?;
+        staple(&app)?;
+        assess(&app)?;
+    }
     let zip = zip_bundle(&app, out)?;
     let version = version(root)?;
     let component = crate::web::build_component(out, &bin_dir(root, profile), web, &version)?;
+    if let Some(id) = &signing.identity {
+        crate::web::developer_id_sign_component(&component, id, out)?;
+    }
     crate::web::verify_component(&component)?;
+    if let Some(profile) = &signing.notary {
+        // A framework cannot hold a ticket; the helper apps can, and
+        // Gatekeeper finds the framework's online.
+        notarize(&component, out, profile)?;
+        for app in crate::web::helper_apps(&component) {
+            staple(&app)?;
+            assess(&app)?;
+        }
+    }
     let component_zip = crate::web::zip_component(&component, out, &version)?;
     Ok(MacPackages {
         app,
@@ -737,7 +792,8 @@ pub fn build_bundle_with(
     );
     std::fs::write(app.join("Contents").join("Info.plist"), plist).map_err(|e| e.to_string())?;
     // Ad hoc signature: enough to run locally and to give the bundle a
-    // stable code identity. Public builds are Developer ID signed later.
+    // stable code identity. A release re-signs it with Developer ID
+    // ([`Signing`]).
     // Helpers are signed before the bundle that seals them.
     for exe in &EXECUTABLES[1..] {
         run_checked(
@@ -754,6 +810,141 @@ pub fn build_bundle_with(
         "codesign",
     )?;
     Ok(app)
+}
+
+/// Sign `path` with Developer ID `identity` under the hardened runtime,
+/// with a secure timestamp, and `entitlements` (a plist) when given.
+pub fn developer_id_sign(
+    path: &Path,
+    identity: &str,
+    entitlements: Option<&Path>,
+) -> Result<(), String> {
+    let mut cmd = Command::new("codesign");
+    cmd.args([
+        "--force",
+        "--options",
+        "runtime",
+        "--timestamp",
+        "--sign",
+        identity,
+    ]);
+    if let Some(e) = entitlements {
+        cmd.arg("--entitlements").arg(e);
+    }
+    run_checked(cmd.arg(path), "codesign").map(drop)
+}
+
+/// Re-sign the ad hoc bundle with Developer ID, helpers before the bundle
+/// that seals them, and check that the identity is a Developer ID
+/// Application one: no other kind can be notarized for distribution.
+fn developer_id_sign_app(app: &Path, identity: &str) -> Result<(), String> {
+    let macos = app.join("Contents").join("MacOS");
+    for exe in &EXECUTABLES[1..] {
+        developer_id_sign(&macos.join(exe), identity, None)?;
+    }
+    developer_id_sign(app, identity, None)?;
+    let (kind, team, _) = signing_state(app);
+    if !kind.starts_with("Developer ID Application:") {
+        return Err(format!(
+            "`{identity}` signed the bundle as `{kind}`; a release needs a Developer ID Application identity (`security find-identity -v -p codesigning` lists yours)"
+        ));
+    }
+    println!(
+        "package: {} signed by {kind} (team {team}), hardened runtime",
+        app.display()
+    );
+    Ok(())
+}
+
+/// Submit `path` (an app or a directory of them), zipped, to Apple's
+/// notary service with keychain `profile`, and wait for the verdict. On
+/// anything but Accepted, the service's log says why.
+pub fn notarize(path: &Path, out: &Path, profile: &str) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let upload = out.join(format!("{name}.notarize.zip"));
+    let _ = std::fs::remove_file(&upload);
+    run_checked(
+        Command::new("ditto")
+            .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
+            .arg(path)
+            .arg(&upload),
+        "ditto",
+    )?;
+    println!("package: notarizing {name} (this usually takes a few minutes)");
+    let submitted = Command::new("xcrun")
+        .args(["notarytool", "submit"])
+        .arg(&upload)
+        .args([
+            "--keychain-profile",
+            profile,
+            "--wait",
+            "--output-format",
+            "json",
+        ])
+        .output()
+        .map_err(|e| format!("xcrun notarytool: {e}"));
+    let _ = std::fs::remove_file(&upload);
+    let submitted = submitted?;
+    let reply: serde_json::Value =
+        serde_json::from_slice(&submitted.stdout).unwrap_or(serde_json::Value::Null);
+    let status = reply["status"].as_str().unwrap_or_default();
+    if status == "Accepted" {
+        println!(
+            "package: {name} notarized (submission {})",
+            reply["id"].as_str().unwrap_or("?")
+        );
+        return Ok(());
+    }
+    let mut why = format!(
+        "notarization of {name}: {}",
+        if status.is_empty() {
+            String::from_utf8_lossy(&submitted.stderr).trim().to_owned()
+        } else {
+            status.to_owned()
+        }
+    );
+    if let Some(id) = reply["id"].as_str()
+        && let Ok(log) = Command::new("xcrun")
+            .args(["notarytool", "log", id, "--keychain-profile", profile])
+            .output()
+    {
+        why.push_str(&format!(
+            "\n{}",
+            String::from_utf8_lossy(&log.stdout).trim()
+        ));
+    }
+    Err(why)
+}
+
+/// Attach the notarization ticket to `app`, so it opens offline.
+fn staple(app: &Path) -> Result<(), String> {
+    run_checked(
+        Command::new("xcrun").args(["stapler", "staple"]).arg(app),
+        "xcrun stapler staple",
+    )
+    .map(drop)
+}
+
+/// Gatekeeper accepts `app` as a notarized Developer ID app.
+fn assess(app: &Path) -> Result<(), String> {
+    let out = Command::new("spctl")
+        .args(["--assess", "--type", "execute", "-vv"])
+        .arg(app)
+        .output()
+        .map_err(|e| format!("spctl: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stderr).into_owned();
+    if out.status.success() && text.contains("source=Notarized Developer ID") {
+        Ok(())
+    } else {
+        Err(format!(
+            "Gatekeeper does not accept {}: {}",
+            app.display(),
+            text.trim()
+        ))
+    }
 }
 
 /// Architecture, deployment target, and signature of every executable, and
@@ -825,8 +1016,9 @@ pub fn verify_bundle(app: &Path) -> Result<(), String> {
         Command::new(macos.join("dreamer-termapp")).arg("--version"),
         "dreamer-termapp",
     )?;
+    let (kind, _, _) = signing_state(app);
     println!(
-        "package: dreamer, dreamerd, dream, dreamer-termapp: arm64, ad hoc signed, minimum macOS {MIN_MACOS}; {}; {}; {}",
+        "package: dreamer, dreamerd, dream, dreamer-termapp: arm64, signed {kind}, minimum macOS {MIN_MACOS}; {}; {}; {}",
         daemon.trim(),
         cli.trim(),
         termapp.trim()

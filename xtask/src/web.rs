@@ -33,7 +33,8 @@ use crate::util::{cargo_target, repo_root};
 const TARGET: &str = "aarch64-apple-darwin";
 
 pub fn run(args: &[String]) -> Result<(), String> {
-    const USAGE: &str = "usage: cargo xtask web bundle [--release] [--install] | web smoke";
+    const USAGE: &str =
+        "usage: cargo xtask web bundle [--release] [--install] | web smoke [--packaged]";
     let mut profile = Profile::Debug;
     let mut install = false;
     let smoke_too = match args {
@@ -48,6 +49,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             false
         }
         [cmd] if cmd == "smoke" => true,
+        [cmd, flag] if cmd == "smoke" && flag == "--packaged" => {
+            return smoke_packaged(false);
+        }
         _ => return Err(USAGE.into()),
     };
     let web = provisioned()?
@@ -71,6 +75,36 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The web smoke on the release's own app and component, as `package`
+/// left them in `target/package` (Developer ID signed ones included), its
+/// captures beside them. With `require`, a smoke that could not see the
+/// window is an error rather than not run.
+pub fn smoke_packaged(require: bool) -> Result<(), String> {
+    let out = repo_root().join("target").join("package");
+    let (app, component) = (out.join("Dreamer.app"), out.join(TOP));
+    if !app.is_dir() || !component.is_dir() {
+        return Err(
+            "no packages in target/package: run `cargo xtask package --platform macos` first"
+                .into(),
+        );
+    }
+    let (kind, _, _) = crate::package::signing_state(&app);
+    println!("web: {} ({kind})", app.display());
+    match smoke(&app, &component, &out.join("web-smoke"))? {
+        Smoke::Passed(lines) => {
+            println!("{}\nweb: smoke passed", lines.join("\n"));
+            Ok(())
+        }
+        Smoke::NotRun(lines) if require => Err(format!(
+            "{lines}\nweb: smoke not run: nothing was drawn (unlock the screen and keep the window in front)"
+        )),
+        Smoke::NotRun(lines) => {
+            println!("{lines}\nweb: smoke not run: nothing was drawn");
+            Ok(())
+        }
+    }
 }
 
 /// The web engine's dependencies, if `cargo xtask deps web` provisioned
@@ -196,6 +230,93 @@ pub fn build_component(
     Ok(dir)
 }
 
+/// The hardened-runtime entitlements of the helper app with `suffix`, as
+/// Chromium gives its own helpers: V8 compiles code in renderers and in the
+/// GPU process (`allow-jit`), and plugins load libraries signed by others.
+/// The base helper needs `allow-jit` too, unlike Chrome's: CEF is given it
+/// as `browser_subprocess_path` and starts every child process from it,
+/// and without the entitlement V8 cannot reserve its code range. The
+/// alerts helper gets none.
+pub fn helper_entitlements(suffix: &str) -> &'static [&'static str] {
+    match suffix {
+        "" | " (Renderer)" | " (GPU)" => &["com.apple.security.cs.allow-jit"],
+        " (Plugin)" => &[
+            "com.apple.security.cs.allow-unsigned-executable-memory",
+            "com.apple.security.cs.disable-library-validation",
+        ],
+        _ => &[],
+    }
+}
+
+/// The helper apps of component `dir`.
+pub fn helper_apps(dir: &Path) -> Vec<PathBuf> {
+    HELPERS
+        .iter()
+        .map(|(suffix, _)| dir.join(web_component::helper_app(suffix)))
+        .collect()
+}
+
+/// Re-sign the component with Developer ID `identity` under the hardened
+/// runtime, inside out: the framework's libraries, the framework, then
+/// each helper app with its entitlements (written to `scratch`).
+pub fn developer_id_sign_component(
+    dir: &Path,
+    identity: &str,
+    scratch: &Path,
+) -> Result<(), String> {
+    use crate::package::developer_id_sign;
+    let framework = dir.join(FRAMEWORK);
+    let libraries = framework.join("Libraries");
+    let mut dylibs: Vec<PathBuf> = std::fs::read_dir(&libraries)
+        .map_err(|e| format!("{}: {e}", libraries.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "dylib"))
+        .collect();
+    dylibs.sort();
+    for lib in &dylibs {
+        developer_id_sign(lib, identity, None)?;
+    }
+    developer_id_sign(&framework, identity, None)?;
+    for (suffix, id) in HELPERS {
+        let keys = helper_entitlements(suffix);
+        let plist = if keys.is_empty() {
+            None
+        } else {
+            let path = scratch.join(format!("{id}.entitlements"));
+            let body: String = keys
+                .iter()
+                .map(|k| format!("  <key>{k}</key><true/>\n"))
+                .collect();
+            std::fs::write(
+                &path,
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n{body}</dict>\n</plist>\n"
+                ),
+            )
+            .map_err(|e| e.to_string())?;
+            Some(path)
+        };
+        let app = dir.join(web_component::helper_app(suffix));
+        developer_id_sign(
+            &web_component::helper_executable(dir, suffix),
+            identity,
+            plist.as_deref(),
+        )?;
+        developer_id_sign(&app, identity, plist.as_deref())?;
+        if let Some(p) = plist {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    println!(
+        "web: {}: framework, {} libraries, and {} helper apps signed by {identity}, hardened runtime",
+        dir.display(),
+        dylibs.len(),
+        HELPERS.len()
+    );
+    Ok(())
+}
+
 /// The component is this build's and complete, the framework and every
 /// helper app pass a strict signature check, and a helper loads the
 /// framework from where it sits. Opens no window.
@@ -283,8 +404,9 @@ pub fn zip_component(dir: &Path, out: &Path, version: &str) -> Result<PathBuf, S
         format!("{sha}  {name}\n"),
     )
     .map_err(|e| e.to_string())?;
+    // The helper app, not its executable: tickets are stapled to apps.
     let (kind, team, stapled) =
-        crate::package::signing_state(&web_component::helper_executable(dir, ""));
+        crate::package::signing_state(&dir.join(web_component::helper_app("")));
     let mut contents = vec![FRAMEWORK.to_owned()];
     contents.extend(HELPERS.iter().map(|(s, _)| web_component::helper_app(s)));
     let record = serde_json::json!({
