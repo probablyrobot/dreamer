@@ -214,6 +214,50 @@ The repository is private for now. Until it is public, the `curl` line and
 release downloads need GitHub access; use `--from` with a tarball from a CI
 run or from `gh release download`.
 
+## Ubuntu and Debian (.deb), Fedora and RHEL (.rpm)
+
+Each release has a `.deb` and an `.rpm` for x86-64 and ARM64, built from
+the same glibc 2.39 build as the tarball. Install one with your package
+manager, which also installs tmux and the libraries it needs:
+
+```sh
+sudo apt install ./dreamer-<version>-x86_64-unknown-linux-gnu.deb   # Ubuntu 24.04+, Debian 13+
+sudo dnf install ./dreamer-<version>-x86_64-unknown-linux-gnu.rpm   # Fedora 40+, RHEL/Alma/Rocky 10
+```
+
+RHEL 9 and older, Ubuntu 22.04, and Debian 12 have an older glibc and
+cannot run it.
+
+| Path | Content |
+| --- | --- |
+| `/usr/bin/dreamer`, `dreamerd`, `dream`, `dreamer-termapp` | The executables |
+| `/usr/share/dreamer/fonts/` | Dreamer's own copy of its font |
+| `/usr/share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
+| `/usr/share/icons/hicolor/*/apps/dev.dreamer.Dreamer.{png,svg}` | Application icon |
+| `/usr/lib/systemd/user/dreamerd.service` | Optional user service: `systemctl --user enable --now dreamerd` |
+| `/usr/share/doc/dreamer/`, `/usr/share/licenses/dreamer/` | These documents, the license and notices |
+
+- **Dependencies.** Both declare `tmux` and the libraries the desktop
+  loads at run time (Wayland, Vulkan, fontconfig, xkbcommon). They
+  recommend Mesa's Vulkan drivers. The `.rpm` also gets the libraries the
+  executables link from rpm's own scan.
+- **Building them.** On Linux, with `dpkg-deb` and `rpmbuild` installed
+  (`rpm` on Ubuntu):
+
+  ```sh
+  cargo xtask package --platform deb
+  cargo xtask package --platform rpm
+  ```
+
+  Both write to `target/package/linux/` with a `.sha256` beside them.
+  `--container` builds them along with the tarball.
+- **Checked on fresh machines.** `--fresh` installs the `.deb` with apt on
+  `ubuntu:24.04`, and the `.rpm` with dnf on `fedora:44` and
+  `almalinux:10`. On each it runs the command-line tools. On Ubuntu and
+  Fedora it also runs `dreamer --smoke` on X11 (Xvfb), which must present
+  a frame. RHEL 10 ships no X server, Xvfb included, so no frame is drawn
+  on AlmaLinux.
+
 ## Headless server archive
 
 For hosts reached over SSH, which need no desktop stack:
@@ -266,13 +310,13 @@ Then:
      notarized, and stapled, with their `.sha256` and signing records.
    - Web pages drawn with that app and component (`cargo xtask web smoke
      --packaged`), so keep the screen unlocked while it runs.
-   - The ARM64 desktop tarball and server archive, built in an ARM64
-     container.
-   - Both ARM64 archives run on fresh containers (`--fresh`).
+   - The ARM64 desktop tarball, `.deb`, `.rpm`, and server archive, built
+     in an ARM64 container.
+   - All of them run on fresh containers (`--fresh`).
 2. **The tag,** created on GitHub. It starts
-   `.github/workflows/release.yml`, which builds the x86-64 desktop tarball
-   and server archive, runs them on fresh containers, and drafts the
-   release with them and `install.sh`.
+   `.github/workflows/release.yml`, which builds the x86-64 desktop
+   tarball, `.deb`, `.rpm`, and server archive, runs them on fresh
+   containers, and drafts the release with them and `install.sh`.
 3. **The report.**
    - It waits for that run and takes its x86-64 archives back.
    - It writes the build report with the run attached.

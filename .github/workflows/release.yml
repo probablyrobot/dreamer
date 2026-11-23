@@ -38,11 +38,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev \
             libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev \
-            libevent-dev libncurses-dev bison
+            libevent-dev libncurses-dev bison rpm
       - run: cargo xtask deps prepare --locked
       - run: cargo xtask package --platform linux
+      - run: cargo xtask package --platform deb
+      - run: cargo xtask package --platform rpm
       - run: cargo xtask package --platform server
-      - name: Both archives on fresh ubuntu:24.04 containers
+      - name: The archives and packages on fresh containers
         run: cargo xtask package --fresh --arch amd64
       - name: Draft the release with the archives
         env:
@@ -55,5 +57,9 @@ jobs:
             target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz.sha256 \
             target/package/server/dreamer-server-*-x86_64-unknown-linux-gnu.tar.gz \
             target/package/server/dreamer-server-*-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+            target/package/linux/dreamer-*-x86_64-unknown-linux-gnu.deb \
+            target/package/linux/dreamer-*-x86_64-unknown-linux-gnu.deb.sha256 \
+            target/package/linux/dreamer-*-x86_64-unknown-linux-gnu.rpm \
+            target/package/linux/dreamer-*-x86_64-unknown-linux-gnu.rpm.sha256 \
             target/package/fresh-amd64.json \
             packaging/install.sh

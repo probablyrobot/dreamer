@@ -261,6 +261,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "dreamer-server-*-x86_64-unknown-linux-gnu.tar.gz*",
             format!("{out_s}/server"),
         ),
+        (
+            "dreamer-*-x86_64-unknown-linux-gnu.deb*",
+            format!("{out_s}/linux"),
+        ),
+        (
+            "dreamer-*-x86_64-unknown-linux-gnu.rpm*",
+            format!("{out_s}/linux"),
+        ),
         ("fresh-amd64.json", out_s.clone()),
     ] {
         sh(
@@ -293,7 +301,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 "fresh-macos.json",
             ][..],
         ),
-        (out.join("linux"), &["aarch64-unknown-linux-gnu.tar.gz"][..]),
+        (
+            out.join("linux"),
+            &[
+                "aarch64-unknown-linux-gnu.tar.gz",
+                "aarch64-unknown-linux-gnu.deb",
+                "aarch64-unknown-linux-gnu.rpm",
+            ][..],
+        ),
         (
             out.join("server"),
             &["aarch64-unknown-linux-gnu.tar.gz"][..],
