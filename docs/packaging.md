@@ -323,6 +323,18 @@ Then:
    - It adds the Mac's artifacts, the fresh-check records, and the report
      to the draft.
 
+Every call to GitHub is retried, and the wait for the workflow survives
+a dropped connection. If a release still stops after its tag was made
+(the network, or a failed upload), finish it with:
+
+```sh
+cargo xtask release vX.Y.Z --resume
+```
+
+It checks that the tag is this commit and that `target/package` holds this
+release's notarized macOS zip and ARM64 fresh record. It then does step 3
+again, without rebuilding or retagging.
+
 The release stays a draft until you publish it. Every file has a `.sha256`
 beside it, and the license and notices are inside every archive.
 

@@ -41,7 +41,7 @@ commands:
                                exits 5, not run, without one)
   bench report FILE...         result files as the Markdown docs/performance.md records
   build-report [--ci-run ID]   the release build report (spec 17.6) from target/package, the gate, and CI
-  release vX.Y.Z [--sign ID] [--notarize PROFILE]
+  release vX.Y.Z [--sign ID] [--notarize PROFILE] [--resume]
                                build both lanes' artifacts, tag, and fill a draft GitHub release with the report
   bindings [--check]           regenerate (or check) the libghostty-vt Rust bindings
   deps prepare|path [--target <triple>]
