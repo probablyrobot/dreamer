@@ -194,6 +194,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     "{name}: its record is for another commit; rebuild it"
                 ));
             }
+            if record.as_ref().map(|r| &r["signing"]["notarized"]) != Some(&Value::Bool(true)) {
+                not_run.push(format!(
+                    "{name}: not Developer ID signed and notarized (`cargo xtask package --sign ID --notarize PROFILE`)"
+                ));
+            }
             if checked.is_none() {
                 checked = Some("the macOS gate's package stage (see the gate report)".into());
             }
@@ -284,7 +289,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
     };
     not_run.extend([
-        "Developer ID signing and notarization (credentialed release step)".to_owned(),
         "the desktop on Wayland and on real Linux GPUs (the fresh check uses X11 with software Vulkan)".to_owned(),
     ]);
 

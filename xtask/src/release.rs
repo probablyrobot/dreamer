@@ -4,7 +4,8 @@
 //! Run on the development Mac, from a clean `main` at `origin/main` whose
 //! version is `X.Y.Z` and whose tree has passed the full macOS gate:
 //!
-//! 1. Build the macOS zip and the Dreamer Web zip, and add Dreamer Web
+//! 1. Build the macOS zip and the Dreamer Web zip, Developer ID signed,
+//!    notarized, and stapled; draw pages with them; and add Dreamer Web
 //!    from its zip away from the tree; build the ARM64 Linux desktop
 //!    tarball and server archive in an ARM64 container; run the ARM64
 //!    archives on fresh containers.
@@ -21,6 +22,35 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::util::repo_root;
+
+/// The notarytool keychain profile a release uses unless told otherwise.
+pub const DEFAULT_NOTARY_PROFILE: &str = "dreamer-notary";
+
+/// The keychain's Developer ID Application identity, when there is exactly
+/// one.
+fn developer_id_identity() -> Result<String, String> {
+    let out = Command::new("security")
+        .args(["find-identity", "-v", "-p", "codesigning"])
+        .output()
+        .map_err(|e| format!("security: {e}"))?;
+    let found: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split('"').nth(1))
+        .filter(|n| n.starts_with("Developer ID Application:"))
+        .map(str::to_owned)
+        .collect();
+    match found.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => Err(
+            "no Developer ID Application identity in the keychain; a release is signed with one"
+                .into(),
+        ),
+        _ => Err(format!(
+            "several Developer ID Application identities; name one with --sign: {}",
+            found.join(", ")
+        )),
+    }
+}
 
 fn sh(root: &Path, program: &str, args: &[&str]) -> Result<String, String> {
     let out = Command::new(program)
@@ -55,10 +85,24 @@ fn step(root: &Path, args: &[&str]) -> Result<(), String> {
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
-    let tag = match args {
-        [t] if t.starts_with('v') => t.clone(),
-        _ => return Err("usage: cargo xtask release vX.Y.Z".into()),
+    const USAGE: &str = "usage: cargo xtask release vX.Y.Z [--sign IDENTITY] [--notarize PROFILE]";
+    let (tag, rest) = match args.split_first() {
+        Some((t, rest)) if t.starts_with('v') => (t.clone(), rest),
+        _ => return Err(USAGE.into()),
     };
+    // Every release is Developer ID signed and notarized. The identity is
+    // the keychain's one Developer ID Application identity unless named;
+    // the notary profile is `dreamer-notary` unless named.
+    let mut identity = None;
+    let mut profile = DEFAULT_NOTARY_PROFILE.to_owned();
+    let mut iter = rest.iter();
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--sign" => identity = Some(iter.next().ok_or(USAGE)?.clone()),
+            "--notarize" => profile = iter.next().ok_or(USAGE)?.clone(),
+            _ => return Err(USAGE.into()),
+        }
+    }
     if !cfg!(target_os = "macos") {
         return Err("the release runs on the development Mac (it builds the macOS zip)".into());
     }
@@ -103,10 +147,41 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ));
     }
 
+    let identity = match identity {
+        Some(id) => id,
+        None => developer_id_identity()?,
+    };
+    // The credentials are checked before anything is built or tagged.
+    sh(
+        &root,
+        "xcrun",
+        &["notarytool", "history", "--keychain-profile", &profile],
+    )
+    .map_err(|e| {
+        format!(
+            "notary profile `{profile}` does not work ({e}); store it once with \
+             `xcrun notarytool store-credentials {profile} --apple-id APPLE_ID --team-id TEAMID`"
+        )
+    })?;
+    println!("release: signing with {identity}, notarizing with profile {profile}");
+
     // 1. The Mac's artifacts, from nothing.
     let out = root.join("target/package");
     let _ = std::fs::remove_dir_all(&out);
-    step(&root, &["package", "--platform", "macos"])?;
+    step(
+        &root,
+        &[
+            "package",
+            "--platform",
+            "macos",
+            "--sign",
+            &identity,
+            "--notarize",
+            &profile,
+        ],
+    )?;
+    // Chromium under the hardened runtime: the signed component draws pages.
+    crate::web::smoke_packaged(true)?;
     step(&root, &["package", "--fresh", "--platform", "macos"])?;
     step(
         &root,

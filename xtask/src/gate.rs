@@ -1190,7 +1190,7 @@ fn package_away_from_tree(dir: &Path) -> Result<Done, String> {
     use crate::package::{Profile, macos_packages, smoke_from_zip};
     let out = dir.join("target").join("package");
     let web = crate::deps::ensure_web(&crate::manifest::Manifest::load()?)?;
-    let made = macos_packages(dir, Profile::Release, &out, &web)?;
+    let made = macos_packages(dir, Profile::Release, &out, &web, &Default::default())?;
     println!("gate:   {}", made.zip.display());
     println!("gate:   {}", made.component_zip.display());
     for line in crate::fresh::mac_check(dir)? {

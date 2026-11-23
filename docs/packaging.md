@@ -25,7 +25,7 @@ app starts the daemon from there. `Contents/Resources/Fonts` holds the
 default font (four styles and its license), which the app loads itself, so
 nothing has to be installed system-wide. `Contents/Resources/Dreamer.icns`
 is the application icon. Every executable is arm64 with a minimum
-of macOS 15.0. Each helper is signed, then the bundle is ad hoc signed over
+of macOS 15.0. Each helper is signed, then the bundle is signed over
 them. `cargo xtask package` verifies all of this, and runs
 `dreamerd --self-check`, `dream --version`, and `dreamer-termapp --version`
 from inside the bundle.
@@ -36,13 +36,56 @@ To install, unzip into `/Applications`. To use the CLI from a shell:
 ln -s /Applications/Dreamer.app/Contents/MacOS/dream /usr/local/bin/dream
 ```
 
-The bundle is ad hoc signed, not Developer ID signed or notarized; that is
-a separate release step. Beside the zip, `<zip>.json` records what was
-built and how it is signed: size and SHA-256, the commit, the target and
-minimum macOS, the executables, and the signing kind (`adhoc` or the
-signing authority), team, and whether a notarization ticket is stapled. For a zip downloaded from elsewhere, Gatekeeper
-asks you to confirm the first launch: Control-click the app, choose Open,
-then confirm.
+By default the bundle is ad hoc signed, which runs on the Mac that built
+it. Beside the zip, `<zip>.json` records what was built and how it is
+signed: size and SHA-256, the commit, the target and minimum macOS, the
+executables, and the signing kind (`adhoc` or the signing authority),
+team, and whether a notarization ticket is stapled. An ad hoc zip opened
+on another Mac needs its first launch confirmed: Control-click the app,
+choose Open, then confirm.
+
+### Signing for distribution
+
+To ship to other Macs, sign with a Developer ID Application certificate
+and notarize:
+
+```sh
+cargo xtask package --platform macos \
+  --sign "Developer ID Application: NAME (TEAMID)" \
+  --notarize PROFILE
+```
+
+- `--sign` re-signs every executable and then the bundle under the
+  hardened runtime with a secure timestamp. It refuses an identity that
+  is not a Developer ID Application one; `security find-identity -v -p
+  codesigning` lists yours.
+- `--notarize` submits the bundle to Apple's notary service, waits for
+  it (usually a few minutes), staples the ticket, and checks that
+  Gatekeeper accepts the app as notarized. When notarization fails, the
+  service's log is printed. It needs `--sign`.
+- Dreamer Web is signed the same way, from the inside out: the
+  framework's libraries, the framework, then each helper app with the
+  entitlements Chromium gives its own helpers. The base, renderer, and
+  GPU helpers may compile code (`allow-jit`; Chromium starts every child
+  process from the base helper, so V8 needs it there too); the plugin
+  helper may run unsigned executable memory and load libraries signed by
+  others. `cargo xtask web smoke --packaged` draws pages with the
+  packaged app and component, to check a signed build. Its
+  helper apps are stapled; the framework cannot hold a ticket, and
+  Gatekeeper finds its ticket online.
+- The zips, their `.sha256` and their records are made after signing,
+  so the records say `Developer ID Application: …` and `notarized: true`.
+
+`PROFILE` is a keychain profile you store once. It asks for an
+app-specific password, which you make at account.apple.com under
+Sign-In and Security:
+
+```sh
+xcrun notarytool store-credentials PROFILE --apple-id APPLE_ID --team-id TEAMID
+```
+
+The gate always signs ad hoc and never needs the keychain or Apple's
+servers. Every release is signed and notarized (see below).
 
 The macOS gate builds a debug bundle on every commit (`bundle`), and the
 release zip on every push (`package`). Both are launched outside the
@@ -63,8 +106,8 @@ package step fetches it (checksum-verified) when it is missing.
 
 | Path in `dreamer-web/` | Content |
 | --- | --- |
-| `Chromium Embedded Framework.framework` | CEF's framework, from the pinned distribution, signed ad hoc |
-| `dreamer Helper.app`, `dreamer Helper (GPU).app`, `dreamer Helper (Renderer).app`, `dreamer Helper (Plugin).app`, `dreamer Helper (Alerts).app` | The helper apps Chromium runs its renderer, GPU, and utility processes from, each holding `dreamer-web-helper` and signed ad hoc |
+| `Chromium Embedded Framework.framework` | CEF's framework, from the pinned distribution, signed like the app |
+| `dreamer Helper.app`, `dreamer Helper (GPU).app`, `dreamer Helper (Renderer).app`, `dreamer Helper (Plugin).app`, `dreamer Helper (Alerts).app` | The helper apps Chromium runs its renderer, GPU, and utility processes from, each holding `dreamer-web-helper` and signed like the app |
 | `LICENSE.txt`, `CREDITS.html` | CEF's license and Chromium's third-party notices |
 | `component.json` | The component's Dreamer version, CEF release, and target |
 
@@ -211,12 +254,18 @@ It refuses to start unless:
 - the workspace version is `X.Y.Z`;
 - the tag does not exist yet;
 - this tree has passed the full macOS gate (`cargo xtask gate --full`, which
-  pushing runs).
+  pushing runs);
+- the keychain has a Developer ID Application identity (or `--sign`
+  names one), and the notary profile works: `dreamer-notary`, or the one
+  `--notarize` names ([Signing for distribution](#signing-for-distribution)).
 
 Then:
 
 1. **The Mac's artifacts, built from nothing.**
-   - The macOS zip, with its `.sha256` and signing record.
+   - The macOS zip and the Dreamer Web zip, Developer ID signed,
+     notarized, and stapled, with their `.sha256` and signing records.
+   - Web pages drawn with that app and component (`cargo xtask web smoke
+     --packaged`), so keep the screen unlocked while it runs.
    - The ARM64 desktop tarball and server archive, built in an ARM64
      container.
    - Both ARM64 archives run on fresh containers (`--fresh`).

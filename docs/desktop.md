@@ -802,14 +802,16 @@ and `dream web remove`.
   must be the one of the same Dreamer version (and CEF release). After
   updating Dreamer, web panes say which version is installed and which is
   needed, and offer to add this version's.
-- **Signing.** Like the app, the component is signed ad hoc, not with a
-  Developer ID or notarized. `dream web install` downloads with `curl`,
-  which does not mark the file as quarantined. A zip that a browser
-  downloaded is quarantined, the mark carries over to what is unpacked
-  from it, and Gatekeeper may then stop Chromium's helper apps from
-  starting. Install such a zip with `dream web install` and no file
-  instead, or remove the mark from the zip yourself (`xattr -d
-  com.apple.quarantine FILE`) if you trust where it came from.
+- **Signing.** The component is signed like the app: Developer ID
+  signed and notarized in a release, ad hoc in a local build
+  ([packaging.md](packaging.md#signing-for-distribution)). `dream web
+  install` downloads with `curl`, which does not mark the file as
+  quarantined. A zip that a browser downloaded is quarantined, and the
+  mark carries over to what is unpacked from it. Gatekeeper lets a
+  notarized component start; an ad hoc one it may stop. Install such a
+  zip with `dream web install` and no file instead, or remove the mark
+  from the zip yourself (`xattr -d com.apple.quarantine FILE`) if you
+  trust where it came from.
 - **An agent's `web.open` waits for it.** Each desktop tells the daemon
   whether it has Dreamer Web (`web.component`), whenever that changes.
   While none has it but one is adding it, or offers it (`ask`, the pane
