@@ -34,6 +34,10 @@
 //! window that is not drawing. Then the file says `"not_run": true` with
 //! the reason, holds no results, and the process exits 5, as the gate's
 //! smoke runs do.
+//!
+//! **Focus.** The window is opened without GPUI's 30 fps limit for
+//! unfocused windows, asks for focus once, and the file records whether
+//! it had focus at every measure (`window_focused`).
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -72,6 +76,9 @@ fn report(results: Vec<serde_json::Value>, not_run: Option<&str>) -> serde_json:
         "hardware": given("DREAMER_BENCH_MACHINE"),
         "revision": given("DREAMER_BENCH_REVISION"),
         "not_measured": [NOT_MEASURED],
+        // GPUI's unfocused-window frame limit is off in bench runs, so
+        // these hold either way; recorded because the input path differs.
+        "window_focused": FOCUSED_THROUGHOUT.load(std::sync::atomic::Ordering::Relaxed),
         "results": results,
     });
     if let Some(why) = not_run {
@@ -106,6 +113,28 @@ async fn drawing(any: AnyWindowHandle, cx: &mut AsyncApp) -> bool {
     let _ = cx.update_window(any, |_, window, _| window.refresh());
     sleep(cx, Duration::from_millis(500)).await;
     crate::workspace::draws() != before
+}
+
+/// Whether a bench run is asked for (`DREAMER_BENCH_GUI`). Its window
+/// is opened without GPUI's frame limit for unfocused windows (30 frames
+/// a second): a compositor may keep focus elsewhere (Hyprland does not
+/// hand it to a window started from a shell while another has it), and
+/// what is measured is the app's latency, not that limit.
+pub fn requested() -> bool {
+    std::env::var_os("DREAMER_BENCH_GUI").is_some()
+}
+
+/// Whether the window had keyboard focus at every measure so far.
+static FOCUSED_THROUGHOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Note whether the window has focus now; asks for it once at the start.
+fn note_focus(any: AnyWindowHandle, cx: &mut AsyncApp) {
+    let focused = cx
+        .update_window(any, |_, window, _| window.is_window_active())
+        .unwrap_or(false);
+    if !focused {
+        FOCUSED_THROUGHOUT.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 const NOT_DRAWING: &str = "the window did not draw when asked (screen locked, display asleep, or the window hidden or behind another app)";
@@ -571,6 +600,9 @@ pub(crate) async fn run(
         ms(first - started),
         "ms",
     );
+    let _ = cx.update_window(any, |_, window, _| window.activate_window());
+    sleep(cx, Duration::from_millis(500)).await;
+    note_focus(any, cx);
 
     // 2. Idle.
     sleep(cx, Duration::from_secs(1)).await;
@@ -582,6 +614,7 @@ pub(crate) async fn run(
         not_run(&format!("idle: {NOT_DRAWING}"));
     }
     put("terminal paints over 3 s idle", idle as f64, "paints");
+    note_focus(any, cx);
 
     // 3. Key to echo, idle: the first visible pane.
     let typing = *visible.first().unwrap_or_else(|| fail("no pane"));
@@ -596,6 +629,7 @@ pub(crate) async fn run(
         pct(&mut echo, 0.95),
         "ms",
     );
+    note_focus(any, cx);
 
     // 4. Load on every other visible pane.
     let load = load_command(&given("DREAMER_BENCH_LOAD"));
@@ -628,6 +662,7 @@ pub(crate) async fn run(
         frames.len() as f64,
         "frames",
     );
+    note_focus(any, cx);
     frame_results(&frames, &mut put);
 
     // 5. Key to echo under that load.
@@ -642,6 +677,7 @@ pub(crate) async fn run(
         pct(&mut echo, 0.95),
         "ms",
     );
+    note_focus(any, cx);
     for p in &busy {
         tmux(&daemon, &["send-keys", "-t", &format!("%{p}"), "C-c", ""]);
     }
@@ -696,8 +732,11 @@ pub(crate) async fn run(
         );
     }
 
+    note_focus(any, cx);
+
     // 7. A streaming transcript.
     transcript(any, &ws, cx, &mut put).await;
+    note_focus(any, cx);
 
     write(&report(results, None));
     std::process::exit(0);

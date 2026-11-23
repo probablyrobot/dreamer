@@ -3292,6 +3292,12 @@ pub(crate) fn open_via(
                 }),
                 window_decorations: (decorations == workspace_config::Decorations::None)
                     .then_some(gpui::WindowDecorations::Client),
+                // A bench run measures the app, not GPUI's unfocused limit.
+                inactive_frame_interval: if crate::bench_gui::requested() {
+                    None
+                } else {
+                    WindowOptions::default().inactive_frame_interval
+                },
                 ..Default::default()
             },
             |window, cx| {
