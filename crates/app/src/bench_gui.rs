@@ -534,6 +534,10 @@ pub(crate) async fn run(
 ) {
     let started = *crate::STARTED.get_or_init(Instant::now);
     let _ = OUT.set(out);
+    // Launch's frames, from the first render this run sees.
+    if let Ok(mut log) = FRAME_LOG.lock() {
+        *log = Some(Vec::new());
+    }
     let mut results = Vec::new();
     let mut put = |measure: &str, value: f64, unit: &str| {
         println!("bench: {measure}: {value:.2} {unit}");
@@ -573,6 +577,20 @@ pub(crate) async fn run(
     )
     .await;
     put("launch: a pane's first frame", ms(one - started), "ms");
+    let content = until(
+        any,
+        &ws,
+        cx,
+        "every visible pane's content",
+        Duration::from_secs(30),
+        |w, cx| all_show(w, cx, "READY"),
+    )
+    .await;
+    put(
+        "launch: every visible pane's content received (not yet painted)",
+        ms(content - started),
+        "ms",
+    );
     let first = until(
         any,
         &ws,
@@ -588,8 +606,29 @@ pub(crate) async fn run(
         },
     )
     .await;
+    let launch_frames = split_frames(
+        &FRAME_LOG
+            .lock()
+            .ok()
+            .and_then(|mut l| l.take())
+            .unwrap_or_default(),
+    );
     let visible = read(any, &ws, cx, |w, _| w.pane_ids()).unwrap_or_default();
     put("visible panes", visible.len() as f64, "panes");
+    // Where launch went: how many frames were drawn before every visible
+    // pane was painted, and the work in them.
+    let total = |f: fn(&FrameSplit) -> u64| -> f64 {
+        launch_frames.iter().map(f).sum::<u64>() as f64 / 1e6
+    };
+    put("launch: frames drawn", launch_frames.len() as f64, "frames");
+    put("launch: frame build, total", total(|f| f.build), "ms");
+    put("launch: terminal paint, total", total(|f| f.paint), "ms");
+    put("launch: shaping, total", total(|f| f.shape), "ms");
+    put(
+        "launch: slowest frame build",
+        launch_frames.iter().map(|f| f.build).max().unwrap_or(0) as f64 / 1e6,
+        "ms",
+    );
     // A first frame can be drawn on a locked screen; what follows needs a
     // window that keeps drawing.
     if !drawing(any, cx).await {
@@ -644,7 +683,9 @@ pub(crate) async fn run(
     if let Ok(mut log) = FRAME_LOG.lock() {
         *log = Some(Vec::new());
     }
+    let fast_before = terminal_render::fast_runs();
     sleep(cx, Duration::from_secs(5)).await;
+    let fast_runs = terminal_render::fast_runs() - fast_before;
     let marks = FRAME_LOG
         .lock()
         .ok()
@@ -664,6 +705,11 @@ pub(crate) async fn run(
     );
     note_focus(any, cx);
     frame_results(&frames, &mut put);
+    put(
+        "runs drawn without shaping (ASCII glyphs placed), 5 s under load",
+        fast_runs as f64,
+        "runs",
+    );
 
     // 5. Key to echo under that load.
     let mut echo = key_to_echo(any, &ws, typing, 100, cx).await;

@@ -1368,6 +1368,10 @@ impl Shell {
         );
         println!("smoke: skin {}", theme::for_window(window).name);
         println!("smoke: painted {:?}", last_paint_stats());
+        println!(
+            "smoke: runs drawn without shaping: {}",
+            terminal_render::fast_runs()
+        );
     }
 }
 
@@ -1381,7 +1385,23 @@ impl Render for Shell {
             window.on_next_frame(move |window, cx| {
                 Shell::report_frame(window);
                 if !repaint {
-                    cx.quit();
+                    // `DREAMER_SMOKE_HOLD_MS`: keep the frame on screen that
+                    // long before quitting, for a capture of it (renderer
+                    // comparisons on a virtual display).
+                    let hold = std::env::var("DREAMER_SMOKE_HOLD_MS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok());
+                    match hold {
+                        Some(ms) => cx
+                            .spawn(async move |cx| {
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(ms))
+                                    .await;
+                                cx.update(|cx| cx.quit());
+                            })
+                            .detach(),
+                        None => cx.quit(),
+                    }
                     return;
                 }
                 let first = last_paint_stats();
