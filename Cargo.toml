@@ -35,6 +35,8 @@ workspace-config = { package = "dreamer-workspace-config", path = "crates/worksp
 workspace-host = { package = "dreamer-workspace-host", path = "crates/workspace-host", version = "=0.10.0" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "6ceb6fee8738274589b59139df27efc191ec2231", default-features = false }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "6ceb6fee8738274589b59139df27efc191ec2231", default-features = false }
+gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "6ceb6fee8738274589b59139df27efc191ec2231", default-features = false }
+gpui_apple = { git = "https://github.com/zed-industries/zed", rev = "6ceb6fee8738274589b59139df27efc191ec2231", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

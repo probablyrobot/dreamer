@@ -7523,6 +7523,8 @@ version = "0.10.0"
 dependencies = [
  "dreamer-terminal-core",
  "gpui",
+ "gpui_apple",
+ "gpui_wgpu",
  "image",
  "smallvec",
 ]

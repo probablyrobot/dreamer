@@ -33,6 +33,15 @@ between frames and the colors, font, size, and cell width stay the same.
 Paint statistics report lines shaped versus reused, decorated runs, and the
 cursor shape painted.
 
+A run of printable ASCII in the font's own glyphs can skip the shaper: its
+glyphs are placed at the cells the shaper itself uses. This happens only
+when every five-symbol window of the run (its start and end count as
+symbols) has been seen shaped as exactly those glyphs before, so text the
+font joins or changes, such as ligatures and contextual alternates, is
+always shaped. Characters from a fallback font and decorated runs are
+always shaped. `DREAMER_RENDER_ASCII=off` shapes every run; `all` places
+every run of the font's own glyphs, for comparing the two paths.
+
 ## Checks
 
 The macOS gate runs these after building the app:

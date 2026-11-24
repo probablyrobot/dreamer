@@ -206,8 +206,6 @@ pub fn paint_nanos() -> u64 {
     PAINT_NANOS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Of [`paint_nanos`], the time spent shaping rows the shape cache did
-/// not hold, in nanoseconds.
 /// Runs drawn as placed ASCII glyphs without shaping, since start.
 static FAST_RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -216,6 +214,8 @@ pub fn fast_runs() -> u64 {
     FAST_RUNS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Of [`paint_nanos`], the time spent shaping rows the shape cache did
+/// not hold, in nanoseconds.
 pub fn shape_nanos() -> u64 {
     SHAPE_NANOS.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -494,9 +494,10 @@ struct PlacedGlyphs {
 }
 
 /// `DREAMER_RENDER_ASCII`: `off` shapes every run (a way out should a
-/// font draw differently placed glyph by glyph); `all` trusts every pair,
-/// to compare the two paths pixel for pixel. Otherwise pairs are learned.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// font draw differently placed glyph by glyph); `all` places every run of
+/// the font's own glyphs, to compare the two paths pixel for pixel.
+/// Otherwise what may skip shaping is learned ([`AsciiFont`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AsciiMode {
     Learned,
     Off,
@@ -515,18 +516,36 @@ fn ascii_mode() -> AsciiMode {
 /// Printable ASCII, the only characters the fast path draws.
 const ASCII_FIRST: u8 = 0x20;
 const ASCII_COUNT: usize = 95;
+/// A run's start or end, as one more symbol after the characters.
+const EDGE: u64 = ASCII_COUNT as u64;
+/// Symbols in a window ([`AsciiFont`]).
+const WINDOW: usize = 5;
+/// Windows remembered per font; past this nothing new is learned, so
+/// endless varied text (a base64 dump) cannot grow the set without bound.
+const WINDOWS_MAX: usize = 1 << 18;
 
-/// A font's glyphs for printable ASCII, and which adjacent pairs it
-/// shapes exactly as those glyphs side by side.
+/// A font's glyphs for printable ASCII, and the stretches of text it has
+/// been seen to draw as exactly those glyphs, one per cell.
 ///
 /// Shaping a run of narrow cells through the text system is most of a
 /// busy frame's cost, yet most terminal text is ASCII that a monospace
 /// font draws one glyph per character. A run may skip shaping when every
-/// character has a glyph in the font itself (no fallback) and every
-/// adjacent pair in it has been seen shaped as the two glyphs side by
-/// side. Pairs are learned from runs shaped normally, so a pair the font
-/// joins (a ligature such as `->`, or a contextual alternate) never
-/// qualifies, and the result is what shaping would have drawn.
+/// character has a glyph in the font itself (no fallback) and every window
+/// of [`WINDOW`] consecutive symbols in it, counting the run's start and
+/// end as symbols, has been seen in a run the shaper drew as the
+/// characters' own glyphs at their cells. Windows are learned from runs
+/// shaped normally, so text a font joins or changes never qualifies: a
+/// ligature (`->`), or a contextual alternate.
+///
+/// Pairs are not enough. A contextual alternate can depend on both
+/// neighbours: JetBrains Mono raises the colon in `12:30`, yet draws `2:`
+/// and `:3` plain. A three-character ligature can depend on the
+/// characters before and after it (`===` in JetBrains Mono, `***` in Fira
+/// Code), so a window is five symbols. Windows of five found no case
+/// drawn differently in the shipped ligature fonts (JetBrains Mono, Fira
+/// Code, Cascadia Code), where windows of four did. A font whose rules
+/// reach further could still be drawn differently here, and
+/// `DREAMER_RENDER_ASCII=off` is the way out.
 struct AsciiFont {
     font_id: gpui::FontId,
     ascent: Pixels,
@@ -537,7 +556,30 @@ struct AsciiFont {
     /// system keeps the font's own position while it is within a pixel of
     /// the cell, so these are taken from the shaper itself.
     positions: Vec<Pixels>,
-    safe_pairs: Box<[u64; ASCII_COUNT * ASCII_COUNT / 64 + 1]>,
+    /// Windows seen drawn apart, each as a base-96 number.
+    seen: std::collections::HashSet<u64, std::hash::BuildHasherDefault<WindowHasher>>,
+}
+
+/// Mixes a window's number so that every bit reaches the low bits a hash
+/// table indexes by (they would otherwise hold only the last symbol).
+#[derive(Default)]
+struct WindowHasher(u64);
+
+impl std::hash::Hasher for WindowHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(u64::from(b));
+        }
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        let x = (self.0 ^ v).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 = x ^ (x >> 29);
+    }
 }
 
 /// The longest run drawn without shaping.
@@ -546,11 +588,16 @@ const ASCII_RUN_MAX: usize = 1024;
 impl AsciiFont {
     /// Each printable character shaped on its own; `None` when the font
     /// draws none of them itself.
-    fn learn(font: &Font, font_size: Pixels, width: Pixels, window: &mut Window) -> Option<Self> {
-        let mut glyphs = [None; ASCII_COUNT];
+    fn learn(
+        font: &Font,
+        font_size: Pixels,
+        width: Pixels,
+        text_system: &gpui::WindowTextSystem,
+    ) -> Option<Self> {
+        let mut alone = [None; ASCII_COUNT];
         let mut primary = None;
         let mut metrics = None;
-        for (i, slot) in glyphs.iter_mut().enumerate() {
+        for (i, slot) in alone.iter_mut().enumerate() {
             let ch = (ASCII_FIRST + i as u8) as char;
             let text: SharedString = ch.to_string().into();
             let run = TextRun {
@@ -561,9 +608,7 @@ impl AsciiFont {
                 underline: None,
                 strikethrough: None,
             };
-            let line = window
-                .text_system()
-                .shape_line(text, font_size, &[run], Some(width));
+            let line = text_system.shape_line(text, font_size, &[run], Some(width));
             let [run] = line.runs.as_slice() else {
                 continue;
             };
@@ -576,7 +621,7 @@ impl AsciiFont {
                 primary = Some(run.font_id);
                 metrics = Some((line.ascent, line.descent));
             }
-            *slot = Some((run.font_id, glyph.id));
+            *slot = Some((run.font_id, glyph.id, glyph.position));
         }
         let font_id = primary?;
         let (ascent, descent) = metrics?;
@@ -591,9 +636,7 @@ impl AsciiFont {
             underline: None,
             strikethrough: None,
         };
-        let line = window
-            .text_system()
-            .shape_line(text, font_size, &[run], Some(width));
+        let line = text_system.shape_line(text, font_size, &[run], Some(width));
         let placed: Vec<&gpui::ShapedGlyph> = line.runs.iter().flat_map(|r| &r.glyphs).collect();
         if placed.len() != ASCII_RUN_MAX
             || line.runs.iter().any(|r| r.font_id != font_id)
@@ -601,14 +644,13 @@ impl AsciiFont {
         {
             return None;
         }
-        let positions = placed.iter().map(|g| g.position.x).collect();
+        let positions: Vec<Pixels> = placed.iter().map(|g| g.position.x).collect();
         // Only characters as wide as `M` sit where `M` does.
-        let text_system = window.text_system();
         let m_advance = text_system.advance(font_id, font_size, 'M').ok()?.width;
         let glyphs = std::array::from_fn(|i| {
             let ch = (ASCII_FIRST + i as u8) as char;
-            match glyphs[i] {
-                Some((f, id))
+            match alone[i] {
+                Some((f, id, _))
                     if f == font_id
                         && text_system
                             .advance(font_id, font_size, ch)
@@ -619,14 +661,27 @@ impl AsciiFont {
                 _ => None,
             }
         });
-        Some(AsciiFont {
+        let mut f = AsciiFont {
             font_id,
             ascent,
             descent,
             glyphs,
             positions,
-            safe_pairs: Box::new([0; ASCII_COUNT * ASCII_COUNT / 64 + 1]),
-        })
+            seen: Default::default(),
+        };
+        // A run of one character, drawn alone above.
+        for (i, a) in alone.iter().enumerate() {
+            if let Some((_, _, at)) = a
+                && f.glyphs[i].is_some()
+                && *at == point(f.positions[0], px(0.0))
+            {
+                Self::windows(&[ASCII_FIRST + i as u8], |w| {
+                    f.seen.insert(w);
+                    true
+                });
+            }
+        }
+        Some(f)
     }
 
     fn index(ch: u8) -> Option<usize> {
@@ -634,32 +689,36 @@ impl AsciiFont {
         (i < ASCII_COUNT).then_some(i)
     }
 
-    fn pair(a: usize, b: usize) -> (usize, u64) {
-        let bit = a * ASCII_COUNT + b;
-        (bit / 64, 1 << (bit % 64))
+    /// Calls `f` with each window of [`WINDOW`] symbols over `bytes` and
+    /// its two edges (a shorter run is one window, padded with edges)
+    /// until `f` returns false. False when it did, or a byte is not
+    /// printable ASCII.
+    fn windows(bytes: &[u8], mut f: impl FnMut(u64) -> bool) -> bool {
+        let symbol = |k: usize| match k.checked_sub(1).and_then(|k| bytes.get(k)) {
+            Some(&b) => Self::index(b).map(|i| i as u64),
+            None => Some(EDGE),
+        };
+        let symbols = (bytes.len() + 2).max(WINDOW);
+        (0..=symbols - WINDOW).all(|start| {
+            (start..start + WINDOW)
+                .try_fold(0u64, |key, k| Some(key * (EDGE + 1) + symbol(k)?))
+                .is_some_and(&mut f)
+        })
     }
 
     /// Glyphs for `text` at successive cells, if it may skip shaping.
-    fn place(&self, text: &str) -> Option<Vec<(Pixels, gpui::GlyphId)>> {
-        let mode = ascii_mode();
-        if mode == AsciiMode::Off || text.len() > ASCII_RUN_MAX {
+    fn place(&self, text: &str, mode: AsciiMode) -> Option<Vec<(Pixels, gpui::GlyphId)>> {
+        let bytes = text.as_bytes();
+        if mode == AsciiMode::Off
+            || bytes.len() > ASCII_RUN_MAX
+            || (mode == AsciiMode::Learned && !Self::windows(bytes, |w| self.seen.contains(&w)))
+        {
             return None;
         }
-        let bytes = text.as_bytes();
         let mut out = Vec::with_capacity(bytes.len());
-        let mut prev = None;
         for (col, &b) in bytes.iter().enumerate() {
-            let i = Self::index(b)?;
-            let glyph = self.glyphs[i]?;
-            if let Some(p) = prev
-                && mode == AsciiMode::Learned
-            {
-                let (word, mask) = Self::pair(p, i);
-                if self.safe_pairs[word] & mask == 0 {
-                    return None;
-                }
-            }
-            prev = Some(i);
+            let glyph = self.glyphs[Self::index(b)?]?;
+            // A space takes its cell and draws nothing.
             if b != b' ' {
                 out.push((self.positions[col], glyph));
             }
@@ -668,10 +727,13 @@ impl AsciiFont {
     }
 
     /// After `text` was shaped into `line`: if the shaper drew exactly the
-    /// characters' own glyphs, one per cell, every adjacent pair in it is
-    /// safe from now on.
+    /// characters' own glyphs, one per cell, every window in it is safe
+    /// from now on.
     fn observe(&mut self, text: &str, line: &gpui::ShapedLine) {
         let bytes = text.as_bytes();
+        if bytes.len() > ASCII_RUN_MAX || self.seen.len() >= WINDOWS_MAX {
+            return;
+        }
         let mut glyphs = line.runs.iter().flat_map(|r| {
             r.glyphs
                 .iter()
@@ -693,12 +755,10 @@ impl AsciiFont {
         if glyphs.next().is_some() {
             return;
         }
-        for w in bytes.windows(2) {
-            if let (Some(a), Some(b)) = (Self::index(w[0]), Self::index(w[1])) {
-                let (word, mask) = Self::pair(a, b);
-                self.safe_pairs[word] |= mask;
-            }
-        }
+        Self::windows(bytes, |w| {
+            self.seen.insert(w);
+            true
+        });
     }
 }
 
@@ -828,7 +888,7 @@ fn shape_row(
                     && let Some(placed) = ASCII.with(|a| {
                         let mut a = a.borrow_mut();
                         let entry = a.entry(key.clone()).or_insert_with(|| {
-                            AsciiFont::learn(&font, el.font_size, m.width, window)
+                            AsciiFont::learn(&font, el.font_size, m.width, window.text_system())
                         });
                         let f = entry.as_ref()?;
                         Some(PlacedGlyphs {
@@ -837,7 +897,7 @@ fn shape_row(
                             ascent: f.ascent,
                             descent: f.descent,
                             color: fg,
-                            glyphs: f.place(&text)?,
+                            glyphs: f.place(&text, ascii_mode())?,
                         })
                     })
                 {
@@ -1126,29 +1186,25 @@ mod tests {
             descent: px(3.0),
             glyphs: std::array::from_fn(|i| Some(gpui::GlyphId(u32::from(ASCII_FIRST) + i as u32))),
             positions: (0..ASCII_RUN_MAX).map(|k| px(8.0 * k as f32)).collect(),
-            safe_pairs: Box::new([0; ASCII_COUNT * ASCII_COUNT / 64 + 1]),
+            seen: Default::default(),
         }
     }
 
-    fn learn_pairs(f: &mut AsciiFont, text: &str) {
-        for w in text.as_bytes().windows(2) {
-            let (a, b) = (
-                AsciiFont::index(w[0]).expect("ascii"),
-                AsciiFont::index(w[1]).expect("ascii"),
-            );
-            let (word, mask) = AsciiFont::pair(a, b);
-            f.safe_pairs[word] |= mask;
-        }
+    fn seen_apart(f: &mut AsciiFont, text: &str) {
+        AsciiFont::windows(text.as_bytes(), |w| {
+            f.seen.insert(w);
+            true
+        });
     }
 
     #[test]
-    fn ascii_runs_skip_shaping_only_through_pairs_seen_shaped_apart() {
+    fn ascii_runs_skip_shaping_only_through_windows_seen_shaped_apart() {
+        use AsciiMode::{All, Learned, Off};
         let mut f = ascii_font();
-        // Nothing learned: a single character has no pair and may skip.
-        assert!(f.place("a").is_some());
-        assert!(f.place("ab").is_none());
-        learn_pairs(&mut f, "ab b");
-        let placed = f.place("ab b").expect("every pair seen");
+        assert!(f.place("a", Learned).is_none());
+        assert!(f.place("a", All).is_some());
+        seen_apart(&mut f, "ab b");
+        let placed = f.place("ab b", Learned).expect("every window seen");
         // Spaces take a cell but draw nothing.
         assert_eq!(
             placed,
@@ -1158,13 +1214,183 @@ mod tests {
                 (px(24.0), gpui::GlyphId(u32::from(b'b'))),
             ]
         );
-        // A pair a font may join (a ligature) is never assumed safe.
-        assert!(f.place("a->b").is_none());
+        assert!(f.place("ab b", Off).is_none());
+        // The same characters at a run's edge are other windows.
+        assert!(f.place("ab", Learned).is_none());
+        // Every pair in `12:30` seen apart is not enough: a font may
+        // change the colon only between digits.
+        for t in ["12 ", "2: ", " :3", "30"] {
+            seen_apart(&mut f, t);
+        }
+        assert!(f.place("12:30", Learned).is_none());
         // Outside printable ASCII, or a character the font lacks: shaped.
-        assert!(f.place("a\u{e9}").is_none());
+        assert!(f.place("a\u{e9}", All).is_none());
         f.glyphs[AsciiFont::index(b'z').expect("ascii")] = None;
-        assert!(f.place("z").is_none());
+        assert!(f.place("z", All).is_none());
     }
+
+    /// Fonts Dreamer ships, with ligatures and contextual alternates:
+    /// family, regular file.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const SHIPPED: [(&str, &str); 2] = [
+        (
+            "JetBrainsMono Nerd Font Mono",
+            "JetBrainsMonoNerdFontMono-Regular.ttf",
+        ),
+        (
+            "FiraCode Nerd Font Mono",
+            "FiraCodeNerdFontMono-Regular.ttf",
+        ),
+    ];
+
+    /// A shipped font file, from `DREAMER_FONT_DIR` or where `cargo xtask
+    /// deps prepare` puts it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn shipped_font(file: &str) -> Vec<u8> {
+        use std::path::PathBuf;
+        let mut dirs: Vec<PathBuf> = std::env::var_os("DREAMER_FONT_DIR")
+            .map(PathBuf::from)
+            .into_iter()
+            .collect();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let cache = if cfg!(target_os = "macos") {
+            home.map(|h| h.join("Library/Caches"))
+        } else {
+            std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .or_else(|| home.map(|h| h.join(".cache")))
+        };
+        if let Some(Ok(entries)) =
+            cache.map(|c| std::fs::read_dir(c.join("dreamer/deps/fonts/nerdfonts")))
+        {
+            let mut found: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            found.sort();
+            dirs.extend(found.into_iter().rev());
+        }
+        dirs.iter()
+            .find_map(|d| std::fs::read(d.join(file)).ok())
+            .unwrap_or_else(|| {
+                panic!("{file} not found: run `cargo xtask deps prepare` or set DREAMER_FONT_DIR")
+            })
+    }
+
+    /// The platform's own shaper, as the desktop uses it, with the shipped
+    /// fonts. No window or display is needed.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn platform_text_system() -> gpui::WindowTextSystem {
+        #[cfg(target_os = "linux")]
+        let platform: Arc<dyn gpui::PlatformTextSystem> = Arc::new(
+            gpui_wgpu::CosmicTextSystem::new_without_system_fonts(SHIPPED[0].0),
+        );
+        #[cfg(target_os = "macos")]
+        let platform: Arc<dyn gpui::PlatformTextSystem> =
+            Arc::new(gpui_apple::AppleTextSystem::new());
+        let text_system = Arc::new(gpui::TextSystem::new(platform));
+        text_system
+            .add_fonts(
+                SHIPPED
+                    .iter()
+                    .map(|(_, file)| shipped_font(file).into())
+                    .collect(),
+            )
+            .expect("the shipped fonts load");
+        gpui::WindowTextSystem::new(text_system)
+    }
+
+    /// Pixel-identical by construction: a placed run issues the same
+    /// glyph paints a shaped line does (font, glyph, size, color, and
+    /// origin; a space's glyph draws nothing), so it is enough that every
+    /// run the fast path takes gets exactly the shaper's glyphs, positions,
+    /// and baseline. Text is full of what fonts join or change: operators,
+    /// times, hex numbers, and runs of punctuation.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn placed_ascii_runs_are_what_the_shaper_draws() {
+        let text_system = platform_text_system();
+        let size = px(14.0);
+        // Symbols the shipped fonts join or change in some context.
+        let alphabet = b"0123x:/\\|-=<>!_.* w";
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut random = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        let mut line = |len: usize| -> String {
+            (0..len)
+                .map(|_| alphabet[random(alphabet.len())] as char)
+                .collect()
+        };
+        let train: Vec<String> = (0..12000).map(|k| line(1 + k % 8)).collect();
+        let mut test: Vec<String> = (0..4000).map(|k| line(2 + k % 9)).collect();
+        test.extend(
+            [
+                "12:30", " /\\ ", "www", "0x1F", "a->b", "x != y", "===", "<!--", "1:2", "||",
+            ]
+            .map(String::from),
+        );
+        for (k, (family, _)) in SHIPPED.into_iter().enumerate() {
+            // Letter spacing moves the cells off the font's advance.
+            let spacings: &[f32] = if k == 0 { &[0.0, 1.0] } else { &[0.0] };
+            for &spacing in spacings {
+                let font = gpui::font(family);
+                let id = text_system.resolve_font(&font);
+                let width =
+                    text_system.advance(id, size, 'M').expect("advance").width + px(spacing);
+                let shape = |text: &str| {
+                    let run = TextRun {
+                        len: text.len(),
+                        font: font.clone(),
+                        color: Hsla::default(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    text_system.shape_line(text.to_owned().into(), size, &[run], Some(width))
+                };
+                let mut f = AsciiFont::learn(&font, size, width, &text_system)
+                    .expect("the font draws ASCII itself");
+                for t in &train {
+                    f.observe(t, &shape(t));
+                }
+                let mut placed = 0;
+                for t in &test {
+                    let Some(glyphs) = f.place(t, AsciiMode::Learned) else {
+                        continue;
+                    };
+                    placed += 1;
+                    let line = shape(t);
+                    let drawn: Vec<_> = line
+                        .runs
+                        .iter()
+                        .flat_map(|r| r.glyphs.iter().map(move |g| (r.font_id, g)))
+                        .filter(|(_, g)| t.as_bytes().get(g.index) != Some(&b' '))
+                        .map(|(font_id, g)| (font_id, g.position, g.id))
+                        .collect();
+                    let ours: Vec<_> = glyphs
+                        .iter()
+                        .map(|&(x, glyph)| (f.font_id, point(x, px(0.0)), glyph))
+                        .collect();
+                    assert_eq!(
+                        ours, drawn,
+                        "{family} +{spacing} px: `{t}` placed unlike the shaper"
+                    );
+                    assert_eq!((f.ascent, f.descent), (line.ascent, line.descent));
+                }
+                eprintln!(
+                    "{family} +{spacing} px: {placed} of {} runs placed",
+                    test.len()
+                );
+                // Enough runs skipped shaping for the comparison to mean something.
+                assert!(
+                    placed > test.len() / 20,
+                    "{family}: only {placed} runs placed"
+                );
+            }
+        }
+    }
+
     use terminal_core::{ImageLayer, ImagePixels, ImagePlacement};
 
     fn placement(col: i32, row: i32, w: u32, h: u32, src: (u32, u32, u32, u32)) -> ImagePlacement {

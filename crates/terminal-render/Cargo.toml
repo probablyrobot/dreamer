@@ -14,5 +14,12 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 smallvec = "1.16.5"
 terminal-core.workspace = true
 
+# The platform shapers themselves, for comparing placed runs with them.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui_wgpu.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui_apple = { workspace = true, features = ["font-kit"] }
+
 [lints]
 workspace = true
