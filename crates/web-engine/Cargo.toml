@@ -24,7 +24,7 @@ required-features = ["engine"]
 cef-sys = { path = "../cef-sys" }
 raw-window-handle = { version = "0.6.2", optional = true }
 serde_json = "1.0.154"
-view-tree = { path = "../view-tree" }
+view-tree.workspace = true
 web-component = { path = "../web-component" }
 
 [lints]

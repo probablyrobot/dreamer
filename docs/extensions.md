@@ -58,7 +58,16 @@ daemon (see [messages.md](messages.md)).
 The `dreamer-sdk` crate (`crates/sdk`) speaks the protocol for you. It
 answers `extension.hello`, `$/ping`, and `extension.shutdown` on its own
 task, so heartbeats are answered while your code is busy. Your code makes
-typed calls and reads typed notifications:
+typed calls and reads typed notifications It is on crates.io, and it re-exports
+`api`, `app_protocol`, and `view_tree`, so it is the only Dreamer crate a
+program adds:
+
+```toml
+[dependencies]
+dreamer-sdk = "0.9"
+```
+
+The calls and notifications look like this:
 
 ```rust
 let mut session = dreamer_sdk::start("my-extension 0.1").await?;

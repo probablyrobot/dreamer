@@ -23,7 +23,9 @@
 //! let mut session = dreamer_sdk::start("my-extension 0.1").await?;
 //! let mut events = session.notifications().expect("taken once");
 //! session
-//!     .call(api::Request::EventsSubscribe(api::EventSubscribe::default()))
+//!     .call(dreamer_sdk::api::Request::EventsSubscribe(
+//!         dreamer_sdk::api::EventSubscribe::default(),
+//!     ))
 //!     .await?;
 //! loop {
 //!     tokio::select! {
@@ -39,6 +41,12 @@
 
 pub mod app;
 pub mod ui;
+
+// The crates an app or extension needs types from, so `dreamer-sdk` is the
+// only dependency to add.
+pub use api;
+pub use app_protocol;
+pub use view_tree;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

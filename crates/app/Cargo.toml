@@ -18,9 +18,9 @@ path = "src/main.rs"
 web = ["web-engine/engine", "dep:futures-lite"]
 
 [dependencies]
-api = { path = "../api" }
+api.workspace = true
 app-model = { path = "../app-model" }
-view-tree = { path = "../view-tree" }
+view-tree.workspace = true
 async-channel = "2.5.0"
 futures-lite = { version = "2.6.1", optional = true }
 client = { path = "../client" }

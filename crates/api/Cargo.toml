@@ -1,11 +1,15 @@
 [package]
-name = "api"
+name = "dreamer-api"
 description = "Dreamer's typed API: generated records, method table, and dispatch"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme = "README.md"
+keywords = ["dreamer","terminal","tmux","api","rpc"]
+categories = ["api-bindings","command-line-utilities"]
+publish = true
 
 [dependencies]
 prost = "0.14.5"

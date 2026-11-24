@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-api = { path = "../api" }
+api.workspace = true
 mlua = { version = "0.12.2", features = ["luau", "vendored", "async"] }
 rustix = { version = "1.1.6", features = ["time"] }
 serde_json = "1.0.154"

@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-api = { path = "../api" }
+api.workspace = true
 platform = { path = "../platform" }
 prost = "0.14.5"
 rustix = "1.1.6"

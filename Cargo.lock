@@ -221,16 +221,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "api"
-version = "0.9.0"
-dependencies = [
- "mlua",
- "prost",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "api-gen"
 version = "0.9.0"
 dependencies = [
@@ -243,9 +233,10 @@ dependencies = [
 name = "app-model"
 version = "0.9.0"
 dependencies = [
- "api",
- "app-protocol",
  "client",
+ "dreamer-api",
+ "dreamer-app-protocol",
+ "dreamer-view-tree",
  "platform",
  "providers",
  "script-runtime",
@@ -253,30 +244,20 @@ dependencies = [
  "serde_json",
  "tokio",
  "toml 0.8.23",
- "view-tree",
-]
-
-[[package]]
-name = "app-protocol"
-version = "0.9.0"
-dependencies = [
- "serde",
- "serde_json",
- "view-tree",
 ]
 
 [[package]]
 name = "app-script"
 version = "0.9.0"
 dependencies = [
- "api",
  "app-model",
- "app-protocol",
+ "dreamer-api",
+ "dreamer-app-protocol",
+ "dreamer-view-tree",
  "rquickjs",
  "serde_json",
  "tokio",
  "ureq",
- "view-tree",
 ]
 
 [[package]]
@@ -669,8 +650,8 @@ dependencies = [
 name = "bench"
 version = "0.9.0"
 dependencies = [
- "api",
  "client",
+ "dreamer-api",
  "perf",
  "platform",
  "replica",
@@ -1192,7 +1173,7 @@ checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 name = "client"
 version = "0.9.0"
 dependencies = [
- "api",
+ "dreamer-api",
  "platform",
  "prost",
  "rustix",
@@ -1807,13 +1788,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd8e701084c37e7ef62d3f9e453b618130cbc0ef3573847785952a3ac3f746bf"
 
 [[package]]
+name = "dreamer-api"
+version = "0.9.0"
+dependencies = [
+ "mlua",
+ "prost",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dreamer-app"
 version = "0.9.0"
 dependencies = [
- "api",
  "app-model",
  "async-channel",
  "client",
+ "dreamer-api",
+ "dreamer-view-tree",
  "futures-lite",
  "gpui",
  "gpui_platform",
@@ -1823,19 +1815,27 @@ dependencies = [
  "terminal-ghostty",
  "terminal-render",
  "tokio",
- "view-tree",
  "web-component",
  "web-engine",
  "workspace-config",
 ]
 
 [[package]]
+name = "dreamer-app-protocol"
+version = "0.9.0"
+dependencies = [
+ "dreamer-view-tree",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dreamer-cli"
 version = "0.9.0"
 dependencies = [
- "api",
- "app-protocol",
  "client",
+ "dreamer-api",
+ "dreamer-app-protocol",
  "platform",
  "prost",
  "providers",
@@ -1862,25 +1862,26 @@ dependencies = [
 name = "dreamer-sdk"
 version = "0.9.0"
 dependencies = [
- "api",
- "app-protocol",
  "client",
+ "dreamer-api",
+ "dreamer-app-protocol",
+ "dreamer-view-tree",
  "platform",
  "prost",
  "serde_json",
  "tmux-backend",
  "tokio",
- "view-tree",
 ]
 
 [[package]]
 name = "dreamer-server"
 version = "0.9.0"
 dependencies = [
- "api",
  "app-model",
  "client",
  "domain",
+ "dreamer-api",
+ "dreamer-view-tree",
  "matcher",
  "memory",
  "mirror",
@@ -1897,7 +1898,6 @@ dependencies = [
  "tmux-backend",
  "tokio",
  "ureq",
- "view-tree",
  "wire",
  "workspace-config",
  "workspace-host",
@@ -1907,17 +1907,25 @@ dependencies = [
 name = "dreamer-termapp"
 version = "0.9.0"
 dependencies = [
- "api",
  "app-model",
- "app-protocol",
  "app-script",
  "client",
  "crossterm",
+ "dreamer-api",
+ "dreamer-app-protocol",
+ "dreamer-view-tree",
  "ratatui",
  "serde_json",
  "tmux-backend",
  "tokio",
- "view-tree",
+]
+
+[[package]]
+name = "dreamer-view-tree"
+version = "0.9.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5998,9 +6006,9 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "replica"
 version = "0.9.0"
 dependencies = [
- "api",
  "async-channel",
  "client",
+ "dreamer-api",
  "matcher",
  "perf",
  "prost",
@@ -6325,7 +6333,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "script-runtime"
 version = "0.9.0"
 dependencies = [
- "api",
+ "dreamer-api",
  "mlua",
  "rustix",
  "serde_json",
@@ -8234,14 +8242,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "view-tree"
-version = "0.9.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "vsimd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8484,9 +8484,9 @@ name = "web-engine"
 version = "0.9.0"
 dependencies = [
  "cef-sys",
+ "dreamer-view-tree",
  "raw-window-handle",
  "serde_json",
- "view-tree",
  "web-component",
 ]
 
@@ -9258,8 +9258,8 @@ dependencies = [
 name = "workspace-host"
 version = "0.9.0"
 dependencies = [
- "api",
  "domain",
+ "dreamer-api",
  "serde_json",
  "tmux-backend",
  "tokio",
