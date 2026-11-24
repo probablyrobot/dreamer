@@ -842,7 +842,7 @@ pub fn version(root: &Path) -> Result<String, String> {
         .ok_or_else(|| "workspace version not found".into())
 }
 
-fn run_checked(cmd: &mut Command, what: &str) -> Result<String, String> {
+pub(crate) fn run_checked(cmd: &mut Command, what: &str) -> Result<String, String> {
     let out = cmd.output().map_err(|e| format!("{what}: {e}"))?;
     if !out.status.success() {
         return Err(format!(

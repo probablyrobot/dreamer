@@ -3,6 +3,11 @@
 //! web` fetches the web engine's (CEF, cmake, Ninja), which only builds with
 //! the desktop's `web` feature need.
 //!
+//! `cargo xtask deps prebuilt` packs the library for every shipped target
+//! into the archives a crates.io build of `ghostty-sys` downloads, and pins
+//! their SHA-256 in `crates/ghostty-sys/prebuilt.toml`; `--check` (also
+//! run by `prepare`) fails when those pins name another libghostty-vt.
+//!
 //! Everything lands in a per-user cache (`DREAMER_DEPS_DIR`, default
 //! `~/Library/Caches/dreamer/deps` or `$XDG_CACHE_HOME/dreamer/deps`) keyed by
 //! version and target, so the gate worktree, CI, and every checkout share one
@@ -17,13 +22,17 @@ use crate::manifest::Manifest;
 pub fn run(args: &[String]) -> Result<(), String> {
     let (cmd, rest) = args
         .split_first()
-        .ok_or("usage: cargo xtask deps <prepare|path|tmux|fonts|web> [--target <triple>]...")?;
+        .ok_or(
+            "usage: cargo xtask deps <prepare|path|tmux|fonts|web|prebuilt [--check]> [--target <triple>]...",
+        )?;
     let mut targets = Vec::new();
+    let mut check = false;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             // Pins are never updated by this command; accepted for clarity.
             "--locked" => {}
+            "--check" => check = true,
             "--target" => targets.push(iter.next().ok_or("--target needs a value")?.clone()),
             other => return Err(format!("unknown deps argument `{other}`")),
         }
@@ -34,6 +43,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let manifest = Manifest::load()?;
     match cmd.as_str() {
         "prepare" => {
+            check_prebuilt_pins(&manifest)?;
             let fonts = ensure_fonts(&manifest)?;
             println!("deps: fonts at {}", fonts.display());
             let zig = ensure_zig(&manifest)?;
@@ -72,8 +82,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "prebuilt" if check => check_prebuilt_pins(&manifest),
+        "prebuilt" => prebuilt(&manifest),
         other => Err(format!(
-            "unknown deps command `{other}` (prepare, path, tmux, fonts, web)"
+            "unknown deps command `{other}` (prepare, path, tmux, fonts, web, prebuilt)"
         )),
     }
 }
@@ -612,4 +624,152 @@ fn extract(archive: &Path, dest: &Path, strip: bool) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::rename(&staging, dest).map_err(|e| e.to_string())
+}
+
+/// Targets the prebuilt archives cover: every target Dreamer ships.
+const PREBUILT_TARGETS: &[&str] = &[
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+];
+
+/// The GitHub release that holds one libghostty-vt build's archives, named
+/// for the build so the pins move only when the library does.
+fn prebuilt_tag(manifest: &Manifest) -> Result<String, String> {
+    let version = manifest.get("ghostty", "version")?;
+    let commit = manifest.get("ghostty", "commit")?;
+    Ok(format!("libghostty-vt-{version}-{}", &commit[..12]))
+}
+
+fn prebuilt_url_base(manifest: &Manifest) -> Result<String, String> {
+    Ok(format!(
+        "https://github.com/probablyrobot/dreamer/releases/download/{}",
+        prebuilt_tag(manifest)?
+    ))
+}
+
+fn prebuilt_pins_path() -> PathBuf {
+    crate::util::repo_root().join("crates/ghostty-sys/prebuilt.toml")
+}
+
+/// `crates/ghostty-sys/prebuilt.toml` names the pinned libghostty-vt and
+/// has an archive for every shipped target.
+fn check_prebuilt_pins(manifest: &Manifest) -> Result<(), String> {
+    let path = prebuilt_pins_path();
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let pins = Manifest::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let stale = |what: &str| {
+        format!(
+            "{} pins another libghostty-vt ({what} differs from deps/baseline.toml); \
+             run `cargo xtask deps prebuilt` and upload the archives",
+            path.display()
+        )
+    };
+    for key in ["version", "commit"] {
+        if pins.get("ghostty", key)? != manifest.get("ghostty", key)? {
+            return Err(stale(key));
+        }
+    }
+    if pins.get("ghostty", "url_base")? != prebuilt_url_base(manifest)? {
+        return Err(stale("url_base"));
+    }
+    for target in PREBUILT_TARGETS {
+        let sha = pins.get(target, "sha256")?;
+        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!(
+                "{}: [{target}] sha256 is not a SHA-256",
+                path.display()
+            ));
+        }
+        pins.get(target, "file")?;
+    }
+    Ok(())
+}
+
+/// Build libghostty-vt for every shipped target, pack each prefix with the
+/// licenses into `target/ghostty-prebuilt/`, and write the pins.
+fn prebuilt(manifest: &Manifest) -> Result<(), String> {
+    let root = crate::util::repo_root();
+    let zig = ensure_zig(manifest)?;
+    let src = ensure_ghostty_source(manifest)?;
+    let version = manifest.get("ghostty", "version")?;
+    let commit = manifest.get("ghostty", "commit")?;
+    let out = root.join("target/ghostty-prebuilt");
+    if out.exists() {
+        std::fs::remove_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    }
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut pins = format!(
+        "# Written by `cargo xtask deps prebuilt`; checked by `cargo xtask deps prepare`.\n\
+         # A crates.io build of this crate downloads its target's archive from\n\
+         # url_base and refuses it unless the SHA-256 matches.\n\
+         [ghostty]\nversion = \"{version}\"\ncommit = \"{commit}\"\nurl_base = \"{}\"\n",
+        prebuilt_url_base(manifest)?
+    );
+    for target in PREBUILT_TARGETS {
+        let prefix = ensure_ghostty_build(manifest, &zig, &src, target)?;
+        let stage = out.join("stage").join(target);
+        std::fs::create_dir_all(stage.join("lib")).map_err(|e| e.to_string())?;
+        for (from, to) in [
+            (prefix.join(".dreamer-build"), ".dreamer-build"),
+            (prefix.join("lib/libghostty-vt.a"), "lib/libghostty-vt.a"),
+            (src.src.join("LICENSE"), "LICENSE-ghostty"),
+            (
+                root.join("THIRD_PARTY_NOTICES.md"),
+                "THIRD_PARTY_NOTICES.md",
+            ),
+        ] {
+            std::fs::copy(&from, stage.join(to)).map_err(|e| format!("{}: {e}", from.display()))?;
+        }
+        crate::package::run_checked(
+            Command::new("cp")
+                .arg("-R")
+                .arg(prefix.join("include"))
+                .arg(&stage),
+            "cp include",
+        )?;
+        let file = format!("libghostty-vt-{version}-{}-{target}.tar.gz", &commit[..12]);
+        let archive = out.join(&file);
+        let owner: &[&str] = if cfg!(target_os = "macos") {
+            &["--uid", "0", "--gid", "0", "--numeric-owner"]
+        } else {
+            &["--owner=0", "--group=0", "--numeric-owner"]
+        };
+        crate::package::run_checked(
+            Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
+                .args(owner)
+                .arg("-czf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&stage)
+                .args([
+                    ".dreamer-build",
+                    "LICENSE-ghostty",
+                    "THIRD_PARTY_NOTICES.md",
+                    "lib",
+                    "include",
+                ]),
+            "tar",
+        )?;
+        let sha = crate::util::sha256_file(&archive)?;
+        std::fs::write(
+            out.join(format!("{file}.sha256")),
+            format!("{sha}  {file}\n"),
+        )
+        .map_err(|e| e.to_string())?;
+        println!("deps: {} {sha}", archive.display());
+        pins.push_str(&format!(
+            "\n[{target}]\nfile = \"{file}\"\nsha256 = \"{sha}\"\n"
+        ));
+    }
+    std::fs::remove_dir_all(out.join("stage")).map_err(|e| e.to_string())?;
+    let path = prebuilt_pins_path();
+    std::fs::write(&path, pins).map_err(|e| format!("{}: {e}", path.display()))?;
+    println!("deps: pins written to {}", path.display());
+    println!(
+        "deps: upload them as release {}: gh release create {0} --prerelease --latest=false target/ghostty-prebuilt/*",
+        prebuilt_tag(manifest)?
+    );
+    Ok(())
 }

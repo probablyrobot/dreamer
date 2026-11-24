@@ -9,5 +9,9 @@ publish = false
 links = "ghostty-vt"
 build = "build.rs"
 
+[build-dependencies]
+# Checks the prebuilt archive a crates.io build downloads.
+sha2 = "0.10.9"
+
 [lints]
 workspace = true

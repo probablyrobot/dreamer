@@ -445,13 +445,15 @@ impl Mirror {
                 }
                 e
             });
+            // Mark before sending: the receiving task runs elsewhere and
+            // may take the mark as soon as the record arrives. A mark made
+            // after the send could come too late and wait for a record that
+            // never follows.
+            if let Some(stamp) = &s.stamp {
+                stamp.mark();
+            }
             match s.records.try_send((seq, record.clone(), effect)) {
-                Ok(()) => {
-                    if let Some(stamp) = &s.stamp {
-                        stamp.mark();
-                    }
-                    true
-                }
+                Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     perf::count(perf::Counter::Lagged, 1);
                     s.ended.store(end::LAGGED, Ordering::SeqCst);

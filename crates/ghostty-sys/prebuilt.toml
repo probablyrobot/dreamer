@@ -1,0 +1,19 @@
+# Written by `cargo xtask deps prebuilt`; checked by `cargo xtask deps prepare`.
+# A crates.io build of this crate downloads its target's archive from
+# url_base and refuses it unless the SHA-256 matches.
+[ghostty]
+version = "1.0.1"
+commit = "108cacb17ed8990840cd14abfce43d8ed8503ca1"
+url_base = "https://github.com/probablyrobot/dreamer/releases/download/libghostty-vt-1.0.1-108cacb17ed8"
+
+[aarch64-apple-darwin]
+file = "libghostty-vt-1.0.1-108cacb17ed8-aarch64-apple-darwin.tar.gz"
+sha256 = "ffa3be19cf79fa9bcc0fd816762050b839db4d9b99513835cf30ed6cfc7f4dde"
+
+[aarch64-unknown-linux-gnu]
+file = "libghostty-vt-1.0.1-108cacb17ed8-aarch64-unknown-linux-gnu.tar.gz"
+sha256 = "5c851993da3f4b4a725f971f7881d0030cfa8a384d53cac8a748b3d4db897e96"
+
+[x86_64-unknown-linux-gnu]
+file = "libghostty-vt-1.0.1-108cacb17ed8-x86_64-unknown-linux-gnu.tar.gz"
+sha256 = "62905cb4b73be18315b0619f2d046f9e4a091870fc7aa392796ba49981848b16"

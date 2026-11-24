@@ -50,6 +50,29 @@ Zig on `PATH` is not used.
 | `x86_64-unknown-linux-gnu` | `x86_64-linux-gnu.2.39` | glibc 2.39 (Ubuntu 24.04) |
 | `aarch64-unknown-linux-gnu` | `aarch64-linux-gnu.2.39` | glibc 2.39 (Ubuntu 24.04) |
 
+### Prebuilt archives (crates.io builds)
+
+A build of `ghostty-sys` from crates.io has no `deps/baseline.toml` beside
+it and no prepared cache. It uses a prebuilt `libghostty-vt` instead,
+pinned in `crates/ghostty-sys/prebuilt.toml`:
+
+- one archive per target above, holding the static library, the headers,
+  the build fingerprint, Ghostty's license, and `THIRD_PARTY_NOTICES.md`;
+- attached to the GitHub release named for the build
+  (`libghostty-vt-1.0.1-108cacb17ed8`), so the pins change only when the
+  library does;
+- downloaded with `curl` and refused unless its SHA-256 matches the pin.
+  `DREAMER_GHOSTTY_ARCHIVE` names a file already on disk instead, and
+  `DREAMER_GHOSTTY_PREFIX` a prepared prefix.
+
+A build inside the repository never downloads; it links the prepared cache.
+
+`cargo xtask deps prebuilt` builds the three targets (Zig cross-compiles
+the Linux ones on the Mac), packs the archives into
+`target/ghostty-prebuilt/`, and rewrites the pins. Upload the archives to
+the release it names. `cargo xtask deps prepare` fails while the pins name
+another libghostty-vt than this baseline.
+
 ### Code linked into libghostty-vt
 
 From `deps/libghostty-vt-third-party.json` in the release source:
