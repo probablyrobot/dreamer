@@ -29,3 +29,7 @@ rustc-ice-*.txt
 # Core dumps from crashed test processes.
 core
 core.[0-9]*
+
+# Local scratch: design captures and service logs.
+/design/
+/logs/
