@@ -55,7 +55,7 @@ sh install.sh
 Pass options after `sh -s --`:
 
 ```sh
-curl -fsSL https://github.com/probablyrobot/dreamer/releases/latest/download/install.sh | sh -s -- --version 0.9.0
+curl -fsSL https://github.com/probablyrobot/dreamer/releases/latest/download/install.sh | sh -s -- --version 0.10.0
 ```
 
 `DREAMER_VERSION`, `DREAMER_PREFIX`, and `DREAMER_APP_DIR` in the
@@ -66,7 +66,7 @@ environment do the same as the options.
 ```sh
 dream update            # install the latest release over this one
 dream update --check    # only say whether a newer release exists
-dream update --version 0.9.0
+dream update --version 0.10.0
 ```
 
 `dream update` runs the new release's installer into the place Dreamer is

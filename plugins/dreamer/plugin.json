@@ -1,11 +1,17 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "dreamer",
-  "version": "0.9.0",
+  "author": {
+    "name": "Dreamer developers"
+  },
   "description": "Configure and manage the Dreamer terminal, build pane apps, and see and drive your panes through Dreamer's MCP server.",
-  "author": { "name": "Dreamer developers" },
   "homepage": "https://github.com/probablyrobot/dreamer",
-  "repository": "https://github.com/probablyrobot/dreamer",
+  "keywords": [
+    "terminal",
+    "tmux",
+    "dreamer"
+  ],
   "license": "Apache-2.0",
-  "keywords": ["terminal", "tmux", "dreamer"]
+  "name": "dreamer",
+  "repository": "https://github.com/probablyrobot/dreamer",
+  "version": "0.10.0"
 }
