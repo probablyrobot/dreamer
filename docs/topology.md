@@ -1,5 +1,10 @@
 # Topology
 
+The topology is the daemon's picture of a tmux server: its sessions,
+windows, and panes. You need this page if you are writing a client or an
+extension that lists panes, follows layout changes, sizes windows, or
+shows app panes.
+
 `tmux.topology` returns an endpoint's sessions, windows, and panes as the
 daemon last read them from tmux:
 - windows have their name, panes, active pane, zoom state, size, and
@@ -12,7 +17,7 @@ daemon last read them from tmux:
   `holding` set. Clients leave it out of tabs and session lists;
 - a pane whose program is a registered app host (a package started with
   `dream app launch` or `dream app run`) has `app`: the app's `instance`
-  and `app_id`, and `live`, false once the host's connection closed.
+  and `app_id`, and `live`, false once the host's connection closed;
 - a [web pane](desktop.md#web-panes) (made by `web.open`) has `web`: the
   page's URL, from the pane's `@dreamer_surface` option. A value that is
   not a page a web pane may show is not reported. `web_scroll_x` and
@@ -110,8 +115,7 @@ after a newer one.
 
 **Coalescing.** Updates go through a latest-value channel. A client that
 reads slowly gets the newest topology when it catches up, not every step
-in between (spec 16.3: status coalesces to the latest revision). The
-daemon never waits on a watcher.
+in between. The daemon never waits on a watcher.
 
 There is one watch per connection; a second `tmux.watch` only returns the
 current topology. The watch ends with the connection.
@@ -119,7 +123,7 @@ current topology. The watch ends with the connection.
 ## Window size
 
 tmux is authoritative for cell geometry. Each tmux window takes its size
-from at most one Dreamer client, its **sizing owner** (spec 11.8):
+from at most one Dreamer client, its **sizing owner**:
 - **Asking.** `tmux.size_window {window, cols, rows, client}` asks for a
   window's size. The first client to ask owns it. The daemon applies the
   owner's requests with `refresh-client -C @WINDOW:COLSxROWS` on its control

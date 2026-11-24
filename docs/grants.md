@@ -5,14 +5,21 @@ checks it before every request, before the request acts on anything.
 Nothing a client sends, and no terminal output, manifest, or model
 response, can widen a grant. Only the daemon assigns one.
 
+To choose how far an agent may act, give it an act level: `dream mcp
+--level observe|own|elsewhere` for Claude Code, Codex, and other MCP
+clients ([mcp.md](mcp.md#choose-what-the-agent-may-do)), or
+`DREAMER_AGENT_LEVEL` for pi ([agents.md](agents.md#what-an-agent-can-see-and-do)).
+[Act levels and approvals](#act-levels-and-approvals) says what each
+level allows. Answer a waiting approval with `dream approvals`.
+
 ## Owner and narrow grants
 
 - **Owner.** The daemon's socket is owner-only, so whoever connects to it is
   the user. The user's own clients (the desktop, `dream`, scripts the user
   runs) hold the owner grant: everything.
 - **Narrow.** A registered pane app holds a narrow grant (see
-  [Launching and registering apps](#launching-and-registering-apps)). It
-  lists:
+  [Launching and registering apps](#launching-and-registering-apps)). So
+  does an agent session, and a connection that narrowed itself. It lists:
   - **methods:** exact names such as `terminal.read`, or a whole service
     such as `tmux.*` (which covers `tmux.topology`, not `tmuxfoo.bar`);
   - **panes:** the panes it may read, follow, type into, or act on, or
@@ -75,8 +82,8 @@ requests, not running streams.
 
 An agent's grant has an act level on top of its methods and panes. The
 level decides how far the agent may act on panes; the methods and panes
-still decide what it may call at all. A grant without a level (every
-grant from before levels, the owner's included) is unaffected.
+still decide what it may call at all. A grant without a level, such as
+the owner's, is unaffected.
 
 | Level | May | Asks the user |
 | --- | --- | --- |
@@ -341,16 +348,17 @@ may start one only under one grant entry, `web.download`:
 
 `crates/app-model/src/manifest.rs` checks that a package's pages may
 save downloads only with `web.download` (or `web.*`), and the web smoke
-([desktop.md](desktop.md#web-pane-check)) that the example web app, without
+([desktop.md](desktop-internals.md#web-pane-check)) that the example web app, without
 it, is refused, while the browser asks and saves.
 
 ### What this does and does not protect
 
 The socket is owner-only, so any process of the same user can still
 connect directly and act as the owner. Grants confine apps started through
-Dreamer's launch, scripts in the sandboxed tier, and future remote and
-agent clients. They are not an OS sandbox (spec 12.2): an app with native
-code runs with the user's privileges.
+Dreamer's launch, sandboxed scripts, agent sessions, and connections that
+narrowed themselves, such as `dream mcp --level`. They are not an OS
+sandbox: an app with native code, or an agent's harness, runs with the
+user's privileges.
 
 `crates/cli/tests/cli.rs` launches a probe app into a real tmux pane. It
 registers, reads its own pane, is refused another pane, `daemon.shutdown`,

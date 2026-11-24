@@ -59,6 +59,16 @@ fn which(name: &str) -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
+/// `program`, run with no API-key variable in its environment.
+fn without_api_keys(program: String) -> Vec<String> {
+    let mut argv = vec!["env".to_owned()];
+    for v in providers::session::SCRUBBED {
+        argv.extend(["-u".to_owned(), v.to_owned()]);
+    }
+    argv.push(program);
+    argv
+}
+
 /// A pane that says why the harness did not start, until Enter.
 fn message_argv(message: &str) -> Vec<String> {
     vec![
@@ -142,7 +152,11 @@ pub fn harness_launch(settings: &Settings, session: TmuxSessionId) -> HarnessLau
             }
         }
     } else if let Some(p) = which(&program) {
-        vec![p]
+        // Claude Code and Codex run on their own login. An API key in the
+        // pane's environment would make them bill that account instead,
+        // so the drawer starts them without one. tmux gives the pane its
+        // environment, so the variables are removed in the command itself.
+        without_api_keys(p)
     } else {
         problem = Some(format!(
             "`{program}` is not on PATH. Install it, or set agents.{name}.command in dreamer.yaml."
@@ -673,6 +687,27 @@ mod tests {
         assert!(too_small(100, 12, DrawerSide::Bottom, 35));
         assert!(!too_small(100, 12, DrawerSide::Right, 35));
         assert!(too_small(28, 40, DrawerSide::Left, 35));
+    }
+
+    #[test]
+    fn a_harness_found_on_path_starts_without_api_keys() {
+        let argv = without_api_keys("/usr/bin/claude".into());
+        assert_eq!(argv.first().map(String::as_str), Some("env"));
+        assert_eq!(argv.last().map(String::as_str), Some("/usr/bin/claude"));
+        for key in ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"] {
+            assert!(
+                argv.windows(2).any(|w| w[0] == "-u" && w[1] == key),
+                "{key} is not removed: {argv:?}"
+            );
+        }
+        // The program runs the same way with the keys gone.
+        let out = std::process::Command::new(&argv[0])
+            .args(&argv[1..argv.len() - 1])
+            .arg("/usr/bin/true")
+            .env("ANTHROPIC_API_KEY", "sk-test")
+            .status()
+            .expect("env");
+        assert!(out.success());
     }
 
     #[test]

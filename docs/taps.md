@@ -3,7 +3,9 @@
 A tap is a bounded view of panes for monitors, filters, scripts, and
 agents. It reads the daemon's canonical mirror after output was ingested,
 so it never changes what a program wrote or what any tmux client sees,
-and it can never slow a pane down.
+and it can never slow a pane down. You need this page if you are writing
+a monitor, script, or extension that reads pane output (`taps.subscribe`)
+or searches it (`terminal.query`).
 
 ## Levels
 

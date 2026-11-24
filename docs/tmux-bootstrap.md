@@ -1,7 +1,9 @@
 # tmux cold attach (bootstrap)
 
-How `dreamerd` builds a terminal mirror for a pane it has not been watching,
-and continues it from live output without losing or repeating bytes.
+A cold attach is how `dreamerd` builds a terminal mirror for a pane it has
+not been watching, and continues it from live output without losing or
+repeating bytes. You need this page if you work on the tmux backend, or
+want to know what a freshly attached mirror can and cannot restore.
 Baseline: tmux 3.8 (`control.c`, `cmd-refresh-client.c`,
 `cmd-capture-pane.c`, `window.c` at tag `3.8`). Implementation:
 `crates/tmux-backend/src/bootstrap.rs`. Tests:
@@ -30,7 +32,7 @@ Both steps run on the pane's canonical control client, which must not use
 
 **Phase 1: pause, and wait for it.**
 
-```
+```text
 display-message -p -t '%N' '#{pane_id}' ; refresh-client -A '%N:pause'
 ```
 
@@ -46,7 +48,7 @@ display-message -p -t '%N' '#{pane_id}' ; refresh-client -A '%N:pause'
 
 **Phase 2: capture and continue, as one command line.**
 
-```
+```text
 display-message -p -t '%N' '<state format>' ;
 capture-pane -p -e -J -N -S - -E -1 -t '%N' ;   # history
 capture-pane -p -e -J -N -S 0 -E - -t '%N' ;    # visible (alternate if active)
@@ -140,7 +142,7 @@ after the attach is exact.
 tmux 3.8 appends lines scrolled out of a scroll region whose top margin is
 not the first row to its history. Ghostty, like xterm, does not. This affects
 live mirroring as well as bootstrap: the visible screen and cursor match,
-history differs. It is listed for `docs/terminal-compatibility.md`.
+history differs. See [terminal-compatibility.md](terminal-compatibility.md).
 
 ## Results
 
@@ -163,8 +165,7 @@ Linux x86-64 results come from CI, which builds the pinned tmux 3.8 with
 
 Not yet tested:
 
-- Resize *during* bootstrap and after it. The mirror must follow
-  `%layout-change` with a resize, which is M1 reconciliation.
+- Resize *during* bootstrap.
 - Panes in copy mode or with a tmux-generated mode active.
 - Capture hooks or other yielding commands configured on the server.
 - Pane respawn during bootstrap.

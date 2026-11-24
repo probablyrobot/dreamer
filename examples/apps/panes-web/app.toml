@@ -1,7 +1,8 @@
 # A web app: its view is web/index.html, which lists the panes through
 # the bridge (window.dreamer.call), under the grant below. In a terminal
 # the pane shows the page's address.
-# Run it with: dream app launch examples/apps/panes-web
+# Run it with: dream app install examples/apps/panes-web, then dream app launch NAME
+# with the name the install prints
 schema_version = 2
 id = "dreamer.panes-web"
 version = "0.1.0"

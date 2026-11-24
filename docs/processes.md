@@ -3,7 +3,9 @@
 `processes.list` reports the user's processes on the daemon's host: which
 tmux pane each belongs to and which are agent runs (Claude Code, Codex),
 each with the evidence behind it. It reports only what the system says.
-A field it cannot know is absent, not guessed.
+A field it cannot know is absent, not guessed. From a shell,
+`dream agents runs` lists the agent runs
+([Agent runs across hosts](#agent-runs-across-hosts)).
 
 ## Identity
 

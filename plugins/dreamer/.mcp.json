@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dreamer": {
+      "command": "dream",
+      "args": ["mcp", "--level", "elsewhere"]
+    }
+  }
+}

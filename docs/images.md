@@ -4,7 +4,7 @@ Dreamer shows images that programs send with the
 [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
 Ghostty interprets the protocol and keeps the images. Dreamer reads them
 through the public render-state and graphics interfaces of the pinned
-release (spec 9.4).
+release.
 
 ## What is supported
 
@@ -21,7 +21,7 @@ release (spec 9.4).
 
 File and shared-memory transmissions name something on the daemon's host.
 A client can't read that, so every engine refuses them: daemon mirrors and
-window replicas alike (spec 11.7).
+window replicas alike.
 
 ## PNG decoding
 
@@ -40,8 +40,8 @@ pure-Rust `png` crate:
 
 ## Limits
 
-- **Storage:** each engine keeps at most 64 MiB of images, the spec's
-  starting budget per pane. Older images are evicted first, as Kitty does.
+- **Storage:** each engine keeps at most 64 MiB of images per pane.
+  Older images are evicted first, as Kitty does.
 - **Same limit everywhere:** eviction changes what a pane shows, so daemon
   mirrors and window replicas apply the same limit. Snapshots don't carry
   it, so it is applied again on restore. The limit is part of the engine

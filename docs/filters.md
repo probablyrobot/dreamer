@@ -1,13 +1,35 @@
 # Filters
 
-A filter watches panes for lines that match and acts on them: it
-publishes them, records them as events, sends them to an app, or types a
-fixed command into a pane. It only reads. It never changes what a program
-wrote, the daemon's mirror, or what any tmux client sees.
+A filter watches panes for lines that match and acts on them: it marks
+them, publishes them, records them as events, sends them to an app, or
+types a fixed command into a pane. It only reads. It never changes what a
+program wrote, the daemon's mirror, or what any tmux client sees.
 
-A filter is a [text tap](taps.md) plus the Rust match stage (the same
-patterns as `terminal.query`: linear-time regular expressions or plain
-text, size-limited) plus outputs.
+## A first filter
+
+This filter highlights every line that contains `error`, in any case, on
+every pane. `dream rpc` sends a JSON-RPC request, one object per line, to
+the daemon ([cli.md](cli.md#json-rpc)):
+
+```sh
+echo '{"jsonrpc":"2.0","id":1,"method":"filters.install","params":{"name":"errors","every_pane":true,"pattern":"error","literal":true,"ignore_case":true,"decorate":"highlight","grant":{"methods":["taps.subscribe"],"all_panes":true}}}' | dream rpc
+```
+
+List it, and remove it, the same way:
+
+```sh
+echo '{"jsonrpc":"2.0","id":1,"method":"filters.list"}' | dream rpc
+echo '{"jsonrpc":"2.0","id":1,"method":"filters.remove","params":{"name":"errors"}}' | dream rpc
+```
+
+There is no `dream` subcommand for filters. Agents install them with the
+`watch_lines`, `list_filters`, and `stop_filter` tools ([mcp.md](mcp.md)),
+and a [filter pane](termapp.md#filter-panes) turns a description into
+filters for you.
+
+A filter is a [text tap](taps.md), a match stage (the same patterns as
+`terminal.query`: linear-time regular expressions or plain text,
+size-limited), and outputs.
 
 ## Installing
 
@@ -15,17 +37,17 @@ text, size-limited) plus outputs.
 
 | Field | Meaning |
 | --- | --- |
-| `name` | Unique; the filter's sender identity is `filter:<name>` |
+| `name` | Unique: letters, digits, `-`, `_`, or `.`. The filter's sender identity is `filter:<name>` |
 | `panes` or `every_pane` | What it watches |
 | `pattern`, `literal`, `literals`, `ignore_case` | What it matches, as in [taps.md](taps.md#queries) |
 | `topic` | Publish each matched line on this topic: the derived stream ([messages.md](messages.md)) |
 | `recipient` | Send each matched line to this instance |
 | `event` | Record each match as a `filters.matched` event; [scripts](scripts.md) receive these with `on_event` |
-| `input` | Type this fixed text into this pane on each match. The matched text is never typed |
+| `input` | `{ pane, text }`: type this fixed text into this pane on each match. The matched text is never typed |
 | `decorate`, `badge` | Mark each matched line (`highlight`, `dim`, `fold`, or `badge` with its text); see [Decorations](#decorations) |
 | `grant` | What the filter itself may do: `taps.subscribe` for its panes, `messages.publish` for `topic`/`recipient`, `terminal.input` and the pane for `input` |
 | `per_second` | Matches acted on per second (default 20); more are counted as `dropped` |
-| `breaker` | Triggers allowed in any 10 s (default 50); see below |
+| `breaker` | Triggers allowed in any 10 s (default 50); see [Loops](#loops) |
 
 The grant is checked when the filter is installed and again on every call
 it makes, like any connection's. `filters.list` shows each filter's state
@@ -38,6 +60,7 @@ A [filter pane](termapp.md#filter-panes) installs filters itself. An app
 may call the `filters.*` methods only with `filters.manage` in its grant
 (a grant entry, not a method) and content read (`terminal.query`,
 `terminal.read`, or `taps.subscribe`). Its filters only read:
+
 - they watch panes within the app's own (`every_pane` needs the app to
   have `all_panes`), with a grant of at most `taps.subscribe` on them;
 - they may record events (`event`) and decorate, but not publish, send,

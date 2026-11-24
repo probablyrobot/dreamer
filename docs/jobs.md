@@ -2,14 +2,22 @@
 
 A job is an exact program that runs in a tmux window of its own, for work
 that should outlive everything else: builds, long tests, migrations,
-agent runs started by an operator. The daemon starts it; tmux owns it.
+agent runs you start by hand. The daemon starts it; tmux owns it.
+
+```sh
+dream jobs start --name build -- cargo build --release
+dream jobs                 # every job and its state
+dream jobs artifacts ID    # files the job left behind
+dream jobs cancel ID
+```
 
 ## Starting and following
 
 `jobs.start` (on the command line, `dream jobs start [--cwd DIR] [--name
 NAME] -- PROGRAM [ARGS...]`) takes the exact `argv` (no shell), an
-optional `cwd`, environment variables to add, a window `name`, and a
-`session` (default the first). The window opens in the background, so no
+optional `cwd`, environment variables to add, a window `name` (default:
+the program's name), and a `session` (default the first). The command
+line sets only `cwd` and `name`. The window opens in the background, so no
 attached client is moved to it. The program gets two extra variables:
 
 | Variable | Value |

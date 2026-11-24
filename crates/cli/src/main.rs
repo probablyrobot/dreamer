@@ -60,6 +60,7 @@ mod sessions;
 mod strip;
 mod templates;
 mod typecheck;
+mod update;
 mod webcomp;
 
 use std::process::ExitCode;
@@ -75,10 +76,13 @@ fn version_line() -> String {
 const USAGE: &str = "usage:
   dream config-dir
   dream themes
+  dream config check | dream config schema [--json]
+  dream skills [list | show NAME | install [--claude] [--codex]]   (agent skills for configuring Dreamer and building apps)
   dream workspace list
   dream workspace check <name|path>
   dream workspace up <name|path> [-L socket] [--tmux PATH]
   dream version
+  dream update [--check | --version V]   (install the latest release over this one)
   dream status [--perf] [--json]
   dream diagnostics on|off|reset [--json]
   dream ensure-running [-L socket | --tmux-socket-path PATH] [--tmux PATH]
@@ -110,7 +114,7 @@ const USAGE: &str = "usage:
   dream scripts [--json] | check FILE | load NAME FILE [options] | reload NAME FILE | stop NAME
   dream collect create -f FILE | create NAME ... | create --preset NAME ... | list | query NAME ... | stop NAME [--delete]
   dream memory recall|remember|list|get|update|forget ... (see `dream memory`)
-  dream hosts connect|list|call|disconnect ... (see `dream hosts`)
+  dream hosts connect|list|verify|install|upgrade|reconnect|call|disconnect ... (see `dream hosts`)
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
   dream service uninstall [--no-stop]
@@ -130,6 +134,7 @@ fn main() -> ExitCode {
             println!("{}", version_line());
             Ok(())
         }
+        ["update", rest @ ..] => update::run(rest),
         ["config-dir"] => config_dir()
             .map(|d| println!("{}", d.display()))
             .ok_or_else(|| "cannot determine the configuration directory (HOME unset)".into()),

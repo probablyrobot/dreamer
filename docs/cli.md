@@ -1,20 +1,41 @@
 # dream
 
-`dream` is Dreamer's command-line interface. It works without a GUI: every
-command that touches tmux goes through `dreamerd`'s typed API, and
-`dreamerd` is started on demand.
+`dream` is Dreamer's command-line interface. Use it to list and read
+panes, act on them, manage the daemon, connect remote hosts, and build
+pane apps, from a shell or a script. It works without the desktop app:
+commands that touch tmux go through the daemon, `dreamerd`
+([daemon.md](daemon.md)), which is started on demand.
 
-## tmux through the daemon
+```sh
+dream ls                           # sessions, windows, and panes
+dream read %3 --history 200        # a pane's text
+dream act split %3 -h -- htop      # a new pane beside %3, running htop
+dream act send %3 'make test' --enter
+dream status                       # is the daemon running, and what does it drive
+dream doctor                       # when something is wrong
+```
 
-These commands start `dreamerd` if it is not running. They take the tmux
-options a newly started daemon should use: `-L name` or
-`--tmux-socket-path PATH` for the server, and `--tmux PATH` for the
-binary. If a running daemon drives a different tmux server, they refuse
-and suggest `dream shutdown`.
+`dream` with no arguments prints every command. `dream --version` prints
+the version. Most commands that print take `--json`.
+
+**Which tmux server.** A command that starts `dreamerd` takes the tmux
+options the new daemon should use: `-L name` (or `--tmux-socket name`) or
+`--tmux-socket-path PATH` for the server, and `--tmux PATH` for the tmux
+program. Without them, the daemon drives your default tmux server, with
+`tmux` from `PATH` or `DREAMER_TMUX`. If a running daemon drives a
+different tmux server, the command refuses and suggests `dream shutdown`.
+
+## Panes and actions
+
+These commands start `dreamerd` if it is not running, except
+`dream actions`, which needs a running daemon.
 
 | Command | Effect |
 | --- | --- |
 | `dream ls [--json]` | Sessions (`$N`), windows (`@N`), and panes (`%N`), with sizes, programs, process IDs, and pane generations. `*` marks the active window or pane |
+| `dream read %PANE [--history N] [--json]` | A pane's text from the daemon's [mirror](mirrors.md): up to N lines of scrollback, then the screen |
+| `dream mirrors [--json]` | Every pane's mirror: state, tier, size, and journal |
+| `dream tier %PANE hot\|warm\|cold` | Set a pane's [tier](mirrors.md#tiers) |
 | `dream act <action> … [--key K] [--json]` | Run one typed action and print its observed outcome |
 | `dream actions [ID] [--limit N] [--json]` | The action ledger, newest first, or one action |
 
@@ -58,15 +79,20 @@ refused (the output says why), and 3 when the outcome is unknown. See
 | `dream version` | Client and daemon versions and build family |
 | `dream shutdown` | Stop `dreamerd`. tmux keeps running |
 | `dream doctor` | Diagnostics: directories and their permissions, socket, startup lock, ledger summary, daemon, and tmux link. Never starts the daemon |
+| `dream service install [--no-start] [tmux options]` | Install an optional per-user service (systemd on Linux, a launch agent on macOS) that keeps `dreamerd` running from login; `--no-start` only writes its definition |
+| `dream service status` | Whether the service is installed and running |
+| `dream service uninstall [--no-stop]` | Unload the service (unless `--no-stop`) and remove its definition |
 
-See [daemon.md](daemon.md) for files, directories, and lifecycle.
+`status`, `diagnostics`, and `shutdown` need a running daemon and never
+start one. See [daemon.md](daemon.md) for files, directories, lifecycle,
+and [running as a service](daemon.md#running-as-a-service).
 
 ## Remote hosts
 
 | Command | Effect |
 | --- | --- |
 | `dream hosts connect NAME DESTINATION [--dream PATH] [--remote-tmux PATH] [--remote-socket NAME \| --remote-socket-path PATH]` | The local daemon connects to the daemon on `DESTINATION` over SSH and keeps the connection |
-| `dream hosts connect PROFILE` | Connect to a profile from `hosts.yaml`. `--auto-reconnect` or `--manual` overrides its policy (also for a destination given directly) |
+| `dream hosts connect PROFILE` | Connect to a profile from `hosts.yaml` ([remote.md](remote.md#profiles)). `--auto-reconnect` or `--manual` overrides its policy (also for a destination given directly) |
 | `dream hosts verify NAME [--wait]` | Run your own `ssh` to the host in this terminal so you can answer its questions (host key, passphrase), then connect the coordinator. See [remote.md](remote.md#first-connection) |
 | `dream hosts install NAME [--artifacts DIR] [--yes] [--wait]` | Install this version's server on the host after showing the plan; see [remote.md](remote.md#installing-a-server) |
 | `dream hosts upgrade NAME [--artifacts DIR] [--yes] [--allow-older] [--wait]` | Install, restart the host's daemon on the new version (tmux keeps running), and reconnect; see [remote.md](remote.md#upgrading-a-server) |
@@ -236,7 +262,8 @@ state. `dream hook claude` is the hook itself. See
 
 `dream agents status [--json]`, `dream agents update [--version X.Y.Z]`,
 and `dream agents rollback` show, install or update, and roll back the pi
-that Dreamer installs in its data directory. See
+that Dreamer installs in its data directory. Each takes `--harness pi`,
+the only harness Dreamer installs. See
 [agents.md](agents.md#pi-installed-by-dreamer).
 
 `dream agents pi [ARGS...]` starts pi the way Dreamer runs it: with
@@ -245,10 +272,11 @@ version if it no longer loads. `dream agents profile
 init|status|log|diff|revert|commit|check` show and manage that profile
 and its history. See [agents.md](agents.md#dreamers-pi-profile).
 
-`dream agents providers` shows whether Claude Code and Codex are ready
-to run on your own login, and `dream agents ask [options] -- PROMPT` runs
-a prompt on one of them with Dreamer's tools. See
-[providers.md](providers.md).
+`dream agents providers [--json]` shows whether Claude Code and Codex are
+ready to run on your own login. `dream agents ask [--provider P]
+[--method M]... [--pane %N]... [--all-panes] [--no-tools] [--max-turns N]
+[--timeout SECONDS] [--allow-metered] -- PROMPT` runs a prompt on one of
+them with Dreamer's tools. See [providers.md](providers.md).
 
 `dream agents sessions` works with agent sessions in the daemon (see
 [agents.md](agents.md#sessions)):
@@ -270,9 +298,10 @@ result as JSON). It is what pi's `claude_code` and `codex` tools run. See
 
 ## Jobs
 
-`dream jobs` lists jobs; `dream jobs start [--cwd DIR] [--name NAME] --
-PROGRAM [ARGS...]`, `cancel ID`, and `artifacts ID` manage them. See
-[jobs.md](jobs.md).
+A job is a program that runs in a tmux window of its own and keeps
+running when the daemon stops. `dream jobs [--json]` lists jobs;
+`dream jobs start [--cwd DIR] [--name NAME] -- PROGRAM [ARGS...]`,
+`cancel ID`, and `artifacts ID` manage them. See [jobs.md](jobs.md).
 
 ## Collectors
 
@@ -317,7 +346,7 @@ SCOPE]` copies the other way; both print what they copied. See
 
 ## Scripts
 
-`dream scripts` lists loaded scripts; `dream scripts load NAME FILE
+`dream scripts [--json]` lists loaded scripts; `dream scripts load NAME FILE
 [--method M]... [--pane %N]... [--all-panes] [--event KIND]... [--call-ms N]`,
 `reload NAME FILE`, `stop NAME`, and `check FILE` manage them. See
 [scripts.md](scripts.md).
@@ -339,8 +368,15 @@ input open to receive notifications from subscriptions.
 
 ## Workspaces
 
-`dream config-dir`, `dream workspace list | check | up` work on workspace
-files directly; see [workspaces.md](workspaces.md).
+| Command | What it does |
+| --- | --- |
+| `dream config-dir` | Print the configuration directory |
+| `dream workspace list` | Workspace files, and whether each is valid |
+| `dream workspace check NAME\|PATH` | Validate a workspace and show its windows and panes |
+| `dream workspace up NAME\|PATH [-L socket] [--tmux PATH]` | Create the workspace's tmux session, and print the `tmux attach` command for it |
+
+These work on workspace files and tmux directly, without the daemon. See
+[workspaces.md](workspaces.md).
 
 ## Configuration and agent skills
 
@@ -349,8 +385,23 @@ files directly; see [workspaces.md](workspaces.md).
 | `dream config check` | Validate every configuration file. Exits 1 on a problem, naming the file, key or line, and what is wrong. Also reports each agent harness: whether its program is there, and its login state |
 | `dream config schema [--json]` | Every key of `dreamer.yaml`: kind and range, default, meaning, example, and whether it applies live |
 | `dream themes` | Every theme, built in and yours, with a swatch and the one in force |
-| `dream skills` | The agent skills that ship with Dreamer |
+| `dream skills` (or `dream skills list`) | The agent skills that ship with Dreamer |
 | `dream skills show NAME` | Print a skill |
-| `dream skills install [--claude] [--codex]` | Write the skills to `~/.claude/skills/` and `~/.codex/skills/` (both by default): `dreamer-config` (configuring Dreamer) and `dreamer-apps` (building pane apps). Dreamer's pi profile has them already |
+| `dream skills install [--claude] [--codex]` | Write the skills to `~/.claude/skills/` and `~/.codex/skills/` (both by default): `dreamer-config` (configuring Dreamer), `dreamer-manage` (installing, updating, and operating it), and `dreamer-apps` (building pane apps). Dreamer's pi profile has them already |
 
-See [settings.md](settings.md#live-and-checked).
+See [settings.md](settings.md#live-and-checked). The same skills, with
+the MCP server, come as a plugin for Claude Code and Codex: see
+[MCP](mcp.md#the-dreamer-plugin).
+
+## Updating
+
+| Command | What it does |
+| --- | --- |
+| `dream update` | Install the latest release over this one, in the same place |
+| `dream update --check` | Say whether a newer release exists |
+| `dream update --version V` | Install release `V`, an older one too |
+
+`dream update` runs the release's own installer, so it applies to
+installations made by the install script. It leaves one made by `apt`,
+`dnf`, or `pacman` alone and says which package to get. See
+[Installing Dreamer](install.md#update).

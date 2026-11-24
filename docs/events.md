@@ -2,8 +2,10 @@
 
 `dreamerd` keeps a log of small events: what changed, not the content.
 A client follows it with `events.subscribe` instead of polling, and can
-pick up where it left off after a reconnect. Events never contain terminal
-output; read that with `terminal.read` or `terminal.subscribe`.
+pick up where it left off after a reconnect. You need this page if you
+are writing a client, a script, or an extension that reacts to changes.
+Events never contain terminal output; read that with `terminal.read` or
+`terminal.subscribe`.
 
 ## Kinds
 

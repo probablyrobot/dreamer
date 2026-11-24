@@ -1,8 +1,360 @@
 # Performance
 
-Measured results from the benchmark harness, on named hardware, against
-the targets in the specification (sections 16.5 and 16.6). A target with
-no measurement here is not claimed.
+Measured results from the benchmark harness (`cargo xtask bench`), on
+named hardware, against Dreamer's performance targets. A target with no
+measurement here is not claimed.
+
+## Summary
+
+Two machines have results:
+
+- **macOS:** Mac15,11 (Apple M3 Max, 14 cores, 36 GiB), Darwin 27.2.0
+  arm64.
+- **Linux ARM64:** an Ubuntu 24.04 container (Linux 6.8.0 aarch64) in a
+  VM with 4 cores and 8 GiB on that Mac. It has no display, so only the
+  headless workloads ran there.
+
+| Measure | macOS | Linux ARM64 | Target |
+| --- | --- | --- | --- |
+| Key to echo, one pane, no paint, p50 / p95 | 0.22 / 0.28 ms | 0.61 / 1.33 ms | p95 under 30 ms: met |
+| Key to echo including paint, one pane, p50 / p95 | 2.1 / 3.2 ms | No measurement yet | p95 under 30 ms: met on macOS |
+| Key to echo with 63 busy panes, p50 / p95 | 13.7 / 14.6 ms (400 panes on the tmux server) | 125 / 129 ms (1,000 panes on the tmux server) | 40 ms: met on macOS, **not met** on Linux with 1,000 panes |
+| Key to echo through a host over OpenSSH, p50 / p95 | 1.06 / 1.73 ms (the Mac to the Linux container) | — | — |
+| Launch to every visible pane painted, daemon running | 181 ms (1 or 16 panes) | No measurement yet | Under 150 ms: **not met** |
+| Daemon RSS with one pane | 6.1 MiB | 9.2 MiB | — |
+| Warm pane with 2,000 lines of history, RSS | 2,056 KiB | 1,924 KiB | Measured and published |
+| Cold pane, heap | 2.2 to 2.7 KiB | 2.7 to 3.1 KiB | At least 20 times smaller than Warm: met with history |
+
+No measurement yet:
+
+- **x86-64 Linux,** any workload. CI runs the harness there only as a
+  debug-build check and discards the numbers.
+- **The desktop on Linux** (Wayland and X11): launch, paint, and key to
+  echo including paint.
+- More under [Not measured yet](#not-measured-yet).
+
+The runs behind each number are under [Results](#results), and what they
+led to under [Findings](#findings). The results record the revision each
+run was built from, but not the day it ran.
+
+## Results
+
+### macOS, 400 panes
+
+- **Machine:** Mac15,11 (Apple M3 Max, 14 cores, 36 GiB), Darwin 27.2.0
+  arm64.
+- **Revision:** a development branch; the commit was not recorded.
+- **Why 400:** macOS allows 511 pseudo-terminals for the whole system
+  (`kern.tty.ptmx_max`), so 1,000 panes cannot exist on a Mac without
+  raising that limit.
+
+| Measure | Empty shells | 2,000 lines of history | Target |
+| --- | --- | --- | --- |
+| Key to echo, one pane, p50 / p95 | 0.22 / 0.28 ms | 0.23 / 0.31 ms | p95 under 30 ms end to end (the paint is not in this path): met |
+| Mirror 400 new panes | 1.22 s | 8.0 s | — |
+| Daemon RSS, 1 pane / 400 Warm panes | 6.1 / 23.8 MiB | 6.1 / 809 MiB | — |
+| Warm pane, RSS / heap | 45 / 19 KiB | 2,056 / 22 KiB | Measured and published |
+| Daemon CPU, 400 idle Warm panes | 0.0 % of a core | 0.0 % | Under 1 % for 256 idle panes: met |
+| Demote 400 panes to Cold | 0.02 s | 0.04 s | — |
+| Cold pane, heap / RSS | 2.2 / 29 KiB | 2.7 / 34 KiB | At least 20 times smaller than Warm: met with history (60 times by RSS); see below for empty shells |
+| Daemon CPU, 400 idle Cold panes | 0.1 % of a core | 0.1 % | — |
+| Open a Cold pane, p50 / p95 | 24 / 27 ms | 22 / 24 ms | p95 under 300 ms: met |
+| Key to echo with 63 busy panes, p50 / p95 | 13.7 / 14.6 ms | 13.7 / 14.4 ms | Within the one-pane budget plus 10 ms (40 ms): met |
+| Daemon CPU with 63 busy panes | 46 % of a core | 44 % | — |
+
+### Linux, 1,000 panes
+
+- **Machine:** the gate's ARM64 Linux container, Ubuntu 24.04, Linux
+  6.8.0 aarch64. It ran in a Colima VM with 4 cores and 8 GiB on the Mac
+  above.
+- **Command:** `cargo xtask bench headless --panes 1000 [--history 2000] --linux`.
+- **Revision:** the same development branch as the macOS run.
+
+| Measure | Empty shells | 2,000 lines of history | Target |
+| --- | --- | --- | --- |
+| Key to echo, one pane, p50 / p95 | 0.61 / 1.33 ms | 0.62 / 0.99 ms | p95 under 30 ms end to end (the paint is not in this path): met |
+| Mirror 1,000 new panes | 1.85 s | 34 s | — |
+| Daemon RSS, 1 pane / 1,000 Warm panes | 9.2 / 32.6 MiB | 9.2 / 1,888 MiB | — |
+| Warm pane, RSS / heap | 24 / 18 KiB | 1,924 / 21 KiB | Measured and published |
+| Daemon CPU, 1,000 idle Warm panes | 0.1 % of a core | 0.1 % | Under 1 % for 256 idle panes: met |
+| Demote 1,000 panes to Cold | 0.13 s | 0.22 s | — |
+| Cold pane, heap / RSS | 2.7 / 6.8 KiB | 3.1 / 6.8 KiB | At least 20 times smaller than Warm: met with history (280 times by RSS); see below for empty shells |
+| Daemon CPU, 1,000 idle Cold panes | 0.0 % of a core | 0.1 % | — |
+| Open a Cold pane, p50 / p95 | 32 / 55 ms | 29 / 44 ms | p95 under 300 ms: met |
+| Key to echo with 63 busy panes, p50 / p95 | 125 / 129 ms | 135 / 140 ms | 40 ms: **not met** with 1,000 panes on the tmux server; see below |
+| Daemon CPU with 63 busy panes | 12 % of a core | 11 % | — |
+
+### Typing under load, split between tmux and the daemon
+
+Machine and container as above, with `cargo xtask bench busy --idle M
+--linux`: 63 panes running `yes`, after `M` idle shells.
+
+| Idle panes on the tmux server | Key to echo through the daemon, p50 / p95 | Key in tmux's grid, p50 / p95 | tmux CPU | Daemon CPU |
+| --- | --- | --- | --- | --- |
+| 0 | 21 / 24 ms | 21 / 23 ms | 99 % | 51 % |
+| 250 | 39 / 42 ms | 40 / 43 ms | 100 % | 28 % |
+| 500 | 65 / 68 ms | 66 / 69 ms | 100 % | 21 % |
+| 1,000 | 136 / 160 ms | 137 / 145 ms | 100 % | 12 % |
+
+On the Mac with 400 idle panes, the same run gave 13.7 / 14.3 ms through
+the daemon, with tmux at 100 % of a core.
+
+### One control client per session
+
+`cargo xtask bench busy --panes 15 --idle 200 --sessions S` on the Mac
+above: 200 idle shells, in the first session (one client) or spread over
+`S` more sessions, then 15 panes running `yes`. Revision: a development
+branch (the commit was not recorded), release build.
+
+| Measure | 1 session | 10 more | 50 more | 200 more |
+| --- | --- | --- | --- | --- |
+| tmux clients (the daemon's) | 1 | 11 | 51 | 201 |
+| Daemon memory (RSS), idle | 16.2 MiB | 17.1 MiB | 18.8 MiB | 28.0 MiB |
+| tmux memory (RSS), idle | 6.0 MiB | 6.8 MiB | 11.0 MiB | 26.8 MiB |
+| tmux CPU, idle | 0.2 % | 0.0 % | 0.6 % | 7.8 % |
+| Key to echo, no load, p50 / p95 | 0.49 / 0.60 ms | 0.61 / 0.70 ms | 1.37 / 1.52 ms | 5.79 / 6.14 ms |
+| Key to echo, 15 busy panes, p50 / p95 | 1.89 / 2.24 ms | 1.95 / 2.12 ms | 2.60 / 3.17 ms | 9.09 / 10.7 ms |
+| Daemon CPU, 15 busy panes | 53 % | 51 % | 32 % | 9 % |
+| tmux CPU, 15 busy panes | 100 % | 100 % | 100 % | 100 % |
+
+tmux is at a full core under load in every column. With more clients it
+spends more of that core on them, so less output reaches the daemon
+(its CPU falls) and keys take longer. Up to 10 sessions the cost is
+within noise.
+
+### Tiers, memory, and extensions (M3 Max, as above)
+
+Revision `d2c668ac90ae` (branch `main`), release build, each workload
+with its defaults, one after another while nothing else ran.
+
+**A pane's cost in each tier** (`bench tiers`: 16 panes, `yes` at the
+workload's rate):
+
+| Measure | Cold | Warm | Hot |
+| --- | --- | --- | --- |
+| Daemon heap per idle pane | 3.2 KiB | 19.9 KiB | 102 KiB |
+| Daemon CPU per busy pane | 0.11 % | 0.41 % | 0.69 % |
+| Daemon heap per busy pane | 3.3 KiB | 4,903 KiB | 4,698 KiB |
+| Client replica CPU, 16 busy panes | — | — | 18.5 % (5.3 % per MiB/s) |
+| Client replica RSS per pane, idle / busy | — | — | 771 / 2,934 KiB |
+
+A busy Cold pane costs the daemon 26 % of a busy Warm pane's CPU: tmux
+still sends its output, which the daemon reads and drops. tmux's own CPU
+is the same in every tier (14 % for the 16 panes).
+
+**Memory under pressure** (`bench memory`, 300 s a scenario):
+
+| Scenario | Peak RSS | Stated bound | Heap in use, peak | Bound |
+| --- | --- | --- | --- | --- |
+| Sustained output, 64 panes | 1,332 MiB | 910 MiB | 319 MiB | **not met** |
+| Lagging viewer, 64 busy panes | 1,438 MiB | 998 MiB | 370 MiB | **not met** |
+| Paste of 10 MiB | 43 MiB | 47 MiB | 12 MiB | met |
+| Extension crash loop (382 crashes) | 8.8 MiB | 40 MiB | 0.6 MiB | met |
+
+- The journal stayed at its 256 MiB host limit, and the heap in use
+  stayed bounded. Every stalled subscription ended as `lagged`, and every
+  resume from its start was answered with a checkpoint.
+- The overrun is outside the Rust heap: about 15.6 MiB a pane against the
+  2 MiB the bound allows for a 2,000-line mirror, and RSS was still
+  growing in the second half (75 MiB in the output scenario). A 90 s run
+  with 16 panes stayed within its bound (218 MiB against 312 MiB), at
+  about 5 MiB a pane outside the heap, so this memory grows with time.
+  It is in the malloc zones; why it outgrows the history limit is not
+  known yet.
+- The paste is delivered at 0.36 MiB/s into a program that reads and
+  discards it.
+
+**With a Warm memory ceiling** (`bench memory --scenario output
+--warm-memory 64`: the same 64 busy panes, `tiers.warm_memory: 64MiB`,
+one pane followed by a replica that takes frames throughout; the daemon
+as above, with the bench's `--warm-memory` option added):
+
+| Measure | Result |
+| --- | --- |
+| Panes Cold, most at once / at the end | 59 / 59 |
+| Followed pane went Cold | no (32,950 frames taken) |
+| Mirrors' memory, daemon's estimate, largest after a demotion round | 62 MiB |
+| Daemon RSS, peak / at the end | 577 / 97 MiB |
+| Heap in use, peak / at the end | 319 / 60 MiB |
+
+The ceiling held: demotion kept the daemon's estimate under 64 MiB, the
+followed pane stayed Warm, and peak RSS stayed within the 910 MiB bound.
+RSS fell by 220 MiB over the second half once the quiet panes were Cold,
+so the memory outside the heap belongs to Warm mirrors and goes with
+them.
+
+**Slow and stalled extensions** (`bench extensions`: 63 busy panes, a
+quiet pane typed into):
+
+| Measure | Quiet | 63 busy panes | Busy, monitor open | Busy, every slow extension |
+| --- | --- | --- | --- | --- |
+| Key to echo, p50 / p95 | 0.17 / 0.23 ms | 6.78 / 7.15 ms | 6.81 / 7.83 ms | 6.73 / 7.51 ms |
+| Daemon CPU | 0.1 % | 124 % | 125 % | 227 % |
+| Busy pane-seconds with no mirror progress, of 630 | — | 0 | 0 | 0 |
+
+Key to echo with every slow extension stays within the one-pane budget
+plus 10 ms (7.5 ms against 40 ms), and within this run's quiet p95 plus
+10 ms. The monitor adds 1.5 % of a core and 1.2 MiB of daemon heap under
+load, and nothing measurable when quiet. The slow extensions add 102 % of
+a core, most of it the Luau scripts.
+
+### Desktop, macOS (M3 Max, as above)
+
+```sh
+cargo xtask bench gui [--panes N] [--visible N] [--load text|escape|image] [--backend wayland|x11]
+```
+
+`bench gui` creates an isolated tmux server with N panes (16 by default).
+The first tab holds `--visible` of them (16 by default, at most 64),
+tiled and shown; the rest go 16 to a tab. It starts the daemon first,
+then a release `dreamer`, which measures itself
+(`crates/app/src/bench_gui.rs`):
+- **Ends at a paint.** Each measure stops when the pane's new frame has
+  been painted, not when it arrived.
+- **Load.** Under load, every other visible pane prints a line every
+  20 ms. With `--load`, they replay a streams corpus nonstop with `cat`
+  instead: `text`, `sgr` for `escape`, or `images` for `image`. The
+  corpora are written for 120x40 panes; tiled panes are smaller, so
+  lines wrap and images are clipped. The results record which corpus,
+  with its size and hash.
+- **The frame, split.** For each window frame under load, from the
+  workspace's render to its last element painted: the whole frame build
+  (render, layout, and paint), the terminal panes' paint, the shaping of
+  rows the cache did not hold, the conversion of new images for the GPU,
+  and the rest (layout, chrome, building the element tree). GPU
+  submission and present are not in it: GPUI times them only with its
+  `profiler` feature, which Dreamer does not build. The results say so.
+- **Display backend.** On Linux it runs on Wayland when the session
+  offers it, else X11; `--backend` picks one (`x11` runs through
+  XWayland on a Wayland session). The results record the backend the app
+  drew on.
+- **Needs a display.** It must be awake and unlocked, with the window in
+  front. When it is not, the results file says `"not_run": true` with the
+  reason and holds no results, and the command exits 5, as the gate's
+  smoke runs do. That happens when the screen is locked (macOS), there
+  is no display server or not the one asked for (Linux), or the window
+  does not draw when asked: after launch, after the idle count, under
+  load, or when a wait runs out. `bench report` refuses such a file.
+
+Revision: a development branch; the commit was not recorded.
+
+| Measure | 1 pane | 16 panes | 64 panes | 256 panes | Target |
+| --- | --- | --- | --- | --- | --- |
+| Visible panes | 1 | 16 | 16 | 16 | — |
+| Launch to every visible pane painted (daemon running) | 181 ms | 181 ms | 190 ms | 205 ms | Under 150 ms: **not met**; see below |
+| Terminal paints over 3 s with nothing changing | 0 | 0 | 0 | 0 | Zero: met |
+| Key to echo including paint, idle, p50 / p95 | 2.1 / 3.2 ms | 2.1 / 3.7 ms | 2.1 / 4.4 ms | 2.1 / 4.3 ms | p95 under 30 ms: met |
+| Key to echo including paint, 15 busy panes, p50 / p95 | — | 2.1 / 3.5 ms | 2.1 / 3.4 ms | 2.1 / 3.7 ms | One-pane budget plus 10 ms: met |
+| Terminal paint time per frame, 15 busy panes, p95 | — | 1.5 ms | 1.7 ms | 1.6 ms | Under 8 ms: met |
+| Time between frames, 15 busy panes, p95 | — | 17 ms | 25 ms | 25 ms | — |
+| Tab switch to every pane painted, p50 / p95 | — | — | 8.9 / 12.8 ms | 8.7 / 9.9 ms | p95 under 50 ms: met |
+
+### Remote latency, through OpenSSH to an ARM64 Linux container
+
+`cargo xtask bench remote --container`, and again with `--netem 'delay
+20ms 5ms'`: the desktop side on the Mac above, the host in the gate's
+ARM64 Linux container (Linux 6.8 under Colima), reached through
+OpenSSH 10.5p1 on a published loopback port. 200 keystrokes each.
+Revision `8e9dd7ade6d5` (branch `main`).
+
+| Measure | No added delay | netem delay 20 ms ± 5 ms |
+| --- | --- | --- |
+| Connect to the host (SSH, bridge, handshake) | 0.19 s | 0.48 s |
+| Link round trip (`hosts.call daemon.version`), p50 / p95 | 1.24 / 2.51 ms | 28.6 / 36.1 ms |
+| Link round trip, jitter | 0.13 ms | 5.57 ms |
+| Key to echo through the host, p50 / p95 | 1.06 / 1.73 ms | 29.1 / 32.5 ms |
+| Key to echo through the host, jitter | 0.14 ms | 2.55 ms |
+| Host processing (sum of its stage p50s) | 0.45 ms | 1.78 ms |
+| Link, relay and replica (end-to-end p50 less host processing) | 0.96 ms | 27.5 ms |
+| Key to echo, local pane in the same run, p50 / p95 | 0.27 / 0.43 ms | 0.28 / 0.38 ms |
+
+Host processing is mostly the host's `input` and `tmux` stages (238 and
+156 µs p50 without delay); the daemon's own stages after tmux take under
+60 µs together. With the delay, every host stage took about four times
+as long, the container being idle between keystrokes. Even so, the link
+is nearly all of the end-to-end time. netem's jitter reorders packets, so
+TCP adds to the 20 ms it puts on each round trip.
+
+## Findings
+
+- **Typing under load is bounded by tmux, not the daemon.**
+  - At every size, the time for a key to reach a Dreamer client matches
+    the time for it to appear in tmux's own grid, within the noise.
+  - tmux is single-threaded and at 100 % of a core. With the daemon
+    stopped it is just as slow (95 ms with 1,000 idle panes).
+  - The delay grows with the number of panes on the tmux server, by about
+    0.11 ms per pane on this 4-core VM. After every pass of its event loop,
+    tmux walks every window and pane (`server_client_loop` in tmux 3.8:
+    resize, style, buffer, and name checks). With 63 panes writing
+    nonstop, it makes many passes a second.
+  - Turning `automatic-rename` off changed nothing.
+
+  **Revised target:** the daemon adds no measurable delay over tmux's own
+  key to echo under load. The 40 ms budget holds with up to about 250
+  panes on one tmux server on a 4-core Linux machine. On the 14-core Mac it
+  holds with 400 panes (14 ms). More panes on a heavily loaded server need
+  a faster tmux, or the panes split across tmux servers.
+- **Cold against Warm memory depends on what the pane holds.**
+  - A Cold pane holds about 3 KiB of heap whatever it held before. On
+    Linux, once the freed memory is returned, that is about 7 KiB of RSS.
+  - A Warm pane's mirror grows with its screen and history, by about
+    1 KiB per 120-column line kept. With 2,000 lines, Cold is 60 times
+    (macOS) to 280 times (Linux) smaller by RSS.
+  - An empty idle shell's mirror is small to begin with (18 to 24 KiB on
+    Linux), so there the ratio is 3.5 times by RSS on Linux and 8 times by
+    heap.
+
+  **Revised target:** a Cold pane holds under 4 KiB of heap and, on Linux,
+  under 8 KiB of RSS, independent of its history. The 20-times ratio holds
+  for any pane with a screenful of content.
+- **Warm panes with long histories are expensive.** 1,000 Warm panes with
+  2,000 lines each take 1.9 GB. Demoting panes nobody watches to Cold is
+  what keeps a large daemon small: `tiers.warm_memory` (1 GiB by default)
+  caps what all mirrors hold together, and the benchmark turns it off to
+  measure Warm panes.
+- **Launch: 1.33 s, then 0.2 s, now about 185 ms.**
+  - **Fonts.** Choosing the terminal font asked GPUI for every installed
+    font name, twice, at about 0.6 s each on macOS. It now resolves the
+    wanted family alone. It also parsed all five shipped families (46 MB)
+    to use one; only the configured family's files are read now, on a
+    thread started at launch, while GPUI starts up.
+  - **Daemon and themes.** The daemon connection and the first topology
+    start at process start too. The theme list, which only the palette's
+    Theme command needs, is read after the window opens.
+  - **What remains.** Most of it is outside Dreamer's code: GPUI's
+    platform start (about 58 ms) and the window's first frame (about
+    60–70 ms: Metal setup, first layout, and shaping).
+  - **Revised target: 200 ms** with the daemon running. 150 ms would take
+    changes to GPUI's startup.
+- **Tab switch: 65–80 ms, now about 10 ms.**
+  - **Before.** A switch waited for tmux's confirmation, then subscribed
+    every pane of the tab again.
+  - **Now.** Panes in hidden tabs keep their views: up to 48 of them, the
+    client's Warm tier. A clicked tab is shown at once from those
+    last frames while tmux confirms. tmux stays authoritative: if it
+    reports another window as active, that is what is shown.
+- **Attaching many panes at once failed some of them.** Each attach is a
+  few command batches on the daemon's one tmux control connection, whose
+  queue holds 256. Creating hundreds of panes together overflowed it, and
+  the overflowed panes stayed failed ("command queue full"). The router now
+  runs at most 16 attaches at once and queues the rest.
+  `three_hundred_new_panes_all_become_live` fails without the limit and
+  passes with it.
+- **tmux cannot switch a pane's output off** for the daemon without
+  stalling the pane when the daemon is its only client. A Cold pane's
+  output is dropped in the daemon instead (see [mirrors.md](mirrors.md#tiers)).
+
+## Not measured yet
+
+- **Any workload on x86-64 Linux.** The Linux results are from an ARM64
+  container in a VM.
+- **Stage timings on named hardware.** `bench headless` prints them; no
+  run is recorded here yet.
+- **Desktop workloads on Linux** (Wayland and X11), and on macOS with more
+  than 16 visible panes, with corpus loads, or with the frame split.
+- **Image-heavy and escape-heavy streams:** the `streams` workload
+  exists, but no results are recorded here yet.
+- **The same workloads in reference terminals.**
 
 ## Running the harness
 
@@ -377,320 +729,3 @@ from histogram buckets and are within 6 %.
 **Queue depths** are read when asked, on or off: tmux events waiting for
 the router, output held for a full owner queue, attaches running and
 waiting, each VT owner's queue, and the fullest subscriber queue.
-
-## Results
-
-### macOS, 400 panes
-
-- **Machine:** Mac15,11 (Apple M3 Max, 14 cores, 36 GiB), Darwin 27.2.0
-  arm64.
-- **Revision:** branch `m7-05-loaded-typing`.
-- **Why 400:** macOS allows 511 pseudo-terminals for the whole system
-  (`kern.tty.ptmx_max`), so 1,000 panes cannot exist on a Mac without
-  raising that limit.
-
-| Measure | Empty shells | 2,000 lines of history | Target |
-| --- | --- | --- | --- |
-| Key to echo, one pane, p50 / p95 | 0.22 / 0.28 ms | 0.23 / 0.31 ms | p95 under 30 ms end to end (the paint is not in this path): met |
-| Mirror 400 new panes | 1.22 s | 8.0 s | — |
-| Daemon RSS, 1 pane / 400 Warm panes | 6.1 / 23.8 MiB | 6.1 / 809 MiB | — |
-| Warm pane, RSS / heap | 45 / 19 KiB | 2,056 / 22 KiB | Measured and published |
-| Daemon CPU, 400 idle Warm panes | 0.0 % of a core | 0.0 % | Under 1 % for 256 idle panes: met |
-| Demote 400 panes to Cold | 0.02 s | 0.04 s | — |
-| Cold pane, heap / RSS | 2.2 / 29 KiB | 2.7 / 34 KiB | At least 20 times smaller than Warm: met with history (60 times by RSS); see below for empty shells |
-| Daemon CPU, 400 idle Cold panes | 0.1 % of a core | 0.1 % | — |
-| Open a Cold pane, p50 / p95 | 24 / 27 ms | 22 / 24 ms | p95 under 300 ms: met |
-| Key to echo with 63 busy panes, p50 / p95 | 13.7 / 14.6 ms | 13.7 / 14.4 ms | Within the one-pane budget plus 10 ms (40 ms): met |
-| Daemon CPU with 63 busy panes | 46 % of a core | 44 % | — |
-
-### Linux, 1,000 panes
-
-- **Machine:** the gate's ARM64 Linux container, Ubuntu 24.04, Linux
-  6.8.0 aarch64. It ran in a Colima VM with 4 cores and 8 GiB on the Mac
-  above.
-- **Command:** `cargo xtask bench headless --panes 1000 [--history 2000] --linux`.
-- **Revision:** branch `m7-05-loaded-typing`.
-
-| Measure | Empty shells | 2,000 lines of history | Target |
-| --- | --- | --- | --- |
-| Key to echo, one pane, p50 / p95 | 0.61 / 1.33 ms | 0.62 / 0.99 ms | p95 under 30 ms end to end (the paint is not in this path): met |
-| Mirror 1,000 new panes | 1.85 s | 34 s | — |
-| Daemon RSS, 1 pane / 1,000 Warm panes | 9.2 / 32.6 MiB | 9.2 / 1,888 MiB | — |
-| Warm pane, RSS / heap | 24 / 18 KiB | 1,924 / 21 KiB | Measured and published |
-| Daemon CPU, 1,000 idle Warm panes | 0.1 % of a core | 0.1 % | Under 1 % for 256 idle panes: met |
-| Demote 1,000 panes to Cold | 0.13 s | 0.22 s | — |
-| Cold pane, heap / RSS | 2.7 / 6.8 KiB | 3.1 / 6.8 KiB | At least 20 times smaller than Warm: met with history (280 times by RSS); see below for empty shells |
-| Daemon CPU, 1,000 idle Cold panes | 0.0 % of a core | 0.1 % | — |
-| Open a Cold pane, p50 / p95 | 32 / 55 ms | 29 / 44 ms | p95 under 300 ms: met |
-| Key to echo with 63 busy panes, p50 / p95 | 125 / 129 ms | 135 / 140 ms | 40 ms: **not met** with 1,000 panes on the tmux server; see below |
-| Daemon CPU with 63 busy panes | 12 % of a core | 11 % | — |
-
-### Typing under load, split between tmux and the daemon
-
-Machine and container as above, with `cargo xtask bench busy --idle M
---linux`: 63 panes running `yes`, after `M` idle shells.
-
-| Idle panes on the tmux server | Key to echo through the daemon, p50 / p95 | Key in tmux's grid, p50 / p95 | tmux CPU | Daemon CPU |
-| --- | --- | --- | --- | --- |
-| 0 | 21 / 24 ms | 21 / 23 ms | 99 % | 51 % |
-| 250 | 39 / 42 ms | 40 / 43 ms | 100 % | 28 % |
-| 500 | 65 / 68 ms | 66 / 69 ms | 100 % | 21 % |
-| 1,000 | 136 / 160 ms | 137 / 145 ms | 100 % | 12 % |
-
-On the Mac with 400 idle panes, the same run gave 13.7 / 14.3 ms through
-the daemon, with tmux at 100 % of a core.
-
-### One control client per session
-
-`cargo xtask bench busy --panes 15 --idle 200 --sessions S` on the Mac
-above: 200 idle shells, in the first session (one client) or spread over
-`S` more sessions, then 15 panes running `yes`. Revision: branch
-`m461-bench-sessions`, release build.
-
-| Measure | 1 session | 10 more | 50 more | 200 more |
-| --- | --- | --- | --- | --- |
-| tmux clients (the daemon's) | 1 | 11 | 51 | 201 |
-| Daemon memory (RSS), idle | 16.2 MiB | 17.1 MiB | 18.8 MiB | 28.0 MiB |
-| tmux memory (RSS), idle | 6.0 MiB | 6.8 MiB | 11.0 MiB | 26.8 MiB |
-| tmux CPU, idle | 0.2 % | 0.0 % | 0.6 % | 7.8 % |
-| Key to echo, no load, p50 / p95 | 0.49 / 0.60 ms | 0.61 / 0.70 ms | 1.37 / 1.52 ms | 5.79 / 6.14 ms |
-| Key to echo, 15 busy panes, p50 / p95 | 1.89 / 2.24 ms | 1.95 / 2.12 ms | 2.60 / 3.17 ms | 9.09 / 10.7 ms |
-| Daemon CPU, 15 busy panes | 53 % | 51 % | 32 % | 9 % |
-| tmux CPU, 15 busy panes | 100 % | 100 % | 100 % | 100 % |
-
-tmux is at a full core under load in every column. With more clients it
-spends more of that core on them, so less output reaches the daemon
-(its CPU falls) and keys take longer. Up to 10 sessions the cost is
-within noise.
-
-### Tiers, memory, and extensions (M3 Max, as above)
-
-Revision `d2c668ac90ae` (branch `main`), release build, each workload
-with its defaults, one after another while nothing else ran.
-
-**A pane's cost in each tier** (`bench tiers`: 16 panes, `yes` at the
-workload's rate):
-
-| Measure | Cold | Warm | Hot |
-| --- | --- | --- | --- |
-| Daemon heap per idle pane | 3.2 KiB | 19.9 KiB | 102 KiB |
-| Daemon CPU per busy pane | 0.11 % | 0.41 % | 0.69 % |
-| Daemon heap per busy pane | 3.3 KiB | 4,903 KiB | 4,698 KiB |
-| Client replica CPU, 16 busy panes | — | — | 18.5 % (5.3 % per MiB/s) |
-| Client replica RSS per pane, idle / busy | — | — | 771 / 2,934 KiB |
-
-A busy Cold pane costs the daemon 26 % of a busy Warm pane's CPU: tmux
-still sends its output, which the daemon reads and drops. tmux's own CPU
-is the same in every tier (14 % for the 16 panes).
-
-**Memory under pressure** (`bench memory`, 300 s a scenario):
-
-| Scenario | Peak RSS | Stated bound | Heap in use, peak | Bound |
-| --- | --- | --- | --- | --- |
-| Sustained output, 64 panes | 1,332 MiB | 910 MiB | 319 MiB | **not met** |
-| Lagging viewer, 64 busy panes | 1,438 MiB | 998 MiB | 370 MiB | **not met** |
-| Paste of 10 MiB | 43 MiB | 47 MiB | 12 MiB | met |
-| Extension crash loop (382 crashes) | 8.8 MiB | 40 MiB | 0.6 MiB | met |
-
-- The journal stayed at its 256 MiB host limit, and the heap in use
-  stayed bounded. Every stalled subscription ended as `lagged`, and every
-  resume from its start was answered with a checkpoint.
-- The overrun is outside the Rust heap: about 15.6 MiB a pane against the
-  2 MiB the bound allows for a 2,000-line mirror, and RSS was still
-  growing in the second half (75 MiB in the output scenario). A 90 s run
-  with 16 panes stayed within its bound (218 MiB against 312 MiB), at
-  about 5 MiB a pane outside the heap, so this memory grows with time.
-  It is in the malloc zones; why it outgrows the history limit is not
-  known yet.
-- The paste is delivered at 0.36 MiB/s into a program that reads and
-  discards it.
-
-**With a Warm memory ceiling** (`bench memory --scenario output
---warm-memory 64`: the same 64 busy panes, `tiers.warm_memory: 64MiB`,
-one pane followed by a replica that takes frames throughout; the daemon
-as above, with the bench's `--warm-memory` option added):
-
-| Measure | Result |
-| --- | --- |
-| Panes Cold, most at once / at the end | 59 / 59 |
-| Followed pane went Cold | no (32,950 frames taken) |
-| Mirrors' memory, daemon's estimate, largest after a demotion round | 62 MiB |
-| Daemon RSS, peak / at the end | 577 / 97 MiB |
-| Heap in use, peak / at the end | 319 / 60 MiB |
-
-The ceiling held: demotion kept the daemon's estimate under 64 MiB, the
-followed pane stayed Warm, and peak RSS stayed within the 910 MiB bound.
-RSS fell by 220 MiB over the second half once the quiet panes were Cold,
-so the memory outside the heap belongs to Warm mirrors and goes with
-them.
-
-**Slow and stalled extensions** (`bench extensions`: 63 busy panes, a
-quiet pane typed into):
-
-| Measure | Quiet | 63 busy panes | Busy, monitor open | Busy, every slow extension |
-| --- | --- | --- | --- | --- |
-| Key to echo, p50 / p95 | 0.17 / 0.23 ms | 6.78 / 7.15 ms | 6.81 / 7.83 ms | 6.73 / 7.51 ms |
-| Daemon CPU | 0.1 % | 124 % | 125 % | 227 % |
-| Busy pane-seconds with no mirror progress, of 630 | — | 0 | 0 | 0 |
-
-Key to echo with every slow extension stays within the one-pane budget
-plus 10 ms (7.5 ms against 40 ms), and within this run's quiet p95 plus
-10 ms. The monitor adds 1.5 % of a core and 1.2 MiB of daemon heap under
-load, and nothing measurable when quiet. The slow extensions add 102 % of
-a core, most of it the Luau scripts.
-
-### Desktop, macOS (M3 Max, as above)
-
-```sh
-cargo xtask bench gui [--panes N] [--visible N] [--load text|escape|image] [--backend wayland|x11]
-```
-
-`bench gui` creates an isolated tmux server with N panes (16 by default).
-The first tab holds `--visible` of them (16 by default, at most 64),
-tiled and shown; the rest go 16 to a tab. It starts the daemon first,
-then a release `dreamer`, which measures itself
-(`crates/app/src/bench_gui.rs`):
-- **Ends at a paint.** Each measure stops when the pane's new frame has
-  been painted, not when it arrived.
-- **Load.** Under load, every other visible pane prints a line every
-  20 ms. With `--load`, they replay a streams corpus nonstop with `cat`
-  instead: `text`, `sgr` for `escape`, or `images` for `image`. The
-  corpora are written for 120x40 panes; tiled panes are smaller, so
-  lines wrap and images are clipped. The results record which corpus,
-  with its size and hash.
-- **The frame, split.** For each window frame under load, from the
-  workspace's render to its last element painted: the whole frame build
-  (render, layout, and paint), the terminal panes' paint, the shaping of
-  rows the cache did not hold, the conversion of new images for the GPU,
-  and the rest (layout, chrome, building the element tree). GPU
-  submission and present are not in it: GPUI times them only with its
-  `profiler` feature, which Dreamer does not build. The results say so.
-- **Display backend.** On Linux it runs on Wayland when the session
-  offers it, else X11; `--backend` picks one (`x11` runs through
-  XWayland on a Wayland session). The results record the backend the app
-  drew on.
-- **Needs a display.** It must be awake and unlocked, with the window in
-  front. When it is not, the results file says `"not_run": true` with the
-  reason and holds no results, and the command exits 5, as the gate's
-  smoke runs do. That happens when the screen is locked (macOS), there
-  is no display server or not the one asked for (Linux), or the window
-  does not draw when asked: after launch, after the idle count, under
-  load, or when a wait runs out. `bench report` refuses such a file.
-
-Revision: branch `m7-05-launch-and-tabs`.
-
-| Measure | 1 pane | 16 panes | 64 panes | 256 panes | Target |
-| --- | --- | --- | --- | --- | --- |
-| Visible panes | 1 | 16 | 16 | 16 | — |
-| Launch to every visible pane painted (daemon running) | 181 ms | 181 ms | 190 ms | 205 ms | Under 150 ms: **not met**; see below |
-| Terminal paints over 3 s with nothing changing | 0 | 0 | 0 | 0 | Zero: met |
-| Key to echo including paint, idle, p50 / p95 | 2.1 / 3.2 ms | 2.1 / 3.7 ms | 2.1 / 4.4 ms | 2.1 / 4.3 ms | p95 under 30 ms: met |
-| Key to echo including paint, 15 busy panes, p50 / p95 | — | 2.1 / 3.5 ms | 2.1 / 3.4 ms | 2.1 / 3.7 ms | One-pane budget plus 10 ms: met |
-| Terminal paint time per frame, 15 busy panes, p95 | — | 1.5 ms | 1.7 ms | 1.6 ms | Under 8 ms: met |
-| Time between frames, 15 busy panes, p95 | — | 17 ms | 25 ms | 25 ms | — |
-| Tab switch to every pane painted, p50 / p95 | — | — | 8.9 / 12.8 ms | 8.7 / 9.9 ms | p95 under 50 ms: met |
-
-### Remote latency, through OpenSSH to an ARM64 Linux container
-
-`cargo xtask bench remote --container`, and again with `--netem 'delay
-20ms 5ms'`: the desktop side on the Mac above, the host in the gate's
-ARM64 Linux container (Linux 6.8 under Colima), reached through
-OpenSSH 10.5p1 on a published loopback port. 200 keystrokes each.
-Revision `8e9dd7ade6d5` (branch `main`).
-
-| Measure | No added delay | netem delay 20 ms ± 5 ms |
-| --- | --- | --- |
-| Connect to the host (SSH, bridge, handshake) | 0.19 s | 0.48 s |
-| Link round trip (`hosts.call daemon.version`), p50 / p95 | 1.24 / 2.51 ms | 28.6 / 36.1 ms |
-| Link round trip, jitter | 0.13 ms | 5.57 ms |
-| Key to echo through the host, p50 / p95 | 1.06 / 1.73 ms | 29.1 / 32.5 ms |
-| Key to echo through the host, jitter | 0.14 ms | 2.55 ms |
-| Host processing (sum of its stage p50s) | 0.45 ms | 1.78 ms |
-| Link, relay and replica (end-to-end p50 less host processing) | 0.96 ms | 27.5 ms |
-| Key to echo, local pane in the same run, p50 / p95 | 0.27 / 0.43 ms | 0.28 / 0.38 ms |
-
-Host processing is mostly the host's `input` and `tmux` stages (238 and
-156 µs p50 without delay); the daemon's own stages after tmux take under
-60 µs together. With the delay, every host stage took about four times
-as long, the container being idle between keystrokes. Even so, the link
-is nearly all of the end-to-end time. netem's jitter reorders packets, so
-TCP adds to the 20 ms it puts on each round trip.
-
-## Findings
-
-- **Typing under load is bounded by tmux, not the daemon.**
-  - At every size, the time for a key to reach a Dreamer client matches
-    the time for it to appear in tmux's own grid, within the noise.
-  - tmux is single-threaded and at 100 % of a core. With the daemon
-    stopped it is just as slow (95 ms with 1,000 idle panes).
-  - The delay grows with the number of panes on the tmux server, by about
-    0.11 ms per pane on this 4-core VM. After every pass of its event loop,
-    tmux walks every window and pane (`server_client_loop` in tmux 3.8:
-    resize, style, buffer, and name checks). With 63 panes writing
-    nonstop, it makes many passes a second.
-  - Turning `automatic-rename` off changed nothing.
-
-  **Revised target:** the daemon adds no measurable delay over tmux's own
-  key to echo under load. The 40 ms budget holds with up to about 250
-  panes on one tmux server on a 4-core Linux machine. On the 14-core Mac it
-  holds with 400 panes (14 ms). More panes on a heavily loaded server need
-  a faster tmux, or the panes split across tmux servers.
-- **Cold against Warm memory depends on what the pane holds.**
-  - A Cold pane holds about 3 KiB of heap whatever it held before. On
-    Linux, once the freed memory is returned, that is about 7 KiB of RSS.
-  - A Warm pane's mirror grows with its screen and history, by about
-    1 KiB per 120-column line kept. With 2,000 lines, Cold is 60 times
-    (macOS) to 280 times (Linux) smaller by RSS.
-  - An empty idle shell's mirror is small to begin with (18 to 24 KiB on
-    Linux), so there the ratio is 3.5 times by RSS on Linux and 8 times by
-    heap.
-
-  **Revised target:** a Cold pane holds under 4 KiB of heap and, on Linux,
-  under 8 KiB of RSS, independent of its history. The 20-times ratio holds
-  for any pane with a screenful of content.
-- **Warm panes with long histories are expensive.** 1,000 Warm panes with
-  2,000 lines each take 1.9 GB. Demoting panes nobody watches to Cold is
-  what keeps a large daemon small: `tiers.warm_memory` (1 GiB by default)
-  caps what all mirrors hold together, and the benchmark turns it off to
-  measure Warm panes.
-- **Launch: 1.33 s, then 0.2 s, now about 185 ms.**
-  - **Fonts.** Choosing the terminal font asked GPUI for every installed
-    font name, twice, at about 0.6 s each on macOS. It now resolves the
-    wanted family alone. It also parsed all five shipped families (46 MB)
-    to use one; only the configured family's files are read now, on a
-    thread started at launch, while GPUI starts up.
-  - **Daemon and themes.** The daemon connection and the first topology
-    start at process start too. The theme list, which only the palette's
-    Theme command needs, is read after the window opens.
-  - **What remains.** Most of it is outside Dreamer's code: GPUI's
-    platform start (about 58 ms) and the window's first frame (about
-    60–70 ms: Metal setup, first layout, and shaping).
-  - **Revised target: 200 ms** with the daemon running. 150 ms would take
-    changes to GPUI's startup.
-- **Tab switch: 65–80 ms, now about 10 ms.**
-  - **Before.** A switch waited for tmux's confirmation, then subscribed
-    every pane of the tab again.
-  - **Now.** Panes in hidden tabs keep their views: up to 48 of them, the
-    spec's Warm client tier. A clicked tab is shown at once from those
-    last frames while tmux confirms. tmux stays authoritative: if it
-    reports another window as active, that is what is shown.
-- **Attaching many panes at once failed some of them.** Each attach is a
-  few command batches on the daemon's one tmux control connection, whose
-  queue holds 256. Creating hundreds of panes together overflowed it, and
-  the overflowed panes stayed failed ("command queue full"). The router now
-  runs at most 16 attaches at once and queues the rest.
-  `three_hundred_new_panes_all_become_live` fails without the limit and
-  passes with it.
-- **tmux cannot switch a pane's output off** for the daemon without
-  stalling the pane when the daemon is its only client. A Cold pane's
-  output is dropped in the daemon instead (see [mirrors.md](mirrors.md#tiers)).
-
-## Not measured yet
-
-- **Stage timings on named hardware.** `bench headless` prints them; no
-  run is recorded here yet.
-- **Desktop workloads on Linux** (Wayland and X11), and on macOS with more
-  than 16 visible panes, with corpus loads, or with the frame split.
-- **Image-heavy and escape-heavy streams:** the `streams` workload
-  exists, but no results are recorded here yet.
-- **The same workloads in reference terminals.**

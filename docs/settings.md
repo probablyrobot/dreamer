@@ -107,11 +107,24 @@ If the configured family is not available, Dreamer says so on standard
 error and falls back to Menlo on macOS or DejaVu Sans Mono on Linux. It
 never substitutes silently.
 
+`font.size` is in points, from 6 to 72. `font.line_height` is a multiple
+of the font's own line height, from 0.8 to 3.0, and `font.letter_spacing`
+adds pixels to each cell's width, from -3 to 10. Bigger and smaller text
+in the desktop ([desktop.md](desktop.md#menus-and-shortcuts)) change the
+size in the open windows only and leave the file alone.
+
 ## Errors
 
-An unknown key or an out-of-range value is reported with the file, line,
-and column, and Dreamer then runs with the defaults. A typo never quietly
-changes behavior.
+An unknown key or an out-of-range value is an error that names the file
+and the key, with the line and column for a syntax error or an unknown
+key. A typo never quietly changes behavior:
+
+- **At startup,** the desktop prints the error on standard error and runs
+  with the defaults until the file reads.
+- **While running,** the settings in force stay, and the tab strip shows
+  the reason ([above](#live-and-checked)).
+
+`dream config check` reports the same errors without starting anything.
 
 ## Links
 
@@ -129,8 +142,8 @@ reaches the system clipboard:
 - `deny`: never.
 
 The daemon addresses each write to one window only: the one focused on
-the pane. Programs can never read the clipboard. See `docs/effects.md`.
-
+the pane. Programs can never read the clipboard. See
+[effects.md](effects.md#clipboard-writes-go-to-one-window).
 
 **tmux's paste buffers and the clipboard** (`clipboard.tmux`):
 - **A copy made in tmux** reaches the system clipboard. That covers copy
@@ -149,7 +162,7 @@ the pane. Programs can never read the clipboard. See `docs/effects.md`.
 
 `fallback.launch` is the terminal to open when a window or pane holds
 something the workspace does not draw, such as floating panes or tmux copy
-mode (see [desktop.md](desktop.md)). It is an argv with exactly one
+mode (see [desktop.md](desktop.md#what-the-workspace-does-not-draw)). It is an argv with exactly one
 `{command}` element, which is replaced by the words of the `tmux attach`
 command. Examples:
 - `[kitty, -e, "{command}"]`
@@ -216,7 +229,7 @@ cursor a program gets until it sets its own (and after it resets it with
     accent = '#ff8800'
     ```
 
-    ```
+    ```text
     dreamer-chrome-accent = #ff8800   # Ghostty
     dreamer_chrome_accent #ff8800     # kitty
     ```
@@ -232,7 +245,7 @@ cursor a program gets until it sets its own (and after it resets it with
 - `cursor.style` is `block`, `bar`, or `underline`; `cursor.blink` is
   `true` or `false`.
 
-A terminal's colors are its state, not a view's (spec 14.2). The daemon
+A terminal's colors are its state, not a view's. The daemon
 applies the theme to every pane's canonical mirror, and every window,
 including one on another machine, gets the same colors through its
 checkpoint. A program can still change colors for itself (OSC 4, 10, 11,

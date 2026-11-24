@@ -9,7 +9,31 @@ happened without re-reading scrollback.
 A collector only reads. It never changes what a program wrote or what any
 tmux client sees, and it never writes to a pane.
 
+## A first collector
+
+Record every failed test from every pane, using the shipped
+`test-failures` [preset](#presets), then ask what failed in the last hour:
+
+```sh
+dream collect create --preset test-failures
+dream collect list
+dream collect query test-failures --since 1h
+dream collect query test-failures --since 1h --group-by test
+dream collect stop test-failures --delete
+```
+
+Or write the rule yourself: a name, the panes, and what makes a row.
+
+```sh
+dream collect create fails --all --line '^FAILED (?P<test>\S+)' --after 5 --keep-for 7d
+```
+
+All the options are under [From the command line](#from-the-command-line).
+
 ## A definition
+
+A definition says which panes a collector reads (`from`), what makes a row
+(`when`), what a row keeps (`capture`), and how much is kept (`keep`):
 
 ```yaml
 name: test-failures
@@ -94,7 +118,8 @@ as a job ([jobs.md](jobs.md)), for the status.
 | `lines: N` | The pane's last N lines (at most 1000) up to the cursor, in `lines` | every trigger |
 
 A template that names a group the pattern does not have is refused when
-the collector is created. Field values and lines are cut at 8 KiB.
+the collector is created. A definition has at most 64 `fields`, and a
+`json` line adds at most 64. Field values and lines are cut at 8 KiB.
 
 ### `keep`: how much
 
@@ -255,7 +280,23 @@ dream collect create --preset errors build-errors --session build
 dream collect list
 dream collect query fails --since 1h --group-by test
 dream collect query cmds --field exit_status=1 --json
-dream collect stop fails [--delete]
+dream collect stop fails            # --delete also removes its rows
 ```
 
-See [cli.md](cli.md#collectors).
+`dream collect create NAME` takes one option from each of the first two
+rows; the rest are optional. With `--preset PRESET`, the name is optional
+too, and each part given replaces the preset's.
+
+| Part | Options |
+| --- | --- |
+| `from` | `--all`, `--session NAME`, `--window @N`, `--pane %N` (repeatable), or `--command REGEX` |
+| `when` | `--line REGEX` (with `--ignore-case`), `--command-end`, `--idle MS`, `--bell`, `--exit`, or `--every SECONDS` |
+| `capture` | `--field NAME=TEMPLATE` (repeatable), `--json-line`, `--screen` or `--lines N`, `--before N`, `--after N` |
+| `keep` | `--keep-rows N`, `--keep-for DURATION`, `--per-second N` |
+
+`dream collect query NAME` takes `--pane %N` and `--field NAME=VALUE`
+(both repeatable), `--since DURATION`, `--after ID`, `--limit N`, and
+`--group-by FIELD`. `list` and `query` print JSON with `--json`. A
+duration is a number with `s`, `m`, `h`, or `d` (`30s`, `10m`, `7d`).
+
+See also [cli.md](cli.md#collectors).

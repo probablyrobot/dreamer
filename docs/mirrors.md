@@ -4,7 +4,9 @@
 server it drives: a Ghostty engine that holds the pane's screen, history,
 cursor, and modes. Clients and agents read panes from these mirrors. They
 never parse tmux output themselves. The mirrors keep running while no GUI
-is open.
+is open. You need this page if you are writing a client that follows
+panes, or want to know what `dream read`, `dream mirrors`, and
+`dream tier` report ([Reading mirrors](#reading-mirrors)).
 
 ## How a pane is mirrored
 
@@ -29,7 +31,7 @@ tmux sends a control client output only for panes in its own session, so
 the daemon keeps one control client per tmux session (see
 [daemon.md](daemon.md#control-clients)): its main client, and one more for
 every other session, started and stopped as sessions come and go. Panes in
-your own second session, in sessions made by `workspace apply`, and in
+your own second session, in sessions made by `dream workspace up`, and in
 hidden harness drawers stream like any other.
 
 - **One source per pane.** Each pane's output is taken from exactly one
@@ -51,9 +53,9 @@ hidden harness drawers stream like any other.
   If a client cannot attach, the pane reports `failed` with the reason,
   and the next change tmux reports tries again.
 
-The `not_streaming` mirror state is reserved: API 1.64 reported it for
-panes outside the session the daemon was attached to, and nothing reports
-it now.
+The `not_streaming` mirror state is reserved. Daemons that kept a single
+control client reported it for panes outside that client's session;
+nothing reports it now.
 
 ## Ownership and ordering
 
@@ -76,7 +78,7 @@ it now.
 Each mirror journals every record it applies, numbered by the mirror's
 committed sequence: output bytes, size changes, and the continuation that
 followed the cold attach. The journal is what a client replays to catch
-up from a checkpoint (M2-02).
+up from a checkpoint.
 
 | Limit | Default | Enforced |
 | --- | --- | --- |
@@ -101,7 +103,7 @@ has fallen behind and needs a fresh checkpoint instead.
 A client follows a pane with `terminal.subscribe`. The pane's owning worker
 decides how the stream starts and registers the subscriber before it
 applies the next record. Nothing can fall between the starting point and
-the stream (spec 11.5).
+the stream.
 
 - **Checkpoint:** the worker snapshots the engine at sequence N, and records
   N+1 onward follow. The snapshot travels as chunked bulk data (topic
@@ -208,7 +210,7 @@ See [settings.md](settings.md#pane-tiers).
 
 | Command | API | Shows |
 | --- | --- | --- |
-| `dream read %PANE [--history N] [--json]` | `terminal.read` | Up to N scrollback lines, then the screen; size, cursor, generation, epoch, and the number of records applied |
+| `dream read %PANE [--history N] [--json]` | `terminal.read` | Up to N scrollback lines (at most 10,000), then the screen, as text. With `--json`, also the size, cursor, generation, epoch, and the number of records applied |
 | `dream mirrors [--json]` | `terminal.mirrors` | Each pane's state, tier, size, records, bytes ingested, retained journal range and size, and worker; host journal totals and limits |
 | `dream tier %PANE hot\|warm\|cold` | `terminal.set_tier` | Sets a pane's tier |
 

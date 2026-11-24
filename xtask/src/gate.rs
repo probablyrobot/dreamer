@@ -165,6 +165,11 @@ fn stages(platform: Platform) -> Vec<Stage> {
             when: When::Code,
         },
         Stage {
+            name: "plugin",
+            action: Cmd("cargo", &["xtask", "plugin", "--check"]),
+            when: When::Always,
+        },
+        Stage {
             name: "fmt",
             action: Cmd("cargo", &["fmt", "--all", "--check"]),
             when: When::Always,

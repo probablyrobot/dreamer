@@ -5,10 +5,11 @@ talks to the daemon in JSON-RPC 2.0 on its standard input and output, and
 reaches everything through the same typed API as every other client,
 under the grant you give it.
 
-**Process separation isolates crashes; it is not a sandbox.** An extension
-runs as you, with your files, network, and processes. The grant limits
-what it can ask the daemon; it does not limit what the program can do on
-its own. Only configure programs you trust.
+**An extension is not sandboxed.** It runs as you, with your files,
+network, and processes. A separate process keeps its crashes away from
+the daemon, and the grant limits what it can ask the daemon. Neither
+limits what the program does on its own. Only configure programs you
+trust.
 
 ## Configuring
 
@@ -26,8 +27,9 @@ extensions:
       all_panes: false                # every pane, windows, sessions, hosts
 ```
 
-The daemon reads the file when it starts. An invalid file starts nothing
-and `dream extensions` shows why. The grant works like an app's (see
+The daemon reads the file when it starts, so restart the daemon after
+editing it. An invalid file starts nothing and `dream extensions` shows
+why. The grant works like an app's (see
 [grants.md](grants.md)); an extension never holds the owner grant, and
 cannot launch apps or restart extensions.
 
@@ -55,21 +57,26 @@ daemon (see [messages.md](messages.md)).
 
 ## Writing one in Rust
 
-The `dreamer-sdk` crate (`crates/sdk`) speaks the protocol for you. It
-answers `extension.hello`, `$/ping`, and `extension.shutdown` on its own
-task, so heartbeats are answered while your code is busy. Your code makes
-typed calls and reads typed notifications It is on crates.io, and it re-exports
-`api`, `app_protocol`, and `view_tree`, so it is the only Dreamer crate a
-program adds:
+The `dreamer-sdk` crate speaks the protocol for you. It answers
+`extension.hello`, `$/ping`, and `extension.shutdown` on its own task, so
+heartbeats are answered while your code is busy. Your code makes typed
+calls and reads typed notifications.
+
+The crate is on crates.io. It re-exports `api`, `app_protocol`, and
+`view_tree`, so it is the only Dreamer crate your program adds. It runs
+on [Tokio](https://tokio.rs):
 
 ```toml
 [dependencies]
 dreamer-sdk = "0.9"
+tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
 The calls and notifications look like this:
 
 ```rust
+use dreamer_sdk::api;
+
 let mut session = dreamer_sdk::start("my-extension 0.1").await?;
 let mut notifications = session.notifications().expect("taken once");
 session
@@ -98,11 +105,12 @@ loop {
   or its input ends.
 - Write logs to standard error. Standard output belongs to the protocol.
 
-A complete example, `crates/sdk/examples/event-summary.rs`, follows the
-event log and publishes a summary on `summary.events` after each batch.
-Build it with `cargo build -p dreamer-sdk --example event-summary`; it
-needs `events.subscribe` and `messages.publish`, and `all_panes` to see
-events about no pane.
+A complete example, `crates/sdk/examples/event-summary.rs` in the source
+tree, follows the event log and publishes a summary on `summary.events`
+after each batch. Build it with
+`cargo build -p dreamer-sdk --example event-summary`. Its grant needs
+`events.subscribe` and `messages.publish`, and `all_panes` to see events
+about no pane.
 
 In other languages, implement the three daemon requests above and speak
 JSON-RPC by the conventions in [api.md](api.md#json-rpc-endpoint).

@@ -1,0 +1,12 @@
+{
+  "name": "dreamer",
+  "interface": { "displayName": "Dreamer" },
+  "plugins": [
+    {
+      "name": "dreamer",
+      "source": { "source": "local", "path": "./plugins/dreamer" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Developer Tools"
+    }
+  ]
+}

@@ -1,12 +1,55 @@
 # Remote hosts
 
-The local daemon reaches a daemon on another host through system OpenSSH.
-There is no listener on either side: `ssh -T` runs `dream bridge --stdio`
-on the remote host, and the protocol travels over that SSH session's
+Dreamer shows the tmux panes of another machine beside your local ones.
+Your local daemon reaches the daemon on that machine through your own
+`ssh`, with your SSH configuration and keys. Nothing listens on a network
+port on either side.
+
+## Connect to a host
+
+Any destination you can `ssh` to works: a host alias, `user@host`, or an
+`ssh://` URI. Give it a name of your own:
+
+```sh
+dream hosts connect devbox devbox  # NAME DESTINATION
+dream hosts list                   # each host's state, and why one is not live
+```
+
+A first connection often fails for one of two reasons, and `hosts list`
+says which:
+
+```sh
+dream hosts verify devbox    # host_key or auth: answer SSH's questions here, once
+dream hosts install devbox   # not_installed: put this version's server on the host
+```
+
+Both work on a host the daemon already knows: one from `hosts.yaml`
+([Profiles](#profiles)) or one you tried to connect. For a host you use
+often, add a profile and run `dream hosts connect devbox`.
+
+| Command | Does |
+| --- | --- |
+| `dream hosts connect NAME DESTINATION [--dream PATH] [--remote-tmux PATH] [--remote-socket NAME \| --remote-socket-path PATH] [--auto-reconnect \| --manual]` | Connect and keep the connection. The options name the remote `dream`, the remote tmux, and its tmux server |
+| `dream hosts connect PROFILE [--auto-reconnect \| --manual]` | Connect to a profile from `hosts.yaml` |
+| `dream hosts list [--json]` | Every host, its state, the remote daemon, and why a host is not live |
+| `dream hosts verify NAME [--wait]` | Answer SSH's questions in this terminal ([First connection](#first-connection)) |
+| `dream hosts install NAME [--artifacts DIR] [--yes] [--wait]` | Install the server ([Installing a server](#installing-a-server)) |
+| `dream hosts upgrade NAME [--artifacts DIR] [--yes] [--allow-older] [--wait]` | Install and restart the host's daemon ([Upgrading a server](#upgrading-a-server)) |
+| `dream hosts reconnect NAME` | Connect again now ([Reconnecting](#reconnecting)) |
+| `dream hosts call NAME METHOD [JSON]` | Run one API call on the host, for example `dream hosts call devbox tmux.topology` |
+| `dream hosts disconnect NAME` | Close the SSH connection. The remote daemon and its tmux keep running |
+
+`--wait` waits for Enter before the command ends, for windows that close
+with their command.
+
+## How it works
+
+The local daemon runs `ssh -T` with the command `dream bridge --stdio` on
+the remote host, and the protocol travels over that SSH session's
 standard streams ([cli.md](cli.md#bridge), [wire.md](wire.md)).
 
 SSH is the only way between hosts. Dreamer opens no network sockets of its
-own, so every byte between the main terminal and a host is SSH's
+own, so every byte between your machine and a host is SSH's
 encrypted, authenticated channel, under your own SSH configuration and
 keys. `cargo xtask policy` (the gate's first stage) fails if product code
 uses a TCP or UDP socket. The one exception is [forwards](#forwards):
@@ -70,12 +113,12 @@ checks both.
 
 The coordinator's SSH never prompts (`BatchMode=yes`). A host whose key is
 not yet known, or whose key needs a passphrase that no agent holds, fails
-with `host_key` or `auth` and is not retried. The user answers SSH's
+with `host_key` or `auth` and is not retried. You answer SSH's
 questions in a visible connection instead:
 
-- `dream hosts verify NAME` runs the user's own `ssh -- DESTINATION true`
+- `dream hosts verify NAME` runs your own `ssh -- DESTINATION true`
   in the current terminal. SSH asks its usual questions there, and the
-  answers go into the user's own `known_hosts` and agent. On success it
+  answers go into your own `known_hosts` and agent. On success it
   asks the coordinator to reconnect; on failure SSH's message stays on
   screen and the host stays as it was. `--wait` waits for Enter before
   ending.
@@ -83,11 +126,11 @@ questions in a visible connection instead:
   terminal…" in the palette, opens a local tmux window running that
   command, so the prompt appears in an ordinary pane.
 
-Dreamer never accepts a host key for the user, never turns off host-key
+Dreamer never accepts a host key for you, never turns off host-key
 checking, and never stores a passphrase. A changed host key fails exactly
 as SSH reports it, with no option to bypass it. For the coordinator to keep
 connecting after a passphrase prompt, the key must stay available
-non-interactively, for example in an agent; that is the user's SSH
+non-interactively, for example in an agent; that is your SSH
 configuration.
 
 ## Installing a server
@@ -266,7 +309,7 @@ Hosts can be defined in `hosts.yaml` in the configuration directory
 hosts:
   - name: devbox                  # the label; unique
     destination: devbox           # SSH host alias, user@host, or ssh:// URI
-    dream: ~/.local/bin/dream     # optional; default `dream` on the remote PATH
+    dream: ~/.local/bin/dream     # optional; default: the installed server, else `dream` on the remote PATH
     tmux: /usr/bin/tmux           # optional remote tmux executable
     tmux_socket: work             # optional; or tmux_socket_path, not both
     workspace: default            # optional workspace namespace
@@ -308,11 +351,16 @@ remote side's `remote_instance` changes only when that daemon restarted.
 
 ## The SSH command
 
-`client::ssh::command` builds it. For a host alias `devbox`:
+`client::ssh::command` builds it. For a host alias `devbox` whose profile
+names `dream: ~/.local/bin/dream`:
 
 ```text
-ssh -T -a -x -- devbox 'dream bridge --stdio'
+ssh -T -a -x -o BatchMode=yes -- devbox '~/.local/bin/dream bridge --stdio'
 ```
+
+When no `dream` is named, the remote command is a short `sh -c` script
+instead. It runs `~/.local/share/dreamer/current/bin/dream` if that
+exists, else `dream` from the remote `PATH`, with the same arguments.
 
 | Part | Why |
 | --- | --- |
@@ -321,10 +369,10 @@ ssh -T -a -x -- devbox 'dream bridge --stdio'
 | `-o BatchMode=yes` | SSH fails instead of prompting (the daemon has no terminal) |
 | `--` | Ends options; the destination cannot be read as one |
 
-Everything else comes from the user's SSH configuration: host aliases,
+Everything else comes from your SSH configuration: host aliases,
 keys, agents, `known_hosts`, `ProxyJump`, and connection sharing. Dreamer
 never disables host-key checking, enables agent forwarding, or edits SSH
-configuration. Credentials stay in the user's SSH facilities.
+configuration. Credentials stay in your SSH facilities.
 
 The destination must be non-empty, must not start with `-`, and must not
 contain whitespace or control characters. `user@host` and `ssh://` URIs are
@@ -356,8 +404,8 @@ of quotes, `$(…)`, backquotes, globs, and separators.
 
 ## Acceptance through real OpenSSH
 
-`cargo xtask remote-acceptance` runs the section 18.2 remote cases through
-real OpenSSH on this machine, with nothing of the user's SSH setup
+`cargo xtask remote-acceptance` runs the remote cases below through
+real OpenSSH on this machine, with nothing of your own SSH setup
 involved:
 
 - **Setup:** an unprivileged `sshd` listens on a free loopback port. It
@@ -382,8 +430,8 @@ involved:
 - **Cleanup:** everything started from the private directory is stopped,
   and the directory is removed.
 
-It needs `sshd` (on Linux, the `openssh-server` package). The Mac's full
-gate runs it on ARM64 Linux in a container, as root, before every push;
+It needs `sshd` (on Linux, the `openssh-server` package). The pre-push
+gate on macOS runs it on ARM64 Linux in a container, as root;
 the weekly Linux workflow (`.github/workflows/full.yml`, also run on
 version tags and on demand) runs it on x86-64 as an unprivileged user.
 Incompatible-build cases run against a stand-in SSH in

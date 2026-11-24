@@ -1,6 +1,6 @@
 # Design
 
-The desktop's look follows spec 14.4. Content comes first: terminal text
+How the desktop app looks, and why. Content comes first: terminal text
 is the brightest, sharpest thing on screen. The chrome uses lower contrast
 and a single accent color.
 
@@ -14,7 +14,7 @@ scheme and one type family.
   `terminal.theme`, or `dreamer-dark` / `dreamer-light` for
   `appearance`) is set by the daemon on every pane, and the desktop draws
   its chrome from the same scheme. The chrome follows the terminals, never
-  the other way: a terminal's colors are its canonical state (spec 14.2).
+  the other way: a terminal's colors are its canonical state.
 - **Dreamer's two schemes** come with hand-tuned chrome (below). Any other
   scheme gets chrome derived from its own colors: its background for the
   window, surfaces a few steps toward its foreground, its blue as the
@@ -80,10 +80,10 @@ on, and for each danger and warning text on its surface.
   a small fixed scale: 11, 12, and 13 pt. One family keeps the chrome and
   the terminals visibly of a piece.
 
-## Review gate
+## Reference scenes
 
-Before M3 closes, the product owner approves captures of the reference
-scenes on macOS and Linux, in both skins. `cargo xtask scenes [NAME]`
+Visual changes are reviewed against captures of the reference scenes on
+macOS and Linux, in both of Dreamer's schemes. `cargo xtask scenes [NAME]`
 opens them one at a time, each against an isolated tmux with a temporary
 config, and names the file to save. Close each window to move on.
 
@@ -96,9 +96,5 @@ config, and names the file to save. Close each window to move on.
 | `error-state` | A pane in tmux copy mode, marked with the attach fallback |
 | `app-components` | The reference app with every text, input, and status component, drawn natively and as a terminal interface |
 
-Captures go outside the repository, in
-`~/Devel/analysis/dreamer/design/`, named
+Captures are kept outside the repository, named
 `<scene>-<dark|light>-<macos|linux>.png`.
-
-The spec's agentic-pane scene comes with M6. Later visual changes update
-the captures.

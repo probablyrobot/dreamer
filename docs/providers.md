@@ -1,7 +1,8 @@
 # Agent providers
 
-Agent features reach a model through one provider interface, the
-`providers` crate. It drives the CLIs you already have installed and
+A provider runs one prompt on a model and streams the answer back.
+`dream agents ask` uses one, and so does a task pi delegates to Claude
+Code or Codex. Providers drive the CLIs you already have installed and
 logged in to:
 
 | Provider | Runs | Billing |
@@ -12,8 +13,14 @@ logged in to:
 The default order is `claude`, then `codex`: the first that is ready is
 used.
 
-Agent sessions run a harness (pi by default, which Dreamer installs) chosen
-by `agents:` in `dreamer.yaml`; see [agents.md](agents.md).
+```sh
+dream agents providers                         # which CLIs are ready, and on which login
+dream agents ask -- "which pane is running the tests?"
+```
+
+Providers are separate from the agent you chat with. That is a harness
+(pi by default), chosen by `agents:` in `dreamer.yaml`; see
+[agents.md](agents.md).
 
 ## Rules
 

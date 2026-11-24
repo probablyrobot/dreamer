@@ -6,7 +6,7 @@
 //!
 //! This is interactive: it opens the app, says which capture to save, and
 //! waits for the window to be closed. Captures belong outside the
-//! repository, in `~/Devel/analysis/dreamer/design/`.
+//! repository.
 //!
 //! `cargo xtask screenshot` opens the same scenes and captures the app's
 //! own window by itself (see [`screenshot`]).
@@ -150,7 +150,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     } else {
         "linux"
     };
-    println!("scenes: save each capture to ~/Devel/analysis/dreamer/design/<name> as shown");
+    println!("scenes: save each capture under the name shown, outside the repository");
     println!("scenes: the agentic pane scene is not available yet (M6)");
     for skin in ["dark", "light"] {
         for scene in SCENES {
