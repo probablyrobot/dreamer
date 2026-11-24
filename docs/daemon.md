@@ -100,8 +100,8 @@ The log records the `PATH` in force at startup.
 | Log `dreamerd.log` | state directory | Written in background mode; mode 0600 |
 | Action ledger `actions.jsonl` | state directory | See [actions.md](actions.md) |
 | Extension logs `extensions/<name>.log` | state directory | Each extension's standard error, appended; mode 0600. See [extensions.md](extensions.md) |
-| Host and session memory `memory/host/`, `memory/sessions/<id>/` | state directory | Markdown files and a `MEMORY.md` index. See [memory.md](memory.md) |
-| Memory database `memory.kosmonaut/` | data directory | Only with `memory.provider: kosmonaut`, in a build with the `kosmonaut` feature. See [memory.md](memory.md#kosmonaut) |
+| Memory database `memory.sqlite` | data directory | With `memory.provider: sqlite`, the default (or where `memory.sqlite.path` says). See [memory.md](memory.md#sqlite) |
+| Host and session memory `memory/host/`, `memory/sessions/<id>/` | state directory | Markdown files and a `MEMORY.md` index, with `memory.provider: files`; read once into the database when `sqlite` takes over. See [memory.md](memory.md#moving-from-files) |
 
 The **runtime directory** is the first of these that is set:
 

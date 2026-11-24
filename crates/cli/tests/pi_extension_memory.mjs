@@ -7,8 +7,6 @@
 //
 // argv: path to daemon.ts, the project directory, the remembered id.
 
-import * as fs from "node:fs";
-
 const [, , modulePath, project, id] = process.argv;
 const m = await import(modulePath);
 
@@ -85,23 +83,30 @@ try {
 	const list = await a.memoryCommand("");
 	const shown = await a.memoryCommand(`show ${id}`);
 	const edited = await a.memoryCommand(`edit ${id}`, async (t) => `${t.trim()} Edited in the chat.`);
-	const file = (await a.call("memory.get", { id, context: { cwd: project } })).path;
+	// Whatever keeps it (the default, sqlite, has no file): the daemon has
+	// the edit.
+	const kept = await a.call("memory.get", { id, context: { cwd: project } });
 	step("/memory", {
 		ok:
 			list.includes(id) &&
 			list.includes(mine) &&
 			shown.includes("8461") &&
 			edited.startsWith(`Updated ${id}`) &&
-			fs.readFileSync(file, "utf8").includes("Edited in the chat."),
+			kept.text.includes("Edited in the chat."),
 		list,
 		edited,
 	});
 	const forgot = await a.memoryCommand(`forget ${id}`);
 	const after = await a.memoryCommand("list");
+	let gone = false;
+	try {
+		await a.call("memory.get", { id, context: { cwd: project } });
+	} catch (e) {
+		gone = e instanceof m.RpcError;
+	}
 	step("/memory forget", {
-		ok: forgot.startsWith(`Forgot ${id}`) && !fs.existsSync(file) && !after.includes(id),
+		ok: forgot === `Forgot ${id}` && gone && !after.includes(id),
 		forgot,
-		file,
 	});
 	let unknown;
 	try {

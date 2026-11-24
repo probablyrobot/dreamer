@@ -1,6 +1,6 @@
-//! What every provider does the same way, run against `files` and, with
-//! the `kosmonaut` feature, the Kosmonaut provider, embedded and over a
-//! Kosmonaut server; and moving memories between them.
+//! What every provider does the same way, run against `files`, `sqlite`,
+//! and, with the `kosmonaut` feature, the Kosmonaut provider on a server of
+//! the test's own; and moving memories between them.
 
 use std::path::{Path, PathBuf};
 
@@ -293,59 +293,117 @@ fn files_to_files_copies_every_scope_byte_for_byte() {
     );
 }
 
-/// Each Kosmonaut test runs twice: on the embedded database (`embedded::`)
-/// and on a Kosmonaut server of its own over gRPC (`server::`, when
+/// The database providers, `sqlite` and (with the `kosmonaut` feature)
+/// Kosmonaut on a server, keep the same things and answer alike; each
+/// test below runs on both: on a SQLite file of its own (`sqlite::`), and
+/// on a Kosmonaut server of its own over gRPC (`server::`, when
 /// `DREAMER_KOSMONAUT_SERVER` names the server program; see
-/// `support/kosmonaut_server.rs`). The provider's code is the same; only
-/// where the statements run differs.
+/// `support/kosmonaut_server.rs`).
 #[cfg(feature = "kosmonaut")]
 #[path = "support/kosmonaut_server.rs"]
 mod kosmonaut_server;
 
-#[cfg(feature = "kosmonaut")]
-mod kosmonaut {
+mod graph {
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
 
     use super::*;
     use memory::embed::{Embedder, StaticVectors};
-    use memory::{Kosmonaut, Server};
+    use memory::{CollectorRow, Sqlite, Summary};
 
+    #[cfg(feature = "kosmonaut")]
     use super::kosmonaut_server::TestServer;
+
+    /// What both database providers have besides [`Provider`].
+    trait Graph: Provider {
+        fn add_row(&self, row: &CollectorRow) -> Result<(), Error>;
+        fn rows(
+            &self,
+            collector: &str,
+            since: u64,
+            limit: usize,
+        ) -> Result<Vec<CollectorRow>, Error>;
+        fn set_summary(&self, session: &str, text: &str) -> Result<Summary, Error>;
+        fn summary(&self, session: &str) -> Result<Option<Summary>, Error>;
+        fn relations_at(
+            &self,
+            cx: &Context,
+            id: &str,
+            at: u64,
+        ) -> Result<Vec<(String, String)>, Error>;
+    }
+
+    macro_rules! graph {
+        ($t:ty) => {
+            impl Graph for $t {
+                fn add_row(&self, row: &CollectorRow) -> Result<(), Error> {
+                    <$t>::add_row(self, row)
+                }
+                fn rows(
+                    &self,
+                    collector: &str,
+                    since: u64,
+                    limit: usize,
+                ) -> Result<Vec<CollectorRow>, Error> {
+                    <$t>::rows(self, collector, since, limit)
+                }
+                fn set_summary(&self, session: &str, text: &str) -> Result<Summary, Error> {
+                    <$t>::set_summary(self, session, text)
+                }
+                fn summary(&self, session: &str) -> Result<Option<Summary>, Error> {
+                    <$t>::summary(self, session)
+                }
+                fn relations_at(
+                    &self,
+                    cx: &Context,
+                    id: &str,
+                    at: u64,
+                ) -> Result<Vec<(String, String)>, Error> {
+                    <$t>::relations_at(self, cx, id, at)
+                }
+            }
+        };
+    }
+    graph!(Sqlite);
+    #[cfg(feature = "kosmonaut")]
+    graph!(memory::Kosmonaut);
 
     /// Where a test's database is.
     enum Db {
-        Embedded(PathBuf),
+        Sqlite(PathBuf),
+        #[cfg(feature = "kosmonaut")]
         Server(TestServer),
     }
 
     impl Db {
-        fn open(&self, embedder: Option<Arc<dyn Embedder>>) -> Kosmonaut {
+        fn open(&self, embedder: Option<Arc<dyn Embedder>>) -> Box<dyn Graph> {
             match self {
-                Db::Embedded(path) => Kosmonaut::new(path.clone(), embedder),
-                Db::Server(s) => {
-                    Kosmonaut::server(Server::new(&s.url, false, None).expect("server"), embedder)
-                }
+                Db::Sqlite(path) => Box::new(Sqlite::new(path.clone(), embedder)),
+                #[cfg(feature = "kosmonaut")]
+                Db::Server(s) => Box::new(memory::Kosmonaut::server(
+                    memory::Server::new(&s.url, false, None).expect("server"),
+                    embedder,
+                )),
             }
         }
     }
 
-    fn db(at: &Db) -> Kosmonaut {
+    fn db(at: &Db) -> Box<dyn Graph> {
         at.open(None)
     }
 
-    macro_rules! on_both {
+    macro_rules! on_each {
         ($($name:ident),* $(,)?) => {
-            mod embedded {
+            mod sqlite {
                 $(
                     #[test]
                     fn $name() {
-                        let d = super::Dirs::new(concat!("kosmo-", stringify!($name)));
-                        let at = super::Db::Embedded(d.root.join("data/memory.kosmonaut"));
+                        let d = super::Dirs::new(concat!("sqlite-", stringify!($name)));
+                        let at = super::Db::Sqlite(d.root.join("data/memory.sqlite"));
                         super::$name(&d, &at);
                     }
                 )*
             }
+            #[cfg(feature = "kosmonaut")]
             mod server {
                 $(
                     #[test]
@@ -361,17 +419,19 @@ mod kosmonaut {
         };
     }
 
-    on_both!(
+    on_each!(
         keeps_the_contract,
         memories_last_across_a_reopen,
+        recall_gives_the_order_files_gives,
         import_from_files_and_export_back_round_trips_the_files,
         links_are_edges_with_valid_times_and_recall_follows_them,
+        unlinking_closes_an_edge_and_forgetting_deletes_it,
         with_an_embedder_recall_also_finds_memories_near_in_meaning,
         collector_rows_and_session_summaries_share_the_store,
     );
 
     fn keeps_the_contract(d: &Dirs, at: &Db) {
-        contract(&db(at), d);
+        contract(db(at).as_ref(), d);
     }
 
     fn memories_last_across_a_reopen(d: &Dirs, at: &Db) {
@@ -389,19 +449,83 @@ mod kosmonaut {
         );
     }
 
+    /// The same memories, without links (so no neighbours join), give the
+    /// same recall as `files`: the same ids, scores, and order.
+    fn recall_gives_the_order_files_gives(d: &Dirs, at: &Db) {
+        let cx = d.cx();
+        let f = d.files("a");
+        let notes = [
+            (
+                "Rust toolchain",
+                "Pinned rust 1.99 for every crate",
+                Scope::Project,
+            ),
+            ("Rustfmt", "Run rustfmt before each commit", Scope::User),
+            (
+                "Trusted hosts",
+                "The build host trusts the rust mirror",
+                Scope::Host,
+            ),
+            (
+                "Commit style",
+                "Small commits with short subjects",
+                Scope::User,
+            ),
+            (
+                "Session goal",
+                "Fix the rust lints in this session",
+                Scope::Session,
+            ),
+            ("Release day", "Releases ship on Tuesdays", Scope::Project),
+            ("Rust rust rust", "Nothing else", Scope::User),
+        ];
+        for (title, text, scope) in notes {
+            f.remember(
+                &cx,
+                New {
+                    title: Some(title.into()),
+                    ..new(text, scope)
+                },
+            )
+            .expect(title);
+            // Distinct update times, so the newer-first tie break is
+            // exercised and not left to the id.
+            std::thread::sleep(std::time::Duration::from_millis(3));
+        }
+        let k = db(at);
+        memory::transfer(&f, k.as_ref(), &cx, None).expect("import");
+        for (q, limit) in [
+            ("rust", None),
+            ("rust", Some(2)),
+            ("ru", None),
+            ("commit rust", None),
+            ("ship tuesdays", None),
+            ("lints session rust", Some(3)),
+            ("", Some(4)),
+            ("nothing-matches-this", None),
+        ] {
+            let ranked = |found: memory::Found| -> Vec<(String, Option<u32>)> {
+                found.items.into_iter().map(|m| (m.id, m.score)).collect()
+            };
+            let want = ranked(f.recall(&cx, q, None, limit).expect("files"));
+            let got = ranked(k.recall(&cx, q, None, limit).expect("graph"));
+            assert_eq!(got, want, "{q:?} {limit:?}");
+        }
+    }
+
     fn import_from_files_and_export_back_round_trips_the_files(d: &Dirs, at: &Db) {
         let (a, b) = (d.files("a"), d.files("b"));
         let cx = d.cx();
         seed(&a, &cx);
         let k = db(at);
-        let moved = memory::transfer(&a, &k, &cx, None).expect("import");
+        let moved = memory::transfer(&a, k.as_ref(), &cx, None).expect("import");
         assert_eq!(moved.ids.len(), 4);
-        // Kosmonaut answers as the files did.
+        // The database answers as the files did.
         let want: Vec<Memory> = a.list(&cx, None, None).expect("a").items;
         let got: Vec<Memory> = k.list(&cx, None, None).expect("k").items;
         assert_eq!(got, want.iter().cloned().map(plain).collect::<Vec<_>>());
-        // Word matches come in the same order; Kosmonaut may add related
-        // memories after them.
+        // Word matches come in the same order; the database may add
+        // related memories after them.
         for q in ["commits", "tabs yaml", "8461", "lints"] {
             let words = |f: memory::Found| {
                 f.items
@@ -415,12 +539,19 @@ mod kosmonaut {
             assert_eq!(words(k.recall(&cx, q, None, None).expect("k")), want, "{q}");
         }
         // Importing again replaces, it does not duplicate.
-        memory::transfer(&a, &k, &cx, None).expect("again");
+        memory::transfer(&a, k.as_ref(), &cx, None).expect("again");
         assert_eq!(k.list(&cx, None, None).expect("k").items.len(), 4);
         // Export into empty directories gives the same files back.
-        memory::transfer(&k, &b, &cx, None).expect("export");
+        memory::transfer(k.as_ref(), &b, &cx, None).expect("export");
         assert_eq!(tree(&d.root.join("a")), tree(&d.root.join("b")));
     }
+
+    fn rel(r: &str, t: &str) -> (String, String) {
+        (r.to_owned(), t.to_owned())
+    }
+
+    /// Far enough ahead to be after every edge opened now.
+    const LATER: u64 = u64::MAX / 2000;
 
     fn links_are_edges_with_valid_times_and_recall_follows_them(d: &Dirs, at: &Db) {
         let cx = d.cx();
@@ -455,12 +586,12 @@ mod kosmonaut {
                 },
             )
             .expect("deploy");
-        let root = d.root.join("project").display().to_string();
-        let file = d.root.join("project/docs/style.md").display().to_string();
-        let rel = |r: &str, t: &str| (r.to_owned(), t.to_owned());
+        // A project is its real path, links resolved.
+        let real = std::fs::canonicalize(d.root.join("project")).expect("real");
+        let root = real.display().to_string();
+        let file = real.join("docs/style.md").display().to_string();
         assert_eq!(
-            k.relations_at(&cx, &review.id, u64::MAX / 2000)
-                .expect("now"),
+            k.relations_at(&cx, &review.id, LATER).expect("now"),
             vec![
                 rel("ABOUT_FILE", &file),
                 rel("ABOUT_PANE", "%3"),
@@ -468,8 +599,7 @@ mod kosmonaut {
             ]
         );
         assert_eq!(
-            k.relations_at(&cx, &deploy.id, u64::MAX / 2000)
-                .expect("deploy"),
+            k.relations_at(&cx, &deploy.id, LATER).expect("deploy"),
             vec![rel("IN_PROJECT", &root), rel("LINKS_TO", &style.id)]
         );
         // "tabs" matches the style guide by its words; the review shares
@@ -479,11 +609,11 @@ mod kosmonaut {
         assert_eq!(ids[0], style.id);
         assert_eq!(ids.len(), 3, "{ids:?}");
         assert!(ids.contains(&review.id.as_str()) && ids.contains(&deploy.id.as_str()));
-        assert!(found.items[1..].iter().all(|m| m.score < Some(1000)));
-        // Dropping a link closes its edge: it held until the change, and
-        // not after.
-        let before = memory_now();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(
+            found.items[1..].iter().all(|m| m.score == Some(510)),
+            "{found:?}"
+        );
+        // Dropping a link: recall no longer follows it.
         k.update(
             &cx,
             &review.id,
@@ -493,19 +623,75 @@ mod kosmonaut {
             },
         )
         .expect("update");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        assert!(
-            k.relations_at(&cx, &review.id, before)
-                .expect("then")
-                .contains(&rel("ABOUT_FILE", &file))
-        );
-        assert!(
-            !k.relations_at(&cx, &review.id, memory_now())
-                .expect("now")
-                .contains(&rel("ABOUT_FILE", &file))
-        );
         let found = k.recall(&cx, "tabs", None, None).expect("recall");
         assert!(found.items.iter().all(|m| m.id != review.id));
+    }
+
+    /// Dropping a link closes its edge: it held until the change, and not
+    /// after. Forgetting a memory deletes it with its edges, and the
+    /// edges other memories had to it.
+    fn unlinking_closes_an_edge_and_forgetting_deletes_it(d: &Dirs, at: &Db) {
+        let cx = d.cx();
+        let k = db(at);
+        let port = || New {
+            title: Some("Port".into()),
+            ..new("Staging listens on 8461", Scope::User)
+        };
+        let target = k.remember(&cx, port()).expect("target");
+        let note = k
+            .remember(
+                &cx,
+                New {
+                    links: vec![target.id.clone(), "pane:%7".into()],
+                    ..new("Deploys check staging first", Scope::User)
+                },
+            )
+            .expect("note");
+        let both = vec![rel("ABOUT_PANE", "%7"), rel("LINKS_TO", &target.id)];
+        assert_eq!(k.relations_at(&cx, &note.id, LATER).expect("now"), both);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let before = memory_now();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        k.update(
+            &cx,
+            &note.id,
+            Change {
+                links: Some(vec![target.id.clone()]),
+                ..Change::default()
+            },
+        )
+        .expect("unlink");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert_eq!(k.relations_at(&cx, &note.id, before).expect("then"), both);
+        assert_eq!(
+            k.relations_at(&cx, &note.id, memory_now()).expect("now"),
+            vec![rel("LINKS_TO", &target.id)]
+        );
+        // Before the memory was made, it had no edges.
+        assert!(k.relations_at(&cx, &note.id, 1).expect("before").is_empty());
+        // Linking the pane again opens a new edge; the closed one stays
+        // closed.
+        k.update(
+            &cx,
+            &note.id,
+            Change {
+                links: Some(vec![target.id.clone(), "pane:%7".into()]),
+                ..Change::default()
+            },
+        )
+        .expect("relink");
+        assert_eq!(k.relations_at(&cx, &note.id, LATER).expect("again"), both);
+        // Forgetting the target takes the link to it away.
+        k.forget(&cx, &target.id).expect("forget");
+        assert_eq!(
+            k.relations_at(&cx, &note.id, LATER).expect("after"),
+            vec![rel("ABOUT_PANE", "%7")]
+        );
+        // Remembered again under the same id, nothing links to it.
+        let back = k.remember(&cx, port()).expect("back");
+        assert_eq!(back.id, target.id);
+        let found = k.recall(&cx, "8461", None, None).expect("recall");
+        assert_eq!(found.items.len(), 1, "{found:?}");
     }
 
     fn memory_now() -> u64 {
@@ -546,9 +732,48 @@ mod kosmonaut {
         );
     }
 
+    /// An embedder that always fails: recall still answers by words and
+    /// says why there were no vectors.
+    #[derive(Debug)]
+    struct Broken;
+
+    impl Embedder for Broken {
+        fn model(&self) -> &str {
+            "broken"
+        }
+        fn embed(&self, _: &[&str]) -> Result<Vec<Vec<f32>>, Error> {
+            Err(Error::Unavailable("no model".into()))
+        }
+        fn dimension(&self) -> usize {
+            3
+        }
+    }
+
+    #[test]
+    fn sqlite_recalls_by_words_when_the_embedder_fails() {
+        let d = Dirs::new("sqlite-broken-embedder");
+        let cx = d.cx();
+        let path = d.root.join("data/memory.sqlite");
+        let k = Sqlite::new(path.clone(), Some(Arc::new(Broken)));
+        k.remember(&cx, new("Deploys go through staging", Scope::User))
+            .expect("remember");
+        k.remember(&cx, new("Lunch is at noon", Scope::User))
+            .expect("other");
+        let found = k.recall(&cx, "staging", None, None).expect("recall");
+        assert_eq!(found.items.len(), 1);
+        assert_eq!(found.problems.len(), 1, "{found:?}");
+        assert_eq!(found.problems[0].path, path);
+        assert!(
+            found.problems[0]
+                .message
+                .contains("recalled without vectors: embedder broken"),
+            "{found:?}"
+        );
+    }
+
     fn collector_rows_and_session_summaries_share_the_store(d: &Dirs, at: &Db) {
         let k = db(at);
-        let row = |at, pane: &str| memory::CollectorRow {
+        let row = |at, pane: &str| CollectorRow {
             collector: "test-failures".into(),
             at_unix_ms: at,
             pane: pane.into(),
@@ -560,7 +785,7 @@ mod kosmonaut {
         };
         k.add_row(&row(20, "%2")).expect("row");
         k.add_row(&row(10, "%1")).expect("row");
-        k.add_row(&memory::CollectorRow {
+        k.add_row(&CollectorRow {
             collector: "urls".into(),
             ..row(30, "%1")
         })
@@ -568,6 +793,7 @@ mod kosmonaut {
         let rows = k.rows("test-failures", 0, 10).expect("rows");
         assert_eq!(rows, vec![row(10, "%1"), row(20, "%2")]);
         assert_eq!(k.rows("test-failures", 15, 10).expect("since").len(), 1);
+        assert_eq!(k.rows("test-failures", 0, 1).expect("limit").len(), 1);
         assert!(k.summary("s-1").expect("none").is_none());
         k.set_summary("s-1", "Fixed the lints.").expect("summary");
         k.set_summary("s-1", "Fixed the lints; tests pass.")
@@ -578,6 +804,187 @@ mod kosmonaut {
         );
         assert!(k.set_summary("../x", "no").is_err());
     }
+
+    /// The schema is versioned: a new database gets this Dreamer's, and a
+    /// database from a newer Dreamer is refused, not changed.
+    #[test]
+    fn sqlite_records_its_schema_and_refuses_a_newer_one() {
+        let d = Dirs::new("sqlite-schema");
+        let cx = d.cx();
+        let path = d.root.join("data/memory.sqlite");
+        // Nothing is made until the first call.
+        let k = Sqlite::new(path.clone(), None);
+        assert!(!path.exists());
+        k.remember(&cx, new("Deploys go through staging", Scope::User))
+            .expect("remember");
+        assert!(path.is_file());
+        drop(k);
+        let c = rusqlite::Connection::open(&path).expect("open");
+        let version: i64 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .expect("version");
+        assert_eq!(version, 2);
+        let mode: String = c
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .expect("mode");
+        assert_eq!(mode, "wal");
+        c.pragma_update(None, "user_version", 99).expect("newer");
+        drop(c);
+        let e = Sqlite::new(path, None)
+            .list(&cx, None, None)
+            .expect_err("newer");
+        assert!(e.to_string().contains("has schema 99"), "{e}");
+    }
+
+    /// One project is one owner whatever path names it: through a
+    /// symbolic link, a memory kept under one name is found under the
+    /// other.
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_finds_a_project_under_any_name_for_it() {
+        let d = Dirs::new("sqlite-alias");
+        let alias = d.root.join("alias");
+        std::os::unix::fs::symlink(d.root.join("project"), &alias).expect("link");
+        let k = Sqlite::new(d.root.join("data/memory.sqlite"), None);
+        let kept = k
+            .remember(&d.cx(), new("Deploys go through staging", Scope::Project))
+            .expect("remember");
+        let via = Context {
+            cwd: Some(alias.join("src")),
+            session: None,
+        };
+        let found = k.list(&via, Some(Scope::Project), None).expect("list");
+        assert_eq!(
+            found.items.iter().map(|m| &m.id).collect::<Vec<_>>(),
+            [&kept.id]
+        );
+    }
+
+    /// What the files layout holds is copied in once per scope owner, the
+    /// first time a call reaches it: same ids, text, links, and times; the
+    /// files untouched; a memory forgotten here not copied again, even by
+    /// a new provider on the same database; a file that does not read
+    /// reported once; a memory already here under the same id kept.
+    #[test]
+    fn sqlite_copies_in_the_files_once_per_scope_owner() {
+        let d = Dirs::new("sqlite-importing");
+        let cx = d.cx();
+        let files = Arc::new(d.files("a"));
+        seed(&files, &cx);
+        // A link between two memories of one scope, the later one first
+        // in the listing.
+        files
+            .remember(
+                &cx,
+                New {
+                    title: Some("Tabs in YAML too".into()),
+                    links: vec!["user/prefers-tabs".into()],
+                    ..new("YAML is indented with tabs as well.", Scope::User)
+                },
+            )
+            .expect("linked");
+        std::fs::write(
+            d.root.join("a/config/memory/broken.md"),
+            "no frontmatter here\n",
+        )
+        .expect("broken");
+        let before = tree(&d.root.join("a"));
+        let project_before = tree(&d.root.join("project/.dreamer"));
+        let want: Vec<Memory> = files
+            .list(&cx, None, None)
+            .expect("files")
+            .items
+            .into_iter()
+            .map(plain)
+            .collect();
+        assert_eq!(want.len(), 5);
+
+        let path = d.root.join("data/memory.sqlite");
+        let open = || Sqlite::new(path.clone(), None).importing(files.clone());
+        let k = open();
+        // Nothing is opened or copied until a call.
+        assert!(!path.exists());
+        let found = k.list(&cx, None, None).expect("list");
+        assert_eq!(found.items, want);
+        assert_eq!(found.problems.len(), 1, "{found:?}");
+        assert!(found.problems[0].path.ends_with("broken.md"));
+        assert_eq!(
+            k.relations_at(&cx, "user/tabs-in-yaml-too", LATER)
+                .expect("relations"),
+            [rel("LINKS_TO", "user/prefers-tabs")]
+        );
+        // Reported once.
+        assert!(k.list(&cx, None, None).expect("again").problems.is_empty());
+        assert_eq!(tree(&d.root.join("a")), before);
+        assert_eq!(tree(&d.root.join("project/.dreamer")), project_before);
+
+        // Forgotten here, it stays forgotten: a fresh provider on the same
+        // database does not copy it again.
+        k.forget(&cx, "host/staging-listens-on-8461")
+            .expect("forget");
+        drop(k);
+        let k = open();
+        let ids: Vec<String> = k
+            .list(&cx, None, None)
+            .expect("reopened")
+            .items
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(ids.len(), 4, "{ids:?}");
+        assert!(!ids.iter().any(|i| i.starts_with("host/")), "{ids:?}");
+        assert!(
+            d.root
+                .join("a/state/memory/host/staging-listens-on-8461.md")
+                .is_file()
+        );
+
+        // A session reached for the first time is copied then; one the
+        // database holds already under the same id keeps its own.
+        let later = Context {
+            session: Some("s-2".into()),
+            ..cx.clone()
+        };
+        files
+            .remember(&later, new("Second session note", Scope::Session))
+            .expect("s-2 file");
+        files
+            .remember(&later, new("Kept in the database", Scope::Session))
+            .expect("s-2 clash");
+        let other = Sqlite::new(path.clone(), None);
+        // Written without the copy, as a provider without files would.
+        other
+            .put(
+                &later,
+                &Memory {
+                    text: "The database's own words".into(),
+                    ..files
+                        .get(&later, "session/kept-in-the-database")
+                        .expect("clash")
+                },
+            )
+            .expect("put");
+        drop(other);
+        let got = k
+            .list(&later, Some(Scope::Session), None)
+            .expect("s-2")
+            .items;
+        let texts: Vec<&str> = got.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(texts.contains(&"Second session note"), "{texts:?}");
+        assert!(texts.contains(&"The database's own words"), "{texts:?}");
+    }
+}
+
+/// Server mode only: a server that stops, and its token.
+#[cfg(feature = "kosmonaut")]
+mod kosmonaut {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use memory::{Kosmonaut, Server};
+
+    use super::kosmonaut_server::TestServer;
 
     /// A server that stops is "memory unavailable", promptly, and memory
     /// is back when the server is.

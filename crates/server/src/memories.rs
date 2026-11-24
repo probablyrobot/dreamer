@@ -5,12 +5,17 @@
 //!   scope in `<state dir>/memory/host/`, each session's in
 //!   `<state dir>/memory/sessions/<id>/`, and a project's in
 //!   `<project root>/.dreamer/memory/`.
-//! - `kosmonaut` (a build with the `kosmonaut` feature): one database for
-//!   the user, `<data dir>/memory.kosmonaut` unless the settings name
-//!   another, opened on first use; or, with `mode: server`, a Kosmonaut
+//! - `sqlite` (the default): one database for the user,
+//!   `<data dir>/memory.sqlite` unless the settings name another, opened
+//!   on first use. What the `files` layout above holds is copied in once
+//!   per scope owner, the first time a call reaches it; the files are
+//!   only read.
+//! - `kosmonaut` (a build with the `kosmonaut` feature): a Kosmonaut
 //!   server over gRPC. When the server cannot be reached, memory calls
 //!   fail with `UNAVAILABLE` ("memory unavailable: ...") and everything
 //!   else, agent sessions included, goes on without memory.
+//!
+//! `memory.embedder` gives `sqlite` and `kosmonaut` vectors.
 //!
 //! `memory.import` and `memory.export` copy between `files` and the
 //! provider in force. Calls do I/O, so they run off the event loop.
@@ -19,11 +24,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use api::{RpcError, code};
-use workspace_config::{KosmonautSettings, MemoryProvider, MemorySettings};
+use memory::embed::Embedder;
+use workspace_config::{EmbedderSettings, KosmonautSettings, MemoryProvider, MemorySettings};
 
 use crate::log;
 
-#[cfg(feature = "kosmonaut")]
 mod openai;
 
 #[derive(Debug)]
@@ -33,70 +38,72 @@ pub struct Memory {
 }
 
 fn build(s: &MemorySettings, files: &Arc<memory::Files>) -> Arc<dyn memory::Provider> {
+    for note in &s.notes {
+        log::warn(format!("settings: {note}"));
+    }
     match s.provider {
         MemoryProvider::Files => files.clone(),
-        MemoryProvider::Kosmonaut => kosmonaut(&s.kosmonaut),
+        MemoryProvider::Sqlite => {
+            let path = s
+                .sqlite
+                .path
+                .clone()
+                .unwrap_or_else(|| platform::data_dir().join("memory.sqlite"));
+            Arc::new(
+                memory::Sqlite::new(path, embedder(s.embedder.as_ref())).importing(files.clone()),
+            )
+        }
+        MemoryProvider::Kosmonaut => kosmonaut(&s.kosmonaut, s.embedder.as_ref()),
     }
 }
 
-#[cfg(feature = "kosmonaut")]
-fn kosmonaut(k: &KosmonautSettings) -> Arc<dyn memory::Provider> {
-    use memory::embed::{Command, Embedder, Lazy};
-    use workspace_config::EmbedderSettings;
-    let path = k
-        .path
-        .clone()
-        .unwrap_or_else(|| platform::data_dir().join("memory.kosmonaut"));
-    let embedder: Option<Arc<dyn Embedder>> = match &k.embedder {
-        None => None,
-        Some(EmbedderSettings::Static { path }) => {
-            Some(Arc::new(Lazy::static_vectors(path.clone())))
-        }
-        Some(EmbedderSettings::Local {
+/// The embedder the settings name, if any. One that cannot be made is
+/// logged, and recall goes on by words and links.
+fn embedder(e: Option<&EmbedderSettings>) -> Option<Arc<dyn Embedder>> {
+    use memory::embed::{Command, Lazy};
+    let made: Result<Arc<dyn Embedder>, memory::Error> = match e? {
+        EmbedderSettings::Static { path } => Ok(Arc::new(Lazy::static_vectors(path.clone()))),
+        EmbedderSettings::Local {
             command,
             dimension,
             timeout,
-        }) => match Command::new(command.clone(), *dimension, *timeout) {
-            Ok(c) => Some(Arc::new(c)),
-            Err(e) => {
-                log::warn(format!("memory embedder: {e}; recall runs without vectors"));
-                None
-            }
-        },
-        Some(EmbedderSettings::OpenAi {
+        } => Command::new(command.clone(), *dimension, *timeout)
+            .map(|c| Arc::new(c) as Arc<dyn Embedder>),
+        EmbedderSettings::OpenAi {
             model,
             key_env,
             url,
             dimension,
             timeout,
-        }) => {
-            match openai::OpenAi::new(model.clone(), key_env.clone(), url, *dimension, *timeout) {
-                Ok(o) => Some(Arc::new(o)),
-                Err(e) => {
-                    log::warn(format!("memory embedder: {e}; recall runs without vectors"));
-                    None
-                }
-            }
-        }
+        } => openai::OpenAi::new(model.clone(), key_env.clone(), url, *dimension, *timeout)
+            .map(|o| Arc::new(o) as Arc<dyn Embedder>),
     };
-    match &k.server {
-        None => Arc::new(memory::Kosmonaut::new(path, embedder)),
-        Some(s) => match memory::Server::new(&s.url, s.tls, s.token_env.clone()) {
-            Ok(server) => Arc::new(memory::Kosmonaut::server(server, embedder)),
-            Err(e) => {
-                log::warn(format!("memory provider kosmonaut: {e}"));
-                Arc::new(Unavailable(e.to_string()))
-            }
-        },
+    made.map_err(|e| log::warn(format!("memory embedder: {e}; recall runs without vectors")))
+        .ok()
+}
+
+#[cfg(feature = "kosmonaut")]
+fn kosmonaut(k: &KosmonautSettings, e: Option<&EmbedderSettings>) -> Arc<dyn memory::Provider> {
+    let Some(s) = &k.server else {
+        return Arc::new(Unavailable(
+            "memory.provider is kosmonaut, but memory.kosmonaut.url names no server".into(),
+        ));
+    };
+    match memory::Server::new(&s.url, s.tls, s.token_env.clone()) {
+        Ok(server) => Arc::new(memory::Kosmonaut::server(server, embedder(e))),
+        Err(e) => {
+            log::warn(format!("memory provider kosmonaut: {e}"));
+            Arc::new(Unavailable(e.to_string()))
+        }
     }
 }
 
 #[cfg(not(feature = "kosmonaut"))]
-fn kosmonaut(_: &KosmonautSettings) -> Arc<dyn memory::Provider> {
+fn kosmonaut(_: &KosmonautSettings, _: Option<&EmbedderSettings>) -> Arc<dyn memory::Provider> {
     log::warn("memory provider kosmonaut: this dreamerd was built without the kosmonaut feature");
     Arc::new(Unavailable(
         "memory.provider is kosmonaut, but this dreamerd was built without the kosmonaut \
-         feature: set memory.provider: files, or use a build that has it"
+         feature: set memory.provider: sqlite or files, or use a build that has it"
             .into(),
     ))
 }
@@ -266,7 +273,14 @@ impl Memory {
             session: (!session.is_empty()).then(|| session.to_owned()),
         };
         match self.run(move |m| m.list(&cx, None, None)).await {
-            Ok(found) => memory::index(&found.items),
+            Ok(found) => {
+                // Nothing else shows them here: a file the copy into
+                // sqlite could not read, say.
+                for p in &found.problems {
+                    log::warn(format!("memory: {}: {}", p.path.display(), p.message));
+                }
+                memory::index(&found.items)
+            }
             Err(e) => {
                 log::warn(format!("memory index for session {session}: {}", e.message));
                 None

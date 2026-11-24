@@ -48,6 +48,7 @@ impl Cli {
         c.args(args)
             .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
             .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_DATA_DIR", self.root.join("data"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", Self::daemon())
             .env("DREAMER_SSH", self.root.join("ssh"))
@@ -308,6 +309,7 @@ impl Cli {
             .args(["--tmux", program.as_str()])
             .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
             .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_DATA_DIR", self.root.join("data"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", daemon)
             .env("DREAMER_CONFIG_DIR", self.root.join("config"))
@@ -763,6 +765,7 @@ impl Cli {
         c.args(args)
             .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
             .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_DATA_DIR", self.root.join("data"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", Self::daemon())
             .env("DREAMER_SSH", self.root.join("ssh"))
@@ -2079,6 +2082,7 @@ impl Cli {
             .args(["-L", self.tmux.socket(), "--tmux", program.as_str()])
             .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
             .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_DATA_DIR", self.root.join("data"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", Self::daemon())
             .env("DREAMER_CONFIG_DIR", self.root.join("config"))
@@ -2099,6 +2103,7 @@ impl Cli {
             .args(["-L", self.tmux.socket(), "--tmux", program.as_str()])
             .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
             .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_DATA_DIR", self.root.join("data"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", Self::daemon())
             .env("DREAMER_CONFIG_DIR", self.root.join("config"))
@@ -2121,6 +2126,7 @@ impl Cli {
             .current_dir(dir)
             .env("DREAMER_RUNTIME_DIR", self.root.join("rt"))
             .env("DREAMER_STATE_DIR", self.root.join("st"))
+            .env("DREAMER_DATA_DIR", self.root.join("data"))
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_DAEMON", Self::daemon())
             .env("DREAMER_CONFIG_DIR", self.root.join("config"))
@@ -3164,11 +3170,18 @@ fn the_drawer_toggles_from_a_shell_and_asks_before_replacing_its_harness() {
     assert_ne!(fresh["pane"].as_u64(), Some(pane));
 }
 
-/// `dream memory`: what it remembers is a plain file in the project, a
-/// person's edit is what it shows next, and forget takes the file.
+/// `dream memory` with `provider: files`: what it remembers is a plain
+/// file in the project, a person's edit is what it shows next, and forget
+/// takes the file.
 #[test]
 fn dream_memory_keeps_plain_files_a_person_can_edit() {
     let cli = Cli::new();
+    std::fs::create_dir_all(cli.root.join("config")).expect("config");
+    std::fs::write(
+        cli.root.join("config/dreamer.yaml"),
+        "memory:\n  provider: files\n",
+    )
+    .expect("settings");
     let project = cli.root.join("work/app");
     std::fs::create_dir_all(project.join(".git")).expect("project");
     let cwd = project.display().to_string();

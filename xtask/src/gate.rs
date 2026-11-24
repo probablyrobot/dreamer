@@ -1351,9 +1351,6 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
         return Ok(Done::NotRun);
     }
     let image = ensure_arm64_image()?;
-    // The container has no GitHub login: private git dependencies come
-    // from mirrors of the host's cargo cache (see private_git.rs).
-    let private = crate::private_git::docker_args(dir)?;
     // `ulimit -c 0`: one test makes dreamerd abort on purpose, and the
     // container would otherwise write its core into the mounted tree.
     // Only this checkout's target is kept in the shared cache volume; the
@@ -1388,7 +1385,6 @@ fn arm64_container(dir: &Path) -> Result<Done, String> {
         .args(["run", "--rm", "--platform", "linux/arm64"])
         .arg("-v")
         .arg(format!("{}:/src", dir.display()))
-        .args(&private)
         .args([
             "-v",
             "dreamer-arm64-cargo:/root/.cargo",

@@ -19,9 +19,10 @@ dream memory list
 dream memory forget project/small-commits
 ```
 
-With the default provider each memory is a markdown file, so you can
-also read, edit, or delete it by hand ([Files](#files)). [CLI](#cli)
-lists every command.
+The default provider keeps memories in a SQLite database on this machine
+([SQLite](#sqlite)). If you would rather have each memory as a markdown
+file you can read, edit, or delete by hand, set `memory.provider: files`
+([Files](#files)). [CLI](#cli) lists every command.
 
 There is no setting that turns memory off. An agent session with no
 memories gets no index in its first prompt. To keep an MCP client from
@@ -30,26 +31,33 @@ memory, give `dream mcp` a `--method` list without the `memory.*` methods
 
 ## Providers
 
-There are two providers:
+There are three providers:
 
-- `files` (the default): one markdown file per memory, which a person can
-  read, edit, diff, and commit like any other file.
-- `kosmonaut`: one graph database for the user, Kosmonaut embedded in the
-  daemon or on a Kosmonaut server, where memories are nodes linked to
-  their project, session, files, panes, and each other
+- `sqlite` (the default): one SQLite database for the user on this
+  machine, where each memory is a row linked to its project, session,
+  files, panes, and other memories, so recall can also bring back what is
+  related to a match ([SQLite](#sqlite)). SQLite is compiled into
+  `dreamerd`; there is nothing to install.
+- `files`: one markdown file per memory, which a person can read, edit,
+  diff, and commit like any other file ([Files](#files)).
+- `kosmonaut`: the same as `sqlite`, kept on a Kosmonaut server instead
   ([Kosmonaut](#kosmonaut)). It is optional and off by default: it needs
   a `dreamerd` built with the `kosmonaut` feature.
 
 Choose one with `memory.provider` ([Settings](#settings)).
-`dream memory import` and `dream memory export` copy memories between the
-two, so the readable form is never lost.
+`dream memory import` and `dream memory export` copy memories between
+`files` and the provider in force, so the readable form is never lost.
+
+Earlier versions of Dreamer used `files` by default. Memories kept that
+way are copied into SQLite the first time they are needed
+([Moving from files](#moving-from-files)); the files stay where they are.
 
 ## Scopes and kinds
 
 Every memory has one **scope**, which decides where it is kept and who
 sees it:
 
-| Scope | Applies to | Kept in (`files`) |
+| Scope | Applies to | Directory (`files`) |
 | --- | --- | --- |
 | `user` | The user, everywhere | `<config dir>/memory/` (`~/.config/dreamer/memory/` on macOS and Linux) |
 | `host` | This machine only | `<state dir>/memory/host/` |
@@ -85,7 +93,7 @@ The **kind** says what a memory is about. The kinds are Claude Code's:
 
 ## Files
 
-Each memory is `<name>.md` in its scope's directory: YAML frontmatter, a
+With `memory.provider: files`, each memory is `<name>.md` in its scope's directory: YAML frontmatter, a
 blank line, and the text.
 
 ```markdown
@@ -174,34 +182,26 @@ title. `MemoryItems` holds `items`, `problems`, and the `provider` in
 force. An id in the project or session scope needs the same `context` it
 was made with. An unknown id fails with `NOT_FOUND`.
 
-## Kosmonaut
+## SQLite
 
-With `memory.provider: kosmonaut` the daemon keeps memory in
-[Kosmonaut](dependency-baseline.md#kosmonaut), a graph database it runs
-in-process (`mode: embedded`).
+By default (and with `memory.provider: sqlite`) the daemon keeps memory
+in one SQLite database for the user, `<data dir>/memory.sqlite`
+(`~/.local/share/dreamer/memory.sqlite` unless `DREAMER_DATA_DIR`,
+`XDG_DATA_HOME`, or `memory.sqlite.path` says otherwise). It is made on
+the first memory call. SQLite is
+compiled into `dreamerd` ([dependency-baseline.md](dependency-baseline.md#sqlite)),
+so it works the same on macOS and Linux and needs no system library.
 
-This provider is an optional build feature and is off by default. It
-needs a `dreamerd` built with the `kosmonaut` feature
-(`cargo build -p dreamer-server --features kosmonaut`), and that build
-needs access to the Kosmonaut source, which is not public. In a build
-without the feature, every memory call fails with `INVALID_PARAMS` and
-this message:
-
-```text
-memory.provider is kosmonaut, but this dreamerd was built without the kosmonaut feature: set memory.provider: files, or use a build that has it
-```
-
-**One database per user.** Every scope lives in one database,
-`<data dir>/memory.kosmonaut/` (`~/.local/share/dreamer/memory.kosmonaut`
-by default, or `memory.kosmonaut.path`), opened on the first memory call;
-or on a Kosmonaut server ([Server mode](#server-mode)).
-Each memory is tagged with its scope and owner: the project root for a
-project memory, the session id for a session memory. A request sees only
-the scopes its context reaches, so another project's memories never come
+**One database per user.** Every scope lives in the one database. Each
+memory is tagged with its scope and owner: the project root for a project
+memory, the session id for a session memory. The project root is its real
+path, with symbolic links resolved, so a project reached through a link
+(or as `/tmp/...` and `/private/tmp/...` on macOS) is still one project. A request sees only the
+scopes its context reaches, so another project's memories never come
 back. The API, ids, kinds, and fields are the same as with `files`;
 `path` is empty.
 
-**The graph.** A memory is a node, related to:
+**Links.** A memory is related to:
 
 | Relation | To | When |
 | --- | --- | --- |
@@ -213,34 +213,54 @@ back. The API, ids, kinds, and fields are the same as with `files`;
 
 Every relation has a valid time. When an update drops a link, its edge is
 closed at that moment instead of deleted, so the database keeps what a
-memory was linked to and until when. Forgetting a memory deletes it and
-its edges.
+memory was linked to and until when. Forgetting a memory deletes it, its
+edges, and the links other memories had to it.
 
 **Recall** ranks by words exactly as `files` does ([Recall](#recall)), so
 switching providers does not change which memories match or their order.
-After the word matches, Kosmonaut adds memories one edge from the best
-of them: ones that link to a match or that a match links to, and ones
-about the same file or pane. These score below every word match (500,
-plus 10 for each further edge). With an [embedder](#embedders), memories
-whose vectors are near the query's come next (similarity of at least 0.5;
-score below 500).
+After the word matches come memories one edge from the best of them: ones
+that link to a match or that a match links to, and ones about the same
+file or pane. These score below every word match (500, plus 10 for each
+further edge). With an [embedder](#embedders), memories whose vectors are
+near the query's come next (similarity of at least 0.5; score below 500).
 
 **Collector rows and session summaries** have tables in the same
-database, linked to their pane, session, and project, so they can be
-found next to the memories they concern.
+database, with their pane, session, and project, so they can be found
+next to the memories they concern.
 
-### Server mode
+**Storage.** The database is a file of the user's,
+in WAL mode. Each write (a memory, its edges, and its vector) is one
+transaction: all of it is kept, or none. Every call reads the database
+again; nothing is cached. The file records its schema version, so a later
+Dreamer can upgrade it; a Dreamer older than the database refuses to use
+it instead of changing it.
 
-With `mode: server` the same graph is kept on a Kosmonaut server instead
-of in the daemon. Everything above holds unchanged: the tables, the
-queries, recall, embedders, import and export. Only where the statements
-run differs.
+## Kosmonaut
+
+With `memory.provider: kosmonaut` the same memory, links, and vectors are
+kept on a [Kosmonaut](dependency-baseline.md#kosmonaut) server, a graph
+database, over gRPC. Everything in [SQLite](#sqlite) holds unchanged:
+scopes and owners, relations and their valid times, recall, embedders,
+import and export. Only where the data lives differs.
+
+This provider is an optional build feature and is off by default. It
+needs a `dreamerd` built with the `kosmonaut` feature
+(`cargo build -p dreamer-server --features kosmonaut`); the feature
+adds only a gRPC client from public crates. In a build without it, every
+memory call fails with `INVALID_PARAMS` and this message:
+
+```text
+memory.provider is kosmonaut, but this dreamerd was built without the kosmonaut feature: set memory.provider: sqlite or files, or use a build that has it
+```
+
+Kosmonaut runs only as a server for now. Running it inside `dreamerd`
+returns when Kosmonaut is published; until then the settings refuse
+`mode: embedded` and `path` and point to `provider: sqlite`.
 
 ```yaml
 memory:
   provider: kosmonaut
   kosmonaut:
-    mode: server
     url: grpc://memory.example:7687
     token_env: KOSMONAUT_TOKEN
 ```
@@ -251,11 +271,10 @@ memory:
   uses its `Query.ExecuteQuery`, `Sessions.Begin`, `Commit` and
   `Rollback`, and `Catalog.ListTables`. A memory write is one session:
   all of it commits, or none. Dreamer makes the tables it needs on the
-  first call, as it does in its own database. Use one server database
-  per user.
+  first call. Use one server database per user.
 - **`url`** is `grpc://host:port`, or `unix:/path` for the server's Unix
-  socket on this machine (a listener with `grpc_enabled: true`). A `url`
-  alone means `mode: server`.
+  socket on this machine (a listener with `grpc_enabled: true`). It is
+  required with `provider: kosmonaut`.
 - **`tls`** is on by default for `grpc://`, with the server's
   certificate checked against the Mozilla root certificates compiled
   into Dreamer (a certificate from a private CA is refused). `tls: false`
@@ -286,10 +305,11 @@ agent sessions start and hold their turns, without the index in the
 first prompt, and the agents' memory tools report the same message. When
 the server is back, the next call uses it; nothing needs restarting.
 
-### Embedders
+## Embedders
 
-Without an embedder there are no vectors: recall is by words and the
-graph, and no model runs. `memory.kosmonaut.embedder` adds one:
+Without an embedder there are no vectors: recall is by words and links,
+and no model runs. `memory.embedder` adds one, for `sqlite` and
+`kosmonaut` (`files` has no vectors):
 
 | `kind` | Settings | What it does |
 | --- | --- | --- |
@@ -302,19 +322,22 @@ before the embedder was configured are embedded at the next recall that
 reaches them. Vectors are kept beside the memories with the name of the
 model that made them (`static:<file name>`, `local:<program>`,
 `openai:<model>`), and only vectors of the configured model are compared.
-When the embedder fails, recall still answers by words and the graph, and
-its `problems` say why there were no vectors.
+When the embedder fails, recall still answers by words and links, and its
+`problems` say why there were no vectors.
 
-#### OpenAI
+The embedder used to be set under `memory.kosmonaut.embedder`. That key
+is still read for now, with a note from `dream config check` and in the
+daemon's log; move it to `memory.embedder`.
+
+### OpenAI
 
 ```yaml
 memory:
-  provider: kosmonaut
-  kosmonaut:
-    embedder:
-      kind: openai
-      model: text-embedding-3-small
-      key_env: OPENAI_API_KEY
+  provider: sqlite
+  embedder:
+    kind: openai
+    model: text-embedding-3-small
+    key_env: OPENAI_API_KEY
 ```
 
 - **The key** is read from the environment variable `key_env` names, in
@@ -335,14 +358,48 @@ memory:
   followed.
 - **Failures:** a refused key (HTTP 401 or 403), an API that cannot be
   reached, an error answer, or no answer within `timeout` each show as a
-  problem in that recall, which still answers by words and the graph.
+  problem in that recall, which still answers by words and links.
   Memories left without a vector are embedded at a later recall.
 
-Apart from app `fetch`, this embedder and the Kosmonaut
-[server mode](#server-mode) are the only parts of Dreamer that open a
-network connection of their own, and only when they are configured.
+Apart from app `fetch`, this embedder and the [Kosmonaut](#kosmonaut)
+provider are the only parts of Dreamer that open a network connection of
+their own, and only when they are configured.
 
-### Import and export
+## Moving from files
+
+When `sqlite` is the provider in force, whether by default or because the
+settings name it, it copies in the memories kept as files, once for each
+place they could be:
+
+- the user and host scopes, on the first memory call;
+- a project's `.dreamer/memory/`, the first time a call's context reaches
+  that project;
+- a session's directory, the first time a call names that session.
+
+The copy keeps ids, kinds, titles, descriptions, text, links, and times,
+so agents and links that name a memory by id still find it. A memory the
+database already holds under the same id is left as it is. The files are
+only read: nothing in them is changed or deleted.
+
+Each scope and owner copied (the project root, or the session id) is
+recorded in the database, together with the time and the number of
+memories, and is never copied again, even when there were no files. So a
+memory you forget in SQLite stays forgotten, though its file is still
+there. A file that does not read is left where it is and reported once,
+in the `problems` of the next list or recall; when the session index is
+the first to see it, the daemon's log has it instead. After fixing such a
+file, `dream memory import` copies it in.
+
+Files written after the copy, for example while `provider: files` was set
+for a while, are not copied automatically; use `dream memory import`.
+
+To go back to files, set `memory.provider: files`. The files are as you
+left them; to take along what was added in SQLite since, run
+`dream memory export` before switching. Export also writes the readable
+files whenever you want to look at, diff, or commit what the database
+holds.
+
+## Import and export
 
 `memory.import` copies every memory the `files` provider holds in the
 scopes the context reaches (or the one `scope` given) into the provider in
@@ -355,10 +412,10 @@ read is left out and reported in `problems`.
 Exported files are what `files` would have written: the same frontmatter,
 the same `MEMORY.md` lines, and the file's modification time set to the
 memory's updated time. Frontmatter keys Dreamer does not use are kept in
-a file that is replaced, but are not carried through Kosmonaut.
+a file that is replaced, but are not carried through a database.
 
 ```sh
-dream memory import             # files -> kosmonaut, every scope this directory reaches
+dream memory import             # files -> sqlite, every scope this directory reaches
 dream memory export --scope project
 ```
 
@@ -366,21 +423,21 @@ dream memory export --scope project
 
 ```yaml
 memory:
-  provider: files        # default; or kosmonaut
+  provider: sqlite       # default; or files, or kosmonaut
+  sqlite:                # used when the provider is sqlite
+    path: ~/.local/share/dreamer/memory.sqlite   # default: <data dir>/memory.sqlite
   kosmonaut:             # used when the provider is kosmonaut
-    mode: embedded       # default; or server
-    path: ~/.local/share/dreamer/memory.kosmonaut   # embedded; default: <data dir>/memory.kosmonaut
-    # url: grpc://memory.example:7687              # server: or unix:/path
-    # tls: true                                    # server: default true; false only to this machine
-    # token_env: KOSMONAUT_TOKEN                   # server: the variable that holds the token
-    embedder:            # optional
-      kind: static
-      path: ~/models/words.vec
+    url: grpc://memory.example:7687              # required: or unix:/path
+    # tls: true                                  # default true; false only to this machine
+    # token_env: KOSMONAUT_TOKEN                 # the variable that holds the token
+  embedder:              # optional, for sqlite and kosmonaut
+    kind: static
+    path: ~/models/words.vec
 ```
 
 A change applies to the next call, like other live settings
-([settings.md](settings.md)). `path` is refused with `mode: server`, and
-`url`, `tls`, and `token_env` without it.
+([settings.md](settings.md)). `tls` and `token_env` are refused without
+`url`.
 
 ## Grants
 

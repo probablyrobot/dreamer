@@ -1,11 +1,13 @@
-//! Memory through a real daemon on private directories: the user scope in
-//! the config directory, the host and session scopes in the state
-//! directory, a project's in the project; hand edits seen at once; a bad
-//! file reported; agent grants that may remember but not forget below
-//! `own`; switching to the `kosmonaut` provider, with import from and
-//! export to the files; its `openai` embedder against a stand-in for
-//! the API on the loopback (no request leaves the machine); and its server
-//! mode against a Kosmonaut server of the test's own, stopped mid-way.
+//! Memory through a real daemon on private directories. With
+//! `provider: files`: the user scope in the config directory, the host and
+//! session scopes in the state directory, a project's in the project; hand
+//! edits seen at once; a bad file reported; agent grants that may remember
+//! but not forget below `own`. `sqlite`, the default: file memories copied
+//! in once when it takes over, at start or live, and never again; import
+//! from and export to the files; the `openai` embedder against a stand-in for the API on
+//! the loopback (no request leaves the machine); `kosmonaut` refused in a
+//! build without it; and, with the feature, Kosmonaut on a server of the
+//! test's own, stopped mid-way.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -20,13 +22,16 @@ const EXE: &str = env!("CARGO_BIN_EXE_dreamerd");
 
 struct Setup {
     root: PathBuf,
-    _tmux: TmuxServer,
+    tmux: TmuxServer,
     daemon: Child,
 }
 
+const FILES: &str = "memory:\n  provider: files\n";
+
 impl Setup {
-    fn new() -> Setup {
-        Setup::start(None, &[])
+    /// A daemon with `provider: files`.
+    fn files() -> Setup {
+        Setup::start(Some(FILES), &[])
     }
 
     /// A daemon started with `settings` as its `dreamer.yaml` and `env`
@@ -46,25 +51,23 @@ impl Setup {
             std::fs::write(root.join("config/dreamer.yaml"), text).expect("settings");
         }
         let tmux = TmuxServer::start(80, 24, "/bin/sh").expect("tmux");
-        let daemon = Command::new(EXE)
-            .envs(env.iter().copied())
-            .args(["--tmux-socket", tmux.socket(), "--tmux"])
-            .arg(tmux_program())
-            .env("DREAMER_RUNTIME_DIR", root.join("rt"))
-            .env("DREAMER_STATE_DIR", root.join("st"))
-            .env("DREAMER_CONFIG_DIR", root.join("config"))
-            .env("DREAMER_DATA_DIR", root.join("data"))
-            .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("dreamerd");
-        Setup {
-            root,
-            _tmux: tmux,
-            daemon,
+        let daemon = daemon(&root, &tmux, env);
+        Setup { root, tmux, daemon }
+    }
+
+    /// Stop the daemon and start another on the same directories, with
+    /// `settings` as its `dreamer.yaml` (none: no settings file).
+    fn restart(&mut self, settings: Option<&str>) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+        let file = self.root.join("config/dreamer.yaml");
+        match settings {
+            Some(text) => std::fs::write(&file, text).expect("settings"),
+            None => {
+                let _ = std::fs::remove_file(&file);
+            }
         }
+        self.daemon = daemon(&self.root, &self.tmux, &[]);
     }
 
     async fn client(&self) -> Client {
@@ -86,6 +89,23 @@ impl Setup {
             session: Some("sess-1".into()),
         })
     }
+}
+
+fn daemon(root: &Path, tmux: &TmuxServer, env: &[(&str, &str)]) -> Child {
+    Command::new(EXE)
+        .envs(env.iter().copied())
+        .args(["--tmux-socket", tmux.socket(), "--tmux"])
+        .arg(tmux_program())
+        .env("DREAMER_RUNTIME_DIR", root.join("rt"))
+        .env("DREAMER_STATE_DIR", root.join("st"))
+        .env("DREAMER_CONFIG_DIR", root.join("config"))
+        .env("DREAMER_DATA_DIR", root.join("data"))
+        .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("dreamerd")
 }
 
 impl Drop for Setup {
@@ -145,7 +165,7 @@ fn under(p: &Path, dir: &Path) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn memories_are_files_in_their_scopes_and_hand_edits_count() {
     use api::MemoryScope as S;
-    let s = Setup::new();
+    let s = Setup::files();
     let c = s.client().await;
     let user = remember(&c, &s, "Prefers short commit subjects", S::User).await;
     let host = remember(
@@ -264,7 +284,7 @@ async fn memories_are_files_in_their_scopes_and_hand_edits_count() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_observing_agent_remembers_but_does_not_forget() {
-    let s = Setup::new();
+    let s = Setup::files();
     let owner = s.client().await;
     let mine = remember(&owner, &s, "Written by the user", api::MemoryScope::User).await;
     for (level, may_forget) in [(api::ActLevel::Observe, false), (api::ActLevel::Own, true)] {
@@ -331,14 +351,34 @@ async fn transfer(c: &Client, s: &Setup, import: bool) -> Result<api::MemoryTran
     }
 }
 
-/// `memory.provider: kosmonaut` applies live. With the feature, the files
-/// go in with import and come back out with export; without it, every
-/// memory call says the build lacks it. Import and export need a provider
-/// other than files.
+/// `memory.provider` until the list says `provider`: a settings change
+/// applies within the watcher's period.
+async fn list_until(c: &Client, s: &Setup, provider: &str) -> api::MemoryItems {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let r = c
+            .call(Request::MemoryList(api::MemoryListQuery {
+                context: s.context(),
+                ..api::MemoryListQuery::default()
+            }))
+            .await;
+        match r {
+            Ok(Response::MemoryList(l)) if l.provider == provider => return l,
+            Ok(Response::MemoryList(_)) => {}
+            other => panic!("list: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "the provider never changed");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// `memory.provider: sqlite` applies live, and the files are in it from the
+/// first call; import copies them again on request, and export brings
+/// them back out. Import and export need a provider other than files.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kosmonaut_takes_over_live_and_the_files_move_in_and_out() {
+async fn sqlite_takes_over_live_and_the_files_move_in_and_out() {
     use api::MemoryScope as S;
-    let s = Setup::new();
+    let s = Setup::files();
     let c = s.client().await;
     let first = remember(&c, &s, "Deploys go through staging first", S::Project).await;
     assert_eq!(
@@ -347,58 +387,37 @@ async fn kosmonaut_takes_over_live_and_the_files_move_in_and_out() {
     );
     std::fs::write(
         s.root.join("config/dreamer.yaml"),
-        "memory:\n  provider: kosmonaut\n",
+        "memory:\n  provider: sqlite\n",
     )
     .expect("settings");
-    // Applied within the watcher's period.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let listed = loop {
-        let r = c
-            .call(Request::MemoryList(api::MemoryListQuery {
-                context: s.context(),
-                ..api::MemoryListQuery::default()
-            }))
-            .await;
-        match r {
-            Ok(Response::MemoryList(l)) if l.provider == "files" => {}
-            other => break other,
-        }
-        assert!(Instant::now() < deadline, "the provider never changed");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    if cfg!(not(feature = "kosmonaut")) {
-        let e = listed.expect_err("no kosmonaut in this build");
-        assert_eq!(code(e), api::code::INVALID_PARAMS);
-        return;
-    }
-    match listed {
-        Ok(Response::MemoryList(l)) => {
-            assert_eq!(l.provider, "kosmonaut");
-            assert!(l.items.is_empty(), "{l:?}");
-        }
-        other => panic!("list: {other:?}"),
-    }
+    let listed = list_until(&c, &s, "sqlite").await;
+    assert_eq!(listed.items.len(), 1, "{listed:?}");
+    assert_eq!(listed.items[0].id, first.id);
+    assert_eq!(listed.items[0].updated_unix_ms, first.updated_unix_ms);
+    assert_eq!(listed.items[0].path, None);
+    // Opened on the first call, in the data directory.
+    assert!(s.root.join("data/memory.sqlite").is_file());
     let moved = transfer(&c, &s, true).await.expect("import");
     assert_eq!(
         (moved.from.as_str(), moved.to.as_str()),
-        ("files", "kosmonaut")
+        ("files", "sqlite")
     );
     assert_eq!(moved.ids, std::slice::from_ref(&first.id));
-    assert!(s.root.join("data/memory.kosmonaut").is_dir());
     let found = recall(&c, &s, "staging", S::Unspecified).await;
-    assert_eq!(found.provider, "kosmonaut");
+    assert_eq!(found.provider, "sqlite");
     assert_eq!(found.items.len(), 1);
     assert_eq!(found.items[0].id, first.id);
     assert_eq!(found.items[0].path, None);
-    // A memory kept in Kosmonaut only reaches the files on export.
+    // A memory kept in the database only reaches the files on export.
     let second = remember(&c, &s, "Releases ship on Tuesdays", S::Project).await;
+    assert_eq!(second.path, None);
     let dir = path(&first).parent().expect("dir").to_path_buf();
     let file = dir.join("releases-ship-on-tuesdays.md");
     assert!(!file.exists());
     let moved = transfer(&c, &s, false).await.expect("export");
     assert_eq!(
         (moved.from.as_str(), moved.to.as_str()),
-        ("kosmonaut", "files")
+        ("sqlite", "files")
     );
     assert_eq!(moved.ids.len(), 2);
     assert!(moved.ids.contains(&second.id));
@@ -408,19 +427,176 @@ async fn kosmonaut_takes_over_live_and_the_files_move_in_and_out() {
     assert!(index.contains("(releases-ship-on-tuesdays.md)"), "{index}");
 }
 
+/// Every file under `dir`, relative, with its bytes.
+fn tree(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                let rel = p.strip_prefix(base).expect("under").to_path_buf();
+                out.push((rel, std::fs::read(&p).expect("read")));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+async fn list(c: &Client, s: &Setup) -> api::MemoryItems {
+    match c
+        .call(Request::MemoryList(api::MemoryListQuery {
+            context: s.context(),
+            ..api::MemoryListQuery::default()
+        }))
+        .await
+    {
+        Ok(Response::MemoryList(l)) => l,
+        other => panic!("list: {other:?}"),
+    }
+}
+
+/// An update to a Dreamer where `sqlite` is the default: the memories a
+/// user kept as files in every scope are there after the switch, with the
+/// same ids and times; the files are not touched; and a memory the user
+/// forgot is not copied in again on the next start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sqlite_by_default_copies_in_the_file_memories_once() {
+    use api::MemoryScope as S;
+    let mut s = Setup::files();
+    let c = s.client().await;
+    let mut kept = Vec::new();
+    for (text, scope) in [
+        ("Prefers short commit subjects", S::User),
+        ("This host builds with eight workers", S::Host),
+        ("The app squashes every commit", S::Project),
+        ("This session renames the commit hook", S::Session),
+    ] {
+        kept.push(remember(&c, &s, text, scope).await);
+    }
+    std::fs::write(
+        s.root.join("config/memory/broken.md"),
+        "no frontmatter here\n",
+    )
+    .expect("broken");
+    drop(c);
+    let dirs = ["config/memory", "st/memory", "work/app/.dreamer"];
+    let files: Vec<_> = dirs.iter().map(|d| tree(&s.root.join(d))).collect();
+
+    // No memory settings: sqlite.
+    s.restart(None);
+    let c = s.client().await;
+    let first = list(&c, &s).await;
+    assert_eq!(first.provider, "sqlite");
+    assert!(s.root.join("data/memory.sqlite").is_file());
+    let mut got: Vec<_> = first
+        .items
+        .iter()
+        .map(|m| {
+            (
+                m.id.clone(),
+                m.text.clone(),
+                m.created_unix_ms,
+                m.updated_unix_ms,
+            )
+        })
+        .collect();
+    let mut want: Vec<_> = kept
+        .iter()
+        .map(|m| {
+            (
+                m.id.clone(),
+                m.text.clone(),
+                m.created_unix_ms,
+                m.updated_unix_ms,
+            )
+        })
+        .collect();
+    got.sort();
+    want.sort();
+    assert_eq!(got, want);
+    assert!(first.items.iter().all(|m| m.path.is_none()), "{first:?}");
+    // The file that does not read is left, and said once.
+    assert_eq!(first.problems.len(), 1, "{first:?}");
+    assert!(first.problems[0].path.ends_with("broken.md"));
+    assert!(list(&c, &s).await.problems.is_empty());
+    let found = recall(&c, &s, "squashes", S::Unspecified).await;
+    assert_eq!(found.items.first().map(|m| &m.id), Some(&kept[2].id));
+
+    // Forgotten in the database: gone for good, though its file is there.
+    match c
+        .call(Request::MemoryForget(api::MemoryRef {
+            id: kept[1].id.clone(),
+            context: s.context(),
+        }))
+        .await
+    {
+        Ok(Response::MemoryForget(m)) => assert_eq!(m.id, kept[1].id),
+        other => panic!("forget: {other:?}"),
+    }
+    drop(c);
+    s.restart(None);
+    let c = s.client().await;
+    let again = list(&c, &s).await;
+    assert_eq!(again.items.len(), 3, "{again:?}");
+    assert!(!again.items.iter().any(|m| m.id == kept[1].id), "{again:?}");
+    assert!(again.problems.is_empty(), "{again:?}");
+    let now: Vec<_> = dirs.iter().map(|d| tree(&s.root.join(d))).collect();
+    assert_eq!(now, files, "the files changed");
+
+    // Back to files: everything is as it was there.
+    drop(c);
+    s.restart(Some(FILES));
+    let c = s.client().await;
+    let back = list(&c, &s).await;
+    assert_eq!(back.provider, "files");
+    assert_eq!(back.items.len(), 4);
+}
+
+/// `memory.provider: kosmonaut` in a build without the feature: every
+/// memory call says so.
+#[cfg(not(feature = "kosmonaut"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kosmonaut_in_a_build_without_it_is_refused_with_why() {
+    let s = Setup::start(
+        Some(
+            "memory:\n  provider: kosmonaut\n  kosmonaut:\n    url: grpc://127.0.0.1:1\n    tls: false\n",
+        ),
+        &[],
+    );
+    let c = s.client().await;
+    let e = c
+        .call(Request::MemoryList(api::MemoryListQuery {
+            context: s.context(),
+            ..api::MemoryListQuery::default()
+        }))
+        .await
+        .expect_err("no kosmonaut in this build");
+    let client::ClientError::Rpc(e) = e else {
+        panic!("not an RPC error: {e}");
+    };
+    assert_eq!(e.code, api::code::INVALID_PARAMS);
+    assert!(
+        e.message
+            .contains("built without the kosmonaut feature: set memory.provider: sqlite"),
+        "{e:?}"
+    );
+}
+
 /// A stand-in for OpenAI's embeddings API on the loopback. Each text gets
 /// a vector by its words: rolling out (deploy, staging, release, ship,
 /// roll, builds) on the first axis, formatting (indent, tabs, spaces) on
 /// the second. With `refuse` set it answers 401. Every request's
 /// `Authorization` header and body are kept.
-#[cfg(feature = "kosmonaut")]
 struct StandIn {
     port: u16,
     refuse: std::sync::Arc<std::sync::atomic::AtomicBool>,
     seen: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
 }
 
-#[cfg(feature = "kosmonaut")]
 fn stand_in() -> StandIn {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::atomic::Ordering;
@@ -505,18 +681,16 @@ fn stand_in() -> StandIn {
     api
 }
 
-#[cfg(feature = "kosmonaut")]
 fn openai_settings(key_env: &str, port: u16) -> String {
     format!(
-        "memory:\n  provider: kosmonaut\n  kosmonaut:\n    embedder:\n      kind: openai\n      \
-         model: test-embedding\n      key_env: {key_env}\n      url: http://127.0.0.1:{port}/v1\n      \
-         dimension: 3\n      timeout: 5s\n"
+        "memory:\n  provider: sqlite\n  embedder:\n    kind: openai\n    \
+         model: test-embedding\n    key_env: {key_env}\n    url: http://127.0.0.1:{port}/v1\n    \
+         dimension: 3\n    timeout: 5s\n"
     )
 }
 
 /// Recall `query` until a problem says `why` (a settings change applies
 /// within the watcher's period), and return that answer.
-#[cfg(feature = "kosmonaut")]
 async fn recall_until_problem(c: &Client, s: &Setup, query: &str, why: &str) -> api::MemoryItems {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -537,7 +711,6 @@ async fn recall_until_problem(c: &Client, s: &Setup, query: &str, why: &str) -> 
 /// query. A refused key, an unreachable API, or a key missing from the
 /// environment each leave a clear problem, and recall still answers by
 /// words.
-#[cfg(feature = "kosmonaut")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_openai_embedder_gives_memories_vectors_and_recall_uses_them() {
     use api::MemoryScope as S;
@@ -575,7 +748,7 @@ async fn the_openai_embedder_gives_memories_vectors_and_recall_uses_them() {
     }
     // No word in common with either memory: only the vectors find it.
     let found = recall(&c, &s, "how do we roll out builds", S::Unspecified).await;
-    assert_eq!(found.provider, "kosmonaut");
+    assert_eq!(found.provider, "sqlite");
     assert!(found.problems.is_empty(), "{found:?}");
     let ids: Vec<&str> = found.items.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(ids, vec![deploys.id.as_str()], "{found:?}");
@@ -660,7 +833,7 @@ async fn a_stopped_kosmonaut_server_leaves_sessions_working_without_memory() {
     let found = recall(&c, &s, "staging", S::Unspecified).await;
     assert_eq!(found.provider, "kosmonaut");
     assert_eq!(found.items.first().map(|m| &m.id), Some(&kept.id));
-    assert!(!s.root.join("data/memory.kosmonaut").exists());
+    assert!(!s.root.join("data/memory.sqlite").exists());
 
     server.stop();
     let e = c

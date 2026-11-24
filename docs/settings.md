@@ -70,7 +70,7 @@ drawer:
   side: bottom                           # bottom (default), right, or left
   size: 35                               # default; percent of the window, 10 to 90
 memory:
-  provider: files                        # default; or kosmonaut
+  provider: sqlite                       # default; or files, or kosmonaut
 window:
   decorations: full                      # full (default) or none
 web:
@@ -402,45 +402,53 @@ web:
 
 ## Memory
 
-`memory:` chooses what keeps durable memory: `provider: files` (the
-default) keeps one markdown file per memory and a `MEMORY.md` index, under
-`<config dir>/memory/` for the user and `.dreamer/memory/` in a project.
-`provider: kosmonaut` keeps every memory in one graph database for the
-user, embedded in the daemon or on a Kosmonaut server (a build with the
-`kosmonaut` feature). A change applies to the next memory call. See
+`memory:` chooses what keeps durable memory: `provider: sqlite` (the
+default) keeps every memory in one SQLite database for the user on this
+machine, `<data dir>/memory.sqlite`, where links are edges that recall
+follows. The first time it reaches a scope, it copies in once what
+`files` kept there, so memories from earlier versions carry over; the
+files are left as they are ([memory.md](memory.md#moving-from-files)).
+`provider: files` keeps one markdown file per memory and a `MEMORY.md`
+index, under `<config dir>/memory/` for the user and `.dreamer/memory/`
+in a project. `provider: kosmonaut` keeps the same on a Kosmonaut server (a build with
+the `kosmonaut` feature). A change applies to the next memory call. See
 [memory.md](memory.md).
 
 ```yaml
 memory:
-  provider: kosmonaut
-  kosmonaut:
-    mode: embedded                       # default; or server
-    path: ~/.local/share/dreamer/memory.kosmonaut   # embedded; default: <data dir>/memory.kosmonaut
-    # mode: server
-    # url: grpc://memory.example:7687    # server: grpc://host:port, or unix:/path
-    # tls: true                          # default; false only to localhost
-    # token_env: KOSMONAUT_TOKEN         # the variable holding the token, in dreamerd's environment
-    embedder:                            # optional; without it, no vectors
-      kind: static                       # static, local, or openai
-      path: ~/models/words.vec           # static: word vectors, word2vec text format
-      # kind: local
-      # command: [my-embedder, --json]   # local: JSON texts in, JSON vectors out
-      # dimension: 384
-      # timeout: 30s                     # default
-      # kind: openai
-      # model: text-embedding-3-small    # openai: OpenAI's embeddings API
-      # key_env: OPENAI_API_KEY          # the variable holding the key, in dreamerd's environment
-      # url: https://api.openai.com/v1   # default; https, or http to localhost only
-      # dimension: 512                   # optional; the model's own length by default
-      # timeout: 30s                     # default; each request
+  provider: sqlite
+  sqlite:
+    path: ~/.local/share/dreamer/memory.sqlite   # default: <data dir>/memory.sqlite
+  # provider: kosmonaut
+  # kosmonaut:
+  #   url: grpc://memory.example:7687    # grpc://host:port, or unix:/path
+  #   tls: true                          # default; false only to localhost
+  #   token_env: KOSMONAUT_TOKEN         # the variable holding the token, in dreamerd's environment
+  embedder:                              # optional, for sqlite and kosmonaut; without it, no vectors
+    kind: static                         # static, local, or openai
+    path: ~/models/words.vec             # static: word vectors, word2vec text format
+    # kind: local
+    # command: [my-embedder, --json]     # local: JSON texts in, JSON vectors out
+    # dimension: 384
+    # timeout: 30s                       # default
+    # kind: openai
+    # model: text-embedding-3-small      # openai: OpenAI's embeddings API
+    # key_env: OPENAI_API_KEY            # the variable holding the key, in dreamerd's environment
+    # url: https://api.openai.com/v1     # default; https, or http to localhost only
+    # dimension: 512                     # optional; the model's own length by default
+    # timeout: 30s                       # default; each request
 ```
 
-`path` and `embedder.path` are absolute or start with `~/`. The `openai`
+The embedder used to be under `memory.kosmonaut.embedder`. That key is
+still read for now, and `dream config check` prints a note saying to
+move it; setting both is an error.
+
+`sqlite.path` and `embedder.path` are absolute or start with `~/`. The `openai`
 key is read only from the environment variable `key_env` names, never
 from a file or keychain, and so is the Kosmonaut server's token
 (`token_env`); a `token:` key is refused. See
 [memory.md](memory.md#embedders) for what each embedder does, and
-[memory.md](memory.md#server-mode) for server mode.
+[memory.md](memory.md#kosmonaut) for the Kosmonaut server.
 
 ## Agent providers
 

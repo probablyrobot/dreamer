@@ -5598,7 +5598,7 @@ pub struct MemoryItems {
     pub items: Vec<MemoryItem>,
     #[prost(message, repeated, tag = "2")]
     pub problems: Vec<MemoryProblem>,
-    /// The provider in force (files or kosmonaut).
+    /// The provider in force (files, sqlite, or kosmonaut).
     #[prost(string, tag = "3")]
     pub provider: String,
 }

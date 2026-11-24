@@ -3148,7 +3148,7 @@
             "type": "array"
           },
           "provider": {
-            "description": "The provider in force (files or kosmonaut).",
+            "description": "The provider in force (files, sqlite, or kosmonaut).",
             "type": "string"
           }
         },

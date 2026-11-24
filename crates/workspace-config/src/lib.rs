@@ -30,7 +30,7 @@ pub use settings::{
     Appearance, ClipboardSettings, ClipboardTmux, ClipboardWrite, Decorations, DownloadSettings,
     DrawerSettings, DrawerSide, EmbedderSettings, FallbackSettings, FontSettings, KosmonautServer,
     KosmonautSettings, LinkSettings, MemoryProvider, MemorySettings, MiddleClick, STARTER_SETTINGS,
-    Settings, TierSettings, WebColor, WebComponent, WebSettings, WindowSettings,
+    Settings, SqliteSettings, TierSettings, WebColor, WebComponent, WebSettings, WindowSettings,
     ensure_settings_file, load_settings, settings_path,
 };
 

@@ -1663,7 +1663,7 @@ impl Dreamer {
     }
 
     #[tool(
-        description = "Remember a fact worth having in a later session, with any agent: something the user told you about themselves or how to work, a decision in this project, or where to find something. One fact per memory; do not store secrets or what the code or git history already records. Returns the new memory's id and file."
+        description = "Remember a fact worth having in a later session, with any agent: something the user told you about themselves or how to work, a decision in this project, or where to find something. One fact per memory; do not store secrets or what the code or git history already records. Returns the new memory's id."
     )]
     async fn memory_remember(
         &self,
@@ -1697,7 +1697,7 @@ impl Dreamer {
     }
 
     #[tool(
-        description = "Forget a memory that is wrong or no longer true: deletes its file. Only when the user asks, or a memory you kept turned out wrong. Needs a grant from `own` up."
+        description = "Forget a memory that is wrong or no longer true: deletes it. Only when the user asks, or a memory you kept turned out wrong. Needs a grant from `own` up."
     )]
     async fn memory_forget(
         &self,

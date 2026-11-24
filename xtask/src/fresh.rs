@@ -79,9 +79,7 @@ pub fn build_in_container(arch: &str) -> Result<(), String> {
     let cargo = format!("dreamer-{arch}-cargo:/root/.cargo");
     let rustup = format!("dreamer-{arch}-rustup:/root/.rustup");
     let cache = format!("dreamer-{arch}-cache:/root/.cache");
-    let private = crate::private_git::docker_args(&root)?;
     let mut args: Vec<&str> = vec!["run", "--rm"];
-    args.extend(private.iter().map(String::as_str));
     args.extend([
         "--platform",
         &platform,

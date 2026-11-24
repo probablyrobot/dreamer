@@ -121,16 +121,27 @@ pub enum Decorations {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemorySettings {
     pub provider: MemoryProvider,
+    pub sqlite: SqliteSettings,
     pub kosmonaut: KosmonautSettings,
+    /// `memory.embedder`, shared by `sqlite` and `kosmonaut`. `None`: no
+    /// vectors; recall by words and links.
+    pub embedder: Option<EmbedderSettings>,
+    /// What the memory settings should change, though they still work: a
+    /// key that moved. `dream config check` shows these, and `dreamerd`
+    /// logs them.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryProvider {
     /// Markdown files with frontmatter and a `MEMORY.md` index.
-    #[default]
     Files,
-    /// Kosmonaut, a graph database, embedded in the daemon or a server.
+    /// One SQLite database for the user, compiled into `dreamerd`; what
+    /// the files hold is copied in once.
+    #[default]
+    Sqlite,
+    /// A Kosmonaut server, over gRPC.
     Kosmonaut,
 }
 
@@ -138,24 +149,28 @@ impl MemoryProvider {
     pub fn name(self) -> &'static str {
         match self {
             MemoryProvider::Files => "files",
+            MemoryProvider::Sqlite => "sqlite",
             MemoryProvider::Kosmonaut => "kosmonaut",
         }
     }
 }
 
-/// `memory.kosmonaut`: the embedded database, or a server.
+/// `memory.sqlite`: where the database is.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct KosmonautSettings {
-    /// The embedded database's directory; `None`: `memory.kosmonaut` in
-    /// Dreamer's data directory.
+pub struct SqliteSettings {
+    /// The database file; `None`: `memory.sqlite` in Dreamer's data
+    /// directory.
     pub path: Option<PathBuf>,
-    /// `mode: server`: the server to use instead of the embedded database.
-    pub server: Option<KosmonautServer>,
-    /// `None`: no vectors; recall by words and the graph.
-    pub embedder: Option<EmbedderSettings>,
 }
 
-/// `memory.kosmonaut` in `mode: server`: a Kosmonaut server over gRPC.
+/// `memory.kosmonaut`: the server.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KosmonautSettings {
+    /// `None` when no `url` is set; `provider: kosmonaut` needs one.
+    pub server: Option<KosmonautServer>,
+}
+
+/// `memory.kosmonaut`: a Kosmonaut server over gRPC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KosmonautServer {
     /// `grpc://host:port`, or `unix:/path` for a socket on this machine.
@@ -167,7 +182,7 @@ pub struct KosmonautServer {
     pub token_env: Option<String>,
 }
 
-/// `memory.kosmonaut.embedder`: what turns memories into vectors.
+/// `memory.embedder`: what turns memories into vectors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmbedderSettings {
     /// Word vectors from a file (word2vec text format).
@@ -577,7 +592,16 @@ struct WindowFile {
 struct MemoryFile {
     provider: Option<MemoryProvider>,
     #[serde(default)]
+    sqlite: SqliteFile,
+    #[serde(default)]
     kosmonaut: KosmonautFile,
+    embedder: Option<EmbedderFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SqliteFile {
+    path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -590,6 +614,7 @@ struct KosmonautFile {
     token_env: Option<String>,
     /// Never accepted: read only to say where a token goes instead.
     token: Option<serde_norway::Value>,
+    /// Moved to `memory.embedder`; still read, with a note.
     embedder: Option<EmbedderFile>,
 }
 
@@ -624,6 +649,12 @@ fn absolute(at: &str, v: &str) -> Result<PathBuf, (String, String)> {
     if p.is_absolute() { Ok(p) } else { Err(bad()) }
 }
 
+/// What `mode: embedded` and `path` get: embedded Kosmonaut is not in
+/// this Dreamer.
+const NO_EMBEDDED: &str = "embedded Kosmonaut is not in this Dreamer; it returns when Kosmonaut \
+     is published. Use provider: sqlite for a database on this machine, or a Kosmonaut server \
+     (url)";
+
 fn parse_kosmonaut(f: &KosmonautFile) -> Result<KosmonautSettings, (String, String)> {
     let at = |k: &str| format!("memory.kosmonaut.{k}");
     if f.token.is_some() {
@@ -634,47 +665,78 @@ fn parse_kosmonaut(f: &KosmonautFile) -> Result<KosmonautSettings, (String, Stri
                 .into(),
         ));
     }
-    // A url alone means a server.
-    let mode = f.mode.as_deref().or(f.url.as_ref().map(|_| "server"));
-    let server = match mode {
-        None | Some("embedded") => {
-            let set = [
-                ("url", f.url.is_some()),
-                ("tls", f.tls.is_some()),
-                ("token_env", f.token_env.is_some()),
-            ];
-            if let Some((k, _)) = set.iter().find(|(_, s)| *s) {
-                return Err((at(k), "used only with mode: server".into()));
-            }
-            None
+    match f.mode.as_deref() {
+        None | Some("server") => {}
+        Some("embedded") => return Err((at("mode"), NO_EMBEDDED.into())),
+        Some(m) => return Err((at("mode"), format!("`{m}` is not server"))),
+    }
+    if f.path.is_some() {
+        return Err((at("path"), NO_EMBEDDED.into()));
+    }
+    let server = if f.url.is_some() || f.mode.is_some() {
+        Some(parse_server(f)?)
+    } else {
+        let set = [
+            ("tls", f.tls.is_some()),
+            ("token_env", f.token_env.is_some()),
+        ];
+        if let Some((k, _)) = set.iter().find(|(_, s)| *s) {
+            return Err((at(k), "used only with url".into()));
         }
-        Some("server") => {
-            if f.path.is_some() {
-                return Err((at("path"), "not used with mode: server".into()));
-            }
-            Some(parse_server(f)?)
-        }
-        Some(m) => {
-            return Err((at("mode"), format!("`{m}` is not embedded or server")));
-        }
+        None
     };
-    let path = f
-        .path
-        .as_deref()
-        .map(|p| absolute("memory.kosmonaut.path", p))
-        .transpose()?;
-    let embedder = match &f.embedder {
-        None => None,
-        Some(e) => Some(parse_embedder(e)?),
+    Ok(KosmonautSettings { server })
+}
+
+/// The memory section: provider, sqlite, kosmonaut, and the embedder,
+/// read from `memory.embedder` or, with a note, from where it was before
+/// (`memory.kosmonaut.embedder`).
+fn parse_memory(f: &MemoryFile) -> Result<MemorySettings, (String, String)> {
+    let provider = f.provider.unwrap_or_default();
+    let kosmonaut = parse_kosmonaut(&f.kosmonaut)?;
+    if provider == MemoryProvider::Kosmonaut && kosmonaut.server.is_none() {
+        return Err((
+            "memory.kosmonaut.url".into(),
+            format!("provider: kosmonaut needs a server (grpc://host:port); {NO_EMBEDDED}"),
+        ));
+    }
+    let sqlite = SqliteSettings {
+        path: f
+            .sqlite
+            .path
+            .as_deref()
+            .map(|p| absolute("memory.sqlite.path", p))
+            .transpose()?,
     };
-    Ok(KosmonautSettings {
-        path,
-        server,
+    let mut notes = Vec::new();
+    let embedder = match (&f.embedder, &f.kosmonaut.embedder) {
+        (Some(_), Some(_)) => {
+            return Err((
+                "memory.kosmonaut.embedder".into(),
+                "moved to memory.embedder, which is set too: keep one".into(),
+            ));
+        }
+        (Some(e), None) => Some(parse_embedder(e, "memory.embedder")?),
+        (None, Some(e)) => {
+            notes.push(
+                "memory.kosmonaut.embedder has moved to memory.embedder (shared by sqlite and \
+                 kosmonaut); the old key is still read, but not after the next release"
+                    .to_owned(),
+            );
+            Some(parse_embedder(e, "memory.kosmonaut.embedder")?)
+        }
+        (None, None) => None,
+    };
+    Ok(MemorySettings {
+        provider,
+        sqlite,
+        kosmonaut,
         embedder,
+        notes,
     })
 }
 
-/// `mode: server`: a `grpc://host:port` URL with TLS unless `tls: false`,
+/// The server: a `grpc://host:port` URL with TLS unless `tls: false`,
 /// which only this machine may have, so a token never crosses the network
 /// in the clear; or `unix:/path`, a socket on this machine, without TLS.
 fn parse_server(f: &KosmonautFile) -> Result<KosmonautServer, (String, String)> {
@@ -752,8 +814,8 @@ fn parse_server(f: &KosmonautFile) -> Result<KosmonautServer, (String, String)> 
     })
 }
 
-fn parse_embedder(e: &EmbedderFile) -> Result<EmbedderSettings, (String, String)> {
-    let at = |k: &str| format!("memory.kosmonaut.embedder.{k}");
+fn parse_embedder(e: &EmbedderFile, key: &str) -> Result<EmbedderSettings, (String, String)> {
+    let at = |k: &str| format!("{key}.{k}");
     let unused = |keys: &[(&str, bool)]| -> Result<(), (String, String)> {
         match keys.iter().find(|(_, set)| *set) {
             Some((k, _)) => Err((at(k), format!("not used by kind {}", e.kind))),
@@ -1330,11 +1392,7 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
             }
         };
     }
-    if let Some(p) = file.memory.provider {
-        s.memory.provider = p;
-    }
-    s.memory.kosmonaut =
-        parse_kosmonaut(&file.memory.kosmonaut).map_err(|(at, m)| error(origin, &at, m))?;
+    s.memory = parse_memory(&file.memory).map_err(|(at, m)| error(origin, &at, m))?;
     if let Some(d) = file.window.decorations {
         s.window.decorations = d;
     }
@@ -1422,6 +1480,12 @@ mod tests {
 
     #[test]
     fn memory_takes_a_known_provider() {
+        // sqlite unless the settings say otherwise.
+        for text in ["", "font:\n  size: 13\n", "memory:\n  sqlite: {}\n"] {
+            let s = parse_settings(text, None).expect("default");
+            assert_eq!(s.memory.provider, MemoryProvider::Sqlite, "{text:?}");
+        }
+        assert_eq!(Settings::default().memory.provider, MemoryProvider::Sqlite);
         let s = parse_settings("memory:\n  provider: files\n", None).expect("files");
         assert_eq!(s.memory.provider, MemoryProvider::Files);
         let e = parse_settings("memory:\n  provider: notes\n", None).expect_err("notes");
@@ -1476,19 +1540,21 @@ mod tests {
     }
 
     #[test]
-    fn kosmonaut_is_embedded_and_its_embedder_is_optional() {
-        let s = parse_settings("memory:\n  provider: kosmonaut\n", None).expect("kosmonaut");
-        assert_eq!(s.memory.provider, MemoryProvider::Kosmonaut);
-        assert_eq!(s.memory.kosmonaut, KosmonautSettings::default());
+    fn sqlite_and_the_embedder_are_optional_and_the_old_embedder_key_is_noted() {
+        let s = parse_settings("memory:\n  provider: sqlite\n", None).expect("sqlite");
+        assert_eq!(s.memory.provider, MemoryProvider::Sqlite);
+        assert_eq!(s.memory.sqlite, SqliteSettings::default());
+        assert_eq!(s.memory.embedder, None);
+        assert!(s.memory.notes.is_empty());
         let s = parse_settings(
-            "memory:\n  provider: kosmonaut\n  kosmonaut:\n    mode: embedded\n    path: /data/m\n    \
-             embedder:\n      kind: local\n      command: [embed, --stdin]\n      dimension: 384\n      timeout: 5s\n",
+            "memory:\n  provider: sqlite\n  sqlite:\n    path: /data/m.sqlite\n  \
+             embedder:\n    kind: local\n    command: [embed, --stdin]\n    dimension: 384\n    timeout: 5s\n",
             None,
         )
         .expect("local");
-        assert_eq!(s.memory.kosmonaut.path, Some(PathBuf::from("/data/m")));
+        assert_eq!(s.memory.sqlite.path, Some(PathBuf::from("/data/m.sqlite")));
         assert_eq!(
-            s.memory.kosmonaut.embedder,
+            s.memory.embedder,
             Some(EmbedderSettings::Local {
                 command: vec!["embed".into(), "--stdin".into()],
                 dimension: 384,
@@ -1496,24 +1562,24 @@ mod tests {
             })
         );
         let s = parse_settings(
-            "memory:\n  kosmonaut:\n    embedder:\n      kind: static\n      path: /v/words.vec\n",
+            "memory:\n  embedder:\n    kind: static\n    path: /v/words.vec\n",
             None,
         )
         .expect("static");
         assert_eq!(
-            s.memory.kosmonaut.embedder,
+            s.memory.embedder,
             Some(EmbedderSettings::Static {
                 path: PathBuf::from("/v/words.vec")
             })
         );
         let s = parse_settings(
-            "memory:\n  kosmonaut:\n    embedder:\n      kind: openai\n      model: text-embedding-3-small\n      \
+            "memory:\n  embedder:\n    kind: openai\n    model: text-embedding-3-small\n    \
              key_env: OPENAI_API_KEY\n",
             None,
         )
         .expect("openai");
         assert_eq!(
-            s.memory.kosmonaut.embedder,
+            s.memory.embedder,
             Some(EmbedderSettings::OpenAi {
                 model: "text-embedding-3-small".into(),
                 key_env: "OPENAI_API_KEY".into(),
@@ -1523,13 +1589,13 @@ mod tests {
             })
         );
         let s = parse_settings(
-            "memory:\n  kosmonaut:\n    embedder:\n      kind: openai\n      model: m\n      key_env: K\n      \
-             url: http://127.0.0.1:8080/v1/\n      dimension: 256\n      timeout: 5s\n",
+            "memory:\n  embedder:\n    kind: openai\n    model: m\n    key_env: K\n    \
+             url: http://127.0.0.1:8080/v1/\n    dimension: 256\n    timeout: 5s\n",
             None,
         )
         .expect("openai stand-in");
         assert_eq!(
-            s.memory.kosmonaut.embedder,
+            s.memory.embedder,
             Some(EmbedderSettings::OpenAi {
                 model: "m".into(),
                 key_env: "K".into(),
@@ -1538,74 +1604,111 @@ mod tests {
                 timeout: std::time::Duration::from_secs(5),
             })
         );
+        // The key it had before still works, with a note.
+        let s = parse_settings(
+            "memory:\n  provider: sqlite\n  kosmonaut:\n    embedder:\n      kind: static\n      \
+             path: /v/words.vec\n",
+            None,
+        )
+        .expect("old key");
+        assert_eq!(
+            s.memory.embedder,
+            Some(EmbedderSettings::Static {
+                path: PathBuf::from("/v/words.vec")
+            })
+        );
+        assert_eq!(s.memory.notes.len(), 1);
+        assert!(
+            s.memory.notes[0].contains("memory.embedder"),
+            "{:?}",
+            s.memory.notes
+        );
+        let e = parse_settings(
+            "memory:\n  kosmonaut:\n    embedder:\n      kind: magic\n",
+            None,
+        )
+        .expect_err("old key, checked");
+        assert!(
+            e.to_string().contains("memory.kosmonaut.embedder.kind"),
+            "{e}"
+        );
+        let e = parse_settings(
+            "memory:\n  embedder:\n    kind: static\n    path: /a\n  kosmonaut:\n    embedder:\n      \
+             kind: static\n      path: /b\n",
+            None,
+        )
+        .expect_err("both");
+        assert!(e.message.contains("keep one"), "{e}");
         for (bad, why) in [
-            ("    mode: server\n", "server is required"),
-            ("    mode: cloud\n", "not embedded or server"),
+            ("  provider: kosmonaut\n", "needs a server"),
+            ("  kosmonaut:\n    mode: server\n", "server is required"),
             (
-                "    mode: embedded\n    url: grpc://h:1\n",
-                "only with mode: server",
+                "  kosmonaut:\n    mode: embedded\n",
+                "returns when Kosmonaut is published",
             ),
-            ("    token_env: KOSMONAUT_TOKEN\n", "only with mode: server"),
+            ("  kosmonaut:\n    path: /data/m\n", "provider: sqlite"),
+            ("  kosmonaut:\n    mode: cloud\n", "not server"),
             (
-                "    mode: server\n    url: grpc://h:1\n    token: abc\n",
+                "  kosmonaut:\n    token_env: KOSMONAUT_TOKEN\n",
+                "only with url",
+            ),
+            (
+                "  kosmonaut:\n    url: grpc://h:1\n    token: abc\n",
                 "token_env",
             ),
+            ("  kosmonaut:\n    url: grpc://h\n", "not grpc://"),
+            ("  kosmonaut:\n    url: https://h:1\n", "not grpc://"),
             (
-                "    mode: server\n    url: grpc://h:1\n    path: /data/m\n",
-                "not used",
-            ),
-            ("    mode: server\n    url: grpc://h\n", "not grpc://"),
-            ("    mode: server\n    url: https://h:1\n", "not grpc://"),
-            (
-                "    mode: server\n    url: grpc://memory.example:9432\n    tls: false\n",
+                "  kosmonaut:\n    url: grpc://memory.example:9432\n    tls: false\n",
                 "only to this machine",
             ),
             (
-                "    mode: server\n    url: unix:/run/k.sock\n    tls: true\n",
+                "  kosmonaut:\n    url: unix:/run/k.sock\n    tls: true\n",
                 "no TLS",
             ),
             (
-                "    mode: server\n    url: grpc://h:1\n    token_env: \"a b\"\n",
+                "  kosmonaut:\n    url: grpc://h:1\n    token_env: \"a b\"\n",
                 "environment variable",
             ),
-            ("    path: relative\n", "absolute"),
+            ("  sqlite:\n    path: relative\n", "absolute"),
+            ("  sqlite:\n    mode: x\n", "mode"),
             (
-                "    embedder:\n      kind: openai\n      key_env: OPENAI_API_KEY\n",
+                "  embedder:\n    kind: openai\n    key_env: OPENAI_API_KEY\n",
                 "model is required",
             ),
             (
-                "    embedder:\n      kind: openai\n      model: m\n",
+                "  embedder:\n    kind: openai\n    model: m\n",
                 "environment variable",
             ),
             (
-                "    embedder:\n      kind: openai\n      model: m\n      key_env: \"sk-a b\"\n",
+                "  embedder:\n    kind: openai\n    model: m\n    key_env: \"sk-a b\"\n",
                 "environment variable",
             ),
             (
-                "    embedder:\n      kind: openai\n      model: m\n      key_env: K\n      url: http://api.example.com/v1\n",
+                "  embedder:\n    kind: openai\n    model: m\n    key_env: K\n    url: http://api.example.com/v1\n",
                 "plain http",
             ),
             (
-                "    embedder:\n      kind: openai\n      model: m\n      key_env: K\n      url: ftp://x/v1\n",
+                "  embedder:\n    kind: openai\n    model: m\n    key_env: K\n    url: ftp://x/v1\n",
                 "not an http",
             ),
             (
-                "    embedder:\n      kind: openai\n      model: m\n      key_env: K\n      command: [x]\n",
+                "  embedder:\n    kind: openai\n    model: m\n    key_env: K\n    command: [x]\n",
                 "not used",
             ),
-            ("    embedder:\n      kind: static\n", "required"),
+            ("  embedder:\n    kind: static\n", "required"),
             (
-                "    embedder:\n      kind: local\n      command: [x]\n",
+                "  embedder:\n    kind: local\n    command: [x]\n",
                 "vector length",
             ),
             (
-                "    embedder:\n      kind: static\n      path: /v\n      dimension: 3\n",
+                "  embedder:\n    kind: static\n    path: /v\n    dimension: 3\n",
                 "not used",
             ),
-            ("    embedder:\n      kind: magic\n", "magic"),
+            ("  embedder:\n    kind: magic\n", "magic"),
         ] {
-            let e = parse_settings(&format!("memory:\n  kosmonaut:\n{bad}"), None).expect_err(bad);
-            assert!(e.message.contains(why), "{bad}: {e}");
+            let e = parse_settings(&format!("memory:\n{bad}"), None).expect_err(bad);
+            assert!(e.to_string().contains(why), "{bad}: {e}");
         }
     }
 

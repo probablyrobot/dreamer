@@ -1,4 +1,4 @@
-//! The `openai` embedder (`memory.kosmonaut.embedder.kind: openai`):
+//! The `openai` embedder (`memory.embedder.kind: openai`):
 //! texts to vectors through OpenAI's embeddings API, `POST <url>/embeddings`
 //! with `{model, input: [...]}`, answered with `{data: [{index, embedding}]}`.
 //!
@@ -69,7 +69,7 @@ impl OpenAi {
             .ok_or_else(|| {
                 Error::Invalid(format!(
                     "openai embedder: the vector length of `{model}` is not known; set \
-                 memory.kosmonaut.embedder.dimension"
+                 memory.embedder.dimension"
                 ))
             })?;
         let agent = ureq::Agent::config_builder()
