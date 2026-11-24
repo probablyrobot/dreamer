@@ -68,7 +68,7 @@ on [Tokio](https://tokio.rs):
 
 ```toml
 [dependencies]
-dreamer-sdk = "0.10"
+dreamer-sdk = "0.11"
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
