@@ -1,4 +1,4 @@
-//! Contribution points (spec 12.2.1): what installed app packages add to
+//! Contribution points: what installed app packages add to
 //! the desktop. Palette commands (with optional keybindings), sidebar
 //! entries, and compact status items. The desktop places and draws them;
 //! a package only declares them.

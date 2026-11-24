@@ -1,5 +1,5 @@
 //! `cargo xtask release vX.Y.Z`: one command sequence for a release with
-//! artifacts from both lanes and the build report (spec 17.5, 17.6).
+//! artifacts from both lanes and the build report.
 //!
 //! Run on the development Mac, from a clean `main` at `origin/main` whose
 //! version is `X.Y.Z` and whose tree has passed the full macOS gate:

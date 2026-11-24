@@ -1,6 +1,6 @@
 [package]
 name = "dreamer-perf"
-description = "Opt-in path timings and counters (spec 16.1, 16.4): lock-free histograms, no terminal content"
+description = "Opt-in path timings and counters: lock-free histograms, no terminal content"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

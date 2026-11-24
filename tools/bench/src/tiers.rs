@@ -1,5 +1,5 @@
 //! `dreamer-bench tiers`: what a pane costs the daemon in each tier
-//! (spec 16.6, ADR 0004), idle and busy.
+//! (ADR 0004), idle and busy.
 //!
 //! ```text
 //! dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB]

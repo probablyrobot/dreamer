@@ -1,4 +1,4 @@
-//! The workspace window (spec 4.2, 14.1, 15.1): one tmux session, a narrow
+//! The workspace window: one tmux session, a narrow
 //! tab strip of its windows, and the active window's panes, each drawn at
 //! its tmux cell rectangle. tmux is authoritative for geometry; the view
 //! follows `tmux.watch` and never assumes an action's result.
@@ -494,7 +494,7 @@ impl Workspace {
     /// The pane area was painted at `cols` x `rows` cells. When that, or
     /// the window shown, differs from the last request, ask tmux for it
     /// after the size has been still for a moment. Never in reaction to a
-    /// topology change: only this view's own size decides (spec 11.8).
+    /// topology change: only this view's own size decides.
     fn area_painted(&mut self, cols: u32, rows: u32, cx: &mut Context<Self>) {
         self.area = Some((cols, rows));
         if self.size_pending {
@@ -1732,7 +1732,7 @@ impl Workspace {
             // Waiting for the new session: show none rather than another.
         } else if !self.restored {
             // The first topology: the saved session, by id only for the same
-            // server incarnation, else by name (spec 15.2: never reopen a
+            // server incarnation, else by name (never reopen a
             // stale id from another server epoch).
             // The holding session of hidden drawers is never shown.
             let sessions: Vec<(u32, &str)> = t

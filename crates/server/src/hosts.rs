@@ -1,4 +1,4 @@
-//! The coordinator role (spec 7.1, 11.1, 11.2): this daemon's outbound
+//! The coordinator role: this daemon's outbound
 //! connections to daemons on other hosts.
 //!
 //! Each host is reached through system `ssh` running the fixed

@@ -1,5 +1,5 @@
 //! Building tmux commands without ever handing user text to tmux's parser
-//! unescaped (spec 7.1, 7.3).
+//! unescaped.
 //!
 //! Every argument is encoded as a double-quoted tmux token. Inside double
 //! quotes tmux 3.8 (`cmd-parse.y`) still interprets `\`, `$` (variables),

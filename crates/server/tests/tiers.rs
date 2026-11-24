@@ -1,4 +1,4 @@
-//! The Cold tier through a real daemon (spec 16.6): a pane nothing follows
+//! The Cold tier through a real daemon: a pane nothing follows
 //! drops its mirror and its tmux output; one that is followed stays warm;
 //! asking for a Cold pane's content attaches it again, with what it wrote
 //! meanwhile.

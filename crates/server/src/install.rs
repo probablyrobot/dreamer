@@ -1,4 +1,4 @@
-//! Installing a server on a host (spec 11.2, 17.6): probe the host over
+//! Installing a server on a host: probe the host over
 //! SSH, choose the archive for its OS and architecture, show the plan, and
 //! carry out exactly that plan.
 //!

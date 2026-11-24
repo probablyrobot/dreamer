@@ -1,5 +1,5 @@
 //! `dream service install|status|uninstall`: an optional per-user service
-//! that keeps `dreamerd` running (spec 11.3). Without it, the desktop and
+//! that keeps `dreamerd` running. Without it, the desktop and
 //! `dream` start the daemon on demand, and a daemon started through SSH
 //! already outlives the SSH session. A service also survives logout where
 //! the system ends a user's processes then, and starts at login.

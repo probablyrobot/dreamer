@@ -227,7 +227,7 @@ impl Default for DrawerSettings {
 }
 
 /// When panes that nothing follows (no view, tap, or filter) go Cold on
-/// their own (spec 16.6). The defaults come from the M7 measurements in
+/// their own. The defaults come from the M7 measurements in
 /// `docs/performance.md`: a Warm pane holds about 1 KiB per line of
 /// history (about 2 MiB at tmux's default 2,000 lines), a Cold one about
 /// 3 KiB, and opening a Cold pane again takes tens of milliseconds.
@@ -261,7 +261,7 @@ impl Default for TierSettings {
     }
 }
 
-/// Agent providers (spec 13.5). The CLIs need nothing here; an API
+/// Agent providers. The CLIs need nothing here; an API
 /// adapter is used only when it is configured, and its model is this
 /// configuration, never a constant in code.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -291,7 +291,7 @@ pub enum ApiKey {
 }
 
 /// The terminal's defaults, applied by the daemon to every pane's
-/// canonical mirror (spec 14.2): views get them through checkpoints.
+/// canonical mirror: views get them through checkpoints.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminalSettings {
     /// A built-in color scheme (`dream themes` lists them). Without one,

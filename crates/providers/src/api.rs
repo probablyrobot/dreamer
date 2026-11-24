@@ -1,4 +1,4 @@
-//! The API adapters (spec 13.5): the Claude Messages API and the OpenAI
+//! The API adapters: the Claude Messages API and the OpenAI
 //! Chat Completions API, used only when configured. They keep the CLI
 //! adapters' contract: the same events, cancellation, usage, and Dreamer's
 //! tools, which they take from `dream mcp` and run in a tool loop

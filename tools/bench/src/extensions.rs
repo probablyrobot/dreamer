@@ -69,7 +69,7 @@ use super::{
     print_table, revision, rss_kib, wait_live, write_json,
 };
 
-/// The one-pane key-to-echo budget (spec 16.5), plus the 10 ms allowed
+/// The one-pane key-to-echo budget, plus the 10 ms allowed
 /// under load.
 const BUDGET_MS: f64 = 30.0 + 10.0;
 

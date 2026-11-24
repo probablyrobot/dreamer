@@ -1,4 +1,4 @@
-//! An asynchronous tmux control-mode connection (spec 7.1, 7.3).
+//! An asynchronous tmux control-mode connection.
 //!
 //! One `tmux -C` subprocess per connection. A reader task parses its stdout
 //! and forwards notifications in order through a bounded channel (ordered

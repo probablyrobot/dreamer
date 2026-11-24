@@ -1,4 +1,4 @@
-//! Kitty images in frames (spec 9.4): placements from the public render
+//! Kitty images in frames: placements from the public render
 //! state, owned pixels, inline transport only, and the same result after a
 //! snapshot restore.
 

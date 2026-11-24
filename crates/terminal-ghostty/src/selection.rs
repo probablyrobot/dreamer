@@ -1,4 +1,4 @@
-//! Local text selection (spec 9.3, 11.5): Ghostty's selection gestures on
+//! Local text selection: Ghostty's selection gestures on
 //! the engine, the selected text, and nothing sent anywhere. A selection
 //! is view state; it never changes what the terminal holds.
 //!

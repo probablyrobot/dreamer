@@ -1,4 +1,4 @@
-//! The protocol matrix (spec 15, M7-03), end to end: a program in a real
+//! The protocol matrix (M7-03), end to end: a program in a real
 //! tmux pane writes each sequence; tmux carries it in control mode to the
 //! daemon's mirror; a client replica restores the mirror's checkpoint and
 //! follows its stream; the replica's frame must show the feature. Every

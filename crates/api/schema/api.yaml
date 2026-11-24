@@ -69,7 +69,7 @@ types:
       - { n: 10, name: desktops, type: u32, doc: "Desktop processes connected now that answer apps.capture." }
 
   - message: DiagnosticsSettings
-    doc: "Turn the daemon's performance diagnostics (spec 16.4) on or off. They are off by default, and cost nothing while off."
+    doc: "Turn the daemon's performance diagnostics on or off. They are off by default, and cost nothing while off."
     fields:
       - { n: 1, name: enabled, type: bool }
       - { n: 2, name: reset, type: bool, doc: "Also start every timing and counter again from zero." }
@@ -433,7 +433,7 @@ types:
       - { n: 6, name: journal_max_age_ms, type: u64 }
 
   - enum: Tier
-    doc: "Observation tier (spec 16.6). Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only."
+    doc: "Observation tier. Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only."
     values:
       - { n: 0, name: unspecified }
       - { n: 1, name: hot }

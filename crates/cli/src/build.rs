@@ -1,4 +1,4 @@
-//! The small-app builder's steps (spec 13.3), for people and agents alike:
+//! The small-app builder's steps, for people and agents alike:
 //! check a package, preview it from its fixtures, install it (keeping the
 //! version it replaces as the last good one), roll back, list, and launch
 //! it in a real tmux pane with exactly the grant it declares.

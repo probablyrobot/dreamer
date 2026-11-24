@@ -1,5 +1,5 @@
 //! `cargo xtask gate linux-desktop`: real-display evidence on a Linux
-//! desktop (spec 17.4). Run by a person on a machine with a graphical
+//! desktop. Run by a person on a machine with a graphical
 //! session; not part of CI.
 //!
 //! Builds the tested revision, then for each display backend that the

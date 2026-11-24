@@ -1,4 +1,4 @@
-//! The command palette (spec 4.2, 14.1): every pane and window action by
+//! The command palette: every pane and window action by
 //! keyboard. Destructive actions are named as such and need a second
 //! Enter; "Close view" closes only this window and never kills anything.
 

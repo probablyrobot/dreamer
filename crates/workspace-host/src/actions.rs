@@ -1,4 +1,4 @@
-//! Running typed actions against one tmux endpoint (spec 12.4).
+//! Running typed actions against one tmux endpoint.
 //!
 //! Each action is validated against the current inventory, recorded as
 //! `prepared`, recorded as `dispatching` (synced) before the command goes

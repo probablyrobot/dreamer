@@ -1,4 +1,4 @@
-//! Remote terminal streams through the coordinator (spec 11.2, 18.2): a
+//! Remote terminal streams through the coordinator: a
 //! pane on another host followed through the local daemon, SSH cut under
 //! it, and the subscription resumed from the host's journal with no new
 //! checkpoint; a host daemon restart told apart from a lost link.

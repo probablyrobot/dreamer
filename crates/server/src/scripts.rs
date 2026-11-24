@@ -1,4 +1,4 @@
-//! The `scripts` service (spec 12.7): sandboxed Luau scripts run by the
+//! The `scripts` service: sandboxed Luau scripts run by the
 //! daemon.
 //!
 //! Each script instance has its own VM on its own worker thread, never on

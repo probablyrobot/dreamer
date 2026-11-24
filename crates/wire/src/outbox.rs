@@ -1,4 +1,4 @@
-//! Outgoing frames in two queues (spec 11.4). Priority frames (input,
+//! Outgoing frames in two queues. Priority frames (input,
 //! requests, responses, events) always go first; a bulk message is cut into
 //! chunks so a large transfer delays priority traffic by at most one chunk.
 

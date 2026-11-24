@@ -1,4 +1,4 @@
-//! Topology push (spec 15.1): after `tmux.watch`, a client follows every
+//! Topology push: after `tmux.watch`, a client follows every
 //! change, including ones made by an ordinary tmux client, without polling.
 
 use std::path::PathBuf;

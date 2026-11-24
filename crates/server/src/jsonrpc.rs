@@ -1,4 +1,4 @@
-//! The JSON-RPC 2.0 endpoint (spec 12.2): one JSON object per line, on its
+//! The JSON-RPC 2.0 endpoint: one JSON object per line, on its
 //! own socket, so the protocol is chosen by the endpoint's name and never
 //! guessed.
 //!

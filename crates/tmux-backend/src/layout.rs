@@ -1,4 +1,4 @@
-//! Parse tmux window layouts into the domain layout tree (spec 7.4, 15.1).
+//! Parse tmux window layouts into the domain layout tree.
 //!
 //! tmux 3.8 has two layout encodings:
 //!

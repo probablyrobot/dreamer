@@ -1,4 +1,4 @@
-//! What a connection may do (spec 12.5): its grant, checked by the daemon
+//! What a connection may do: its grant, checked by the daemon
 //! before every request. The user's own clients hold the owner grant;
 //! registered pane apps hold a narrow one. Nothing a client sends (and no
 //! terminal output, manifest, or model response) can widen a grant: only

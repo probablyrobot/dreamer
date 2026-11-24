@@ -1,4 +1,4 @@
-//! Decorations (spec 12.8): marks filters put on lines of a pane, for
+//! Decorations: marks filters put on lines of a pane, for
 //! clients to draw as an overlay. They are data in a bounded store, never
 //! part of the terminal stream.
 //!

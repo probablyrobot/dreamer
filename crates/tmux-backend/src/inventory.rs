@@ -1,4 +1,4 @@
-//! The tmux object model and its reconciliation (spec 7.4, 15.1).
+//! The tmux object model and its reconciliation.
 //!
 //! [`Inventory::snapshot`] reads sessions, windows (one row per session
 //! link, so linked windows are recognized), panes, and the server identity

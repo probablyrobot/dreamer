@@ -1,4 +1,4 @@
-//! Interaction leases (spec 12.4): automation that types into a pane holds
+//! Interaction leases: automation that types into a pane holds
 //! an expiring lease, and every automated input carries it. The lease is
 //! checked when the input is about to be sent, under the pane's input
 //! lane, so input queued behind a person's keystroke fails rather than

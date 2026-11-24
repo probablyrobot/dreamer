@@ -87,8 +87,7 @@ pub fn evaluate_preamble(server: &Identity, major: u16, minor: u16) -> Option<Ve
 }
 
 /// Decide on a decoded `Hello`. The build family must match exactly: a
-/// matching protocol or snapshot format number alone is not enough
-/// (spec 11.4).
+/// matching protocol or snapshot format number alone is not enough.
 pub fn evaluate(server: &Identity, hello: &Hello) -> Verdict {
     if hello.build_family != server.build_family {
         return reject(

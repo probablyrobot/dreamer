@@ -1,4 +1,4 @@
-//! The per-pane ordered journal (spec 11.5): every record that changed the
+//! The per-pane ordered journal: every record that changed the
 //! canonical engine, numbered by the mirror's committed sequence, bounded
 //! per pane, per host, and by age. Trimming drops the oldest records and
 //! advances the first retained sequence by exactly what it dropped.
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::worker::Record;
 
-/// Retention limits (spec 16.4 starting points).
+/// Retention limits (starting points).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Retention {
     pub per_pane_bytes: usize,

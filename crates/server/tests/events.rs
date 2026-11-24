@@ -1,4 +1,4 @@
-//! The event log through a real daemon (spec 12.1 `events`): cursors
+//! The event log through a real daemon: cursors
 //! resume, and a subscriber that falls behind gets a gap naming what it
 //! missed, then live events. The daemon runs with small queues, so its log
 //! keeps 16 events.

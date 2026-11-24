@@ -1,4 +1,4 @@
-//! A client replica of a pane (spec 11.5, 11.6): an engine restored from a
+//! A client replica of a pane: an engine restored from a
 //! daemon checkpoint, then the journal's records applied strictly in order.
 //!
 //! Rules, so a replica never silently diverges from the canonical mirror:

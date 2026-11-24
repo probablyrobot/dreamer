@@ -1,4 +1,4 @@
-//! Opt-in performance diagnostics (spec 16.1, 16.4): how long each stage of
+//! Opt-in performance diagnostics: how long each stage of
 //! the terminal path takes, and counters for the traffic through it.
 //!
 //! Everything is off until a process turns it on ([`set_enabled`]). While

@@ -1,4 +1,4 @@
-//! Instrumented runs (spec 13.1): what a provider's hooks report about its
+//! Instrumented runs: what a provider's hooks report about its
 //! sessions, tied to the run process they belong to.
 //!
 //! A hook reports from a short-lived helper process. The daemon finds the

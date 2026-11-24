@@ -56,7 +56,7 @@ pub enum RejectReason {
 }
 
 /// Sent instead of `Welcome`. Carries what the peer needs to explain the
-/// mismatch and the way out (spec 11.4: "display a useful upgrade path").
+/// mismatch and the way out ("display a useful upgrade path").
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct Reject {
     #[prost(enumeration = "RejectReason", tag = "1")]

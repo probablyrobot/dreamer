@@ -1,4 +1,4 @@
-//! `cargo xtask build-report [--ci-run ID]`: the build report of spec 17.6,
+//! `cargo xtask build-report [--ci-run ID]`: the build report
 //! from what this checkout built and checked, for a release.
 //!
 //! It writes `target/package/build-report.json` and `build-report.md`:

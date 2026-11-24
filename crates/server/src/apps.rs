@@ -1,4 +1,4 @@
-//! Launching pane apps and registering them (spec 12.5).
+//! Launching pane apps and registering them.
 //!
 //! `apps.launch` (owner only) starts a program in a new tmux window. The
 //! daemon first writes a random single-use ticket to an owner-only file in
@@ -13,7 +13,7 @@
 //!
 //! Every process of the user can open the owner-only socket and act as the
 //! user: grants confine apps that run under Dreamer's launch, not processes
-//! the user starts by other means (spec 12.2: process separation is not an
+//! the user starts by other means (process separation is not an
 //! OS sandbox).
 //!
 //! A registered app's host is its pane's program. It publishes its current

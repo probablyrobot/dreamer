@@ -1,4 +1,4 @@
-//! Input encoding against the engine's current state (spec 10.1): keys,
+//! Input encoding against the engine's current state: keys,
 //! focus, and paste are encoded with the modes the application has set in
 //! this terminal (cursor-key and keypad modes, Kitty keyboard flags,
 //! modifyOtherKeys, focus reporting, bracketed paste).

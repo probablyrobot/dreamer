@@ -1,4 +1,4 @@
-//! The message broker (spec 12.3): structured messages between
+//! The message broker: structured messages between
 //! connections, never typed into a pane.
 //!
 //! Every connection has a broker identity: a registered app's instance,

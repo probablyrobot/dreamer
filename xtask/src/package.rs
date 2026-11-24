@@ -5,7 +5,7 @@
 //!   `dream`, and `dreamer-termapp`, plus `dreamer-<version>-aarch64-apple-darwin.zip` and its
 //!   `.sha256`. Bundles are ad hoc signed; with `--sign IDENTITY` they
 //!   are Developer ID signed under the hardened runtime, and with
-//!   `--notarize PROFILE` notarized and stapled (spec 3.2, 17.5). The app is
+//!   `--notarize PROFILE` notarized and stapled. The app is
 //!   built with web panes, but Chromium is not in it: beside it go
 //!   `target/package/dreamer-web/` and
 //!   `dreamer-web-<version>-aarch64-apple-darwin.zip` (with `.sha256` and
@@ -1332,7 +1332,7 @@ pub fn signing_state(app: &Path) -> (String, String, bool) {
 }
 
 /// `<zip>.json`: what the zip is, the commit it was built from, and its
-/// signing state, for the release's build report (spec 17.6).
+/// signing state, for the release's build report.
 fn record_bundle(app: &Path, zip: &Path, sha256: &str) -> Result<(), String> {
     use crate::gate::json_escape as esc;
     let root = repo_root();

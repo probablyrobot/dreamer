@@ -47,7 +47,7 @@ enum MirrorState {
   MIRROR_STATE_NOT_STREAMING = 5;
 }
 
-// Observation tier (spec 16.6). Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only.
+// Observation tier. Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only.
 enum Tier {
   TIER_UNSPECIFIED = 0;
   TIER_HOT = 1;
@@ -368,7 +368,7 @@ message DaemonStatus {
   uint32 desktops = 10;
 }
 
-// Turn the daemon's performance diagnostics (spec 16.4) on or off. They are off by default, and cost nothing while off.
+// Turn the daemon's performance diagnostics on or off. They are off by default, and cost nothing while off.
 message DiagnosticsSettings {
   bool enabled = 1;
   // Also start every timing and counter again from zero.

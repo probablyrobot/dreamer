@@ -1,4 +1,4 @@
-//! Remote acceptance through real OpenSSH (spec 18.2). Run by
+//! Remote acceptance through real OpenSSH. Run by
 //! `cargo xtask remote-acceptance`, which starts an unprivileged `sshd` on
 //! a loopback port with generated keys and its own configuration, gives
 //! its sessions a private HOME and daemon directories (`SetEnv`), and

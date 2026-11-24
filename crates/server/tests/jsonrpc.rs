@@ -1,4 +1,4 @@
-//! The JSON-RPC 2.0 endpoint through a real daemon (spec 12.2): the same
+//! The JSON-RPC 2.0 endpoint through a real daemon: the same
 //! service as the native socket, one JSON object per line.
 
 use std::path::PathBuf;

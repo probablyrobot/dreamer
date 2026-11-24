@@ -1,4 +1,4 @@
-//! OSC 8 hyperlink hit testing (spec 9.3, 15): which link, if any, is under
+//! OSC 8 hyperlink hit testing: which link, if any, is under
 //! a viewport cell, and which cells it covers. Hit testing only; opening a
 //! link is always the user's explicit action, decided elsewhere.
 

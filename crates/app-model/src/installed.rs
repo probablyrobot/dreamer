@@ -1,4 +1,4 @@
-//! Installed app packages (spec 12.2.1): `<config dir>/apps/<name>/app.toml`.
+//! Installed app packages: `<config dir>/apps/<name>/app.toml`.
 //! Their contributions are read from here. A package that does not
 //! validate, or whose id another package already has, is refused with the
 //! reason; a keybinding that is taken is dropped from its command, with the

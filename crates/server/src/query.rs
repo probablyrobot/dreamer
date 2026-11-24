@@ -1,4 +1,4 @@
-//! `terminal.query` (spec 12.8): which panes' newest lines match, here and
+//! `terminal.query`: which panes' newest lines match, here and
 //! on connected hosts, within fixed bounds.
 //!
 //! Lines come from the canonical mirrors through the same cheap tail read

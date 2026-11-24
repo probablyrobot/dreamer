@@ -1,4 +1,4 @@
-//! Decorations for a view (spec 12.8): the marks filters put on lines of
+//! Decorations for a view: the marks filters put on lines of
 //! the panes the view shows. A thread follows `decorations.changed` events
 //! and lists a pane again when its marks change, keeping the newest list
 //! per pane; the view is woken once per change.

@@ -1,4 +1,4 @@
-//! Running an app package against a daemon (spec 13.3): the connection,
+//! Running an app package against a daemon: the connection,
 //! data sources, events, commands, a Luau module, and hot reload. The
 //! presentation only turns keys into [`Input`]s and draws what is
 //! published.
@@ -397,7 +397,7 @@ fn fixture(path: &Path, name: &str) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.display()))
 }
 
-/// One connection for a package's contributions (spec 12.2.1): its
+/// One connection for a package's contributions: its
 /// commands and data sources, without a view. Narrowed like a panel's
 /// when the endpoint says so.
 #[derive(Debug)]

@@ -1,7 +1,7 @@
 //! `dream bridge --stdio`: the daemon's protocol over standard streams.
 //!
 //! This is the fixed command a coordinator runs on a remote host through
-//! `ssh -T` (spec 7.1, 11.2). It connects to the user's daemon socket,
+//! `ssh -T`. It connects to the user's daemon socket,
 //! starting the daemon if nothing answers, and copies bytes both ways. It
 //! never parses or rewrites the protocol: the handshake travels end to end,
 //! so version and build-family checks happen between the two real peers.
@@ -9,7 +9,7 @@
 //! Standard output carries protocol bytes and nothing else; every
 //! diagnostic goes to standard error. The bridge is short-lived. A daemon
 //! it starts is detached from it, so closing the bridge (or SSH) leaves the
-//! daemon, tmux, and its panes running (spec 11.3).
+//! daemon, tmux, and its panes running.
 
 use std::time::Duration;
 

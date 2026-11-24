@@ -330,7 +330,7 @@ fn require_refreshing_display() -> Result<bool, String> {
 
 /// Debug bundle, ad hoc signed and verified, launched to a presented frame.
 /// Every renderer fixture paints with the statistics derived from its
-/// content (spec 18.3 text matrix). First paints happen even on a locked
+/// content (text matrix). First paints happen even on a locked
 /// screen, so this runs whenever a GUI session exists.
 fn render_matrix(dir: &Path) -> Result<Done, String> {
     if !require_gui()? {
@@ -1322,7 +1322,7 @@ pub(crate) fn ensure_arm64_image() -> Result<String, String> {
 }
 
 /// Native ARM64 Linux checks in a container when a container runtime is
-/// running; otherwise recorded as not run (spec 17.4). In order: clippy on
+/// running; otherwise recorded as not run. In order: clippy on
 /// Linux (code behind `cfg(target_os = "macos")` hides nothing there), the
 /// headless crates' tests against the pinned tmux, and the remote
 /// acceptance cases through real OpenSSH (`cargo xtask remote-acceptance`,

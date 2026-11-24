@@ -1,6 +1,6 @@
 [package]
 name = "bench"
-description = "The benchmark harness: headless workloads against a real tmux and dreamerd (spec 16.5, 16.6)"
+description = "The benchmark harness: headless workloads against a real tmux and dreamerd"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

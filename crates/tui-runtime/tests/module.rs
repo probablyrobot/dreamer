@@ -1,4 +1,4 @@
-//! Luau modules, forms, and hot reload in a real tmux pane (spec 13.3): a
+//! Luau modules, forms, and hot reload in a real tmux pane: a
 //! module computes a column and handles a command through the daemon, a
 //! changed module is applied live, a broken update keeps the last-good
 //! version running, and a form submits typed values.

@@ -16,12 +16,12 @@ Dreamer is a native terminal for macOS (Apple Silicon) and Linux, written in Rus
 ## Where the plan lives
 
 - **Work items:** GitHub issues, grouped by milestones M0 to M8. Titles start with the ticket ID, for example `[M0-01]`. Work in milestone order and respect each issue's "Depends on" line.
-- **Specification:** kept outside this repository at `~/Devel/analysis/dreamer/spec.md` (revision 2.0), with the ticket source in `tickets.md` beside it. Read the sections an issue names before starting it. If the file is not available on your machine, ask for it; do not reconstruct requirements from memory.
-- **`docs/` is for documentation of the project as built:** how to build, run, configure, and extend it, plus compatibility tables. It is user and developer documentation only. Do not put specs, plans, ticket lists, design explorations, architecture decision records, or other process documents in the repository, and do not link to them from it. They belong in `~/Devel/analysis/dreamer/` (ADRs in `adr/`).
+- **Specification:** the maintainers keep the design specification outside this repository. An issue states what it needs; if it refers to something you cannot see, ask on the issue rather than guessing.
+- **`docs/` is for documentation of the project as built:** how to build, run, configure, and extend it, plus compatibility tables. It is user and developer documentation only. Do not put specs, plans, ticket lists, design explorations, architecture decision records, or other process documents in the repository, and do not link to them from it. The maintainers keep those outside the repository.
 
 ## Architecture rules
 
-These are settled. Changing one needs an ADR (kept outside the repository, in `~/Devel/analysis/dreamer/adr/`) and the owner's agreement first.
+These are settled. Changing one needs a written decision record, kept outside the repository, and the owner's agreement first. Open an issue to propose one.
 
 - tmux owns processes, sessions, windows, panes, and layout. Dreamer drives it through control mode (`tmux -C`) and never becomes a second multiplexer.
 - Terminal semantics come from the public `libghostty-vt` C API at an exact pinned release. No private Ghostty APIs. The renderer is original code in this repository.
@@ -62,7 +62,7 @@ The build interface (`cargo xtask doctor`, `deps prepare`, `gate`, `package`, `b
 ## Reporting
 
 - Say what was built, what ran, what passed, and what was not run. Never claim a build, test, benchmark, or platform result without evidence from this revision.
-- State supported subsets precisely. If an upstream limitation blocks a requirement, write a short ADR in `~/Devel/analysis/dreamer/adr/` with the evidence and options instead of substituting a weaker feature.
+- State supported subsets precisely. If an upstream limitation blocks a requirement, write up the evidence and the options on the issue instead of substituting a weaker feature.
 - Performance claims need numbers from the benchmark harness on named hardware.
 
 ## Style

@@ -1,4 +1,4 @@
-//! Input through the daemon (spec 10.1): encoded against the pane's
+//! Input through the daemon: encoded against the pane's
 //! canonical state and delivered to the real program in the pane.
 
 use std::path::PathBuf;
@@ -386,7 +386,7 @@ async fn leased(c: &Client, lease: &str, text: &str) -> Result<api::InputResult,
     }
 }
 
-/// Spec 12.4: automation types under a lease; a person typing into the
+/// Automation types under a lease; a person typing into the
 /// pane takes it over, and the automation's later input is refused instead
 /// of landing in the middle of what the person is doing.
 #[tokio::test]

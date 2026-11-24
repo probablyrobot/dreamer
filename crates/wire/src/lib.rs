@@ -1,4 +1,4 @@
-//! Dreamer's application protocol (spec 11.4): framing, records,
+//! Dreamer's application protocol: framing, records,
 //! handshake, limits, and the priority and bulk queues.
 //!
 //! The byte layout is documented in `docs/wire.md`. Each side opens with an

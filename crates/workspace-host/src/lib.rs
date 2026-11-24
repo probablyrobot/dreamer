@@ -1,4 +1,4 @@
-//! UI-independent host logic (spec 5.1): typed actions and their ledger,
+//! UI-independent host logic: typed actions and their ledger,
 //! and the inventory as API records. `dreamerd` drives these; nothing here
 //! depends on a GUI.
 

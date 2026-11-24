@@ -1,7 +1,7 @@
 //! `dreamer-bench streams`: panes replaying fixed byte corpora (plain
 //! text, escape-heavy TUI redraws, alternate-screen synchronized updates,
 //! Kitty graphics), with a client following one of them and typing into a
-//! quiet pane alongside (spec 16.5).
+//! quiet pane alongside.
 //!
 //! Each corpus gets a fresh tmux server and daemon, so memory growth is
 //! that corpus's alone.

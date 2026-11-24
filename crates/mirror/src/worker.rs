@@ -1,4 +1,4 @@
-//! VT owner workers (spec 5.2): a fixed pool of threads, each the single
+//! VT owner workers: a fixed pool of threads, each the single
 //! owner of the engines of the panes assigned to it. Messages for one pane
 //! always go to the same worker over one ordered channel, so a pane's
 //! records are applied exactly in stream order.
@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::journal::{Journal, Retention};
 
-/// Observation tier (spec 16.6) of a pane that has a mirror. In the daemon
+/// Observation tier of a pane that has a mirror. In the daemon
 /// both keep a live mirror and a journal; Hot panes are visible in a
 /// client, Warm ones are not. A Cold pane has no mirror at all (see
 /// `MirrorState::Cold`).

@@ -133,7 +133,7 @@ pub struct AgentState {
 }
 
 /// One thing an operator did: an action or job it started, or a tool call
-/// that failed, with its target and its state as last read (spec 13.2:
+/// that failed, with its target and its state as last read (so
 /// errors name the action and its actual target).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Taken {

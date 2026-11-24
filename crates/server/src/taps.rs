@@ -1,4 +1,4 @@
-//! Taps (spec 12.8): bounded views of panes for monitors, filters, and
+//! Taps: bounded views of panes for monitors, filters, and
 //! agents, read after canonical ingestion.
 //!
 //! - `raw` follows the mirror's record stream. The mirror never waits for a

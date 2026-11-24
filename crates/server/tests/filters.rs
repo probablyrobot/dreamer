@@ -1,4 +1,4 @@
-//! Filters through a real daemon (spec 12.8): a derived stream of matched
+//! Filters through a real daemon: a derived stream of matched
 //! lines, output a plain tmux client sees unchanged, and a self-triggering
 //! rule stopped by the circuit breaker.
 
@@ -525,7 +525,7 @@ async fn a_view_finds_a_mark_on_its_own_copy_of_the_line() {
     }
 }
 
-/// A filter pane (spec 13.4): an app with `filters.manage` and content read
+/// A filter pane: an app with `filters.manage` and content read
 /// installs filters that only read, on its own panes, and manages only
 /// those; the user's filters are out of its reach.
 #[tokio::test]

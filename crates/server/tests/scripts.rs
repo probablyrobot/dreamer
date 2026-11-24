@@ -1,4 +1,4 @@
-//! Scripts through a real daemon (spec 12.7): a loaded script reacts to
+//! Scripts through a real daemon: a loaded script reacts to
 //! events by calling the API under its grant, a runaway is terminated,
 //! reported, and restarted, and a bad reload keeps the last-good version.
 

@@ -1,4 +1,4 @@
-//! The action ledger (spec 12.4): every transition of every action, in an
+//! The action ledger: every transition of every action, in an
 //! append-only file that is synced before the next step runs.
 //!
 //! Because `dispatching` is on disk before a command reaches tmux, a

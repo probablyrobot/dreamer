@@ -1,4 +1,4 @@
-//! Supervised extensions (spec 12.2): programs from `extensions.yaml`
+//! Supervised extensions: programs from `extensions.yaml`
 //! that the daemon starts, watches, and restarts.
 //!
 //! An extension speaks JSON-RPC 2.0 on its standard output (requests to

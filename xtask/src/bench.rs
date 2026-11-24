@@ -1,4 +1,4 @@
-//! `cargo xtask bench`: the benchmark harness (spec 16.5, 16.6). Builds the
+//! `cargo xtask bench`: the benchmark harness. Builds the
 //! daemon and `dreamer-bench` in release mode and runs a workload against
 //! a private tmux server and daemon, writing the results with the machine
 //! they ran on and the revision they were built from to `target/bench/`.

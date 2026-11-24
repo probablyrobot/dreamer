@@ -217,7 +217,7 @@ mod mirror_state_json {
     }
 }
 
-/// Observation tier (spec 16.6). Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only.
+/// Observation tier. Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum Tier {
@@ -1563,7 +1563,7 @@ pub struct DaemonStatus {
     pub desktops: u32,
 }
 
-/// Turn the daemon's performance diagnostics (spec 16.4) on or off. They are off by default, and cost nothing while off.
+/// Turn the daemon's performance diagnostics on or off. They are off by default, and cost nothing while off.
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiagnosticsSettings {

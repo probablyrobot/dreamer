@@ -73,7 +73,7 @@ export type DaemonStatus = {
 	desktops: number?,
 }
 
---- Turn the daemon's performance diagnostics (spec 16.4) on or off. They are off by default, and cost nothing while off.
+--- Turn the daemon's performance diagnostics on or off. They are off by default, and cost nothing while off.
 export type DiagnosticsSettings = {
 	enabled: boolean?,
 	reset: boolean?,

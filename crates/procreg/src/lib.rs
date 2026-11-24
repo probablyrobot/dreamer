@@ -1,4 +1,4 @@
-//! The host process registry (spec 13.1): the user's processes, which
+//! The host process registry: the user's processes, which
 //! tmux pane each belongs to, and which are agent runs, each with the
 //! evidence behind it.
 //!

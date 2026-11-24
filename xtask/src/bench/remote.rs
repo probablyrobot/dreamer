@@ -1,7 +1,7 @@
 //! `cargo xtask bench remote --container [--netem SPEC] [OPTIONS]`: the
 //! remote workload with this machine as the desktop side and the host's
 //! daemon in the gate's ARM64 Linux container, reached through real
-//! OpenSSH (spec 16.5).
+//! OpenSSH.
 //!
 //! - **The host.** The container builds `dreamerd` and `dream` from this
 //!   checkout and the pinned tmux, starts a tmux server on a private

@@ -1,5 +1,5 @@
-//! `cargo xtask scenes`: the reference scenes of the design review gate
-//! (spec 14.4), one after another, in both default skins, for the product
+//! `cargo xtask scenes`: the reference scenes of the design review gate,
+//! one after another, in both default skins, for the product
 //! owner to capture and approve. Each scene runs against an isolated tmux
 //! server with private daemon directories and a temporary config; nothing
 //! touches the user's own tmux, state, or settings.

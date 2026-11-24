@@ -10,7 +10,7 @@
 //! same format, alacritty-theme TOML, and Ghostty's theme files, so users
 //! can add any scheme published for either (see `workspace-config`).
 //!
-//! A terminal's colors are canonical state (spec 14.2): the daemon applies
+//! A terminal's colors are canonical state: the daemon applies
 //! the configured scheme to its mirrors, and views get it through
 //! checkpoints.
 

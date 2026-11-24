@@ -1,4 +1,4 @@
-//! The match stage of queries, taps, and filters (spec 12.8): it runs in
+//! The match stage of queries, taps, and filters: it runs in
 //! Rust, never in a script, and its cost is bounded by construction.
 //!
 //! - **Literals:** one or more substrings, optionally ignoring case.

@@ -244,7 +244,7 @@ impl Engine {
 
     /// Set the terminal's default colors from a color scheme: foreground,
     /// background, cursor, and the 256-color palette. These are canonical
-    /// state (spec 14.2): only the daemon's mirror sets them, and replicas
+    /// state: only the daemon's mirror sets them, and replicas
     /// get them from checkpoints. Programs can still override them (OSC 4,
     /// 10, 11, 12) until reset.
     pub fn set_scheme(
@@ -450,7 +450,7 @@ impl Engine {
         }
         // Kitty images: an explicit storage limit, and inline transmission
         // only. A file or shared-memory reference names something on the
-        // daemon's host that a client must never read (spec 11.7).
+        // daemon's host that a client must never read.
         let limit = config.image_storage_bytes;
         let off = false;
         // SAFETY: each option reads the pointed-to local during the call.

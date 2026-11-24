@@ -12,6 +12,8 @@ what a plain terminal lacks: agents that can see and drive panes with your
 permission, panes that hold apps and web pages, and a daemon that keeps
 watching your output when the window is closed.
 
+<img src="docs/images/splits.png" alt="Dreamer on macOS: one tmux window split into five panes, each drawn as its own surface">
+
 ## Install
 
 ```sh
@@ -53,6 +55,11 @@ uninstall.
   machine, with no listener on either side. [Remote hosts](docs/remote.md)
 - **A command line for all of it.** `dream` does everything the window
   does, with no window. [dream](docs/cli.md)
+
+<img src="docs/images/pane-app.png" alt="One pane app drawn twice: natively in the desktop on the left, and as a TUI in a terminal pane on the right">
+
+The same pane app, drawn natively by the desktop (left) and as a TUI in a
+terminal pane (right).
 
 ## First steps
 

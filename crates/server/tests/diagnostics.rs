@@ -1,4 +1,4 @@
-//! Performance diagnostics (spec 16.4): off by default, collecting nothing;
+//! Performance diagnostics: off by default, collecting nothing;
 //! once on, every daemon stage of a keystroke's way to a client is timed
 //! and the traffic counted; off again, nothing more is added.
 
