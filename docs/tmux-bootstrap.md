@@ -144,7 +144,7 @@ history differs. It is listed for `docs/terminal-compatibility.md`.
 
 ## Results
 
-macOS 27.2 arm64, tmux 3.8, `cargo test -p tmux-backend` (8 integration
+macOS 27.2 arm64, tmux 3.8, `cargo test -p dreamer-tmux-backend` (8 integration
 tests plus unit tests), all passing:
 
 | Case | What was checked | Result |

@@ -1,12 +1,12 @@
 [package]
-name = "web-component"
+name = "dreamer-web-component"
 description = "Dreamer Web, the Chromium component installed apart from the app: its layout, its manifest, and where it is installed"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+publish = true
 
 # No Chromium here: the packager (xtask), the installer (`dream web`), and
 # the desktop's engine share this description of the component, and the
@@ -15,8 +15,12 @@ publish = false
 # The installer here is shared by `dream web install` and the desktop. It
 # downloads with the `curl` executable, as a subprocess: product code opens
 # no network sockets of its own (`cargo xtask policy`).
+
+# Published as dreamer-web-component; the library keeps its short name.
+[lib]
+name = "web_component"
 [dependencies]
-platform = { path = "../platform" }
+platform.workspace = true
 serde_json = "1.0.154"
 sha2 = "0.10.9"
 

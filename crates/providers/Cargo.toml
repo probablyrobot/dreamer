@@ -1,14 +1,19 @@
 [package]
-name = "providers"
+name = "dreamer-providers"
 description = "Agent providers: Claude Code and Codex CLIs on the user's own login, behind one contract"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
 
+
+# Published as dreamer-providers; the library keeps its short name.
+[lib]
+name = "providers"
 [dependencies]
-platform = { path = "../platform" }
+platform.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"

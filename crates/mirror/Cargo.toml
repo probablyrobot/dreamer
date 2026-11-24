@@ -8,12 +8,12 @@ license.workspace = true
 publish = false
 
 [dependencies]
-domain = { path = "../domain" }
-perf = { path = "../perf" }
-platform = { path = "../platform" }
-terminal-ghostty = { path = "../terminal-ghostty" }
-tmux-backend = { path = "../tmux-backend" }
-tmux-protocol = { path = "../tmux-protocol" }
+domain.workspace = true
+perf.workspace = true
+platform.workspace = true
+terminal-ghostty.workspace = true
+tmux-backend.workspace = true
+tmux-protocol.workspace = true
 tokio = { version = "1.54.1", features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]

@@ -1,24 +1,29 @@
 [package]
-name = "tmux-backend"
+name = "dreamer-tmux-backend"
 description = "tmux control-mode connection, inventory, and pane bootstrap"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
 
+
+# Published as dreamer-tmux-backend; the library keeps its short name.
+[lib]
+name = "tmux_backend"
 [dependencies]
-domain = { path = "../domain" }
-perf = { path = "../perf" }
+domain.workspace = true
+perf.workspace = true
 serde_json = "1.0.154"
-terminal-ghostty = { path = "../terminal-ghostty" }
-tmux-protocol = { path = "../tmux-protocol" }
-workspace-config = { path = "../workspace-config" }
+terminal-ghostty.workspace = true
+tmux-protocol.workspace = true
+workspace-config.workspace = true
 tokio = { version = "1.54.1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 
 [dev-dependencies]
-domain = { path = "../domain" }
-workspace-config = { path = "../workspace-config" }
+domain = { package = "dreamer-domain", path = "../domain" }
+workspace-config = { package = "dreamer-workspace-config", path = "../workspace-config" }
 tokio = { version = "1.54.1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 
 [lints]

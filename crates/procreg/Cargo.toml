@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-platform = { path = "../platform" }
+platform.workspace = true
 
 [lints]
 workspace = true

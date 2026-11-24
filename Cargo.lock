@@ -233,12 +233,12 @@ dependencies = [
 name = "app-model"
 version = "0.9.0"
 dependencies = [
- "client",
  "dreamer-api",
  "dreamer-app-protocol",
+ "dreamer-client",
+ "dreamer-platform",
+ "dreamer-providers",
  "dreamer-view-tree",
- "platform",
- "providers",
  "script-runtime",
  "serde",
  "serde_json",
@@ -650,14 +650,14 @@ dependencies = [
 name = "bench"
 version = "0.9.0"
 dependencies = [
- "client",
  "dreamer-api",
- "perf",
- "platform",
+ "dreamer-client",
+ "dreamer-perf",
+ "dreamer-platform",
+ "dreamer-terminal-ghostty",
+ "dreamer-tmux-backend",
  "replica",
  "serde_json",
- "terminal-ghostty",
- "tmux-backend",
  "tokio",
 ]
 
@@ -1168,18 +1168,6 @@ name = "clap_lex"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
-
-[[package]]
-name = "client"
-version = "0.9.0"
-dependencies = [
- "dreamer-api",
- "platform",
- "prost",
- "rustix",
- "tokio",
- "wire",
-]
 
 [[package]]
 name = "cmake"
@@ -1746,10 +1734,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "domain"
-version = "0.9.0"
-
-[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1803,21 +1787,21 @@ version = "0.9.0"
 dependencies = [
  "app-model",
  "async-channel",
- "client",
  "dreamer-api",
+ "dreamer-client",
+ "dreamer-terminal-ghostty",
  "dreamer-view-tree",
+ "dreamer-web-component",
+ "dreamer-workspace-config",
  "futures-lite",
  "gpui",
  "gpui_platform",
  "png 0.18.1",
  "replica",
  "serde_json",
- "terminal-ghostty",
  "terminal-render",
  "tokio",
- "web-component",
  "web-engine",
- "workspace-config",
 ]
 
 [[package]]
@@ -1833,12 +1817,17 @@ dependencies = [
 name = "dreamer-cli"
 version = "0.9.0"
 dependencies = [
- "client",
  "dreamer-api",
  "dreamer-app-protocol",
- "platform",
+ "dreamer-client",
+ "dreamer-platform",
+ "dreamer-providers",
+ "dreamer-terminal-core",
+ "dreamer-tmux-backend",
+ "dreamer-web-component",
+ "dreamer-workspace-config",
+ "dreamer-workspace-host",
  "prost",
- "providers",
  "rmcp",
  "serde",
  "serde_json",
@@ -1849,27 +1838,67 @@ dependencies = [
  "swc_ecma_transforms_base",
  "swc_ecma_visit",
  "swc_ts_fast_strip",
- "terminal-core",
- "tmux-backend",
  "tokio",
  "toml 0.8.23",
- "web-component",
- "workspace-config",
- "workspace-host",
+]
+
+[[package]]
+name = "dreamer-client"
+version = "0.9.0"
+dependencies = [
+ "dreamer-api",
+ "dreamer-platform",
+ "dreamer-wire",
+ "prost",
+ "rustix",
+ "tokio",
+]
+
+[[package]]
+name = "dreamer-domain"
+version = "0.9.0"
+
+[[package]]
+name = "dreamer-ghostty-sys"
+version = "0.9.0"
+dependencies = [
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "dreamer-perf"
+version = "0.9.0"
+
+[[package]]
+name = "dreamer-platform"
+version = "0.9.0"
+dependencies = [
+ "rustix",
+]
+
+[[package]]
+name = "dreamer-providers"
+version = "0.9.0"
+dependencies = [
+ "dreamer-platform",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]
 name = "dreamer-sdk"
 version = "0.9.0"
 dependencies = [
- "client",
  "dreamer-api",
  "dreamer-app-protocol",
+ "dreamer-client",
+ "dreamer-platform",
+ "dreamer-tmux-backend",
  "dreamer-view-tree",
- "platform",
  "prost",
  "serde_json",
- "tmux-backend",
  "tokio",
 ]
 
@@ -1878,29 +1907,29 @@ name = "dreamer-server"
 version = "0.9.0"
 dependencies = [
  "app-model",
- "client",
- "domain",
  "dreamer-api",
+ "dreamer-client",
+ "dreamer-domain",
+ "dreamer-perf",
+ "dreamer-platform",
+ "dreamer-providers",
+ "dreamer-terminal-core",
+ "dreamer-terminal-ghostty",
+ "dreamer-tmux-backend",
  "dreamer-view-tree",
+ "dreamer-wire",
+ "dreamer-workspace-config",
+ "dreamer-workspace-host",
  "matcher",
  "memory",
  "mirror",
- "perf",
- "platform",
  "procreg",
  "prost",
- "providers",
  "replica",
  "script-runtime",
  "serde_json",
- "terminal-core",
- "terminal-ghostty",
- "tmux-backend",
  "tokio",
  "ureq",
- "wire",
- "workspace-config",
- "workspace-host",
 ]
 
 [[package]]
@@ -1909,15 +1938,48 @@ version = "0.9.0"
 dependencies = [
  "app-model",
  "app-script",
- "client",
  "crossterm",
  "dreamer-api",
  "dreamer-app-protocol",
+ "dreamer-client",
+ "dreamer-tmux-backend",
  "dreamer-view-tree",
  "ratatui",
  "serde_json",
- "tmux-backend",
  "tokio",
+]
+
+[[package]]
+name = "dreamer-terminal-core"
+version = "0.9.0"
+
+[[package]]
+name = "dreamer-terminal-ghostty"
+version = "0.9.0"
+dependencies = [
+ "dreamer-ghostty-sys",
+ "dreamer-terminal-core",
+ "png 0.18.1",
+]
+
+[[package]]
+name = "dreamer-tmux-backend"
+version = "0.9.0"
+dependencies = [
+ "dreamer-domain",
+ "dreamer-perf",
+ "dreamer-terminal-ghostty",
+ "dreamer-tmux-protocol",
+ "dreamer-workspace-config",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "dreamer-tmux-protocol"
+version = "0.9.0"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
@@ -1926,6 +1988,44 @@ version = "0.9.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "dreamer-web-component"
+version = "0.9.0"
+dependencies = [
+ "dreamer-platform",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "dreamer-wire"
+version = "0.9.0"
+dependencies = [
+ "dreamer-terminal-core",
+ "prost",
+ "tokio",
+]
+
+[[package]]
+name = "dreamer-workspace-config"
+version = "0.9.0"
+dependencies = [
+ "dreamer-terminal-core",
+ "serde",
+ "serde_norway",
+]
+
+[[package]]
+name = "dreamer-workspace-host"
+version = "0.9.0"
+dependencies = [
+ "dreamer-api",
+ "dreamer-domain",
+ "dreamer-tmux-backend",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2548,13 +2648,6 @@ name = "ghostty-bindgen"
 version = "0.9.0"
 dependencies = [
  "bindgen",
-]
-
-[[package]]
-name = "ghostty-sys"
-version = "0.9.0"
-dependencies = [
- "sha2 0.10.9",
 ]
 
 [[package]]
@@ -4166,12 +4259,12 @@ dependencies = [
 name = "mirror"
 version = "0.9.0"
 dependencies = [
- "domain",
- "perf",
- "platform",
- "terminal-ghostty",
- "tmux-backend",
- "tmux-protocol",
+ "dreamer-domain",
+ "dreamer-perf",
+ "dreamer-platform",
+ "dreamer-terminal-ghostty",
+ "dreamer-tmux-backend",
+ "dreamer-tmux-protocol",
  "tokio",
 ]
 
@@ -5038,10 +5131,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "perf"
-version = "0.9.0"
-
-[[package]]
 name = "phf"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5174,13 +5263,6 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
-
-[[package]]
-name = "platform"
-version = "0.9.0"
-dependencies = [
- "rustix",
-]
 
 [[package]]
 name = "png"
@@ -5316,7 +5398,7 @@ dependencies = [
 name = "procreg"
 version = "0.9.0"
 dependencies = [
- "platform",
+ "dreamer-platform",
 ]
 
 [[package]]
@@ -5379,17 +5461,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "providers"
-version = "0.9.0"
-dependencies = [
- "platform",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
 ]
 
 [[package]]
@@ -6010,15 +6081,15 @@ name = "replica"
 version = "0.9.0"
 dependencies = [
  "async-channel",
- "client",
  "dreamer-api",
+ "dreamer-client",
+ "dreamer-perf",
+ "dreamer-terminal-ghostty",
+ "dreamer-wire",
  "matcher",
- "perf",
  "prost",
- "terminal-ghostty",
  "tokio",
  "unicode-width",
- "wire",
 ]
 
 [[package]]
@@ -7447,26 +7518,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "terminal-core"
-version = "0.9.0"
-
-[[package]]
-name = "terminal-ghostty"
-version = "0.9.0"
-dependencies = [
- "ghostty-sys",
- "png 0.18.1",
- "terminal-core",
-]
-
-[[package]]
 name = "terminal-render"
 version = "0.9.0"
 dependencies = [
+ "dreamer-terminal-core",
  "gpui",
  "image",
  "smallvec",
- "terminal-core",
 ]
 
 [[package]]
@@ -7615,26 +7673,6 @@ name = "tinyvec"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
-
-[[package]]
-name = "tmux-backend"
-version = "0.9.0"
-dependencies = [
- "domain",
- "perf",
- "serde_json",
- "terminal-ghostty",
- "tmux-protocol",
- "tokio",
- "workspace-config",
-]
-
-[[package]]
-name = "tmux-protocol"
-version = "0.9.0"
-dependencies = [
- "proptest",
-]
 
 [[package]]
 name = "tokio"
@@ -8474,23 +8512,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-component"
-version = "0.9.0"
-dependencies = [
- "platform",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
 name = "web-engine"
 version = "0.9.0"
 dependencies = [
  "cef-sys",
  "dreamer-view-tree",
+ "dreamer-web-component",
  "raw-window-handle",
  "serde_json",
- "web-component",
 ]
 
 [[package]]
@@ -9234,39 +9263,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "wire"
-version = "0.9.0"
-dependencies = [
- "prost",
- "terminal-core",
- "tokio",
-]
-
-[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
-
-[[package]]
-name = "workspace-config"
-version = "0.9.0"
-dependencies = [
- "serde",
- "serde_norway",
- "terminal-core",
-]
-
-[[package]]
-name = "workspace-host"
-version = "0.9.0"
-dependencies = [
- "domain",
- "dreamer-api",
- "serde_json",
- "tmux-backend",
- "tokio",
-]
 
 [[package]]
 name = "writeable"
@@ -9391,10 +9391,10 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 name = "xtask"
 version = "0.9.0"
 dependencies = [
+ "dreamer-web-component",
  "png 0.18.1",
  "resvg",
  "serde_json",
- "web-component",
 ]
 
 [[package]]

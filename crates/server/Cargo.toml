@@ -20,30 +20,30 @@ kosmonaut = ["memory/kosmonaut", "dep:ureq"]
 
 [dependencies]
 api.workspace = true
-client = { path = "../client" }
+client.workspace = true
 matcher = { path = "../matcher" }
 memory = { path = "../memory" }
 procreg = { path = "../procreg" }
 script-runtime = { path = "../script-runtime" }
 serde_json = "1.0.154"
 view-tree.workspace = true
-domain = { path = "../domain" }
+domain.workspace = true
 mirror = { path = "../mirror" }
-perf = { path = "../perf" }
-platform = { path = "../platform" }
+perf.workspace = true
+platform.workspace = true
 prost = "0.14.5"
-providers = { path = "../providers" }
-terminal-core = { path = "../terminal-core" }
-tmux-backend = { path = "../tmux-backend" }
+providers.workspace = true
+terminal-core.workspace = true
+tmux-backend.workspace = true
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "signal", "macros", "process"] }
 # The same client and pin as app `fetch` (docs/dependency-baseline.md).
 ureq = { version = "=3.5.2", default-features = false, features = ["rustls"], optional = true }
-wire = { path = "../wire" }
-workspace-config = { path = "../workspace-config" }
-workspace-host = { path = "../workspace-host" }
+wire.workspace = true
+workspace-config.workspace = true
+workspace-host.workspace = true
 
 [dev-dependencies]
-terminal-ghostty = { path = "../terminal-ghostty" }
+terminal-ghostty = { package = "dreamer-terminal-ghostty", path = "../terminal-ghostty" }
 replica = { path = "../replica" }
 app-model = { path = "../app-model" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
