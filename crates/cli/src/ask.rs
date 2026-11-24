@@ -1,5 +1,5 @@
 //! `dream agents providers` and `dream agents ask`: the agent providers
-//! (spec 13.5) on the command line. A run uses the installed CLI on the
+//! on the command line. A run uses the installed CLI on the
 //! user's own login, never an API key, and reaches Dreamer only through
 //! `dream mcp` with the grant given here.
 

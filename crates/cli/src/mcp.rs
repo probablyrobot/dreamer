@@ -1,4 +1,4 @@
-//! `dream mcp`: an MCP server on standard input and output (spec 12.6),
+//! `dream mcp`: an MCP server on standard input and output,
 //! so an MCP client (an agent) can use Dreamer's tools.
 //!
 //! Every tool is one typed API call over an ordinary connection to the

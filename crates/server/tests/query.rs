@@ -1,4 +1,4 @@
-//! `terminal.query` through a real daemon (spec 12.8): matching panes are
+//! `terminal.query` through a real daemon: matching panes are
 //! found, every bound holds and is reported, bad patterns are refused, and
 //! queries never hold up input.
 

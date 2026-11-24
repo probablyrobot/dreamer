@@ -10,7 +10,7 @@ use tokio::sync::mpsc::Receiver;
 
 use crate::{Outcome, Replica, ReplicaError};
 
-/// Bounds on recovering by resnapshot (spec 11.6: no endless loops).
+/// Bounds on recovering by resnapshot (no endless loops).
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     /// Resnapshots in a row before giving up as unable to catch up.

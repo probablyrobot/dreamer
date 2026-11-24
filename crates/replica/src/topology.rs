@@ -1,4 +1,4 @@
-//! The tmux topology for a view (spec 15.1): a thread follows `tmux.watch`
+//! The tmux topology for a view: a thread follows `tmux.watch`
 //! and keeps the newest topology in a latest-value slot, waking the view
 //! once per newer revision. Actions the view asks for (select a window or
 //! pane) go to the daemon from the same thread; their effect is seen only

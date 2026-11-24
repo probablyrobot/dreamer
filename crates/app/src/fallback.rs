@@ -1,4 +1,4 @@
-//! The fallback for what independent panes cannot show (spec 3.x, 15.1):
+//! The fallback for what independent panes cannot show:
 //! floating-pane layouts and tmux-drawn modes. The user gets a safely
 //! quoted `tmux attach` command for the same server and window, to copy,
 //! and optionally a launch of their configured terminal with it. Either way

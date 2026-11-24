@@ -1,5 +1,5 @@
 //! `dream job-run DIR -- PROGRAM [ARGS...]`: the managed wrapper of a
-//! tmux-backed job (spec 9: durable jobs). It runs the exact program in
+//! tmux-backed job (durable jobs). It runs the exact program in
 //! its pane, records the program's pid and then its exit status in DIR,
 //! and exits with the same status. It needs no daemon: a job started this
 //! way runs to the end, and is recorded, whether or not `dreamerd` is

@@ -1814,7 +1814,7 @@
         "type": "object"
       },
       "DiagnosticsSettings": {
-        "description": "Turn the daemon's performance diagnostics (spec 16.4) on or off. They are off by default, and cost nothing while off.",
+        "description": "Turn the daemon's performance diagnostics on or off. They are off by default, and cost nothing while off.",
         "properties": {
           "enabled": {
             "type": "boolean"
@@ -5352,7 +5352,7 @@
         "type": "object"
       },
       "Tier": {
-        "description": "Observation tier (spec 16.6). Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only.",
+        "description": "Observation tier. Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only.",
         "enum": [
           "unspecified",
           "hot",

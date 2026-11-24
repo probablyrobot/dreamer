@@ -1,4 +1,4 @@
-//! Pressure (spec 16.3, 16.5): a pane flooding output and a subscriber that
+//! Pressure: a pane flooding output and a subscriber that
 //! never reads must not delay input to another pane.
 
 use std::path::PathBuf;

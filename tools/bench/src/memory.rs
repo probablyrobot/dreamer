@@ -1,5 +1,5 @@
 //! `dreamer-bench memory`: the daemon's memory under the four kinds of
-//! pressure spec 16.3 names, each against a fresh daemon:
+//! pressure, each against a fresh daemon:
 //!
 //! - **output:** `N` panes (64 by default) run `yes`;
 //! - **lagging:** the same load, and one client subscribes to every busy

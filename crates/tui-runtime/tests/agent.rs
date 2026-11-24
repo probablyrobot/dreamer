@@ -1,4 +1,4 @@
-//! Agentic panes in a real tmux pane (spec 13.4): an inspector runs a
+//! Agentic panes in a real tmux pane: an inspector runs a
 //! prompt on a provider (a stand-in Claude Code here) with Dreamer's tools
 //! narrowed to its declared read-only grant, and shows its scope, grant,
 //! provider, activity, and every tool call; with no provider ready, the
@@ -302,7 +302,7 @@ cat '{play}'
     p
 }
 
-/// Spec 13.2: an operator's intent, actions, and outcomes are inspectable.
+/// An operator's intent, actions, and outcomes are inspectable.
 /// Its plan (what it said before acting) and every step it took, with the
 /// step's target and state, stay above the transcript; a failed step names
 /// the tool and its actual target.
@@ -365,7 +365,7 @@ provider = "claude"
 tools = { methods = ["terminal.query", "tmux.topology", "filters.manage"], all_panes = true }
 "#;
 
-/// Spec 13.4: a filter pane with no model watches what is typed as plain
+/// A filter pane with no model watches what is typed as plain
 /// text, shows each line its filter matches in another pane as it happens
 /// (the derived stream), and removes the filter on `stop NAME`.
 #[test]

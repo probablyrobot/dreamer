@@ -1,4 +1,4 @@
-//! Client replicas following the real daemon (spec 18.2): resume without
+//! Client replicas following the real daemon: resume without
 //! recapturing tmux, recovery outside retention, daemon restart, respawn.
 
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
-//! Native panels (spec 12.2.1): an app package drawn by the desktop from
+//! Native panels: an app package drawn by the desktop from
 //! the same model the pane app draws (`app-model`). The model runs on a
 //! thread of its own, with its own connection to the daemon; the panel
 //! only sends it keys and draws what it published. No package code runs

@@ -572,7 +572,7 @@ fn a_torn_last_line_is_dropped_but_corruption_elsewhere_is_an_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Spec 13.2: "move these three panes into a named window". Three panes in
+/// "Move these three panes into a named window". Three panes in
 /// three windows end up in one window with that name, keeping their ids
 /// and their programs; the windows they left close.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

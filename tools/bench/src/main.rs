@@ -1,4 +1,4 @@
-//! `dreamer-bench`: the headless workloads of spec 16.5 and 16.6, run
+//! `dreamer-bench`: the headless workloads, run
 //! against a real tmux server and a release `dreamerd` with private
 //! directories (never the user's). Run it through `cargo xtask bench`,
 //! which builds it in release mode with the daemon.

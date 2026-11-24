@@ -1,4 +1,4 @@
-//! Typed identities (spec 4.1).
+//! Typed identities.
 //!
 //! tmux object IDs (`$1`, `@2`, `%3`) are only unique within one tmux server
 //! incarnation. Every Dreamer identity therefore carries the server identity
@@ -95,7 +95,7 @@ pub struct PaneInstance {
 }
 
 /// A host process with enough evidence to avoid PID reuse confusion
-/// (spec 6, `ProcessRef`).
+/// (`ProcessRef`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ProcessRef {
     pub server: ServerKey,

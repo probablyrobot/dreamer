@@ -14,7 +14,7 @@ declare namespace Dreamer {
 
   type MirrorState = "unspecified" | "attaching" | "live" | "failed" | "cold" | "not_streaming";
 
-  /** Observation tier (spec 16.6). Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only. */
+  /** Observation tier. Hot: visible in a client. Warm: mirrored and journaled, not shown. Cold: metadata only. */
   type Tier = "unspecified" | "hot" | "warm" | "cold";
 
   type SubscribeMode = "unspecified" | "checkpoint" | "replay";
@@ -117,7 +117,7 @@ declare namespace Dreamer {
     desktops: number;
   }
 
-  /** Turn the daemon's performance diagnostics (spec 16.4) on or off. They are off by default, and cost nothing while off. */
+  /** Turn the daemon's performance diagnostics on or off. They are off by default, and cost nothing while off. */
   interface DiagnosticsSettings {
     enabled: boolean;
     /** Also start every timing and counter again from zero. */

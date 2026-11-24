@@ -1,4 +1,4 @@
-//! Agentic panes (spec 13.4): an app package bound to a provider and a
+//! Agentic panes: an app package bound to a provider and a
 //! grant. The pane takes a prompt, runs it on the provider with Dreamer's
 //! tools (`dream mcp`, narrowed to the package's `[agent.tools]`), and
 //! keeps what happened inspectable: the prompt, the model's text, every

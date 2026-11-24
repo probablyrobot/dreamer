@@ -1,4 +1,4 @@
-//! Jobs (spec 9, 12.1): exact programs run in their own tmux windows
+//! Jobs: exact programs run in their own tmux windows
 //! through the `dream job-run` wrapper.
 //!
 //! A job belongs to tmux, not to the daemon: it keeps running, and its

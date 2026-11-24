@@ -121,7 +121,7 @@ fn read_family(wanted: &str) -> Read {
 
 /// Whether `family` resolves to itself, not to a fallback. One family
 /// lookup: listing every installed font (`all_font_names`) takes over half
-/// a second on macOS, and launch has 150 ms (spec 16.6).
+/// a second on macOS, and launch has 150 ms.
 fn available(cx: &App, family: &str) -> bool {
     let ts = cx.text_system();
     let id = ts.resolve_font(&gpui::font(family.to_owned()));

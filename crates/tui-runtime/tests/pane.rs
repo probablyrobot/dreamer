@@ -1,4 +1,4 @@
-//! A package running in a real tmux pane (spec 13.3): it shows live data
+//! A package running in a real tmux pane: it shows live data
 //! from the daemon, runs a keybound command, shows its data as stale while
 //! the daemon is gone and live again after it is back, and all of it is
 //! what a plain tmux client sees.

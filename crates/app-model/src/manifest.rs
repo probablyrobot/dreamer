@@ -1,4 +1,4 @@
-//! The app manifest (spec 13.3): a versioned TOML file declaring data
+//! The app manifest: a versioned TOML file declaring data
 //! sources, one view (version 1) or a keyed tree of nodes (version 2), and
 //! keybound commands. It is data, not code: there
 //! is no shell, no eval, and no expression language. Commands fill their
@@ -45,11 +45,11 @@ pub struct Manifest {
     pub nodes: BTreeMap<String, NodeSpec>,
     #[serde(default)]
     pub commands: BTreeMap<String, Command>,
-    /// An agentic pane (spec 13.4): the package bound to a provider and a
+    /// An agentic pane: the package bound to a provider and a
     /// grant, with `view.type = "agent"`.
     #[serde(default)]
     pub agent: Option<AgentSpec>,
-    /// What the package adds to the desktop when installed (spec 12.2.1).
+    /// What the package adds to the desktop when installed.
     #[serde(default)]
     pub contributes: Contributes,
     /// A process app: a program that speaks the app process protocol on

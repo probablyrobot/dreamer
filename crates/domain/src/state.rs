@@ -1,4 +1,4 @@
-//! Connection and pane synchronization states (spec 6), and the capability
+//! Connection and pane synchronization states, and the capability
 //! profile that records what each layer supports, with evidence.
 
 /// Lifecycle of one control connection.
@@ -45,7 +45,7 @@ pub struct Capability {
     pub evidence: String,
 }
 
-/// What each layer supports for one connection (spec 6).
+/// What each layer supports for one connection.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CapabilityProfile {
     pub engine: Vec<Capability>,

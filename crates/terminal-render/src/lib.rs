@@ -227,7 +227,7 @@ pub fn image_nanos() -> u64 {
 }
 
 /// Terminal elements painted since the process started. A static view
-/// must not move it (spec 16.6: zero render wakeups).
+/// must not move it (zero render wakeups).
 pub fn paint_count() -> u64 {
     PAINTS.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -702,7 +702,7 @@ impl AsciiFont {
     }
 }
 
-/// Shaped rows by shared row identity (spec 9.2: unchanged rows are shared
+/// Shaped rows by shared row identity (unchanged rows are shared
 /// between frames, so their shaping is too). Each entry holds its row, so
 /// the address it is keyed by cannot be reused while the entry exists.
 #[derive(Default)]
@@ -945,7 +945,7 @@ fn paint_frame(
     };
     window.paint_quad(fill(bounds, hsla(colors.background)));
 
-    // Layer order (spec 9.3): default background, images below cell
+    // Layer order: default background, images below cell
     // backgrounds, cell backgrounds, images below text, selection, text,
     // images above text, cursor.
     use terminal_core::ImageLayer;

@@ -1,5 +1,4 @@
-//! The command that reaches a remote daemon through system OpenSSH
-//! (spec 7.1, 11.2).
+//! The command that reaches a remote daemon through system OpenSSH.
 //!
 //! There are two escaping layers, and both are handled here:
 //!

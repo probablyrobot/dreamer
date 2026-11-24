@@ -1754,7 +1754,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 a.repaint = true;
             }
             "--workspace" => a.workspace = true,
-            // Reference scenes (spec 14.4): open with the sidebar or the
+            // Reference scenes: open with the sidebar or the
             // command palette showing.
             "--open-sidebar" => a.open.push("sidebar".into()),
             "--open-palette" => a.open.push("palette".into()),

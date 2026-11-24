@@ -1,4 +1,4 @@
-//! The process registry through a real daemon (spec 13.1): an agent CLI
+//! The process registry through a real daemon: an agent CLI
 //! running in a tmux pane is found as a run of its provider, in that pane,
 //! by evidence, with its identity and working directory.
 

@@ -1,5 +1,5 @@
 //! `dreamer-termapp`: runs an app package's manifest as a terminal app in
-//! a tmux pane (spec 13.3). It is the pane's real program, so the app
+//! a tmux pane. It is the pane's real program, so the app
 //! works through any plain tmux attach.
 //!
 //! ```text

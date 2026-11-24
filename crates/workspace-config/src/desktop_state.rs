@@ -1,4 +1,4 @@
-//! The desktop's local arrangement (spec 14.3): every open window, with
+//! The desktop's local arrangement: every open window, with
 //! the session it shows, whether its sidebar is open, and where it was.
 //! Client-only state, kept apart from preferences (`dreamer.yaml`) and from
 //! anything on the host. Written by the app; not meant to be edited.

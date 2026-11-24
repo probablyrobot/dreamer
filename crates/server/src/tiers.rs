@@ -1,4 +1,4 @@
-//! The tier policy (spec 16.6): panes that nothing follows go Cold on
+//! The tier policy: panes that nothing follows go Cold on
 //! their own when they have been quiet for `tiers.cold_after`, or when
 //! there are more than `tiers.warm_limit` of them, or when the host's
 //! mirrors together hold more than `tiers.warm_memory`. One check for the

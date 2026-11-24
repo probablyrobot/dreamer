@@ -1,4 +1,4 @@
-//! Renderer fixture matrix (spec 18.3): each fixture in
+//! Renderer fixture matrix: each fixture in
 //! `crates/terminal-render/fixtures` must paint with the statistics listed
 //! in `expected.txt` (derived from the fixture content). Used by the macOS
 //! gate and by `gate linux-desktop`.

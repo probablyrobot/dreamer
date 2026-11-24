@@ -1,4 +1,4 @@
-//! The GUI benchmark (spec 16.5, 16.6), driven from inside the app so each
+//! The GUI benchmark, driven from inside the app so each
 //! measure ends at a paint: `cargo xtask bench gui` prepares an isolated
 //! tmux server and daemon and starts the app with `DREAMER_BENCH_GUI=FILE`.
 //! Every pane prints `READY` first. The app then measures, in order:

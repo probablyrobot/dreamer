@@ -1,4 +1,4 @@
-//! Design tokens for the desktop's chrome (spec 14.2, 14.4): two default
+//! Design tokens for the desktop's chrome: two default
 //! skins designed together, a dark and a light one, neither an inversion of
 //! the other. Terminal text is the brightest, sharpest thing on screen;
 //! chrome stays lower in contrast with one accent color.
@@ -7,7 +7,7 @@
 //! terminals (`Settings::scheme`), so the window is one theme: Dreamer's
 //! two schemes come with these hand-tuned skins, and any other scheme gets
 //! chrome derived from its own background, foreground, and ANSI colors.
-//! The terminal's colors themselves stay canonical state (spec 14.2), set
+//! The terminal's colors themselves stay canonical state, set
 //! by the daemon; the chrome only follows them.
 
 use gpui::{Rgba, Window, rgb, rgba};

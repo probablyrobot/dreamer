@@ -1,4 +1,4 @@
-//! Agent providers (spec 13.5): one contract over the installed Claude Code
+//! Agent providers: one contract over the installed Claude Code
 //! and Codex CLIs, run in non-interactive mode as supervised child
 //! processes on the user's own login.
 //!
@@ -10,7 +10,7 @@
 //! - **Credentials stay where they are.** Login state comes from the CLI's
 //!   own status command; nothing here reads a credential store.
 //! - **Tools through MCP.** Dreamer's tools reach the CLI as one MCP
-//!   server, `dream mcp` (spec 12.6), scoped by its arguments. The CLI's
+//!   server, `dream mcp`, scoped by its arguments. The CLI's
 //!   own built-in tools are turned off where the CLI allows it.
 //! - **Same contract.** Every adapter yields the same [`Event`]s, can be
 //!   cancelled (its whole process group), and has a [`Capabilities`]

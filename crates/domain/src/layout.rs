@@ -1,4 +1,4 @@
-//! Window layout as a typed tree with exact cell geometry (spec 7.4, 15.1).
+//! Window layout as a typed tree with exact cell geometry.
 
 use crate::ids::TmuxPaneId;
 
@@ -129,7 +129,7 @@ pub enum WindowLayout {
     Tiled(LayoutNode),
     /// The layout uses a form this version cannot represent (for example
     /// floating panes). The window is shown through the unsupported path,
-    /// never with panes silently omitted (spec 15.1).
+    /// never with panes silently omitted.
     Unsupported {
         raw: String,
         reason: String,

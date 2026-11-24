@@ -1,4 +1,4 @@
-//! Typed actions, their lifecycle, and backend events (spec 6, 12.4).
+//! Typed actions, their lifecycle, and backend events.
 //!
 //! UI code and agents submit these; they never assemble tmux command
 //! strings. Distinct intents stay distinct: sending input to a foreground
@@ -98,7 +98,7 @@ pub enum Action {
 
 impl Action {
     /// Destructive actions are never retried automatically after an
-    /// ambiguous outcome (spec 7.3).
+    /// ambiguous outcome.
     pub fn is_destructive(&self) -> bool {
         matches!(
             self,
@@ -120,7 +120,7 @@ impl Action {
     }
 }
 
-/// Lifecycle of an action (spec 12.4). `OutcomeUnknown` is terminal until
+/// Lifecycle of an action. `OutcomeUnknown` is terminal until
 /// reconciliation decides; it never turns into a retry by itself.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ActionState {

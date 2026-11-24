@@ -1,4 +1,4 @@
-//! Taps through a real daemon (spec 12.8): raw, text, and meta views of
+//! Taps through a real daemon: raw, text, and meta views of
 //! real tmux panes, and a tap that stops reading gets a gap while the pane
 //! and another tap keep flowing. The journal is tiny, so a stalled tap
 //! cannot catch up from it.

@@ -1,4 +1,4 @@
-//! Search in a pane's local mirror (spec 15.2): the text of its history
+//! Search in a pane's local mirror: the text of its history
 //! and screen, matched by the bounded match stage, off the thread that
 //! forwards input.
 //!

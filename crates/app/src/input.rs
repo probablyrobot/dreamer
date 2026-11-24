@@ -1,4 +1,4 @@
-//! Keyboard, text, IME, and paste from the window to the pane (spec 10.1).
+//! Keyboard, text, IME, and paste from the window to the pane.
 //!
 //! One policy for every key press:
 //! 1. Paste shortcuts (Cmd-V on macOS, Ctrl-Shift-V elsewhere) paste the

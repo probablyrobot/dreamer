@@ -773,7 +773,7 @@ fn may_read_pane(state: &State, conn: &Conn, pane: u32) -> bool {
         .is_ok()
 }
 
-/// What an app may do with filters (spec 13.4: a filter pane). Only with
+/// What an app may do with filters (a filter pane). Only with
 /// `filters.manage` in its grant, and content read (`terminal.query`,
 /// `terminal.read`, or `taps.subscribe`):
 /// - install a filter that only reads: on panes within the app's own, with

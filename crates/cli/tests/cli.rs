@@ -2935,7 +2935,7 @@ fn an_mcp_agent_collects_test_failures_from_another_pane() {
     assert_ne!(stopped["isError"], true, "{stopped}");
 }
 
-/// Spec 13.2: "run this check on two connected hosts and show each result".
+/// "Run this check on two connected hosts and show each result".
 /// Through `dream mcp`, a job starts on this host and on a connected one,
 /// and each result comes back separately, naming its host.
 #[test]
@@ -3038,7 +3038,7 @@ exec /bin/sh -c "exec $3"
     assert!(nowhere.to_string().contains("nowhere"), "{nowhere}");
 }
 
-/// Spec 13.3 (the small-app builder): a generated monitor package is
+/// The small-app builder: A generated monitor package is
 /// checked, previewed from its fixtures with no daemon, installed (the
 /// version it replaces kept as the last good one), and launched in a real
 /// tmux pane with the grant it declares, where it follows live data with

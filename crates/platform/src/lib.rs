@@ -1,5 +1,5 @@
 //! Where Dreamer keeps per-user runtime and state files, and the checks
-//! that keep them private (spec 11.3: owner-restricted runtime directories
+//! that keep them private (owner-restricted runtime directories
 //! and sockets).
 //!
 //! | Directory | Default | Override |

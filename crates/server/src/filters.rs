@@ -1,4 +1,4 @@
-//! Filters (spec 12.8): a text tap, the Rust match stage, and outputs.
+//! Filters: a text tap, the Rust match stage, and outputs.
 //!
 //! Each filter is its own in-process connection with the filter's grant
 //! and the identity `filter:<name>`: its tap, its messages, and its input
@@ -6,7 +6,7 @@
 //! never changes what a program wrote, the mirror, or what a tmux client
 //! sees.
 //!
-//! Loop protection (spec 12.3):
+//! Loop protection:
 //! - matches acted on are rate-limited per filter;
 //! - lines that echo input the filter itself typed are skipped;
 //! - a circuit breaker trips (pauses) a filter whose triggers come faster

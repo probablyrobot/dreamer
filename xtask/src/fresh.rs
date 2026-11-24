@@ -1,5 +1,5 @@
-//! Linux archives built in, and checked on, fresh containers (spec 17.5:
-//! "test launching the unpacked archive on a clean compatible machine").
+//! Linux archives built in, and checked on, fresh containers, to
+//! test the unpacked archive on a clean, compatible machine.
 //!
 //! - `cargo xtask package --platform linux --container [--arch A]` builds
 //!   the desktop tarball and the server archive inside an `ubuntu:24.04`

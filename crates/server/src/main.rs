@@ -1,4 +1,4 @@
-//! `dreamerd`: Dreamer's per-user headless daemon (spec 11.1, 11.3).
+//! `dreamerd`: Dreamer's per-user headless daemon.
 //!
 //! ```text
 //! dreamerd [--background] [--tmux PATH] [--tmux-socket NAME | --tmux-socket-path PATH]

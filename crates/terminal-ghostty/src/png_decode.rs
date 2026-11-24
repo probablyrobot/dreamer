@@ -1,4 +1,4 @@
-//! PNG decoding for Kitty images (spec 9.4): the decode callback Ghostty
+//! PNG decoding for Kitty images: the decode callback Ghostty
 //! calls when a program sends `f=100` data.
 //!
 //! - Registered once per process, before the library is used on any

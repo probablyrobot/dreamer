@@ -1,4 +1,4 @@
-//! The engine build family (spec 11.4): peers that exchange terminal
+//! The engine build family: peers that exchange terminal
 //! snapshots must have been built from the same terminal semantics.
 //!
 //! The family covers the Ghostty source revision, the features Dreamer
@@ -31,16 +31,16 @@ pub const REQUIRED_FEATURES: &[&str] = &[
 pub const TERMINAL_POLICY_REVISION: u32 = 2;
 
 /// Unfinished input a canonical engine keeps so a snapshot can be taken
-/// mid-sequence; replicas restore with the same limit (spec 11.5).
+/// mid-sequence; replicas restore with the same limit.
 pub const CONTINUATION_MAX_BYTES: usize = 64 << 10;
 
-/// Kitty graphics image storage per engine (spec 16.4: 64 MiB per pane).
+/// Kitty graphics image storage per engine (64 MiB per pane).
 /// Eviction follows it, so mirrors and replicas must agree; it is not
 /// serialized in snapshots and is applied again on restore.
 pub const IMAGE_STORAGE_BYTES: u64 = 64 << 20;
 
 /// Cell size in pixels that daemon mirrors and replicas apply on resize
-/// until clients negotiate canonical geometry (spec 11.8).
+/// until clients negotiate canonical geometry.
 pub const CANONICAL_CELL_PX: (u32, u32) = (10, 20);
 
 /// A stable identifier such as `ghostty-1.0.1-108cacb17ed8-f1a2b3c4-p1`.

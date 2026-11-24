@@ -1,4 +1,4 @@
-//! Find in a pane (spec 15.2): the pane's own local mirror, searched off
+//! Find in a pane: the pane's own local mirror, searched off
 //! the UI thread and off the thread that forwards input, with matches
 //! highlighted over the grid. Typing narrows after a short pause, and a new
 //! search replaces the one in progress. While the bar is open, keys go to

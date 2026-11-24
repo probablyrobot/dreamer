@@ -1,4 +1,4 @@
-//! Typed tmux operations (spec 6). Callers name panes, windows, and
+//! Typed tmux operations. Callers name panes, windows, and
 //! sessions by id and pass exact argument vectors; command strings are
 //! built only here, through the single encoder.
 

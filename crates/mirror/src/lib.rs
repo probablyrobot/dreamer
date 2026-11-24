@@ -1,4 +1,4 @@
-//! Canonical pane mirrors in the daemon (spec 5.2, 8, 11.5).
+//! Canonical pane mirrors in the daemon.
 //!
 //! One router task reads the events of the tmux control clients in order.
 //! tmux sends a control client output only for panes in its own session,
@@ -102,7 +102,7 @@ impl Default for MirrorConfig {
     }
 }
 
-/// When panes that nothing follows go Cold on their own (spec 16.6).
+/// When panes that nothing follows go Cold on their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TierPolicy {
     /// A pane quiet for this long goes Cold; `None`: never for quiet.
@@ -225,7 +225,7 @@ pub struct RouterQueues {
     pub attach_queue: usize,
 }
 
-/// Every queue on a connection's terminal path at one moment (spec 16.4).
+/// Every queue on a connection's terminal path at one moment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Queues {
     pub router: RouterQueues,

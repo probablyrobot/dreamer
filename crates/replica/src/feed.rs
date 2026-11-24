@@ -1,4 +1,4 @@
-//! A pane feed for a view (spec 9.5, 16.2): a dedicated owner thread keeps
+//! A pane feed for a view: a dedicated owner thread keeps
 //! a replica current and publishes frames to whoever paints them.
 //!
 //! - A frame is built only when records were applied or a checkpoint was
@@ -410,8 +410,8 @@ impl InputSender {
                     self.sent.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => {
-                    // Input is never replayed after an uncertain failure
-                    // (spec 12.4); the next input reconnects.
+                    // Input is never replayed after an uncertain failure;
+                    // the next input reconnects.
                     self.dropped.fetch_add(1, Ordering::Relaxed);
                     if matches!(
                         e,

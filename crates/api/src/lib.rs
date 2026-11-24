@@ -1,4 +1,4 @@
-//! Dreamer's typed API, generated from `schema/api.yaml` (spec 12.1).
+//! Dreamer's typed API, generated from `schema/api.yaml`.
 //!
 //! The same records travel as Protobuf on the native wire and as JSON over
 //! JSON-RPC 2.0; `Service` is implemented once and reached through either

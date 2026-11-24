@@ -1,4 +1,4 @@
-//! The daemon's event log (spec 12.1 `events`): small metadata events in
+//! The daemon's event log: small metadata events in
 //! a bounded ring, and the subscriptions that follow it.
 //!
 //! Producers never wait: recording an event takes a short lock and wakes
