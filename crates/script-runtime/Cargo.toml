@@ -1,11 +1,16 @@
 [package]
-name = "script-runtime"
+name = "dreamer-script-runtime"
 description = "Sandboxed Luau host for filters, triggers, and pane apps"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
+
+# Published as dreamer-script-runtime; the library keeps its short name.
+[lib]
+name = "script_runtime"
 
 [dependencies]
 api.workspace = true
