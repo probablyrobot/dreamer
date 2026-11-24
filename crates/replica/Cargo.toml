@@ -10,12 +10,12 @@ publish = false
 [dependencies]
 api.workspace = true
 async-channel = "2.5.0"
-client = { path = "../client" }
+client.workspace = true
 matcher = { path = "../matcher" }
-perf = { path = "../perf" }
-wire = { path = "../wire" }
+perf.workspace = true
+wire.workspace = true
 prost = "0.14.5"
-terminal-ghostty = { path = "../terminal-ghostty" }
+terminal-ghostty.workspace = true
 tokio = { version = "1.54.1", features = ["time", "sync", "rt", "macros"] }
 unicode-width = "0.2.3"
 

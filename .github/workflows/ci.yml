@@ -93,7 +93,7 @@ jobs:
           cargo xtask bench report target/bench/remote-*.json
           rm -rf target/bench
       - name: Generate snapshot fixtures
-        run: cargo run --locked -p terminal-ghostty --bin snapshot-fixtures -- target/snapshot-fixtures
+        run: cargo run --locked -p dreamer-terminal-ghostty --bin snapshot-fixtures -- target/snapshot-fixtures
       - name: Upload this architecture's snapshot fixtures
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

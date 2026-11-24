@@ -1,14 +1,19 @@
 [package]
-name = "ghostty-sys"
+name = "dreamer-ghostty-sys"
 description = "Raw FFI bindings to the pinned libghostty-vt release"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
 links = "ghostty-vt"
 build = "build.rs"
 
+
+# Published as dreamer-ghostty-sys; the library keeps its short name.
+[lib]
+name = "ghostty_sys"
 [build-dependencies]
 # Checks the prebuilt archive a crates.io build downloads.
 sha2 = "0.10.9"

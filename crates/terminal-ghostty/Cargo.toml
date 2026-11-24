@@ -1,12 +1,17 @@
 [package]
-name = "terminal-ghostty"
+name = "dreamer-terminal-ghostty"
 description = "Safe libghostty-vt terminal engine producing owned frame snapshots"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
 
+
+# Published as dreamer-terminal-ghostty; the library keeps its short name.
+[lib]
+name = "terminal_ghostty"
 [[bin]]
 name = "vt-dump"
 path = "src/bin/vt-dump.rs"
@@ -16,9 +21,9 @@ name = "snapshot-fixtures"
 path = "src/bin/snapshot-fixtures.rs"
 
 [dependencies]
-ghostty-sys = { path = "../ghostty-sys" }
+ghostty-sys.workspace = true
 png = "=0.18.1"
-terminal-core = { path = "../terminal-core" }
+terminal-core.workspace = true
 
 [lints]
 workspace = true

@@ -19,10 +19,10 @@ tokio = { version = "1.54.1", features = ["io-std", "io-util", "sync", "rt", "ma
 view-tree.workspace = true
 
 [dev-dependencies]
-client = { path = "../client" }
-platform = { path = "../platform" }
+client = { package = "dreamer-client", path = "../client" }
+platform = { package = "dreamer-platform", path = "../platform" }
 prost = "0.14.5"
-tmux-backend = { path = "../tmux-backend" }
+tmux-backend = { package = "dreamer-tmux-backend", path = "../tmux-backend" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "process"] }
 
 [lints]

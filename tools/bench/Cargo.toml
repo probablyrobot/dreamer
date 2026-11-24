@@ -13,13 +13,13 @@ path = "src/main.rs"
 
 [dependencies]
 api.workspace = true
-client = { path = "../../crates/client" }
-perf = { path = "../../crates/perf" }
-platform = { path = "../../crates/platform" }
+client.workspace = true
+perf.workspace = true
+platform.workspace = true
 replica = { path = "../../crates/replica" }
 serde_json = "1.0.154"
-terminal-ghostty = { path = "../../crates/terminal-ghostty" }
-tmux-backend = { path = "../../crates/tmux-backend" }
+terminal-ghostty.workspace = true
+tmux-backend.workspace = true
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]

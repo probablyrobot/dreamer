@@ -1,19 +1,24 @@
 [package]
-name = "client"
+name = "dreamer-client"
 description = "Connects to dreamerd: handshake, typed calls, ensure-running"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
 
+
+# Published as dreamer-client; the library keeps its short name.
+[lib]
+name = "client"
 [dependencies]
 api.workspace = true
-platform = { path = "../platform" }
+platform.workspace = true
 prost = "0.14.5"
 rustix = "1.1.6"
 tokio = { version = "1.54.1", features = ["net", "time", "io-util", "sync", "rt"] }
-wire = { path = "../wire" }
+wire.workspace = true
 
 [lints]
 workspace = true

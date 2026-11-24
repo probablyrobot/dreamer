@@ -1,12 +1,17 @@
 [package]
-name = "tmux-protocol"
+name = "dreamer-tmux-protocol"
 description = "Incremental, byte-oriented parser for tmux control mode"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
 
+
+# Published as dreamer-tmux-protocol; the library keeps its short name.
+[lib]
+name = "tmux_protocol"
 [dev-dependencies]
 proptest = "1.12.0"
 

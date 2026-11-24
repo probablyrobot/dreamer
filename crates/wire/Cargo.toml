@@ -1,15 +1,20 @@
 [package]
-name = "wire"
+name = "dreamer-wire"
 description = "Dreamer application protocol: framing, records, handshake, limits, queues"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
 
+
+# Published as dreamer-wire; the library keeps its short name.
+[lib]
+name = "wire"
 [dependencies]
 prost = "0.14.5"
-terminal-core = { path = "../terminal-core" }
+terminal-core.workspace = true
 tokio = { version = "1.54.1", features = ["io-util"] }
 
 [dev-dependencies]

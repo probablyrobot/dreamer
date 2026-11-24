@@ -356,22 +356,35 @@ full macOS gate report is marked "macOS runtime verification incomplete".
 
 ### Crates on crates.io
 
-`dreamer-sdk` and the crates it depends on (`dreamer-api`,
-`dreamer-app-protocol`, `dreamer-view-tree`) are published to crates.io with
-the same version. Inside the repository they keep their short dependency
-keys (`api`, `app-protocol`, `view-tree`), declared once in the root
+Two groups are published to crates.io, with the workspace version:
+
+- **The SDK:** `dreamer-sdk` and the crates it depends on (`dreamer-api`,
+  `dreamer-app-protocol`, `dreamer-view-tree`).
+- **The CLI:** `dreamer-cli`, which installs `dream`, and the crates under
+  it, each named `dreamer-<directory>` (`dreamer-tmux-backend`,
+  `dreamer-ghostty-sys`, and so on).
+
+`cargo install dreamer-cli` needs no Zig: `dreamer-ghostty-sys` takes the
+prebuilt libghostty-vt pinned in its `prebuilt.toml` (see
+[the dependency baseline](dependency-baseline.md)).
+
+Inside the repository every crate keeps its short dependency key and
+library name (`tmux-backend`, `tmux_backend`), declared once in the root
 `Cargo.toml` under `[workspace.dependencies]` with an exact `=X.Y.Z` pin.
 Bump those pins with the workspace version; a mismatch fails to resolve.
+Dev-dependencies stay path-only, so publishing drops them.
 
-After the release is published, from `main` at the release commit:
+After the release is published, from `main` at the release commit, publish
+every crate marked `publish = true`; Cargo orders them by dependency:
 
 ```sh
-cargo publish --dry-run --locked -p dreamer-view-tree -p dreamer-api -p dreamer-app-protocol -p dreamer-sdk
-cargo publish --locked -p dreamer-view-tree -p dreamer-api -p dreamer-app-protocol -p dreamer-sdk
+crates=$(cargo metadata --no-deps --format-version 1 \
+  | jq -r '.packages[] | select(.publish == null) | "-p " + .name')
+cargo publish --dry-run --locked $crates
+cargo publish --locked $crates
 ```
 
-Cargo publishes them in dependency order. A published version can be yanked
-but never replaced or deleted.
+A published version can be yanked but never replaced or deleted.
 
 ## Arch Linux
 

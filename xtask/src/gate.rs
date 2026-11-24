@@ -1140,7 +1140,7 @@ fn web_panes(dir: &Path) -> Result<Done, String> {
             "--package",
             "cef-sys",
             "--package",
-            "web-component",
+            "dreamer-web-component",
             "--all-targets",
             "--features",
             "dreamer-app/web",

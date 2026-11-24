@@ -23,8 +23,8 @@ tokio = { version = "1.54.1", features = ["rt", "sync"] }
 
 [dev-dependencies]
 api.workspace = true
-client = { path = "../client" }
-tmux-backend = { path = "../tmux-backend" }
+client = { package = "dreamer-client", path = "../client" }
+tmux-backend = { package = "dreamer-tmux-backend", path = "../tmux-backend" }
 
 [lints]
 workspace = true
