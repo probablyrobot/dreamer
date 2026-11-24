@@ -1,6 +1,6 @@
 [package]
 name = "memory"
-description = "Durable memory: the provider interface, the files provider, and the Kosmonaut provider"
+description = "Durable memory: the provider interface and the files, sqlite, and Kosmonaut providers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,18 +8,18 @@ license.workspace = true
 publish = false
 
 [features]
-# The `kosmonaut` provider: Kosmonaut embedded as a library, or a Kosmonaut
-# server over gRPC (`mode: server`). Off by default, so a headless build can
-# leave the engine and the client out. See docs/memory.md.
-kosmonaut = ["dep:kosmonaut", "dep:tonic", "dep:tonic-prost", "dep:prost", "dep:tokio"]
+# The `kosmonaut` provider: a Kosmonaut server over gRPC. Off by default,
+# so a build leaves the gRPC client out. It needs only public crates. See
+# docs/memory.md.
+kosmonaut = ["dep:tonic", "dep:tonic-prost", "dep:prost", "dep:tokio"]
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_norway = "0.9.42"
 serde_json = "1.0.154"
-# Pinned to a release tag; Cargo.lock records its commit. The repository is
-# private: see docs/dependency-baseline.md for how builds get access to it.
-kosmonaut = { git = "https://github.com/DeytaHQ/kosmonaut", tag = "v0.24.0", optional = true }
+# The `sqlite` provider, with SQLite compiled in (`bundled`): no system
+# library. Pinned exactly; see docs/dependency-baseline.md.
+rusqlite = { version = "=0.43.0", features = ["bundled"] }
 # The server mode's gRPC client (src/kosmonaut/server.rs), with rustls/ring
 # and the webpki roots as the HTTP client has; messages are written out with
 # prost's derive, so no protoc or build script. See

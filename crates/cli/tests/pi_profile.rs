@@ -532,7 +532,8 @@ fn the_extension_attaches_pane_context_and_sends_to_a_pane() {
 /// harness, an MCP client through `dream mcp`, recalls it; a new session's
 /// first prompt, and only its first, starts with the index naming it; and
 /// pi in the drawer sees it in its index, recalls it with its tools, and
-/// edits and forgets it from the chat's `/memory`, which removes the file.
+/// edits and forgets it from the chat's `/memory`. All on the default
+/// provider, sqlite, where a memory has no file.
 #[test]
 fn a_memory_kept_by_one_harness_is_recalled_by_another_and_forgotten_in_the_chat() {
     let Some(node) = node_for_types() else {
@@ -599,8 +600,22 @@ esac
     // One harness remembers, under its session's grant.
     let a = session();
     send(&a, "Remember the staging port");
-    let file = project.join(".dreamer/memory/staging-port.md");
-    assert!(file.is_file(), "nothing remembered:\n{}", log());
+    let kept = live.dream(&[
+        "memory",
+        "get",
+        "project/staging-port",
+        "--cwd",
+        &project.display().to_string(),
+    ]);
+    assert!(kept.status.success(), "nothing remembered:\n{}", log());
+    assert!(
+        String::from_utf8_lossy(&kept.stdout).contains("8461"),
+        "{}",
+        String::from_utf8_lossy(&kept.stdout)
+    );
+    // Kept in the database, not as a file.
+    assert!(root.join("data/memory.sqlite").is_file());
+    assert!(!project.join(".dreamer/memory").exists());
     assert!(
         log().contains("remembered project/staging-port"),
         "{}",
@@ -661,7 +676,14 @@ esac
             "/memory unknown",
         ],
     );
-    assert!(!file.exists(), "the chat's forget left the file");
+    let gone = live.dream(&[
+        "memory",
+        "get",
+        "project/staging-port",
+        "--cwd",
+        &project.display().to_string(),
+    ]);
+    assert!(!gone.status.success(), "the chat's forget left it");
 }
 
 /// `memory_recall` through `dream mcp` run in `cwd`, as Claude Code or

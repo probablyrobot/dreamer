@@ -2193,7 +2193,7 @@ types:
     fields:
       - { n: 1, name: items, type: MemoryItem, repeated: true }
       - { n: 2, name: problems, type: MemoryProblem, repeated: true }
-      - { n: 3, name: provider, type: string, doc: "The provider in force (files or kosmonaut)." }
+      - { n: 3, name: provider, type: string, doc: "The provider in force (files, sqlite, or kosmonaut)." }
 
   - message: MemoryRecall
     fields:

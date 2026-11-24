@@ -301,9 +301,9 @@ pub const SCHEMA: &[Key] = &[
     },
     Key {
         path: "memory.provider",
-        kind: "files | kosmonaut",
-        default: "files",
-        doc: "What keeps durable memory (dream memory, the memory.* API): files is one markdown file per memory and a MEMORY.md index, under <config dir>/memory/ for the user and .dreamer/memory/ in a project; kosmonaut is one graph database for the user, embedded in dreamerd or on a Kosmonaut server (a build with the kosmonaut feature). dream memory import and export copy between them.",
+        kind: "files | sqlite | kosmonaut",
+        default: "sqlite",
+        doc: "What keeps durable memory (dream memory, the memory.* API): sqlite is one SQLite database for the user on this machine (<data dir>/memory.sqlite), where links are edges and recall also follows them; the first time it reaches a scope it copies in, once, what files kept there; files is one markdown file per memory and a MEMORY.md index, under <config dir>/memory/ for the user and .dreamer/memory/ in a project; kosmonaut keeps memories on a Kosmonaut server (a build with the kosmonaut feature). dream memory import and export copy between files and the others.",
         example: "files",
         live: true,
     },
@@ -340,18 +340,18 @@ pub const SCHEMA: &[Key] = &[
         live: false,
     },
     Key {
-        path: "memory.kosmonaut.mode",
-        kind: "embedded | server",
-        default: "embedded, or server when url is set",
-        doc: "How dreamerd reaches Kosmonaut: embedded runs it inside the daemon; server uses a Kosmonaut server over gRPC (url, tls, token_env). When the server cannot be reached, memory calls fail with memory unavailable and agent sessions go on without memory.",
-        example: "embedded",
+        path: "memory.sqlite.path",
+        kind: "absolute path or ~/path",
+        default: "<data dir>/memory.sqlite",
+        doc: "The sqlite provider's database file: one per user, every project's memories in it, each tagged with its project. Made on the first memory call.",
+        example: "~/.local/share/dreamer/memory.sqlite",
         live: true,
     },
     Key {
         path: "memory.kosmonaut.url",
         kind: "grpc://host:port | unix:/path",
-        default: "none (required with mode: server)",
-        doc: "The Kosmonaut server, with mode: server: grpc://host:port over the network, or unix:/path for a socket on this machine.",
+        default: "none (required with provider: kosmonaut)",
+        doc: "The Kosmonaut server: grpc://host:port over the network, or unix:/path for a socket on this machine. When the server cannot be reached, memory calls fail with memory unavailable and agent sessions go on without memory. Kosmonaut runs only as a server; for a database on this machine use provider: sqlite.",
         example: "grpc://memory.example:7687",
         live: true,
     },
@@ -372,18 +372,10 @@ pub const SCHEMA: &[Key] = &[
         live: true,
     },
     Key {
-        path: "memory.kosmonaut.path",
-        kind: "absolute path or ~/path",
-        default: "<data dir>/memory.kosmonaut",
-        doc: "The embedded Kosmonaut database directory: one per user, every project's memories in it, each tagged with its project. Not used with mode: server.",
-        example: "~/.local/share/dreamer/memory.kosmonaut",
-        live: true,
-    },
-    Key {
-        path: "memory.kosmonaut.embedder",
+        path: "memory.embedder",
         kind: "{kind: static, path} | {kind: local, command, dimension, timeout} | {kind: openai, model, key_env, url, dimension, timeout}",
         default: "none (no vectors)",
-        doc: "Optional: what turns memories into vectors, so recall also finds memories near the query in meaning. static reads word vectors from a file (word2vec text format); local runs a program that reads a JSON array of texts and prints a JSON array of vectors; openai sends the texts to OpenAI's embeddings API with the key in the environment variable key_env (url, default https://api.openai.com/v1, must be https unless it is this machine; timeout per request, default 30s). Without it, recall is by words and the graph.",
+        doc: "Optional, for sqlite and kosmonaut: what turns memories into vectors, so recall also finds memories near the query in meaning. static reads word vectors from a file (word2vec text format); local runs a program that reads a JSON array of texts and prints a JSON array of vectors; openai sends the texts to OpenAI's embeddings API with the key in the environment variable key_env (url, default https://api.openai.com/v1, must be https unless it is this machine; timeout per request, default 30s). Without it, recall is by words and links. It was memory.kosmonaut.embedder, which is still read for now, with a note.",
         example: "{kind: openai, model: text-embedding-3-small, key_env: OPENAI_API_KEY}",
         live: true,
     },
@@ -417,6 +409,8 @@ pub struct Checked {
     pub problem: Option<String>,
     /// The file exists.
     pub exists: bool,
+    /// What should change though the file works: a setting that moved.
+    pub notes: Vec<String>,
 }
 
 /// Check every file Dreamer reads from configuration directory `dir`:
@@ -427,22 +421,29 @@ pub fn check(dir: &Path) -> Vec<Checked> {
     let mut out = Vec::new();
     let settings = dir.join("dreamer.yaml");
     out.push(match std::fs::read_to_string(&settings) {
-        Ok(text) => Checked {
-            problem: crate::settings::parse_settings(&text, Some(&settings))
-                .err()
-                .map(|e| e.to_string()),
-            file: settings,
-            exists: true,
-        },
+        Ok(text) => {
+            let parsed = crate::settings::parse_settings(&text, Some(&settings));
+            Checked {
+                notes: parsed
+                    .as_ref()
+                    .map(|s| s.memory.notes.clone())
+                    .unwrap_or_default(),
+                problem: parsed.err().map(|e| e.to_string()),
+                file: settings,
+                exists: true,
+            }
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Checked {
             file: settings,
             problem: None,
             exists: false,
+            notes: Vec::new(),
         },
         Err(e) => Checked {
             problem: Some(e.to_string()),
             file: settings,
             exists: true,
+            notes: Vec::new(),
         },
     });
     let themes = dir.join("themes");
@@ -452,6 +453,7 @@ pub fn check(dir: &Path) -> Vec<Checked> {
             file: l,
             problem: None,
             exists: true,
+            notes: Vec::new(),
         });
     }
     for p in problems {
@@ -461,6 +463,7 @@ pub fn check(dir: &Path) -> Vec<Checked> {
             file: PathBuf::from(file),
             problem: Some(why.to_owned()),
             exists: true,
+            notes: Vec::new(),
         });
     }
     let hosts = dir.join("hosts.yaml");
@@ -476,6 +479,7 @@ pub fn check(dir: &Path) -> Vec<Checked> {
                 .err(),
             file: hosts,
             exists: true,
+            notes: Vec::new(),
         });
     }
     out
@@ -537,6 +541,18 @@ mod tests {
         std::fs::write(d.join("dreamer.yaml"), "appearance: light\n").expect("write");
         std::fs::remove_file(d.join("themes/half.toml")).expect("rm");
         assert!(check(&d).iter().all(|c| c.problem.is_none()));
+        // A moved key still works, with a note.
+        std::fs::write(
+            d.join("dreamer.yaml"),
+            "memory:\n  kosmonaut:\n    embedder: {kind: static, path: /v/words.vec}\n",
+        )
+        .expect("write");
+        let r = check(&d);
+        assert!(r.iter().all(|c| c.problem.is_none()), "{r:?}");
+        assert!(
+            r[0].notes.iter().any(|n| n.contains("memory.embedder")),
+            "{r:?}"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }

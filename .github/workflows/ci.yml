@@ -16,8 +16,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUST_BACKTRACE: "1"
-  # Git dependencies through git itself, so the URL rewrite below applies.
-  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 # Linux only. macOS is verified by the local gate on the development Mac
 # (AGENTS.md). `cargo xtask policy` fails if any workflow uses a macOS runner.
@@ -36,12 +34,6 @@ jobs:
     timeout-minutes: 65
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Cargo fetches every git source in Cargo.lock, optional ones too, so
-      # every job needs the private Kosmonaut repository (read-only token).
-      - name: Access to the private Kosmonaut repository
-        env:
-          KOSMONAUT_TOKEN: ${{ secrets.KOSMONAUT_TOKEN }}
-        run: git config --global url."https://x-access-token:${KOSMONAUT_TOKEN}@github.com/DeytaHQ/".insteadOf "https://github.com/DeytaHQ/"
       - name: Free runner disk
         # The workspace's debug target fills the runner; drop toolchains this job never uses.
         run: |
@@ -76,8 +68,8 @@ jobs:
       - run: cargo xtask icons --check
       - run: cargo xtask plugin --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # The embedded Kosmonaut memory provider is behind a feature; the
-      # line above checks the build without it.
+      # The Kosmonaut memory provider (a gRPC client) is behind a feature;
+      # the line above checks the build without it.
       - run: cargo clippy -p memory -p dreamer-server --features dreamer-server/kosmonaut --all-targets --locked -- -D warnings
       - name: Build the pinned tmux baseline
         run: echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
@@ -103,10 +95,14 @@ jobs:
           path: target/snapshot-fixtures/
           if-no-files-found: ignore
       - run: cargo test --workspace --locked
-      # Server mode's tests run each against a kosmonaut-server of their
-      # own. No image is published, so the server is built from the pinned
-      # commit Cargo already fetched (Cargo.lock), with its gRPC feature,
-      # once per pin: the binary is cached under the commit.
+      # The Kosmonaut provider's tests run each against a kosmonaut-server
+      # of their own. Kosmonaut is not public yet and no image is published,
+      # so the server is built from the pinned tag with its gRPC feature,
+      # once per pin (the binary is cached under the commit). Only the
+      # server needs the private repository, through the read-only
+      # KOSMONAUT_TOKEN secret; Dreamer itself builds without it. Where the
+      # secret is not available (a pull request from a fork), the server
+      # tests say they were skipped.
       - name: Cache the Kosmonaut server
         id: kosmonaut-server
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -115,16 +111,25 @@ jobs:
           key: kosmonaut-server-dbd5af275a7efa3f2ff3ca45afc45b40a214430e-grpc-${{ runner.os }}-${{ runner.arch }}
       - name: Build the Kosmonaut server
         if: steps.kosmonaut-server.outputs.cache-hit != 'true'
+        env:
+          KOSMONAUT_TOKEN: ${{ secrets.KOSMONAUT_TOKEN }}
         run: |
-          src=$(ls -d ~/.cargo/git/checkouts/kosmonaut-*/dbd5af2)
+          if [ -z "$KOSMONAUT_TOKEN" ]; then
+            echo "no KOSMONAUT_TOKEN: the Kosmonaut server tests will be skipped"
+            exit 0
+          fi
+          src="$RUNNER_TEMP/kosmonaut"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$KOSMONAUT_TOKEN" | base64 -w0)" \
+            clone --quiet --depth 1 --branch v0.24.0 https://github.com/DeytaHQ/kosmonaut "$src"
+          test "$(git -C "$src" rev-parse HEAD)" = dbd5af275a7efa3f2ff3ca45afc45b40a214430e
           CARGO_TARGET_DIR="$RUNNER_TEMP/kosmonaut-target" cargo build --release --locked \
             --manifest-path "$src/crates/kosmonaut-server/Cargo.toml" --features grpc --bin kosmonaut-server
           mkdir -p ~/.cache/dreamer/kosmonaut-server
           cp "$RUNNER_TEMP/kosmonaut-target/release/kosmonaut-server" ~/.cache/dreamer/kosmonaut-server/
-          rm -rf "$RUNNER_TEMP/kosmonaut-target"
-      - name: Test the Kosmonaut memory provider, embedded and on a server
+          rm -rf "$RUNNER_TEMP/kosmonaut-target" "$src"
+      - name: Test the Kosmonaut memory provider on a server
         run: |
-          export DREAMER_KOSMONAUT_SERVER="$HOME/.cache/dreamer/kosmonaut-server/kosmonaut-server"
+          server="$HOME/.cache/dreamer/kosmonaut-server/kosmonaut-server"
+          if [ -x "$server" ]; then export DREAMER_KOSMONAUT_SERVER="$server"; fi
           cargo test --locked -p memory --features kosmonaut
           cargo test --locked -p dreamer-server --features kosmonaut --test memory
-          cargo test --locked -p dreamer-server --features kosmonaut --bin dreamerd memories::openai

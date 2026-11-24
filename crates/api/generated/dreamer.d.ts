@@ -2307,7 +2307,7 @@ declare namespace Dreamer {
   interface MemoryItems {
     items: MemoryItem[];
     problems: MemoryProblem[];
-    /** The provider in force (files or kosmonaut). */
+    /** The provider in force (files, sqlite, or kosmonaut). */
     provider: string;
   }
 

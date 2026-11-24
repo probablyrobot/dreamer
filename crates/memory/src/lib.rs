@@ -6,8 +6,10 @@
 //! crate holds the interface, the deterministic full-text ranking every
 //! provider can share ([`search`]), and the providers: [`Files`], one
 //! markdown file per memory plus a `MEMORY.md` index, the layout Claude
-//! Code's memory uses; and, with the `kosmonaut` feature, `Kosmonaut`, a
-//! graph database embedded in the daemon or reached as a server over gRPC.
+//! Code's memory uses; [`Sqlite`], one SQLite database per user with
+//! memories, their links as edges with valid times, vectors, collector
+//! rows, and session summaries; and, with the `kosmonaut` feature,
+//! `Kosmonaut`, the same kept on a Kosmonaut server over gRPC.
 //! [`transfer`] copies memories from one provider to another. See
 //! `docs/memory.md`.
 //!
@@ -18,18 +20,22 @@
 
 pub mod embed;
 mod files;
+mod graph;
 mod index;
 #[cfg(feature = "kosmonaut")]
 mod kosmonaut;
 pub mod search;
+mod sqlite;
 mod time;
 
 use std::path::{Path, PathBuf};
 
 pub use files::Files;
+pub use graph::{CollectorRow, Summary};
 pub use index::{INDEX_BYTES, INDEX_HEAD, INDEX_LINES, index};
 #[cfg(feature = "kosmonaut")]
-pub use kosmonaut::{CollectorRow, Kosmonaut, Server, Summary};
+pub use kosmonaut::{Kosmonaut, Server};
+pub use sqlite::Sqlite;
 
 /// Where a memory applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -192,7 +198,7 @@ pub const MAX_LIMIT: usize = 100;
 /// from `cx`; `scope: None` means every scope `cx` reaches. Providers
 /// keep no cache that could go stale against their store.
 pub trait Provider: Send + Sync + std::fmt::Debug {
-    /// The settings name: `files` or `kosmonaut`.
+    /// The settings name: `files`, `sqlite`, or `kosmonaut`.
     fn name(&self) -> &'static str;
 
     fn remember(&self, cx: &Context, new: New) -> Result<Memory, Error>;

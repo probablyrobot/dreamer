@@ -143,7 +143,7 @@ host carries no TypeScript tooling.
 
 | Crate | Version | Used by | License |
 | --- | --- | --- | --- |
-| `ureq` (default features off; `rustls`) | `=3.5.2`, with `ureq-proto` 0.7.1 | `app-script`: `fetch` in script apps, in `dreamer-termapp`; `dreamer-server` (with the `kosmonaut` feature): the `openai` memory embedder | MIT OR Apache-2.0 |
+| `ureq` (default features off; `rustls`) | `=3.5.2`, with `ureq-proto` 0.7.1 | `app-script`: `fetch` in script apps, in `dreamer-termapp`; `dreamer-server`: the `openai` memory embedder | MIT OR Apache-2.0 |
 | `rustls` (through `ureq`, provider `ring`) | `0.23.46`, with `rustls-webpki` 0.103.17 and `rustls-pki-types` 1.16.0 | same | Apache-2.0 OR ISC OR MIT (`rustls-webpki`: ISC) |
 | `ring` | `0.17.14` | same: rustls's cryptography | Apache-2.0 AND ISC |
 | `webpki-roots` | `1.0.12` | same: the root certificates | CDLA-Permissive-2.0 |
@@ -186,13 +186,12 @@ Why these:
   target; it can be switched to if apps need it.
 
 The server uses the same client, at the same pin and features, for the
-`openai` memory embedder (`memory.kosmonaut.embedder.kind: openai`,
+`openai` memory embedder (`memory.embedder.kind: openai`,
 [memory.md](memory.md#openai)): one blocking POST per batch of texts, on
 the thread a memory call already runs on off the event loop, with
-`timeout_global` for each request, no redirects, and no proxy. It is an
-optional dependency that the `kosmonaut` feature turns on, so a server
-built without that feature does not link it. Adding it changed only the
-server's own dependency list in `Cargo.lock`.
+`timeout_global` for each request, no redirects, and no proxy. Every
+`dreamerd` links it; it sends nothing unless the user configured the
+embedder.
 
 `cargo xtask policy` allows `ureq` in two product files and nowhere else:
 `crates/app-script/src/fetch.rs` (app `fetch`, to the hosts a manifest
@@ -200,52 +199,66 @@ lists) and `crates/server/src/memories/openai.rs` (the embedder, to the
 API base its settings name: `https`, or `http` to this machine only).
 Neither opens sockets of its own. None of these crates pulls in a UI
 framework, GPU, or font crate (`cargo xtask headless --check`).
-`dreamer-termapp` links them, and so does `dreamerd` built with the
-`kosmonaut` feature; the CLI and the desktop do not.
+`dreamer-termapp` and `dreamerd` link them; the CLI and the desktop do
+not.
+
+## SQLite
+
+| Crate | Version | Used by | License |
+| --- | --- | --- | --- |
+| `rusqlite` (feature `bundled`) | `=0.43.0` | `memory`: the `sqlite` memory provider ([memory.md](memory.md#sqlite)) | MIT |
+| `libsqlite3-sys` (through `rusqlite`) | `0.40.0`, which compiles SQLite 3.54.1 | same | MIT; SQLite itself is in the public domain |
+| `hashlink`, `fallible-iterator`, `fallible-streaming-iterator` | as `Cargo.lock` records them | same: `rusqlite`'s statement cache and row iterators | MIT, or MIT OR Apache-2.0 |
+
+`rusqlite` is pinned exactly; the others are pinned by the lock and move
+only with it. `Cargo.lock` also lists `sqlite-wasm-rs`, `rsqlite-vfs`,
+and `rand` 0.8 for `libsqlite3-sys` on WebAssembly targets; no Dreamer
+build compiles them.
+
+Why these:
+
+- **SQLite compiled in.** With `bundled`, `libsqlite3-sys` builds the
+  SQLite amalgamation with the `cc` crate and the C compiler every target
+  already needs (QuickJS, Luau, and `ring` are built the same way). No
+  system SQLite is linked or looked for, so macOS and Linux run the same
+  SQLite version; the library is linked into `dreamerd`. No extension is
+  loaded; JSON functions, which the provider uses for lists of keys, are
+  part of SQLite itself.
+- **Plain SQL is enough.** One user's memories are small. Recall reads the
+  memories of the scopes a call reaches and ranks them in Rust (the same
+  ranking the `files` provider gives), follows edges with indexed joins,
+  and compares vectors in Rust; vectors are blobs of little-endian
+  `f32`. A vector index or full-text index can be added if memory counts
+  grow large.
+- **No UI, windowing, GPU, or font crate**, so the headless crates may use
+  it (`cargo xtask headless --check`).
 
 ## Kosmonaut
 
 | Item | Value |
 | --- | --- |
-| Source | `https://github.com/DeytaHQ/kosmonaut` (private; crate `kosmonaut` and its `ram-*` crates) |
-| Tag | `v0.24.0` |
-| Commit | `dbd5af275a7efa3f2ff3ca45afc45b40a214430e` (recorded in `Cargo.lock`) |
-| Used by | `memory` and `dreamer-server`, behind their `kosmonaut` feature: the embedded `kosmonaut` memory provider ([memory.md](memory.md#kosmonaut)) |
-| Server | `kosmonaut-server` from the same tag, built with its `grpc` feature: what [server mode](memory.md#server-mode) talks to, and what CI runs the memory tests against |
-| Kosmonaut toolchain | Rust 1.95 at least (its own pin 1.98.1); builds with our 1.99.1 |
-| Features | Default: no cloud backends, no Arrow; `object_store` with the local file system only |
-| License | Apache-2.0. What it adds to `Cargo.lock` (Tantivy, `object_store`, zstd, and others) is MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, Unlicense, or zlib, alone or as choices |
+| Server | `kosmonaut-server` at tag `v0.24.0` (commit `dbd5af275a7efa3f2ff3ca45afc45b40a214430e`), built with its `grpc` feature: what the `kosmonaut` memory provider talks to ([memory.md](memory.md#kosmonaut)) |
+| Used by | `memory` and `dreamer-server`, behind their `kosmonaut` feature, through the gRPC client below. No Kosmonaut crate is a dependency |
+| Source | `https://github.com/DeytaHQ/kosmonaut`, not public yet |
 
-Not in release archives: the feature is off by default, and packaging
-builds without it. It is pure Rust apart from zstd (C, built by
-`zstd-sys` with the `cc` crate), and pulls in no UI, windowing, GPU, or
-font crate, so the headless crates may use it.
+Dreamer does not depend on Kosmonaut's source: it is not in `Cargo.toml`
+or `Cargo.lock`, so a clone of this repository builds with
+`cargo build --locked` without access to it, with or without the
+`kosmonaut` feature. Kosmonaut inside `dreamerd` (the embedded mode)
+returns as a crates.io dependency behind the same feature once Kosmonaut
+is published.
 
-**Access.** The repository is private, and Cargo fetches every git
-source in `Cargo.lock` (optional ones too) before it builds anything, so
-every build needs read access to it, with or without the feature:
-
-- On a development machine, your own git login. Set
-  `CARGO_NET_GIT_FETCH_WITH_CLI=true` so Cargo fetches through `git` and
-  its credential helper (for example `gh auth setup-git`). Dreamer never
-  reads a credential store itself.
-- In GitHub Actions, the `KOSMONAUT_TOKEN` secret (a fine-grained,
-  read-only token): each job rewrites `https://github.com/DeytaHQ/` to an
-  address that carries it, before any `cargo` command, and sets
-  `CARGO_NET_GIT_FETCH_WITH_CLI`.
-- In the containers the gate, `cargo xtask package --container`, and
-  `cargo xtask bench` run, which have no GitHub login: the host runs
-  `cargo fetch --locked`, copies the locked commit from its cargo cache
-  into a bare mirror under `target/private-git/`, and mounts it read-only;
-  git in the container reads the repository's URL from the mirror
-  (`url.<mirror>.insteadOf`). No token enters a container
-  (`xtask/src/private_git.rs`).
+Only the CI job that tests the provider against a real server needs the
+server's source. It clones the pinned tag with the `KOSMONAUT_TOKEN`
+secret (a fine-grained, read-only token), checks the commit, builds the
+server once per pin, and caches the binary. Without the secret, as in a
+pull request from a fork, the server tests say they were skipped.
 
 ## gRPC client (Kosmonaut server mode)
 
 | Crate | Version | Used by | License |
 | --- | --- | --- | --- |
-| `tonic` (default features off; `channel`, `codegen`, `tls-ring`, `tls-webpki-roots`) | `0.14.9` | `memory` (with the `kosmonaut` feature): the Kosmonaut provider's `mode: server` | MIT |
+| `tonic` (default features off; `channel`, `codegen`, `tls-ring`, `tls-webpki-roots`) | `0.14.9` | `memory` (with the `kosmonaut` feature): the `kosmonaut` memory provider | MIT |
 | `tonic-prost` | `0.14.9` | same: the protobuf codec | MIT |
 | `prost` | `0.14.5` | same: the messages | Apache-2.0 |
 | `hyper`, `hyper-util`, `h2`, `tower`, `tokio-rustls`, `tokio-stream`, and their small helpers (`http-body-util`, `hyper-timeout`, `sync_wrapper`, `tower-layer`, `tower-service`, `try-lock`, `want`) | as `Cargo.lock` records them | same: through `tonic` | MIT, or MIT OR Apache-2.0 (`sync_wrapper`: Apache-2.0) |

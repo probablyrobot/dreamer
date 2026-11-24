@@ -69,7 +69,19 @@ Common fixes:
 - **Something is stuck.** The log file is named in `dream status`. Read its
   last lines before restarting anything.
 - **A settings file is rejected.** `dream config check` names the file, the
-  key, and the problem. The dreamer-config skill covers fixing it.
+  key, and the problem. The dreamer-config skill covers fixing it. A
+  `note:` under a file is not an error: the setting still works but has
+  moved (`memory.kosmonaut.embedder` is now `memory.embedder`).
+- **Memory calls fail.** `memory.provider` is `sqlite` (the default: one
+  database in the data directory, nothing to install), `files` (markdown
+  files), or `kosmonaut` (a Kosmonaut server, only in a build with that
+  feature). "memory unavailable" means the Kosmonaut server cannot be
+  reached; `mode: embedded` is refused: use `provider: sqlite` instead.
+- **Memories seem missing after an update.** `sqlite` copies in what the
+  files held, once per scope the first time a call reaches it, and leaves
+  the files alone. A file listed under `problems` did not read; fix it,
+  then `dream memory import` copies it in. `dream memory export` writes the
+  database back out as files; `provider: files` goes back to them.
 
 To keep the daemon running across logins, install it as a per-user service
 (systemd on Linux, launchd on macOS): `dream service install`, and check it

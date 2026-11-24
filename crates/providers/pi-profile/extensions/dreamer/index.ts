@@ -478,7 +478,7 @@ export default function (pi: ExtensionAPI) {
 		name: "memory_remember",
 		label: "Remember",
 		description:
-			"Remember a fact worth having in a later session, with any agent: something the user told you about themselves or how to work, a decision in this project, or where to find something. One fact per memory; do not store secrets or what the code or git history already records. Returns the new memory's id and file.",
+			"Remember a fact worth having in a later session, with any agent: something the user told you about themselves or how to work, a decision in this project, or where to find something. One fact per memory; do not store secrets or what the code or git history already records. Returns the new memory's id.",
 		parameters: Type.Object({
 			text: Type.String({ description: "The fact, in a sentence or a short paragraph." }),
 			kind: Type.Union(MEMORY_KINDS.map((k) => Type.Literal(k)), {
@@ -503,7 +503,7 @@ export default function (pi: ExtensionAPI) {
 			name: "memory_forget",
 			label: "Forget",
 			description:
-				"Forget a memory that is wrong or no longer true: deletes its file. Only when the user asks, or a memory you kept turned out wrong.",
+				"Forget a memory that is wrong or no longer true: deletes it. Only when the user asks, or a memory you kept turned out wrong.",
 			parameters: Type.Object({ id: Type.String({ description: "The memory's id, such as project/small-commits." }) }),
 			async execute(_id: string, params: any, _signal: unknown, _onUpdate: unknown, ctx: any) {
 				if (ctx?.hasUI) ui = ctx.ui;

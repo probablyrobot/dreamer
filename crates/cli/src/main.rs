@@ -391,6 +391,9 @@ fn config_check() -> Result<(), String> {
             (None, true) => println!("✓ {}", c.file.display()),
             (None, false) => println!("· {} (absent: defaults)", c.file.display()),
         }
+        for n in &c.notes {
+            println!("  note: {n}");
+        }
     }
     if let Ok(s) = workspace_config::load_settings() {
         harness::print_check(&s.agents);

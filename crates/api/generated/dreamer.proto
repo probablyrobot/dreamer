@@ -2588,7 +2588,7 @@ message MemoryProblem {
 message MemoryItems {
   repeated MemoryItem items = 1;
   repeated MemoryProblem problems = 2;
-  // The provider in force (files or kosmonaut).
+  // The provider in force (files, sqlite, or kosmonaut).
   string provider = 3;
 }
 

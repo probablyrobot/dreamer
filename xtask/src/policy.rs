@@ -114,7 +114,7 @@ const HTTP_CLIENT: &str = "ureq::";
 /// The product files that may use the HTTP client: a script app's
 /// `fetch`, to the hosts its manifest lists; and the `openai` memory
 /// embedder, to the embeddings API the user configured
-/// (`memory.kosmonaut.embedder`), with the key from the environment
+/// (`memory.embedder`), with the key from the environment
 /// variable the settings name.
 const HTTP_CLIENT_FILES: [&str; 2] = [
     "crates/app-script/src/fetch.rs",

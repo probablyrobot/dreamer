@@ -26,10 +26,12 @@ from `Cargo.lock` at packaging time.
 | ratatui | 0.30.2 | MIT | `dreamer-termapp` |
 | crossterm | 0.29.0 | MIT | `dreamer-termapp` |
 | rmcp | 3.10.0 | Apache-2.0 | `dream` (MCP) |
-| ureq | 3.5.2 | MIT OR Apache-2.0 | `dreamer-termapp` (`fetch` in script apps) |
-| rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT | `dreamer-termapp` (`fetch`) |
-| ring | 0.17.14 | Apache-2.0 AND ISC | `dreamer-termapp` (`fetch`) |
-| webpki-roots | 1.0.12 | CDLA-Permissive-2.0 | `dreamer-termapp` (`fetch`: Mozilla's root certificates) |
+| ureq | 3.5.2 | MIT OR Apache-2.0 | `dreamer-termapp` (`fetch` in script apps), `dreamerd` (the `openai` memory embedder) |
+| rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT | `dreamer-termapp` (`fetch`), `dreamerd` (the `openai` embedder) |
+| ring | 0.17.14 | Apache-2.0 AND ISC | same |
+| webpki-roots | 1.0.12 | CDLA-Permissive-2.0 | same (Mozilla's root certificates) |
+| rusqlite | 0.43.0 | MIT | `dreamerd` (the `sqlite` memory provider) |
+| SQLite (bundled by libsqlite3-sys 0.40.0) | 3.54.1 | Public domain | `dreamerd` (the `sqlite` memory provider) |
 
 ## Terminal color schemes
 

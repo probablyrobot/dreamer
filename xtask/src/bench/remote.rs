@@ -196,7 +196,6 @@ fn run(
     // The host's side: the gate's image, cargo caches, and the checkout,
     // as `bench --linux` mounts them.
     let image = crate::gate::ensure_arm64_image()?;
-    let private = crate::private_git::docker_args(root)?;
     let mut run = Command::new("docker");
     run.args([
         "run",
@@ -211,7 +210,6 @@ fn run(
     ])
     .arg("-v")
     .arg(format!("{}:/src", root.display()))
-    .args(&private)
     .args([
         "-v",
         "dreamer-arm64-cargo:/root/.cargo",

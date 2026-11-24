@@ -12,11 +12,10 @@ name = "dreamerd"
 path = "src/main.rs"
 
 [features]
-# Kosmonaut embedded as the `kosmonaut` memory provider (docs/memory.md).
-# Off by default; without it `memory.provider: kosmonaut` is refused at
-# each memory call. It also brings the HTTP client for the `openai`
-# embedder (src/memories/openai.rs), the one place the server uses it.
-kosmonaut = ["memory/kosmonaut", "dep:ureq"]
+# The `kosmonaut` memory provider: a Kosmonaut server over gRPC
+# (docs/memory.md). Off by default; without it `memory.provider: kosmonaut`
+# is refused at each memory call.
+kosmonaut = ["memory/kosmonaut"]
 
 [dependencies]
 api.workspace = true
@@ -36,8 +35,10 @@ providers.workspace = true
 terminal-core.workspace = true
 tmux-backend.workspace = true
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "signal", "macros", "process"] }
-# The same client and pin as app `fetch` (docs/dependency-baseline.md).
-ureq = { version = "=3.5.2", default-features = false, features = ["rustls"], optional = true }
+# The same client and pin as app `fetch` (docs/dependency-baseline.md), for
+# the `openai` memory embedder (src/memories/openai.rs), the one place the
+# server uses it.
+ureq = { version = "=3.5.2", default-features = false, features = ["rustls"] }
 wire.workspace = true
 workspace-config.workspace = true
 workspace-host.workspace = true

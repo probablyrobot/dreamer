@@ -122,7 +122,6 @@ fn linux(root: &std::path::Path, workload: &str, rest: &[String]) -> Result<(), 
          cargo xtask bench {workload} {}",
         rest.join(" ")
     );
-    let private = crate::private_git::docker_args(root)?;
     // The container sees the checkout but not as its owner; the host
     // records which commit it is.
     let git = git_state(root).to_string();
@@ -132,7 +131,6 @@ fn linux(root: &std::path::Path, workload: &str, rest: &[String]) -> Result<(), 
         .arg(format!("DREAMER_BENCH_GIT={git}"))
         .arg("-v")
         .arg(format!("{}:/src", root.display()))
-        .args(&private)
         .args([
             "-v",
             "dreamer-arm64-cargo:/root/.cargo",
