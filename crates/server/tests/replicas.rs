@@ -325,7 +325,14 @@ async fn a_respawned_pane_is_followed_into_its_new_generation() {
     loop {
         f.pump(Duration::from_millis(100)).await.expect("pump");
         let (mirror, status) = s.mirror().await;
-        if status.generation > before.generation && replica_lines(&f) == mirror {
+        // The new process's first output can still arrive on the old
+        // generation's stream, before the daemon sees the respawn; tmux
+        // keeps the screen, so the text can match first. Wait for the new
+        // generation's own checkpoint as well.
+        if status.generation > before.generation
+            && f.checkpoints >= 2
+            && replica_lines(&f) == mirror
+        {
             break;
         }
         assert!(

@@ -44,6 +44,7 @@ pub const BASE: &[(&str, &str)] = base![
     "prompts/apps.md",
     "skills/dreamer-apps/SKILL.md",
     "skills/dreamer-config/SKILL.md",
+    "skills/dreamer-manage/SKILL.md",
     "skills/dreamer-pi-profile/SKILL.md",
 ];
 
@@ -820,7 +821,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(shared_skills().len(), 2);
+        assert_eq!(shared_skills().len(), 3);
     }
 
     fn temp(name: &str) -> PathBuf {

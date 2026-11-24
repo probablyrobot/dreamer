@@ -16,6 +16,7 @@ mod hooks;
 mod icons;
 mod manifest;
 mod package;
+mod plugin;
 mod policy;
 mod preview;
 mod private_git;
@@ -52,7 +53,7 @@ commands:
   web smoke [--packaged]       draw web panes in that bundle, or in target/package's app and component
   headless [--cargo-args]      list the packages of the headless build
   hooks install|status         use the versioned git hooks in .githooks/
-  package --platform macos|arch|linux|server|current [--debug] [--source-only] [--nodeps] [--target T]
+  package --platform macos|arch|linux|deb|rpm|server|current [--debug] [--source-only] [--nodeps] [--target T]
           [--sign ID [--notarize PROFILE]]
                                build a package (macOS: zips of the app and of Dreamer Web, with signing records; ad hoc unless signed with Developer ID)
   package --platform linux --container [--arch arm64|amd64]
@@ -62,6 +63,7 @@ commands:
   package --fresh --platform macos
                                add Dreamer Web from its zip with the unpacked app's dream, away from the tree
   icons [--check]              draw (or check) the application icon files
+  plugin [--check]             copy (or check) the shipped skills and version into plugins/dreamer
   policy                       check repository rules (workflow runners, pinned actions)
   schemes [--check]            generate the terminal color scheme table from the vendored files
   remote-acceptance            section 18.2 remote cases through a private, unprivileged sshd
@@ -90,6 +92,7 @@ fn main() -> ExitCode {
         }
         Some("gate") => gate::run(&args[1..]),
         Some("icons") => icons::run(&args[1..]),
+        Some("plugin") => plugin::run(&args[1..]),
         Some("policy") => policy::run(&args[1..]),
         Some("scenes") => scenes::run(&args[1..]),
         Some("screenshot") => scenes::screenshot(&args[1..]),

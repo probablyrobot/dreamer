@@ -2,9 +2,10 @@
 
 Connections to `dreamerd` can send each other structured messages: a
 pane app reporting progress, a monitor asking another app for its state.
-Messages travel only between connections. **Receiving a message never
-types anything into a shell**: input to a pane is always a separate,
-authorized `terminal.input` or action.
+You need this page if you are writing a pane app or an extension that
+talks to another one. Messages travel only between connections.
+**Receiving a message never types anything into a shell**: input to a
+pane is always a separate, authorized `terminal.input` or action.
 
 ## Who sends
 

@@ -1,8 +1,16 @@
 # API schema
 
-Every typed operation that the GUI, the `dream` CLI, scripts, and extensions
-use is defined once, in `crates/api/schema/api.yaml`. The following are
-generated from it and checked in:
+Every typed operation that the desktop app, the `dream` CLI, scripts, and
+extensions use is defined once, in `crates/api/schema/api.yaml`. You need
+this page if you are writing a client or an extension, or changing the
+API. To call the API from a script, start at
+[JSON-RPC endpoint](#json-rpc-endpoint):
+
+```sh
+echo '{"jsonrpc":"2.0","id":1,"method":"tmux.topology"}' | dream rpc
+```
+
+The following are generated from the schema and checked in:
 
 | File | What it is |
 | --- | --- |
@@ -101,7 +109,10 @@ bytes. `dream rpc` connects standard input and output to it.
 | `tmux.topology` | `TopologyUpdate` |
 | `events.batch` | `EventBatch` |
 | `messages.deliver` | `MessageDelivery` |
+| `taps.data` | `TapData` |
+| `agent.sessions.events` | `AgentSessionEvents` |
 | `forward.data` | `ForwardData` (a bulk record on the native wire) |
+| `apps.input` | `AppInput` |
 
 The topic table is part of the schema (`notifications:` in `api.yaml`), so
 the Rust SDK (`api::Notification`), OpenRPC (`x-notifications`), and the

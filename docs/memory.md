@@ -7,6 +7,29 @@ and serves it with the `memory.*` API, `dream memory`, and the agent
 grants. Instructions files (`AGENTS.md`, `CLAUDE.md`) and session
 transcripts are separate; memory never changes them.
 
+## Use memory
+
+Memory is on by default and needs no setup. Agents read and add memories
+with their own tools ([Agents](#agents)). You do the same from a shell:
+
+```sh
+dream memory remember --kind feedback --scope project --title "Small commits" -- Keep commits small
+dream memory recall commits
+dream memory list
+dream memory forget project/small-commits
+```
+
+With the default provider each memory is a markdown file, so you can
+also read, edit, or delete it by hand ([Files](#files)). [CLI](#cli)
+lists every command.
+
+There is no setting that turns memory off. An agent session with no
+memories gets no index in its first prompt. To keep an MCP client from
+memory, give `dream mcp` a `--method` list without the `memory.*` methods
+([mcp.md](mcp.md#narrowing)).
+
+## Providers
+
 There are two providers:
 
 - `files` (the default): one markdown file per memory, which a person can
@@ -14,9 +37,10 @@ There are two providers:
 - `kosmonaut`: one graph database for the user, Kosmonaut embedded in the
   daemon or on a Kosmonaut server, where memories are nodes linked to
   their project, session, files, panes, and each other
-  ([Kosmonaut](#kosmonaut)). It is in a `dreamerd` built with the
-  `kosmonaut` feature.
+  ([Kosmonaut](#kosmonaut)). It is optional and off by default: it needs
+  a `dreamerd` built with the `kosmonaut` feature.
 
+Choose one with `memory.provider` ([Settings](#settings)).
 `dream memory import` and `dream memory export` copy memories between the
 two, so the readable form is never lost.
 
@@ -154,10 +178,18 @@ was made with. An unknown id fails with `NOT_FOUND`.
 
 With `memory.provider: kosmonaut` the daemon keeps memory in
 [Kosmonaut](dependency-baseline.md#kosmonaut), a graph database it runs
-in-process (`mode: embedded`). It needs a `dreamerd` built with the
-`kosmonaut` feature (`cargo build -p dreamer-server --features kosmonaut`);
-in a build without it, every memory call fails with `INVALID_PARAMS` and
-says so.
+in-process (`mode: embedded`).
+
+This provider is an optional build feature and is off by default. It
+needs a `dreamerd` built with the `kosmonaut` feature
+(`cargo build -p dreamer-server --features kosmonaut`), and that build
+needs access to the Kosmonaut source, which is not public. In a build
+without the feature, every memory call fails with `INVALID_PARAMS` and
+this message:
+
+```text
+memory.provider is kosmonaut, but this dreamerd was built without the kosmonaut feature: set memory.provider: files, or use a build that has it
+```
 
 **One database per user.** Every scope lives in one database,
 `<data dir>/memory.kosmonaut/` (`~/.local/share/dreamer/memory.kosmonaut`
@@ -421,10 +453,4 @@ Every command takes `--json` (the API's reply), `--cwd DIR` (default: the
 current directory, which picks the project), and `--session ID` (default:
 `$DREAMER_SESSION_ID`, which the daemon sets for the harnesses it starts).
 `-` reads the text from standard input; text after `--` is never read as
-an option.
-
-```sh
-dream memory remember --kind feedback --scope project --title "Small commits" -- Keep commits small
-dream memory recall commits
-dream memory forget project/small-commits
-```
+an option. [Use memory](#use-memory) has examples.

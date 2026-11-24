@@ -1,8 +1,12 @@
 # Input
 
+How keys, text, pastes, and the mouse reach a program in a pane, and how
+selection, copy mode, scrolling, and links work in the desktop app. For
+the keys themselves, start at [In the desktop app](#in-the-desktop-app).
+
 Clients never encode terminal input themselves. They send semantic events
 with `terminal.input`, and the daemon encodes each one on the pane's
-mirror worker against the pane's current state (spec 10.1). That state
+mirror worker against the pane's current state. That state
 includes the cursor-key and keypad modes, the Kitty keyboard flags,
 modifyOtherKeys, focus reporting, mouse tracking, and bracketed paste, so the bytes match
 what the application asked for at that moment.
@@ -25,10 +29,12 @@ press of `wheel_up` or `wheel_down`.
 
 Every key press in the window goes through one policy:
 
-1. **Paste:** Cmd-V on macOS, Ctrl-Shift-V on Linux. The clipboard text is
+1. **Copy and paste:** Cmd-C and Cmd-V on macOS, Ctrl-Shift-C and
+   Ctrl-Shift-V on Linux. Copy takes the selection; the clipboard text is
    sent as a `paste`.
 2. **App shortcuts:** other Cmd shortcuts on macOS stay with the
-   application (Cmd-Q quits).
+   application (Cmd-Q quits). See
+   [desktop.md](desktop.md#menus-and-shortcuts) for Dreamer's own.
 3. **Key events:** special keys (arrows, Enter, Tab, Escape, F-keys, Home,
    End, Page Up and Down, Insert, Delete) and anything with Ctrl or Alt.
 4. **Text:** everything else goes to the platform's text input. Plain
@@ -68,7 +74,7 @@ and Shift is not held. Otherwise they make a selection (below).
 
 Selection is local view state on the window's replica, made with
 Ghostty's selection gestures. It never changes the terminal, and selecting
-needs no daemon round trip (spec 9.3, 11.5).
+needs no daemon round trip.
 
 | Gesture | Selects |
 | --- | --- |
@@ -196,22 +202,25 @@ What differs from tmux's own copy mode:
 ## Scrolling
 
 Scrolling is local view state on the window's replica. It is never sent to
-the daemon and never changes the terminal (spec 10.1, 11.5). Each frame
+the daemon and never changes the terminal. Each frame
 carries the viewport position, whether the application tracks the mouse,
 and whether the alternate screen is active, so the window decides locally.
 
 | Input | Application tracks the mouse | Alternate screen, no tracking | Otherwise |
 | --- | --- | --- | --- |
 | Wheel or trackpad | Sent as wheel buttons | One Up or Down arrow key per step | Scrolls history, one row per step |
-| Shift-PageUp, Shift-PageDown | Scroll history by a page | Sent as keys | Scroll history by a page |
-| Shift-Home, Shift-End | Scroll to the top or bottom | Sent as keys | Scroll to the top or bottom |
+
+Shift-PageUp and Shift-PageDown scroll history by a page, and Shift-Home
+and Shift-End go to its top or bottom. On the alternate screen, which has
+no history, they are sent to the program as keys instead.
 
 - **New output while scrolled back:** the view keeps showing the same rows.
   A note at the top right says how many lines below the view there are.
 - **Typing returns to the bottom:** sending a key, text, or a paste
   scrolls a scrolled-back view down first.
-- **History depth:** the subscription's scrollback depth (10,000 lines by
-  default). A restored checkpoint starts at the bottom again.
+- **History depth:** what the pane's mirror keeps, which is tmux's
+  `history-limit` ([mirrors.md](mirrors.md)). A restored checkpoint
+  starts at the bottom again.
 
 The input smoke checks the wheel path too. After the mouse probe it prints
 200 lines, scrolls up five lines with the wheel through GPUI's event
@@ -234,7 +243,7 @@ of terminal output alone.
 - **Open:** a modifier-click opens the link. A plain click never does:
   it selects, or goes to a program that tracks the mouse.
 - **Schemes:** only allowed schemes open: `http`, `https`, and `mailto`
-  unless `links.schemes` says otherwise (see `docs/settings.md`). Any
+  unless `links.schemes` says otherwise ([settings.md](settings.md#links)). Any
   other scheme is refused, and a notice at the bottom of the grid shows
   the refused link for four seconds.
 

@@ -1,0 +1,12 @@
+{
+  "name": "dreamer",
+  "description": "Plugins for the Dreamer terminal",
+  "owner": { "name": "Dreamer developers" },
+  "plugins": [
+    {
+      "name": "dreamer",
+      "source": "./plugins/dreamer",
+      "description": "Configure and manage Dreamer, build pane apps, and see and drive your panes."
+    }
+  ]
+}

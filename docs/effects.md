@@ -2,8 +2,10 @@
 
 A program in a pane does more than draw. It answers queries, sets a
 title, reports its working directory, rings the bell, and may write the
-clipboard. Each of these has one owner (spec 10.3, 11.7). Nothing is
-repeated because a client reconnected or a checkpoint was restored.
+clipboard. Each of these has one owner, listed here. Nothing is repeated
+because a client reconnected or a checkpoint was restored. You need this
+page if you are writing a client that follows panes, or want to know why
+a title, bell, or clipboard write behaves as it does.
 
 | What | Owner and rule |
 | --- | --- |
@@ -12,7 +14,7 @@ repeated because a client reconnected or a checkpoint was restored.
 | Title (OSC 0/2) and working directory (OSC 7) | **State** kept by the daemon's mirror. See below |
 | Bell | **Live effect**. See below |
 | Clipboard write (OSC 52) | **Live effect to one client**. See below |
-| Clipboard read (OSC 52 `?`) | Nobody answers: the program gets nothing back (spec 15.4) |
+| Clipboard read (OSC 52 `?`) | Nobody answers: the program gets nothing back |
 
 ## Title and working directory are state
 
@@ -80,7 +82,7 @@ produces a write.
 | `deny` | Never |
 
 **Reads get nothing back.** Mirrors never reply, and tmux 3.8 with default
-options does not answer either. This is the limited profile of spec 15.4.
+options does not answer either, so a program cannot read your clipboard.
 Pasting stays an ordinary input operation.
 
 **Evidence.**

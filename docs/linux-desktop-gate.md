@@ -3,11 +3,13 @@
 Hosted CI can build and test Dreamer on Linux, but it cannot show that a
 window renders on a real display. That evidence comes from a person running
 `cargo xtask gate linux-desktop` in a graphical session on a Linux machine.
-It is required to close milestones M0, M2, M3, and M8.
+Run it when a change touches rendering, input, windows, or the clipboard
+on Linux, and before a release.
 
 ## What it does
 
-1. Prepares the pinned native dependencies and builds `dreamer`.
+1. Prepares the pinned native dependencies and builds debug `dreamer`,
+   `dreamerd`, and `dreamer-termapp`.
 2. For each display backend:
    - **Wayland:** runs with the session's `WAYLAND_DISPLAY`. This must be a
      native Wayland compositor, not XWayland.
@@ -18,10 +20,10 @@ It is required to close milestones M0, M2, M3, and M8.
    fixture, and on the renderer text matrix in
    `crates/terminal-render/fixtures`. Each matrix fixture must also paint
    the statistics listed in its `expected.txt` (runs, wide cells,
-   decorations, backgrounds, and cursor shape). A run passes only if the app reports the expected backend and
-   presents a frame. A session without a display server fails instead of
-   drawing nothing.
-4. Runs the input smoke (`dreamer --smoke-input`, see `docs/input.md`) on
+   decorations, backgrounds, and cursor shape). A run passes only if the
+   app reports the expected backend and presents a frame. A session
+   without a display server fails instead of drawing nothing.
+4. Runs the input smoke (`dreamer --smoke-input`, see [input.md](input.md)) on
    each backend against an isolated tmux server and daemon. It types and
    commits an IME composition, then clicks and scrolls; the run passes only
    if the shell in the pane received exactly that input.
@@ -37,13 +39,14 @@ It is required to close milestones M0, M2, M3, and M8.
    report, not as a failure. The gate still exits non-zero, because the
    evidence is incomplete: wake the monitor and run it again.
 6. Runs the clipboard smoke (`dreamer --smoke-clipboard`, see
-   [desktop.md](desktop.md#clipboard-check)) on each backend: copy and
+   [desktop.md](desktop-internals.md#clipboard-check)) on each backend: copy and
    paste in a terminal pane, through tmux's buffers, in the harness
    drawer, and in a native app pane, with an in-memory clipboard. On X11
    the run must also show that a finished selection became the primary
    selection. A window that does not refresh is reported as NOT RUN, as
    for the workspace smoke.
-7. Writes `target/gate/linux-desktop/<commit>.json` with distribution,
+7. Writes `target/gate/linux-desktop/<commit>.json` (the commit's first
+   12 characters) with distribution,
    kernel, desktop, session type, compositor, which X server answered the
    X11 runs (`xwayland` or `xorg`), whether the run was over SSH, and each
    run's result and output.
@@ -63,7 +66,7 @@ cargo xtask doctor
 cargo xtask gate linux-desktop
 ```
 
-Attach the JSON report to the milestone issue or pull request.
+Attach the JSON report to the pull request or issue it is evidence for.
 
 ### Over SSH
 

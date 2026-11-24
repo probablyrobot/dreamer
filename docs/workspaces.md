@@ -10,7 +10,7 @@ Dreamer's configuration directory is `~/.config/dreamer` on both macOS and
 Linux (`$XDG_CONFIG_HOME/dreamer` when that is set, or `$DREAMER_CONFIG_DIR`
 to override). Workspaces are YAML files in its `workspaces/` folder:
 
-```
+```text
 ~/.config/dreamer/
   workspaces/
     dreamer-dev.yaml
@@ -33,7 +33,7 @@ dream workspace up ops -L work    # on the tmux server named "work"
 ```yaml
 version: 1
 name: dreamer-dev            # session name; default: the file name
-root: ~/Devel/dreamer        # absolute, ~/..., or relative to this file
+root: ~/src/dreamer          # absolute, ~/..., or relative to this file
 env:
   RUST_LOG: info             # for every pane
 
@@ -129,7 +129,7 @@ when some children have no size, and must add up to 100% when all do.
 Every problem is reported with the file, and for syntax and unknown keys the
 line and column:
 
-```
+```text
 ~/.config/dreamer/workspaces/broken.yaml:3:5: windows[0]: unknown field `lyout`,
 expected one of `name`, `root`, `env`, `focus`, `layout`, `panes`, `arrange`
 ```

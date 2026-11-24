@@ -1,17 +1,96 @@
 # Pane apps (`dreamer-termapp`)
 
-`dreamer-termapp` runs an app package: a manifest that declares where its
-data comes from, how to show it, and which keys run which actions. The app
-is the tmux pane's real program, so it looks and works the same in the
-desktop and through any plain `tmux attach`.
+A pane app is a small program with a user interface that runs as a tmux
+pane's own program: a table of panes, a dashboard of test failures, a
+chat with an agent. Because it is the pane's real program, it works
+through any plain `tmux attach`, and keeps running with no desktop window
+open. The Dreamer desktop draws the same app natively.
 
-The app's model (the manifest, its data and selection, a form's values,
-commands, the Luau module, and reloading) is the headless `app-model`
-crate. `dreamer-termapp` only turns keys into input for it and draws it
-with Ratatui. The desktop draws the same model natively: in the app's
-own pane, from the model the running app publishes (see
-[app panes](#app-panes)), or as a panel with a model of its own (see
-[desktop.md](desktop.md#app-panels)).
+An app is a package: a directory with a manifest, `app.toml`. There are
+four ways to write one.
+
+| Kind | You write | Use it when |
+| --- | --- | --- |
+| [Manifest app](#the-manifest) | Only `app.toml`: data sources, views, and commands on keys | Showing API data in tables, lists, and forms |
+| [Script app](#script-apps-appts) | `app.ts`, TypeScript run sandboxed by the app host | The app needs state and logic. `dream app new` starts one |
+| [Process app](#process-apps) | A program in any language that sends its view as JSON | The app needs files, the network, or other programs |
+| [Web app](#web-pages-and-web-apps) | A web page in the package | The view is a page, drawn by the desktop |
+
+`dreamer-termapp` is the app host: it runs the package, draws it in the
+pane, and publishes its view to the desktop.
+
+Contents:
+
+- [A first app](#a-first-app)
+- [Building an app](#building-an-app): [templates](#starting-from-a-template),
+  [live preview](#live-preview), [testing](#testing-an-app)
+- [The manifest](#the-manifest): data sources, views, commands, keys
+- [View trees](#view-trees): layouts and every component;
+  [text, input, and status](#text-input-and-status-components),
+  [terminals and images](#terminal-and-image-components),
+  [web pages](#web-pages-and-web-apps),
+  [agent sessions](#agent-sessions-transcript-and-composer),
+  [bound streams](#bound-streams), [the tree on the wire](#the-tree-on-the-wire)
+- [Process apps](#process-apps)
+- [Script apps](#script-apps-appts): [the app](#the-app),
+  [globals](#dreamer-ui-and-the-other-globals), [`fetch`](#fetch),
+  [types and checking](#types-and-dream-app-check),
+  [keys and focus](#keys-and-focus), [limits](#limits-and-failure)
+- [Modules](#modules), [forms](#forms), [reloading](#reloading)
+- [Connection](#connection) and [app panes](#app-panes)
+- [Agentic panes](#agentic-panes): [filter panes](#filter-panes),
+  [operator panes](#operator-panes)
+- [Contributions](#contributions)
+
+## A first app
+
+The shortest way to a running app is a template. This writes a script app
+that lists the panes, checks it, draws it once as text, installs it, and
+launches it in a new tmux window:
+
+```sh
+dream app new panes                 # writes ./panes: app.toml, app.ts, fixtures
+dream app check panes
+dream app preview panes --text
+dream app install panes             # installed as local.panes
+dream app launch local.panes
+```
+
+The smallest app you can write by hand is one file. Save this as
+`windows/app.toml`:
+
+```toml
+schema_version = 1
+id = "local.windows"
+version = "0.1.0"
+title = "Windows"
+capabilities = ["tmux.topology"]
+
+[data.windows]
+method = "tmux.topology"
+path = "windows"
+events = ["tmux.topology"]
+
+[view]
+type = "table"
+source = "windows"
+row_key = "id"
+columns = ["id", "name"]
+```
+
+Then validate it and run it in the current terminal (`q` quits):
+
+```sh
+dreamer-termapp --check windows/app.toml
+dreamer-termapp windows/app.toml
+```
+
+Run this way, the app is not registered with the daemon, so the desktop
+draws its pane as a terminal. `dream app install windows` and
+`dream app launch local.windows` run it as a registered app, which the
+desktop draws natively ([app panes](#app-panes)).
+
+`dreamer-termapp` takes these forms:
 
 ```sh
 dreamer-termapp app.toml            # run it in this terminal
@@ -23,7 +102,201 @@ dream app run panes --method tmux.topology --method actions.submit --all-panes \
     -- dreamer-termapp app.toml      # run it in a new window with a narrow grant
 ```
 
+## Building an app
+
+Building an app takes these steps, each a `dream app` command
+([cli.md](cli.md#apps)). An agent can do all of them: `dream skills install`
+gives Claude Code and Codex the `dreamer-apps` skill, which walks through
+them. `DIR` is the package directory, or its `app.toml`.
+
+1. **Start:** `dream app new NAME --template T` writes a working package
+   ([below](#starting-from-a-template)). Or write the package directory
+   yourself: `app.toml`, and for each view's data source a
+   `fixtures/<source>.json` holding what its method returns (for a
+   script app, `app.ts` and a `fixtures/load.json` holding what its
+   `load` returns).
+2. **Check:** `dream app check DIR` builds a script app's JavaScript from
+   its `app.ts` and checks its uses of the API and the builders
+   ([types](#types-and-dream-app-check)), and lists every problem and the
+   grant the app needs: its `capabilities`, plus `events.subscribe` and
+   `events.unsubscribe` when a source follows events and `collect.query`
+   when a source is a collector, on its own pane, its agent's panes, or
+   every pane with `all_panes` (or a collector source).
+3. **Preview:** `dream app preview DIR --text` draws the app once from its
+   fixtures, through its module's `transform`, with no daemon, as text on
+   a screen of 80x24 (`--size WxH` for another). The status line of a
+   manifest app says `preview from fixtures`. For a script or process
+   app, `--open` shows it live in the desktop and reloads it on every
+   save, and `--png FILE` writes the desktop's drawing of it as an image
+   ([below](#live-preview)).
+4. **Test:** `dream app test DIR` replays the app's events and compares
+   each screen with the one expected ([below](#testing-an-app)).
+5. **Install:** `dream app install DIR` checks it, previews it when it has
+   fixtures, and copies it to `<config dir>/apps/<id>/` (or
+   `apps/NAME/` with `--name NAME`). A package that fails changes
+   nothing. `dream app list` shows what is installed. The version it replaces is kept in
+   `apps/.last-good/`, and `dream app rollback NAME` swaps it back.
+6. **Launch:** `dream app launch NAME` runs the installed package `NAME`
+   (its id, unless it was installed with `--name`) in a new tmux window
+   of the first session (`--session $N` for another; `--beside %N` for a
+   pane beside that one) as a registered app with exactly the grant it
+   needs. It keeps running with no desktop window open.
+
+An agent follows the same steps with the app tools of `dream mcp` and of
+Dreamer's pi extension ([mcp.md](mcp.md#app-tools)).
+
+An installed app that is running reloads itself when its files change,
+and an install replaces its files whole. A version that does not validate
+leaves the running one in place.
+
+Events about a pane reach an app only when that pane is in its grant. A
+monitor of jobs, which run in their own panes, sets `all_panes = true`.
+
+### Starting from a template
+
+`dream app new NAME [--template T] [--dir DIR]` writes a script app into
+`DIR` (`./NAME` by default), which must be missing or empty. `NAME` is
+lowercase letters, digits, and `-`; the app's id is `local.NAME`.
+
+| Template | The app | Capabilities |
+| --- | --- | --- |
+| `table` (the default) | The panes in a table; Enter selects the pane | `tmux.topology`, `actions.submit`, `all_panes` |
+| `form` | A select, an input, and a button that rename a window | `tmux.topology`, `actions.submit`, `all_panes` |
+| `chat` | A transcript (`log`) and a composer (`input`); each message gets an answer from a function in `app.ts` to replace | `daemon.version` |
+
+There is no `web` template: `--template web` is refused. For a page,
+start from another template and add a `web` node, or write a web app
+([web pages and web apps](#web-pages-and-web-apps)).
+
+The package has `app.toml`, `app.ts`, `fixtures/load.json`,
+`fixtures/events.jsonl`, `fixtures/calls.json` when the app calls a
+method in its test, `types/dreamer.d.ts` and `tsconfig.json` (as
+`dream app types` writes them), the JavaScript built from `app.ts`, and
+the expected screens of its test, recorded as it is made. So it passes
+`dream app check`, `preview`, and `test` straight away. The templates
+are part of the `dream` program.
+
+### Live preview
+
+`dream app preview DIR --open [--session $N]` opens a preview of a script
+or process app in a new tmux window (of the first session, or `$N`),
+named `preview <directory name>`. The desktop draws it natively, like
+any [app pane](#app-panes); a plain tmux client sees its text
+interface. A manifest app is previewed with `--text` only.
+
+- **From fixtures.** The app runs as `dream app preview --text` runs it:
+  a script app draws `fixtures/load.json` as its data, and every call
+  it makes is answered from `fixtures/calls.json` (refused outside its
+  capabilities, as in a test). Nothing it does reaches the daemon or
+  tmux, so a preview never renames a window or runs an action. Keys,
+  clicks, and typing work as in any app pane.
+- **Reload on save.** The window's program is `dream app preview DIR
+  --pane`. It builds the app's JavaScript from `app.ts` whenever
+  `app.ts` or `app.toml` changes, and runs `dreamer-termapp --live`, the
+  app host. The host looks at the package five times a second and
+  starts the app again from its fixtures when any file in it changed:
+  the JavaScript built, `app.toml`, the fixtures, a process app's
+  program. Hidden files, `types/`, `node_modules/`, and
+  `fixtures/expect/` do not count. The last view stays on the screen
+  until the new one is drawn; the app's state starts over.
+- **The status line** says `preview from fixtures`, then how many times
+  it reloaded. A save that does not build shows `not built:` and the
+  first error, and the last version that built keeps running; the first
+  type mistake (`dream app check` lists them all) is shown the same way.
+  An app that fails is shown stale with why, as in any pane; `r`
+  starts it again.
+- **Ending it.** `q` (when the app has stopped) or Ctrl-C ends the host,
+  and the pane closes with it.
+
+The preview's app id is the package's id followed by `.preview`.
+
+`dream app preview DIR --png FILE` writes the app as the desktop draws
+it, as a PNG of the preview pane's rectangle at the display's
+resolution, in the window's theme. It uses the newest preview pane of
+the package that is open, or opens one as `--open` does and leaves it
+open. It waits until the desktop has drawn the newest version of the
+app's view, then asks the desktop for the image through the daemon (see
+[topology.md](topology.md#images-of-app-panes)). A desktop window must
+show the pane's tmux window; one opened by the preview is the active
+window of its session, so a desktop window showing that session shows
+it.
+
+- With no desktop running (no daemon, or a daemon no desktop is
+  connected to), it fails at once with `no Dreamer window is running;
+  --png needs one`.
+- **A web app** ([above](#web-pages-and-web-apps)) is previewed too: its
+  preview pane runs it as it runs anywhere (it has no fixtures; its
+  page's calls are refused, since a preview's grant is empty), and the
+  image is its page alone, from Chromium in the desktop
+  ([desktop.md](desktop.md#agents-and-pages)), not a capture of the
+  screen. `--open` shows it the same way; it is not reloaded on a save.
+- On macOS the desktop captures its own window with the system's
+  `screencapture`, so the first capture may ask to allow Dreamer, or the
+  terminal that started it, to record the screen. Other platforms answer
+  that this desktop captures panes on macOS only.
+- An image without a display (a software renderer in the app host) is
+  not available.
+
+### Testing an app
+
+`dream app test DIR [--update] [--size WxH]` runs the app as the preview
+does, from its fixtures and with no daemon, and replays
+`fixtures/events.jsonl` against it. It draws the screen as text at the
+start and after each event, and compares each with
+`fixtures/expect/NNN.txt`: `000.txt` is the first view, `001.txt` the
+screen after the first event, and so on.
+
+- **Events** are one per line, as the [app process
+  protocol](app-protocol.md) sends them; blank lines and lines starting
+  with `#` are skipped:
+
+  ```jsonl
+  {"kind":"key","key":"Down"}
+  {"kind":"text","text":"hello"}
+  {"kind":"key","key":"Enter"}
+  {"kind":"select","node":"panes","index":2}
+  {"kind":"scroll","node":"log","steps":3}
+  {"kind":"component","node":"name","action":"submit","value":"x"}
+  ```
+
+  Keys are named as in [keys and focus](#keys-and-focus). A `component`
+  event is for script and process apps; a manifest app is driven with
+  keys, text, select, and scroll.
+- **A screen** is what `dream app preview --text` prints, then a line for
+  each thing the text does not show: `--- focus: KEY` for the focused
+  node, and `--- KEY: row ROW selected` for each table or list with a
+  selected row.
+- **Calls** to `dreamer.*` (and a process app's calls) are answered from
+  `fixtures/calls.json`: an object of results by method name, the same
+  result for every call of that method. A call to a method outside the
+  app's capabilities is refused as it would be in a pane, and a method
+  with no result in the file is refused with an error the app sees.
+- **Settling.** After each event the test waits until the app has handled
+  it and every call it led to, then takes the screen: it asks for the
+  whole tree (`resync`) and answers each call before asking again.
+  Timers are not waited for. A process app must send its whole tree only
+  when asked (first, and after `resync`), as the Rust SDK does.
+- **Manifest apps** (version 1 and 2) take events as in a pane, but their
+  commands do not run: the status line names the commands an event would
+  run, with `not run in a test`.
+- **Failing.** Each screen that differs is reported with the event before
+  it and the rows that differ, `-` expected and `+` drawn; a missing
+  expected screen, and one no event draws any more, are reported too.
+  The command then fails. An app that stops, quits before its last event,
+  or takes more than 5 seconds to settle fails the test with why.
+- **Recording.** `--update` writes every screen as the expected one and
+  removes the ones no event draws. Use it after a deliberate change, and
+  read the screens it wrote. Record and test at the same `--size`.
+
+`dreamer-termapp --replay app.toml [--size WxH]` does the replay and
+prints the screens as JSON (`{"screens": [...]}`); `dream app test` runs
+it and compares.
+
 ## The manifest
+
+`app.toml` declares where the app's data comes from, how to show it, and
+which keys run which commands. This one has every part of a version 1
+manifest:
 
 ```toml
 schema_version = 1
@@ -40,7 +313,7 @@ events = ["tmux.topology"]  # fetch again on these events; or refresh_ms = 2000
 limit = 500
 
 [view]
-type = "table"              # table, list, log, or text
+type = "table"              # table, list, log, text, gauge, chart, or form
 source = "panes"
 row_key = "id"              # keeps the selection on its row across updates
 columns = ["id", "window", "current_command"]
@@ -55,7 +328,8 @@ params = { action = { kind = { rename_window = { window = "${selected.window}", 
 - **Data sources** call one API method each, with fixed `params`, and take
   the rows from `path`. They are fetched when the app connects, on
   `refresh_ms` (at least 200), and when an event of the listed kinds is
-  recorded ([events.md](events.md)).
+  recorded ([events.md](events.md)). A source keeps at most `limit` rows
+  (500 by default, 1 to 10000).
 - **Collectors as data:** a source with `collector = "NAME"` instead of
   `method` shows a collector's rows ([collectors.md](collectors.md)). It
   calls `collect.query` with that name; its `params` are the query's other
@@ -99,9 +373,9 @@ params = { action = { kind = { rename_window = { window = "${selected.window}", 
   is never replaced by nothing. There is no other expression language, no
   shell, and no `eval`.
 - **Keys:** Up/Down (or k/j) and PageUp/PageDown move the selection, and `q`
-  or Ctrl-C quits. Commands may use other letters and digits, Enter, Esc,
-  Tab, Backspace, Delete, Left, Right, Home, End, F1 to F12, and Ctrl-a to
-  Ctrl-z.
+  or Ctrl-C quits. Commands may use any other single printable ASCII
+  character (letters, digits, punctuation), Enter, Esc, Tab, Backspace,
+  Delete, Left, Right, Home, End, F1 to F12, and Ctrl-a to Ctrl-z.
 
 Validation is strict: unknown keys, unknown methods, mutations as data
 sources, malformed placeholders, and duplicate or reserved keys are errors,
@@ -198,6 +472,11 @@ list's selection, and in a focused form they move between fields. Commands act o
 node's selected row (`${selected.<field>}`). Tab, Left, and Right are
 the runtime's in a tree, so commands may not use them.
 
+Every data source a node shows is fetched as in version 1, and the
+sources' `events` and the shortest `refresh_ms` apply. A module's
+command handlers work as before; `transform` is not called for a tree.
+`dream app preview` reads a fixture for every source shown.
+
 On the desktop, a click on a row, field, or input component and wheel
 steps over a table or list go to the node under the pointer, which
 takes the focus; Copy takes the focused node's selected row, form
@@ -277,7 +556,7 @@ handler = "greet"           # function greet(arg) return "hello, " .. arg.values
 
 [commands.save]
 method = "actions.submit"
-params = { action = { kind = { rename_window = { window = "@1", name = "${value.name}" } } } }
+params = { action = { kind = { rename_window = { window = 1, name = "${value.name}" } } } }   # window @1
 ```
 
 Validation names each mistake with its node: a `run` or `submit` that is
@@ -367,7 +646,7 @@ capabilities = ["tmux.topology"]
 allow = ["https://tmux.github.io"]   # origins the pages may also navigate to
 ```
 
-```
+```text
 local.panes-web/
   app.toml
   web/index.html     # the web app's page; anything else it loads beside it
@@ -428,11 +707,6 @@ or `https://host:port`, no path), and a `web` node whose `src` leaves
 `web/`, names another site, or names a page that is not in the package.
 A script names its pages at run time; the host refuses a `src` that is
 none of the above, and the node shows why.
-
-Every data source a node shows is fetched as in version 1, and the
-sources' `events` and the shortest `refresh_ms` apply. A module's
-command handlers work as before; `transform` is not called for a tree.
-`dream app preview` reads a fixture for every source shown.
 
 ### Agent sessions: `transcript` and `composer`
 
@@ -498,7 +772,8 @@ placeholder = "Ask the agent"
 - **The grant.** A transcript adds `agent.sessions.events`,
   `agent.sessions.approve`, `agent.sessions.deny`, and
   `terminal.unsubscribe` to the grant the app needs; a composer adds
-  `agent.sessions.send` and `agent.sessions.cancel`. Sending, stopping,
+  `agent.sessions.send`, `agent.sessions.cancel`, `agent.sessions.events`,
+  and `terminal.unsubscribe`. Sending, stopping,
   answering, and attaching are calls on the app's own connection, so its
   grant decides them.
 
@@ -980,192 +1255,6 @@ input, so a slow app cannot hold up the pane or the desktop.
   daemon. Its calls are answered from `fixtures/calls.json`
   ([testing an app](#testing-an-app)), or with an error.
 
-## Building an app
-
-Building an app takes these steps, each a `dream app` command
-([cli.md](cli.md#apps)). An agent can do all of them: `dream skills install`
-gives Claude Code and Codex the `dreamer-apps` skill, which walks through
-them.
-
-1. **Start:** `dream app new NAME --template T` writes a working package
-   ([below](#starting-from-a-template)). Or write the package directory
-   yourself: `app.toml`, and for each view's data source a
-   `fixtures/<source>.json` holding what its method returns (for a
-   script app, `app.ts` and a `fixtures/load.json` holding what its
-   `load` returns).
-2. **Check:** `dream app check DIR` builds a script app's JavaScript from
-   its `app.ts` and checks its uses of the API and the builders
-   ([types](#types-and-dream-app-check)), and lists every problem and the grant the app needs: its `capabilities`, plus `events.subscribe` when a source
-   follows events and `collect.query` when a source is a collector, on its
-   own pane, its agent's panes, or every pane with `all_panes` (or a
-   collector source).
-3. **Preview:** `dream app preview DIR --text` draws the app once from its
-   fixtures, through its module's `transform`, with no daemon, as text on
-   a screen of 80x24 (`--size WxH` for another). The status line of a
-   manifest app says `preview from fixtures`. For a script or process
-   app, `--open` shows it live in the desktop and reloads it on every
-   save, and `--png FILE` writes the desktop's drawing of it as an image
-   ([below](#live-preview)).
-4. **Test:** `dream app test DIR` replays the app's events and compares
-   each screen with the one expected ([below](#testing-an-app)).
-5. **Install:** `dream app install DIR` checks it, previews it when it has
-   fixtures, and copies it to `<config dir>/apps/<id>/`. A package that
-   fails changes nothing. The version it replaces is kept in
-   `apps/.last-good/`, and `dream app rollback NAME` swaps it back.
-6. **Launch:** `dream app launch NAME` runs it in a new tmux window (or,
-   with `--beside %N`, beside that pane) as a registered app with exactly
-   the grant it needs. It keeps running with no desktop window open.
-
-An agent follows the same steps with the app tools of `dream mcp` and of
-Dreamer's pi extension ([mcp.md](mcp.md#app-tools)).
-
-An installed app that is running reloads itself when its files change,
-and an install replaces its files whole. A version that does not validate
-leaves the running one in place.
-
-Events about a pane reach an app only when that pane is in its grant. A
-monitor of jobs, which run in their own panes, sets `all_panes = true`.
-
-### Starting from a template
-
-`dream app new NAME [--template T] [--dir DIR]` writes a script app into
-`DIR` (`./NAME` by default), which must be missing or empty. `NAME` is
-lowercase letters, digits, and `-`; the app's id is `local.NAME`.
-
-| Template | The app | Capabilities |
-| --- | --- | --- |
-| `table` (the default) | The panes in a table; Enter selects the pane | `tmux.topology`, `actions.submit`, `all_panes` |
-| `form` | A select, an input, and a button that rename a window | `tmux.topology`, `actions.submit`, `all_panes` |
-| `chat` | A transcript (`log`) and a composer (`input`); each message gets an answer from a function in `app.ts` to replace | `daemon.version` |
-
-There is no `web` template: `--template web` is refused. For a page,
-start from another template and add a `web` node, or write a web app
-([web pages and web apps](#web-pages-and-web-apps)).
-
-The package has `app.toml`, `app.ts`, `fixtures/load.json`,
-`fixtures/events.jsonl`, `fixtures/calls.json` when the app calls a
-method in its test, `types/dreamer.d.ts` and `tsconfig.json` (as
-`dream app types` writes them), the JavaScript built from `app.ts`, and
-the expected screens of its test, recorded as it is made. So it passes
-`dream app check`, `preview`, and `test` straight away. The templates
-are part of the `dream` program.
-
-### Live preview
-
-`dream app preview DIR --open [--session $N]` opens a preview of a script
-or process app in a new tmux window (of the first session, or `$N`),
-named `preview <directory name>`. The desktop draws it natively, like
-any [app pane](#app-panes); a plain tmux client sees its text
-interface. A manifest app is previewed with `--text` only.
-
-- **From fixtures.** The app runs as `dream app preview --text` runs it:
-  a script app draws `fixtures/load.json` as its data, and every call
-  it makes is answered from `fixtures/calls.json` (refused outside its
-  capabilities, as in a test). Nothing it does reaches the daemon or
-  tmux, so a preview never renames a window or runs an action. Keys,
-  clicks, and typing work as in any app pane.
-- **Reload on save.** The window's program is `dream app preview DIR
-  --pane`. It builds the app's JavaScript from `app.ts` whenever
-  `app.ts` or `app.toml` changes, and runs `dreamer-termapp --live`, the
-  app host. The host looks at the package five times a second and
-  starts the app again from its fixtures when any file in it changed:
-  the JavaScript built, `app.toml`, the fixtures, a process app's
-  program. Hidden files, `types/`, `node_modules/`, and
-  `fixtures/expect/` do not count. The last view stays on the screen
-  until the new one is drawn; the app's state starts over.
-- **The status line** says `preview from fixtures`, then how many times
-  it reloaded. A save that does not build shows `not built:` and the
-  first error, and the last version that built keeps running; the first
-  type mistake (`dream app check` lists them all) is shown the same way.
-  An app that fails is shown stale with why, as in any pane; `r`
-  starts it again.
-- **Ending it.** `q` (when the app has stopped) or Ctrl-C ends the host,
-  and the pane closes with it.
-
-The preview's app id is the package's id followed by `.preview`.
-
-`dream app preview DIR --png FILE` writes the app as the desktop draws
-it, as a PNG of the preview pane's rectangle at the display's
-resolution, in the window's theme. It uses the newest preview pane of
-the package that is open, or opens one as `--open` does and leaves it
-open. It waits until the desktop has drawn the newest version of the
-app's view, then asks the desktop for the image through the daemon (see
-[topology.md](topology.md#images-of-app-panes)). A desktop window must
-show the pane's tmux window; one opened by the preview is the active
-window of its session, so a desktop window showing that session shows
-it.
-
-- With no desktop running (no daemon, or a daemon no desktop is
-  connected to), it fails at once with `no Dreamer window is running;
-  --png needs one`.
-- **A web app** ([above](#web-pages-and-web-apps)) is previewed too: its
-  preview pane runs it as it runs anywhere (it has no fixtures; its
-  page's calls are refused, since a preview's grant is empty), and the
-  image is its page alone, from Chromium in the desktop
-  ([desktop.md](desktop.md#agents-and-pages)), not a capture of the
-  screen. `--open` shows it the same way; it is not reloaded on a save.
-- On macOS the desktop captures its own window with the system's
-  `screencapture`, so the first capture may ask to allow Dreamer, or the
-  terminal that started it, to record the screen. Other platforms answer
-  that this desktop captures panes on macOS only.
-- An image without a display (a software renderer in the app host) is
-  not available.
-
-### Testing an app
-
-`dream app test DIR [--update] [--size WxH]` runs the app as the preview
-does, from its fixtures and with no daemon, and replays
-`fixtures/events.jsonl` against it. It draws the screen as text at the
-start and after each event, and compares each with
-`fixtures/expect/NNN.txt`: `000.txt` is the first view, `001.txt` the
-screen after the first event, and so on.
-
-- **Events** are one per line, as the [app process
-  protocol](app-protocol.md) sends them; blank lines and lines starting
-  with `#` are skipped:
-
-  ```jsonl
-  {"kind":"key","key":"Down"}
-  {"kind":"text","text":"hello"}
-  {"kind":"key","key":"Enter"}
-  {"kind":"select","node":"panes","index":2}
-  {"kind":"scroll","node":"log","steps":3}
-  {"kind":"component","node":"name","action":"submit","value":"x"}
-  ```
-
-  Keys are named as in [keys and focus](#keys-and-focus). A `component`
-  event is for script and process apps; a manifest app is driven with
-  keys, text, select, and scroll.
-- **A screen** is what `dream app preview --text` prints, then a line for
-  each thing the text does not show: `--- focus: KEY` for the focused
-  node, and `--- KEY: row ROW selected` for each table or list with a
-  selected row.
-- **Calls** to `dreamer.*` (and a process app's calls) are answered from
-  `fixtures/calls.json`: an object of results by method name, the same
-  result for every call of that method. A call to a method outside the
-  app's capabilities is refused as it would be in a pane, and a method
-  with no result in the file is refused with an error the app sees.
-- **Settling.** After each event the test waits until the app has handled
-  it and every call it led to, then takes the screen: it asks for the
-  whole tree (`resync`) and answers each call before asking again.
-  Timers are not waited for. A process app must send its whole tree only
-  when asked (first, and after `resync`), as the Rust SDK does.
-- **Manifest apps** (version 1 and 2) take events as in a pane, but their
-  commands do not run: the status line names the commands an event would
-  run, with `not run in a test`.
-- **Failing.** Each screen that differs is reported with the event before
-  it and the rows that differ, `-` expected and `+` drawn; a missing
-  expected screen, and one no event draws any more, are reported too.
-  The command then fails. An app that stops, quits before its last event,
-  or takes more than 5 seconds to settle fails the test with why.
-- **Recording.** `--update` writes every screen as the expected one and
-  removes the ones no event draws. Use it after a deliberate change, and
-  read the screens it wrote. Record and test at the same `--size`.
-
-`dreamer-termapp --replay app.toml [--size WxH]` does the replay and
-prints the screens as JSON (`{"screens": [...]}`); `dream app test` runs
-it and compares.
-
 ## Modules
 
 A package may name a Luau module beside its manifest (`module =
@@ -1177,8 +1266,9 @@ grant. It may define:
 - `transform(rows)`: called with the fetched rows, returns the rows to
   show; use it for computed columns or to filter rows.
 - Command handlers: a command with `handler = "name"` calls the module's
-  function `name` with `{ selected = <row>, form = <values> }`; a string it
-  returns is shown in the status line.
+  function `name` with `{ selected = <row>, form = <values>, values =
+  <input components' values by node key>, event = <what ran it> }`; a
+  string it returns is shown in the status line.
 
 The module's top level runs when the package loads. Keep it to defining
 functions: it may run while the app is not yet connected.
@@ -1208,7 +1298,7 @@ number, stops the submit and says so.
 
 ## Reloading
 
-The runtime looks at the manifest and the module twice a second. When
+The runtime looks at the manifest and the module about twice a second. When
 either changed, it validates the manifest, compiles the module, and runs
 its top level. Only when all of that succeeds does it swap to the new
 version: the selection stays on its row, form values stay by field name,
@@ -1264,9 +1354,9 @@ app is relaunched.
 
 ## Agentic panes
 
-An agentic pane is an app package bound to an agent provider and a grant
-(spec 13.4). It is a pane app like any other, so it keeps running
-without the desktop and works through a plain `tmux attach`.
+An agentic pane is an app package bound to an agent provider and a
+grant. It is a pane app like any other, so it keeps running without the
+desktop and works through a plain `tmux attach`.
 
 ```toml
 schema_version = 1
@@ -1289,7 +1379,7 @@ timeout_s = 300                   # a run is stopped after this (default 300)
 ```
 
 - **Use:** type a prompt and press Enter. Esc cancels a run in progress,
-  and Ctrl-c quits. `q` is just a letter here.
+  and Ctrl-c quits. `q` is a letter here.
 - **Header:** the kind, the provider (and model), the activity, and the
   grant.
 - **Transcript:** what happened, newest at the bottom: the prompt, the

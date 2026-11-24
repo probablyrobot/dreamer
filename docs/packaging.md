@@ -1,48 +1,73 @@
 # Packaging
 
-| Platform | Command | Output |
+How to build, check, and sign Dreamer's packages, and how to make a
+release. This page is for maintainers.
+
+End users: see [Installing Dreamer](install.md).
+
+| Package | Command | Output |
 | --- | --- | --- |
-| macOS (Apple Silicon) | `cargo xtask package --platform macos` | `target/package/Dreamer.app` and `dreamer-<version>-aarch64-apple-darwin.zip` with its `.sha256`; and the [Dreamer Web](#dreamer-web) component, `target/package/dreamer-web/` and `dreamer-web-<version>-aarch64-apple-darwin.zip` with its `.sha256` |
-| Any Linux (generic) | `cargo xtask package --platform linux` (on Linux) | `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256`, installed into your home directory by `install.sh` |
-| Arch Linux | `cargo xtask package --platform arch` | `target/package/arch/`: source tarball, `PKGBUILD`, and, on Arch, `dreamer-<version>-1-<arch>.pkg.tar.zst` |
+| macOS app (Apple Silicon) | `cargo xtask package --platform macos` | `target/package/Dreamer.app` and `dreamer-<version>-aarch64-apple-darwin.zip`; the [Dreamer Web](#dreamer-web) component, `target/package/dreamer-web/` and `dreamer-web-<version>-aarch64-apple-darwin.zip`. Each zip has a `.sha256` and a `.json` record |
+| Linux tarball (any distribution) | `cargo xtask package --platform linux` | `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256` |
+| `.deb` | `cargo xtask package --platform deb` | `target/package/linux/dreamer-<version>-<target>.deb` and its `.sha256` |
+| `.rpm` | `cargo xtask package --platform rpm` | `target/package/linux/dreamer-<version>-<target>.rpm` and its `.sha256` |
+| Headless server archive | `cargo xtask package --platform server [--target TRIPLE]` | `target/package/server/dreamer-server-<version>-<target>.tar.gz` and its `.sha256` |
+| Arch Linux | `cargo xtask package --platform arch` | `target/package/arch/`: source tarball, `PKGBUILD`, and, where `makepkg` is installed, `dreamer-<version>-1-<arch>.pkg.tar.zst` |
+
+`<target>` is a Rust target triple: `aarch64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, or `aarch64-unknown-linux-gnu`. The macOS
+packages are built on a Mac, and the Linux tarball, `.deb`, and `.rpm` on
+Linux (or in a container, see
+[below](#build-in-a-container-and-check-on-fresh-machines)). Without
+`--platform`, a Mac builds the macOS packages; on Linux you must name one.
+`--debug` builds the macOS packages from a debug build.
 
 The desktop packages contain four executables: `dreamer` (desktop app),
 `dreamerd` (daemon), `dream` (CLI), and `dreamer-termapp` (the runtime for
 [pane apps](termapp.md) and filter panes, which the app and `dream` start
-from beside themselves). Launched with no arguments,
-`dreamer` follows the active pane of your default tmux server, starting
-`dreamerd` if it isn't running. The default terminal font, JetBrains Mono
-Nerd Font (Mono variant), comes with the package (see
-[settings.md](settings.md)). tmux itself is not bundled. Dreamer is
-tested against the tmux baseline in
-[dependency-baseline.md](dependency-baseline.md).
+from beside themselves). The macOS app, the Linux tarball, the `.deb`, and
+the `.rpm` also carry the bundled fonts: the default, JetBrains Mono Nerd
+Font (Mono variant), and the four other families listed in the
+[dependency baseline](dependency-baseline.md#bundled-fonts), each with its
+license. tmux is not bundled. Dreamer is tested against the tmux baseline
+in [dependency-baseline.md](dependency-baseline.md).
 
-## macOS
-
-`Dreamer.app/Contents/MacOS` holds `dreamer`, `dreamerd`, `dream`, and
-`dreamer-termapp`. The
-app starts the daemon from there. `Contents/Resources/Fonts` holds the
-default font (four styles and its license), which the app loads itself, so
-nothing has to be installed system-wide. `Contents/Resources/Dreamer.icns`
-is the application icon. Every executable is arm64 with a minimum
-of macOS 15.0. Each helper is signed, then the bundle is signed over
-them. `cargo xtask package` verifies all of this, and runs
-`dreamerd --self-check`, `dream --version`, and `dreamer-termapp --version`
-from inside the bundle.
-
-To install, unzip into `/Applications`. To use the CLI from a shell:
+## macOS app
 
 ```sh
-ln -s /Applications/Dreamer.app/Contents/MacOS/dream /usr/local/bin/dream
+cargo xtask package --platform macos
 ```
 
+| Path in `Dreamer.app/Contents/` | Content |
+| --- | --- |
+| `MacOS/dreamer`, `dreamerd`, `dream`, `dreamer-termapp` | The executables. The app starts the daemon from here |
+| `Resources/Fonts/` | The bundled fonts and their licenses. The app loads them itself, so nothing is installed system-wide |
+| `Resources/Dreamer.icns` | The application icon |
+| `Resources/LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md` | The license and notices |
+
+Each helper executable is signed, then the bundle is signed over them.
+Before zipping, `cargo xtask package` checks the bundle:
+
+- `codesign --verify --strict --deep` passes;
+- every executable is arm64 with a minimum of macOS 15.0;
+- the icon, at least four font files, and the font license are present;
+- no part of Chromium is inside (see [Dreamer Web](#dreamer-web));
+- `dreamerd --self-check`, `dream --version`, and
+  `dreamer-termapp --version` run from inside the bundle.
+
 By default the bundle is ad hoc signed, which runs on the Mac that built
-it. Beside the zip, `<zip>.json` records what was built and how it is
+it. An ad hoc zip opened on another Mac needs its first launch confirmed:
+Control-click the app, choose Open, then confirm.
+
+Beside each zip, `<zip>.json` records what was built and how it is
 signed: size and SHA-256, the commit, the target and minimum macOS, the
 executables, and the signing kind (`adhoc` or the signing authority),
-team, and whether a notarization ticket is stapled. An ad hoc zip opened
-on another Mac needs its first launch confirmed: Control-click the app,
-choose Open, then confirm.
+team, and whether a notarization ticket is stapled.
+
+The macOS gate builds a debug bundle on every commit (its `bundle`
+stage), and the release zips on every push (its `package` stage). Both
+are launched outside the source tree. The gate always signs ad hoc and
+never needs the keychain or Apple's servers.
 
 ### Signing for distribution
 
@@ -67,14 +92,15 @@ cargo xtask package --platform macos \
   framework's libraries, the framework, then each helper app with the
   entitlements Chromium gives its own helpers. The base, renderer, and
   GPU helpers may compile code (`allow-jit`; Chromium starts every child
-  process from the base helper, so V8 needs it there too); the plugin
+  process from the base helper, so V8 needs it there too). The plugin
   helper may run unsigned executable memory and load libraries signed by
-  others. `cargo xtask web smoke --packaged` draws pages with the
-  packaged app and component, to check a signed build. Its
-  helper apps are stapled; the framework cannot hold a ticket, and
-  Gatekeeper finds its ticket online.
+  others. Its helper apps are stapled; the framework cannot hold a
+  ticket, and Gatekeeper finds its ticket online.
 - The zips, their `.sha256` and their records are made after signing,
   so the records say `Developer ID Application: …` and `notarized: true`.
+
+`cargo xtask web smoke --packaged` draws pages with the app and component
+in `target/package`, to check a signed build.
 
 `PROFILE` is a keychain profile you store once. It asks for an
 app-specific password, which you make at account.apple.com under
@@ -84,12 +110,7 @@ Sign-In and Security:
 xcrun notarytool store-credentials PROFILE --apple-id APPLE_ID --team-id TEAMID
 ```
 
-The gate always signs ad hoc and never needs the keychain or Apple's
-servers. Every release is signed and notarized (see below).
-
-The macOS gate builds a debug bundle on every commit (`bundle`), and the
-release zip on every push (`package`). Both are launched outside the
-source tree.
+Every release is signed and notarized (see [Releases](#releases)).
 
 ### Dreamer Web
 
@@ -97,7 +118,7 @@ Chromium, which draws [web panes](desktop.md#web-panes), is not in
 `Dreamer.app`. It is a second artifact, the Dreamer Web component, that
 users add with `dream web install` ([desktop.md](desktop.md#dreamer-web)).
 The app is built with web panes (its `web` feature), so the same
-`Dreamer.app` works with or without the component; `cargo xtask package`
+`Dreamer.app` works with or without the component. `cargo xtask package`
 fails if the framework or a helper app ends up in the bundle.
 
 `cargo xtask package --platform macos` builds both. The component needs
@@ -119,65 +140,71 @@ the component before zipping it: the manifest, every file, `codesign
 --verify --strict --deep` of the framework and each helper app, and a
 helper loading the framework from where it sits.
 
-`cargo xtask package --fresh --platform macos` then adds the component
-the way a user does, away from the tree: it unpacks the app's zip into a
-new temporary directory and, with an empty data directory, checks that
-its `dream web status` says Dreamer Web is missing and how to add it,
-installs the component from a copy of its zip with `dream web install`,
-checks `dream web status` again, and removes it. It writes
-`target/package/fresh-macos.json`, which the build report matches to the
-zip by checksum. This runs on the development Mac, not a fresh one. The
-gate's `package` stage runs the same check on every push, and its `web`
-stage installs the debug component and draws pages with it
-([dependency-baseline.md](dependency-baseline.md#web-engine)).
-
-The Linux component (an optional `dreamer-web` archive) is not built
-yet: web panes are macOS only so far.
-
-## Generic Linux (any distribution, no root)
-
-Like oh-my-zsh, one command installs into your home directory:
+To check that a user can add the component, run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/probablyrobot/dreamer/main/packaging/install.sh | sh
+cargo xtask package --fresh --platform macos
 ```
 
-The script downloads the latest release tarball for your architecture,
-verifies its SHA-256, and installs:
+It works away from the tree, with the zips already in `target/package`:
 
-| Path | Content |
-| --- | --- |
-| `~/.local/share/dreamer/versions/<version>/` | The unpacked release; `~/.local/share/dreamer/current` points to the active one |
-| `~/.local/bin/dreamer`, `dreamerd`, `dream`, `dreamer-termapp` | Links to the active version |
-| `~/.local/share/fonts/dreamer/` | JetBrains Mono Nerd Font, for other applications too. Dreamer loads its own copy regardless |
-| `~/.local/share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
-| `~/.local/share/icons/hicolor/*/apps/dev.dreamer.Dreamer.{png,svg}` | Application icon, 16 to 512 px and scalable |
-| `~/.config/systemd/user/dreamerd.service` | Optional user service. Enable it with `--enable-service` |
+1. Unpacks the app's zip into a new temporary directory.
+2. With an empty data directory, checks that the app's `dream web status`
+   says Dreamer Web is missing and how to add it.
+3. Installs the component from a copy of its zip with `dream web install`.
+4. Checks `dream web status` again, then removes the component.
 
-Options:
+It writes `target/package/fresh-macos.json`, which the build report
+matches to the zip by checksum. This runs on the development Mac, not a
+fresh one. The gate's `package` stage runs the same check on every push,
+and its `web` stage installs the debug component and draws pages with it
+([dependency-baseline.md](dependency-baseline.md#web-engine)).
 
-| Option | Effect |
-| --- | --- |
-| `--from FILE` | Install a tarball you already have (a local build, or a CI artifact). Verified against `FILE.sha256` if that file exists |
-| `--version V` | Install a specific release instead of the latest |
-| `--prefix DIR` | Install under `DIR` instead of `~/.local` |
-| `--uninstall` | Remove everything above. Your settings and tmux sessions are left alone |
+For development, `cargo xtask web bundle [--release] [--install]` builds
+the app with web panes and the component beside it, in `web-bundle`
+under cargo's target directory. `cargo xtask web smoke` runs the gate's
+web pane check alone.
 
-`DREAMER_VERSION` and `DREAMER_PREFIX` work in place of `--version` and
-`--prefix`.
+The Linux component is not built yet: web panes are macOS only so far.
 
-The script tells you if `~/.local/bin` is not on your `PATH`, and reminds
-you to install `tmux` if it is missing.
+## Linux tarball
 
-To build and install a tarball yourself:
+On Linux, after `cargo xtask deps prepare`:
 
 ```sh
 cargo xtask package --platform linux
+```
+
+This writes `target/package/linux/dreamer-<target>.tar.gz` and its
+`.sha256`. The file name carries no version, so
+`releases/latest/download/dreamer-<target>.tar.gz` always resolves. The
+tarball unpacks to one directory, `dreamer-<version>-<target>/`:
+
+| Path | Content |
+| --- | --- |
+| `bin/dreamer`, `dreamerd`, `dream`, `dreamer-termapp` | The executables |
+| `share/dreamer/fonts/` | The bundled fonts and their licenses |
+| `share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
+| `share/icons/hicolor/` | Application icon, 16 to 512 px and scalable |
+| `share/systemd/user/dreamerd.service` | Optional user service |
+| `share/doc/dreamer/` | These documents |
+| `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md` | The license and notices |
+| `install.sh` | The installer, `packaging/install.sh` |
+| `VERSION` | The version |
+
+`packaging/install.sh` installs a tarball into a home directory, with no
+root; [Installing Dreamer](install.md) describes what it does. To try a
+tarball you built:
+
+```sh
 sh packaging/install.sh --from target/package/linux/dreamer-x86_64-unknown-linux-gnu.tar.gz
 ```
 
+`--from` checks the file against `FILE.sha256` when that file is beside
+it.
+
 The tarball is built against glibc 2.39 (Ubuntu 24.04), so it runs on
-current distributions, Arch included.
+distributions with that glibc or a newer one.
 
 **Runtime packages.** Besides the C and C++ runtimes, the desktop app
 needs xcb and xkbcommon, which it links, and Wayland, Vulkan, and
@@ -188,75 +215,84 @@ sudo apt install libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
   libvulkan1 mesa-vulkan-drivers libfontconfig1
 ```
 
-The server archive needs none of them.
+The fresh-machine check below installs exactly this list
+(`DESKTOP_RUNTIME` in `xtask/src/fresh.rs`), so keep the two in step. The
+server archive needs none of these packages.
 
-**Checked on fresh machines.** Two commands build and check the archives:
+### Build in a container and check on fresh machines
 
 ```sh
 cargo xtask package --platform linux --container [--arch arm64|amd64]
 cargo xtask package --fresh [--arch arm64|amd64]
 ```
 
-- **`--container`** builds the desktop tarball and the server archive in
-  an `ubuntu:24.04` container. On an Apple Silicon Mac this is how the ARM64
-  archives are made.
-- **`--fresh`** checks the archives on fresh `ubuntu:24.04` containers:
-  - the server archive on a bare image with nothing added, where each
-    executable runs;
-  - the desktop tarball, installed by `install.sh` for a new user with
-    only the packages above, then `dreamer --smoke` on X11 (Xvfb, with
-    Mesa's software Vulkan), which must present a frame.
+Both need Docker. `--arch` defaults to the machine's own architecture.
 
-  The weekly Linux workflow (`.github/workflows/full.yml`, also run on
-  version tags and on demand) and the release workflow run it for x86-64.
+- **`--container`** builds the tarball, the `.deb`, the `.rpm`, and the
+  server archive in an `ubuntu:24.04` container. On an Apple Silicon Mac
+  this is how the ARM64 packages are made.
+- **`--fresh`** checks what is in `target/package` on fresh containers:
+  - the server archive on a bare `ubuntu:24.04` image with nothing
+    added, where each executable runs;
+  - the tarball, installed by `install.sh` for a new user on
+    `ubuntu:24.04` with only the packages above, then `dreamer --smoke`
+    on X11 (Xvfb, with Mesa's software Vulkan), which must present a
+    frame;
+  - the `.deb` and the `.rpm`, when they were built (see
+    [below](#deb-and-rpm)).
 
-The repository is private for now. Until it is public, the `curl` line and
-release downloads need GitHub access; use `--from` with a tarball from a CI
-run or from `gh release download`.
+  It writes `target/package/fresh-<arch>.json`, which the build report
+  matches to the archives by checksum.
 
-## Ubuntu and Debian (.deb), Fedora and RHEL (.rpm)
+The weekly Linux workflow (`.github/workflows/full.yml`, also run on
+version tags and on demand) builds the tarball and the server archive
+and runs `--fresh` for x86-64. It also installs the tarball into an
+empty home directory, runs it, and uninstalls it. The release workflow
+builds all four packages and runs `--fresh` for x86-64.
 
-Each release has a `.deb` and an `.rpm` for x86-64 and ARM64, built from
-the same glibc 2.39 build as the tarball. Install one with your package
-manager, which also installs tmux and the libraries it needs:
+## .deb and .rpm
+
+On Linux, with `dpkg-deb` and `rpmbuild` installed (the `rpm` package on
+Ubuntu):
 
 ```sh
-sudo apt install ./dreamer-<version>-x86_64-unknown-linux-gnu.deb   # Ubuntu 24.04+, Debian 13+
-sudo dnf install ./dreamer-<version>-x86_64-unknown-linux-gnu.rpm   # Fedora 40+, RHEL/Alma/Rocky 10
+cargo xtask package --platform deb
+cargo xtask package --platform rpm
 ```
 
-RHEL 9 and older, Ubuntu 22.04, and Debian 12 have an older glibc and
-cannot run it.
+Each builds the tarball first and packs the same files, so both come
+from the glibc 2.39 build. They write to `target/package/linux/` with a
+`.sha256` beside them. `--container` builds them along with the tarball.
+
+| Package | For | Not for |
+| --- | --- | --- |
+| `.deb` | Ubuntu 24.04 and later, Debian 13 and later | Ubuntu 22.04, Debian 12 (older glibc) |
+| `.rpm` | Fedora 40 and later; RHEL, AlmaLinux, and Rocky Linux 10 | RHEL 9 and older (older glibc) |
+
+Installed files:
 
 | Path | Content |
 | --- | --- |
 | `/usr/bin/dreamer`, `dreamerd`, `dream`, `dreamer-termapp` | The executables |
-| `/usr/share/dreamer/fonts/` | Dreamer's own copy of its font |
+| `/usr/share/dreamer/fonts/` | The bundled fonts, which Dreamer loads itself |
 | `/usr/share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
 | `/usr/share/icons/hicolor/*/apps/dev.dreamer.Dreamer.{png,svg}` | Application icon |
 | `/usr/lib/systemd/user/dreamerd.service` | Optional user service: `systemctl --user enable --now dreamerd` |
 | `/usr/share/doc/dreamer/`, `/usr/share/licenses/dreamer/` | These documents, the license and notices |
 
-- **Dependencies.** Both declare `tmux` and the libraries the desktop
-  loads at run time (Wayland, Vulkan, fontconfig, xkbcommon). They
-  recommend Mesa's Vulkan drivers. The `.rpm` also gets the libraries the
-  executables link from rpm's own scan.
-- **Building them.** On Linux, with `dpkg-deb` and `rpmbuild` installed
-  (`rpm` on Ubuntu):
+Declared dependencies:
 
-  ```sh
-  cargo xtask package --platform deb
-  cargo xtask package --platform rpm
-  ```
+| Package | Depends on | Recommends |
+| --- | --- | --- |
+| `.deb` | `tmux`, `libc6 (>= 2.39)`, `libgcc-s1`, `libstdc++6`, `libxcb1`, `libxkbcommon0`, `libxkbcommon-x11-0`, `libwayland-client0`, `libvulkan1`, `libfontconfig1` | `mesa-vulkan-drivers` |
+| `.rpm` | `tmux`, `libwayland-client`, `vulkan-loader`, `fontconfig`, `libxkbcommon-x11`, and the libraries the executables link, which rpm finds by its own scan | `mesa-vulkan-drivers` |
 
-  Both write to `target/package/linux/` with a `.sha256` beside them.
-  `--container` builds them along with the tarball.
-- **Checked on fresh machines.** `--fresh` installs the `.deb` with apt on
-  `ubuntu:24.04`, and the `.rpm` with dnf on `fedora:44` and
-  `almalinux:10`. On each it runs the command-line tools. On Ubuntu and
-  Fedora it also runs `dreamer --smoke` on X11 (Xvfb), which must present
-  a frame. RHEL 10 ships no X server, Xvfb included, so no frame is drawn
-  on AlmaLinux.
+**Checked on fresh machines.** `cargo xtask package --fresh` installs the
+`.deb` with apt on `ubuntu:24.04`, and the `.rpm` with dnf on `fedora:44`
+and `almalinux:10`. On each it runs the command-line tools as a new user.
+On Ubuntu and Fedora it also runs `dreamer --smoke` on X11 (Xvfb), which
+must present a frame. RHEL 10 ships no X server, Xvfb included, so no
+frame is drawn on AlmaLinux.
 
 ## Headless server archive
 
@@ -267,22 +303,91 @@ cargo xtask package --platform server [--target TRIPLE]
 ```
 
 This writes `target/package/server/dreamer-server-<version>-<target>.tar.gz`
-and its `.sha256`. The archive holds `bin/dreamerd`, `bin/dream`, and
-`bin/dreamer-termapp`, the systemd user unit on Linux, `remote.md`,
-`daemon.md`, and `cli.md`, the license files, and a `VERSION` file
-(version, commit, target). There are no GUI, font, or graphics files.
+and its `.sha256`. Without `--target` it builds for this machine. The
+archive unpacks to one directory, `dreamer-server-<version>-<target>/`:
+
+| Path | Content |
+| --- | --- |
+| `bin/dreamerd`, `bin/dream`, `bin/dreamer-termapp` | The executables |
+| `share/systemd/user/dreamerd.service` | The systemd user unit (Linux targets only) |
+| `share/doc/dreamer/` | `remote.md`, `daemon.md`, and `cli.md` |
+| `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md` | The license and notices |
+| `VERSION` | Version, commit, and target |
+
+There are no GUI, font, or graphics files.
+[remote.md](remote.md#installing-a-server) describes how `dream hosts
+install` puts an archive on a host.
 
 After packing, the archive is unpacked in a temporary directory away from
 the tree. Each executable runs with `--version`, on this host or through
 the target's `CARGO_TARGET_<TRIPLE>_RUNNER` (CI uses `qemu-aarch64`). The
 libraries it links are read from its headers (`readelf -d`, `otool -L`),
 and the build fails if any is graphical (X11, xcb, Wayland, xkbcommon,
-Vulkan, GL, fontconfig, FreeType, HarfBuzz, AppKit, Metal, CoreText,
-CoreGraphics, QuartzCore).
+Vulkan, GL, EGL, fontconfig, FreeType, HarfBuzz, AppKit, Metal, CoreText,
+CoreGraphics, QuartzCore). An archive for another architecture with no
+runner set is packed but not run or checked, and the command says so.
 
 The weekly Linux workflow builds and uploads `x86_64-unknown-linux-gnu`
-and `aarch64-unknown-linux-gnu` as workflow artifacts; the Mac builds
-`aarch64-apple-darwin`.
+and `aarch64-unknown-linux-gnu` as workflow artifacts. On a Mac the
+command builds `aarch64-apple-darwin`.
+
+## Arch Linux
+
+On an Arch system with `base-devel`:
+
+```sh
+cargo xtask package --platform arch
+sudo pacman -U target/package/arch/dreamer-*.pkg.tar.zst
+```
+
+`cargo xtask package --platform arch`:
+
+1. Writes a `git archive` tarball of the current commit. Uncommitted
+   changes are not included.
+2. Writes a `PKGBUILD` from `packaging/arch/PKGBUILD.in`, with the
+   version and the tarball's checksum.
+3. Runs `makepkg`, when it is installed.
+
+Use `--source-only` to stop after the tarball and `PKGBUILD`, for example
+to build on another machine.
+
+`makepkg` checks the build dependencies (`rustup`, `git`, `curl`, `xz`,
+`pkgconf`) against pacman's database. If you installed `rustup` with its
+own installer instead of `pacman -S rustup`, that check fails even though
+`cargo` works. Pass `--nodeps` to skip it (`makepkg --nodeps`).
+
+The build fetches the pinned Rust toolchain through `rustup` and
+`rust-toolchain.toml`, plus the pinned, checksum-verified Zig and
+libghostty-vt sources (`cargo xtask deps prepare`). It needs network access
+for both.
+
+Installed files:
+
+| Path | Content |
+| --- | --- |
+| `/usr/bin/dreamer`, `dreamerd`, `dream`, `dreamer-termapp` | The executables |
+| `/usr/share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
+| `/usr/share/icons/hicolor/*/apps/dev.dreamer.Dreamer.{png,svg}` | Application icon, 16 to 512 px and scalable |
+| `/usr/lib/systemd/user/dreamerd.service` | Optional user service: `systemctl --user enable --now dreamerd`. Not needed, since `dreamer` and `dream` start the daemon on demand |
+| `/usr/share/licenses/dreamer/` | License and notices |
+| `/usr/share/doc/dreamer/` | These documents |
+
+The Arch package ships no fonts. Its runtime dependencies are `tmux`,
+`ttf-jetbrains-mono-nerd` (the default font, from Arch's official
+repositories), `fontconfig`, `freetype2`, `libxkbcommon`,
+`libxkbcommon-x11`, `libx11`, `libxcb`, `wayland`, `vulkan-icd-loader`
+(plus a Vulkan driver for your GPU), `gcc-libs`, and `glibc`. The other
+four font families are optional dependencies: `ttf-firacode-nerd`,
+`ttf-hack-nerd`, `ttf-cascadia-code-nerd`, and `ttf-sourcecodepro-nerd`.
+
+The weekly Linux workflow (`.github/workflows/full.yml`) builds the
+package in an `archlinux:base-devel` container. It then installs the
+package with `pacman -U` and runs the installed binaries:
+
+- the daemon's self-check;
+- the CLI's and the pane-app runtime's version;
+- the app's no-display exit;
+- `dream ls` against an isolated tmux server.
 
 ## Releases
 
@@ -294,18 +399,21 @@ cargo xtask release vX.Y.Z
 ```
 
 It refuses to start unless:
+
 - you are on `main`, at `origin/main`, with no uncommitted changes;
 - the workspace version is `X.Y.Z`;
 - the tag does not exist yet;
 - this tree has passed the full macOS gate (`cargo xtask gate --full`, which
   pushing runs);
-- the keychain has a Developer ID Application identity (or `--sign`
-  names one), and the notary profile works: `dreamer-notary`, or the one
-  `--notarize` names ([Signing for distribution](#signing-for-distribution)).
+- the keychain has exactly one Developer ID Application identity (or
+  `--sign` names one), and the notary profile works: `dreamer-notary`, or
+  the one `--notarize` names
+  ([Signing for distribution](#signing-for-distribution)).
 
 Then:
 
-1. **The Mac's artifacts, built from nothing.**
+1. **The Mac's artifacts, built from nothing.** `target/package` is
+   emptied first.
    - The macOS zip and the Dreamer Web zip, Developer ID signed,
      notarized, and stapled, with their `.sha256` and signing records.
    - Web pages drawn with that app and component (`cargo xtask web smoke
@@ -323,8 +431,8 @@ Then:
    - It adds the Mac's artifacts, the fresh-check records, and the report
      to the draft.
 
-Every call to GitHub is retried, and the wait for the workflow survives
-a dropped connection. If a release still stops after its tag was made
+Calls to GitHub are retried, and the wait for the workflow survives a
+dropped connection. If a release still stops after its tag was made
 (the network, or a failed upload), finish it with:
 
 ```sh
@@ -335,15 +443,36 @@ It checks that the tag is this commit and that `target/package` holds this
 release's notarized macOS zip and ARM64 fresh record. It then does step 3
 again, without rebuilding or retagging.
 
-The release stays a draft until you publish it. Every file has a `.sha256`
-beside it, and the license and notices are inside every archive.
+The release stays a draft until you publish it. Every archive and package
+has a `.sha256` beside it, and the license and notices are inside every
+archive.
 
-**The build report** (`cargo xtask build-report [--ci-run ID]`, spec
-17.6) is written to `target/package/build-report.md` and `.json`. It
-covers:
+A finished draft holds these files:
+
+| Asset | From |
+| --- | --- |
+| `dreamer-<version>-aarch64-apple-darwin.zip`, `.sha256`, `.json` | The Mac |
+| `dreamer-web-<version>-aarch64-apple-darwin.zip`, `.sha256`, `.json` | The Mac |
+| `dreamer-<target>.tar.gz`, `.sha256` | x86-64 from the workflow, ARM64 from the Mac |
+| `dreamer-<version>-<target>.deb`, `.sha256` | x86-64 from the workflow, ARM64 from the Mac |
+| `dreamer-<version>-<target>.rpm`, `.sha256` | x86-64 from the workflow, ARM64 from the Mac |
+| `dreamer-server-<version>-<target>.tar.gz`, `.sha256` | x86-64 from the workflow, ARM64 from the Mac |
+| `install.sh` | The workflow |
+| `fresh-amd64.json`, `fresh-arm64.json`, `fresh-macos.json` | The fresh-check records |
+| `build-report.md`, `build-report.json` | The Mac |
+
+Here `<target>` is `x86_64-unknown-linux-gnu` or
+`aarch64-unknown-linux-gnu`.
+
+### The build report
+
+`cargo xtask build-report [--ci-run ID]` writes
+`target/package/build-report.md` and `.json`. `cargo xtask release` runs
+it for you. It covers:
+
 - the commit and tree, and whether the work tree was clean;
 - the Rust toolchain, Zig, and macOS SDK;
-- the pinned libghostty-vt and tmux baseline;
+- the pinned libghostty-vt, tmux baseline, and CEF;
 - the compatibility baseline;
 - each artifact: size, SHA-256 (checked against its `.sha256` file),
   target, signing state, and runtime check;
@@ -366,13 +495,14 @@ Two groups are published to crates.io, with the workspace version:
 
 `cargo install dreamer-cli` needs no Zig: `dreamer-ghostty-sys` takes the
 prebuilt libghostty-vt pinned in its `prebuilt.toml` (see
-[the dependency baseline](dependency-baseline.md)).
+[the dependency baseline](dependency-baseline.md#prebuilt-archives-cratesio-builds)).
 
-Inside the repository every crate keeps its short dependency key and
-library name (`tmux-backend`, `tmux_backend`), declared once in the root
-`Cargo.toml` under `[workspace.dependencies]` with an exact `=X.Y.Z` pin.
-Bump those pins with the workspace version; a mismatch fails to resolve.
-Dev-dependencies stay path-only, so publishing drops them.
+Inside the repository every published crate keeps its short dependency
+key and library name (`tmux-backend`, `tmux_backend`), declared once in
+the root `Cargo.toml` under `[workspace.dependencies]` with an exact
+`=X.Y.Z` pin. Bump those pins with the workspace version; a mismatch
+fails to resolve. Dev-dependencies stay path-only, so publishing drops
+them.
 
 After the release is published, from `main` at the release commit, publish
 every crate marked `publish = true`; Cargo orders them by dependency:
@@ -385,56 +515,3 @@ cargo publish --locked $crates
 ```
 
 A published version can be yanked but never replaced or deleted.
-
-## Arch Linux
-
-On an Arch system with `base-devel`:
-
-```sh
-cargo xtask package --platform arch
-sudo pacman -U target/package/arch/dreamer-*.pkg.tar.zst
-```
-
-`cargo xtask package --platform arch`:
-- writes a `git archive` tarball of the current commit (uncommitted changes
-  are not included);
-- writes a `PKGBUILD` with its checksum;
-- runs `makepkg`.
-
-Use `--source-only` to stop after the tarball and `PKGBUILD`, for example to
-build on another machine.
-
-`makepkg` checks the build dependencies against pacman's database. If you
-installed `rustup` with its own installer instead of `pacman -S rustup`,
-that check fails even though `cargo` works. Pass `--nodeps` to skip it
-(`makepkg --nodeps`).
-
-The build fetches the pinned Rust toolchain through `rustup` and
-`rust-toolchain.toml`, plus the pinned, checksum-verified Zig and
-libghostty-vt sources (`cargo xtask deps prepare`). It needs network access
-for both.
-
-Installed files:
-
-| Path | Content |
-| --- | --- |
-| `/usr/bin/dreamer`, `/usr/bin/dreamerd`, `/usr/bin/dream` | The executables |
-| `/usr/share/applications/dev.dreamer.Dreamer.desktop` | Launcher entry |
-| `/usr/share/icons/hicolor/*/apps/dev.dreamer.Dreamer.{png,svg}` | Application icon, 16 to 512 px and scalable |
-| `/usr/lib/systemd/user/dreamerd.service` | Optional user service: `systemctl --user enable --now dreamerd`. Not needed, since `dreamer` and `dream` start the daemon on demand |
-| `/usr/share/licenses/dreamer/` | License and notices |
-| `/usr/share/doc/dreamer/` | These documents |
-
-Runtime dependencies: `tmux`, `ttf-jetbrains-mono-nerd` (the default
-font, from Arch's official repositories), `fontconfig`, `freetype2`, `libxkbcommon`,
-`libxkbcommon-x11`, `libx11`, `libxcb`, `wayland`, and
-`vulkan-icd-loader` (plus a Vulkan driver for your GPU).
-
-The weekly Linux workflow (`.github/workflows/full.yml`, also run on
-version tags and on demand) builds the package in an `archlinux:base-devel`
-container. It then installs the package with `pacman -U` and runs the
-installed binaries:
-- the daemon's self-check;
-- the CLI's version;
-- the app's no-display exit;
-- `dream ls` against an isolated tmux server.

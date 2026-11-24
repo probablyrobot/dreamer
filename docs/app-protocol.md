@@ -3,9 +3,10 @@
 A process app is a pane app whose own program draws its view. The app
 host (`dreamer-termapp`) starts the program, and the two talk over the
 program's standard input and output. This page defines that conversation
-precisely enough to write an app in any language. For the package and how
-it runs in a pane, see [termapp.md](termapp.md#process-apps); for writing
-one in Rust, see [the Rust SDK](#the-rust-sdk).
+so you can write an app in any language. To write one in Rust, skip to
+[the Rust SDK](#the-rust-sdk), which speaks the protocol for you. For the
+package and how it runs in a pane, see
+[termapp.md](termapp.md#process-apps).
 
 A script app (`app.ts`, [termapp.md](termapp.md#script-apps-appts)) is
 one more client of the same protocol: the host runs it in its own
@@ -116,7 +117,7 @@ tagged by `kind`:
 | `text` | `text` | Text for the focused input as one edit: committed by a desktop's text input, or pasted |
 | `select` | `index`, optional `node` | A click on row or field `index` of node `node` (of the focused node when left out) |
 | `scroll` | `steps`, optional `node` | Wheel steps over node `node`; positive is down |
-| `component` | `node`, `action`, optional `value` | A component's own event, such as a button pressed. Reserved: the current host sends none yet |
+| `component` | `node`, `action`, optional `value` | A component's own event, such as a button pressed. Reserved: the host does not send it to a program for input from a pane or a desktop |
 
 The app owns its focus and selection: the host does not move them. Every
 key goes to the app except `Ctrl-c`, which the host keeps to quit. Ignore
@@ -198,8 +199,15 @@ standard error are read and written apart from drawing and input.
 
 ## The Rust SDK
 
-The `dreamer-sdk` crate (`crates/sdk`, on crates.io as `dreamer-sdk`)
-speaks the protocol for Rust apps.
+The `dreamer-sdk` crate, on crates.io, speaks the protocol for Rust apps.
+It re-exports `api`, `app_protocol`, and `view_tree`, so it is the only
+Dreamer crate your program adds:
+
+```toml
+[dependencies]
+dreamer-sdk = "0.9"
+```
+
 `dreamer_sdk::ui` builds trees, and `dreamer_sdk::app` runs the loop:
 
 ```rust
@@ -234,7 +242,8 @@ fn main() -> Result<(), app::Error> {
   whole tree first and then only the changes (`patch`), and the whole
   tree again after `resync`.
 - **Calls.** `cx.call(tag, method, params)` (or `cx.request(tag,
-  &api::Request)`) sends a call and returns at once. The answer comes back
+  &request)` with a `dreamer_sdk::api::Request`) sends a call and returns
+  at once. The answer comes back
   later as `Msg::Reply { tag, method, result }`;
   `Msg::response(method, &value)` turns a result into the typed
   `api::Response`.
@@ -245,11 +254,14 @@ fn main() -> Result<(), app::Error> {
 - **Builders.** Layout: `column`, `row`, `split` (with `.sizes` and
   `.vertical()`), `tabs`, and `scroll`. Data: `table` (with `.row`),
   `list` and `log` (with `.item`), `text`, `gauge`, `chart`, and `form`
-  (with `field` and `toggle`). Any node: `.title`; tables and lists:
-  `.selected`. `screen(title, root)` makes the frame, with `.status` and
-  `.focus`.
+  (with `field` and `toggle`). Bound to a stream: `tapped_log(key, pane)`,
+  `transcript(key, session)`, and `composer(key, session, value,
+  attachments)`. Any node: `.title`; a layout node: `.child`; tables and
+  lists: `.selected`. `screen(title, root)` makes the frame, with
+  `.status` and `.focus`.
 
-A complete example is `crates/sdk/examples/pane-app.rs`: the tmux panes
-in a table beside a counter, with what happened below. Build it with
+A complete example is `crates/sdk/examples/pane-app.rs` in the source
+tree: the tmux panes in a table beside a counter, with what happened
+below. Build it with
 `cargo build -p dreamer-sdk --example pane-app`, then point a package's
 `[process] command` at the binary.

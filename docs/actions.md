@@ -1,8 +1,11 @@
 # Actions
 
-Clients change tmux through typed actions (`actions.submit`). They never
-send tmux command strings. Every action is recorded in the action ledger and
-settles with an outcome observed in tmux.
+An action is one typed change to tmux: split a pane, send input, rename a
+window. Clients submit actions with `actions.submit` and never send tmux
+command strings. Every action is recorded in the action ledger and settles
+with an outcome observed in tmux. You need this page if you are writing a
+client, a script, or an extension that changes tmux. From a shell,
+`dream act` runs the common ones ([cli.md](cli.md#panes-and-actions)).
 
 | Action | Effect | Reported when completed |
 | --- | --- | --- |

@@ -6,16 +6,26 @@ Clients reach it over a Unix socket using the [wire protocol](wire.md).
 Stopping it never stops tmux: sessions, windows, panes, and their programs
 keep running.
 
+You rarely start it yourself: the desktop app and `dream` start it when
+they need it. To see what it is doing:
+
+```sh
+dream status     # process, socket, log, clients, tmux link
+dream doctor     # directories, permissions, lock, ledger; never starts the daemon
+dream shutdown   # stop it; tmux keeps running
+```
+
 ## Commands
 
 | Command | Effect |
 | --- | --- |
-| `dream ensure-running [-L name \| --tmux-socket-path path] [--tmux PATH]` | Connect to the running daemon, or start one in the background with these tmux options. Concurrent calls start exactly one daemon |
-| `dream status [--json]` | Process, uptime, socket, log, connected clients, version, and the tmux endpoint's state. Does not start a daemon |
+| `dream ensure-running [-L name \| --tmux-socket-path path] [--tmux PATH]` | Connect to the running daemon, or start one in the background with these tmux options (`--tmux-socket name` is the same as `-L name`). Concurrent calls start exactly one daemon |
+| `dream status [--json]` | Process, uptime, socket, log, connected clients, heap in use, version, and the tmux endpoint's state. Does not start a daemon |
 | `dream status --perf [--json]` | The same, then performance diagnostics: stage timings, traffic counters, and queue depths (see [performance.md](performance.md#path-timings-and-diagnostics)) |
 | `dream diagnostics on\|off\|reset [--json]` | Turn performance diagnostics on or off, or zero them. They are off by default |
 | `dream version` | Client version and build family, plus the daemon's version if one is running |
 | `dream shutdown` | Stop the daemon and report what keeps running. A daemon from another build refuses this client's protocol, so `dream shutdown` sends that daemon SIGTERM instead, using the pid recorded in its startup lock |
+| `dream doctor` | The runtime and state directories and their permissions, the socket, the startup lock, a summary of the action ledger, and, if a daemon runs, its tmux link. Never starts the daemon |
 
 `dreamerd` itself takes:
 
@@ -109,9 +119,9 @@ The **data directory**, where Dreamer installs pi
 ([desktop.md](desktop.md#dreamer-web)), is `DREAMER_DATA_DIR`,
 then `$XDG_DATA_HOME/dreamer`, then `~/.local/share/dreamer`.
 
-Both directories are created with mode 0700. The daemon refuses to start if
-an existing directory belongs to another user or is open to other users. It
-never loosens or takes over such a directory.
+The runtime and state directories are created with mode 0700. The daemon
+refuses to start if an existing one belongs to another user or is open to
+other users. It never loosens or takes over such a directory.
 
 Socket paths are limited to 103 bytes on macOS and 107 on Linux. A runtime
 directory whose `dreamerd.rpc.sock` would be longer is refused, with that
@@ -197,6 +207,7 @@ demand.
 | --- | --- |
 | `DREAMER_JOURNAL_PANE_BYTES`, `DREAMER_JOURNAL_HOST_BYTES` | Journal retention per pane and per host, in bytes of memory (defaults 8 MiB and 256 MiB); see [mirrors.md](mirrors.md) |
 | `DREAMER_DIAGNOSTICS` | `1`: performance diagnostics on from the start, as after `dream diagnostics on` |
+| `DREAMER_DAEMON` | The `dreamerd` that `dream` and the desktop start (default: the one beside the running program) |
 
 ## Environment for tests
 
@@ -217,7 +228,8 @@ demand.
 
 ## Under pressure
 
-One busy pane must not slow down another (spec 16.3, 16.5):
+One busy pane must not slow down another:
+
 - **Input lanes.** Input is delivered one event at a time per pane, so a
   paste is never interleaved with other input to the same pane. Each pane
   has its own lane: a large paste into one pane never holds up typing in

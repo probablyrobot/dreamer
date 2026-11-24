@@ -8,7 +8,7 @@ started with.
 
 | Harness | Program | Installed by |
 | --- | --- | --- |
-| `pi` (default) | pi | Dreamer, under its data directory |
+| `pi` (default) | pi | Dreamer, under its data directory, when you run `dream agents update` |
 | `claude` | Claude Code (`claude`) | You; found on `PATH` |
 | `codex` | Codex (`codex`) | You; found on `PATH` |
 | any other name | the `command` you give, with its `protocol` | You |
@@ -16,6 +16,112 @@ started with.
 Every harness uses its own login. Dreamer never reads a harness's
 credentials and never gives it an API key; see
 [providers.md](providers.md#rules).
+
+## Start an agent
+
+Install pi once, then open the harness drawer:
+
+```sh
+dream agents update      # download pi into Dreamer's data directory
+dream drawer show        # or press Cmd-J (macOS) or Ctrl-Shift-J (Linux) in Dreamer
+```
+
+The drawer is a tmux pane at the bottom of the window that runs the
+harness's own terminal interface
+([desktop.md](desktop.md#the-harness-drawer)). Each tmux session has its
+own.
+
+The first time, pi has no login. The drawer shows the reason and runs
+pi's own login for the `openai-codex` provider (a ChatGPT Plus or Pro
+subscription). pi starts once the login is ready. To use a Claude Pro or
+Max subscription instead, see [The base model](#the-base-model).
+
+To run pi in a pane of your choice instead of the drawer, run it there:
+
+```sh
+dream agents pi
+```
+
+`dream agents status` shows the installed release and the login state.
+
+## Use Claude Code or Codex
+
+Install the CLI yourself, log in with it (`claude` or `codex` in a
+shell), and name it as the default in `dreamer.yaml`:
+
+```yaml
+agents:
+  default: claude      # or codex
+```
+
+`dream config check` reports whether Dreamer finds the program and
+whether it is logged in. The drawer then runs `claude` (or `codex`) from
+the daemon's `PATH`, as you would run it in a shell. A drawer that is
+already running keeps its harness: press Cmd-Shift-J (Ctrl-Alt-Shift-J
+on Linux) or run `dream drawer new --yes` to start a fresh one.
+
+Two more steps give that CLI Dreamer's tools and instructions:
+
+```sh
+claude mcp add dreamer -- dream mcp --level elsewhere   # or: codex mcp add dreamer -- ...
+dream skills install                                    # Dreamer's skills, for both CLIs
+```
+
+[mcp.md](mcp.md#connect-claude-code-or-codex) explains the first.
+Without it, a Claude Code or Codex in the drawer works as it does in any
+terminal and cannot see your other panes. An
+[agent session](#sessions) that the daemon runs gets the tools without
+this step.
+
+## Logins
+
+- Each harness uses its own login: pi's `/login`, Claude Code's, Codex's.
+  You log in with the harness, never with Dreamer.
+- Dreamer never reads a harness's credential store. It asks the harness
+  whether it is logged in (`pi auth check`, `claude auth status`, `codex
+  login status`).
+- Dreamer never falls back to a metered API key. It removes
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, and
+  `CODEX_API_KEY` from the environment of pi (`dream agents pi`), of
+  Claude Code or Codex in the drawer, of every agent session's harness,
+  and of delegated and `dream agents ask` runs.
+- Except in the drawer, no model turn starts without a login. You get
+  the reason and the command that logs in
+  ([No model turn without a login](#no-model-turn-without-a-login)).
+  Claude Code and Codex in the drawer show their own login screen.
+- A harness with your own `command` runs exactly as you wrote it, with
+  the pane's environment. If you want it to use an API key, that is
+  where to say so.
+
+## What an agent can see and do
+
+An agent reaches Dreamer through a [grant](grants.md) with an act level
+([grants.md](grants.md#act-levels-and-approvals)):
+
+| Level | The agent may |
+| --- | --- |
+| `observe` | List, read, search, and watch panes; use collectors; recall and remember |
+| `own` | Also type, run commands, and change the layout in panes it created |
+| `elsewhere` | Also act in your panes, after you approve each action or the pane |
+
+- **pi** started by `dream agents pi` (and so the drawer) runs at
+  `elsewhere`. Set `DREAMER_AGENT_LEVEL` to `observe` or `own` in its
+  environment for less (`DREAMER_AGENT_LEVEL=observe dream agents pi`).
+- **Claude Code and Codex** hold what the `dream mcp` you registered was
+  given (`--level`).
+- **An agent session** holds the grant it was created with, at most its
+  creator's. Created without one, it holds `observe`
+  ([Grants](#grants)).
+
+Approve or deny a waiting action with `dream approvals`. An agent's grant
+cannot answer approvals.
+
+Reading and driving web pages needs one more entry, `web.inspect`
+([grants.md](grants.md#reading-and-driving-pages)). Durable memory is
+described in [memory.md](memory.md).
+
+The grant limits what an agent does through Dreamer. The harness itself
+runs with your privileges, like any program you start.
 
 ## Settings
 
@@ -59,6 +165,8 @@ agents:
   offer stops the session from starting, with the modes it does offer.
 - `command` is a program and its arguments. A bare program name is looked
   up on `PATH`.
+- `model` is the model to ask for, as the harness names it. Without it
+  the harness uses its own default.
 - An unknown key, or a key that does not apply to that harness, is
   refused with its key path (for example `agents.pi.modle`), and the
   settings in force stay.
@@ -72,8 +180,9 @@ information; they do not change the exit status.
 
 ## pi, installed by Dreamer
 
-Dreamer installs pi itself, in its data directory, never in your global
-npm packages or `~/.pi`:
+`dream agents update` installs pi in Dreamer's data directory, never in
+your global npm packages or `~/.pi`. Nothing is downloaded until you run
+it:
 
 ```text
 ~/.local/share/dreamer/agents/pi/
@@ -206,7 +315,7 @@ extension with `--extension` and leaves the directory alone).
 | Path | What it is |
 | --- | --- |
 | `extensions/dreamer/` | Dreamer's extension: the terminal tools as native pi tools (below) |
-| `skills/dreamer-config/`, `skills/dreamer-apps/` | The skills `dream skills` also installs for Claude Code and Codex |
+| `skills/dreamer-config/`, `skills/dreamer-manage/`, `skills/dreamer-apps/` | The skills `dream skills` also installs for Claude Code and Codex |
 | `skills/dreamer-pi-profile/` | How the agent changes its own profile |
 | `prompts/panes.md`, `prompts/collect.md`, `prompts/apps.md` | `/panes` (what is running), `/collect` (gather output over time), `/apps` (build a pane app) |
 | `APPEND_SYSTEM.md` | Added to pi's system prompt: the terminals, the approval rules, conciseness |
@@ -302,7 +411,7 @@ the level, the profile), `/dreamer-reload` (commit, then reload),
   shows it in pi (a notice and a status line, with the `dream approvals`
   command that answers it) and records it in the session as a
   `dreamer-approval` entry. It never answers: an agent's grant cannot
-  call `approvals.answer`, so you answer in Dreamer or with
+  call `approvals.answer`, so you answer with
   `dream approvals allow|deny ID`. This keeps an agent from approving its
   own actions through Dreamer. It is not an OS sandbox: pi's own `bash`
   tool runs with your privileges.
@@ -510,6 +619,7 @@ the next start.
 | `dream agents profile check [--no-restore]` | Update Dreamer's files, commit stray changes, check, and restore the last good commit on failure; `--no-restore` only reports |
 
 Each `profile` command takes `--dir DIR` for another profile directory.
+
 ## The harness drawer
 
 The drawer ([desktop.md](desktop.md#the-harness-drawer)) runs the harness
@@ -790,9 +900,9 @@ published shapes; they are not the real programs.
 
 ## Not yet
 
-- The daily check for a newer pi release; `dream agents update` runs it
-  by hand.
-- A contract test against real Claude Code and Codex releases.
-- Running the pi contract test in CI against each new pi release.
+- An automatic check for a newer pi release. `dream agents update`
+  installs the newest release when you run it.
 - `/selection` in pi: attaching the desktop's current selection. (An
   app's `composer` attaches it, as tmux's newest buffer.)
+- The scripted stand-ins above are the only test of the Claude Code and
+  Codex adapters; no test runs against the real programs.

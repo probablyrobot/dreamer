@@ -1,18 +1,110 @@
 # MCP
 
-`dream mcp` is an MCP server on standard input and output, so an agent
-with an MCP client (Claude Code, Codex, and others) can use Dreamer's
-tools. It uses the official Rust SDK (`rmcp`, pinned in the dependency
-baseline), which speaks MCP protocol versions up to 2026-07-28.
+`dream mcp` is an MCP server on standard input and output. It gives an
+agent with an MCP client, such as Claude Code or Codex, Dreamer's tools:
+reading and searching panes, running commands, changing the layout,
+collectors, memory, apps, and the browser.
+
+An [agent session](agents.md#sessions) that Dreamer starts gets this
+server by itself. Register it yourself for a Claude Code or Codex that
+you start, in a pane or in the [harness drawer](agents.md#the-harness-drawer).
+
+## Connect Claude Code or Codex
+
+Claude Code:
 
 ```sh
-dream mcp                                        # the user's full authority
-dream mcp --level elsewhere                      # an agent: asks before acting on your panes
-dream mcp --method terminal.read --pane %3       # only reading pane 3
+claude mcp add dreamer -- dream mcp --level elsewhere
 ```
 
-Register it with an MCP client as a stdio server whose command is
-`dream mcp` with the options you choose.
+Codex:
+
+```sh
+codex mcp add dreamer -- dream mcp --level elsewhere
+```
+
+Both commands store a stdio server named `dreamer` whose command is
+`dream` with the arguments `mcp --level elsewhere`. For another MCP
+client, or to write the entry by hand, the JSON form is:
+
+```json
+{
+  "mcpServers": {
+    "dreamer": {
+      "command": "dream",
+      "args": ["mcp", "--level", "elsewhere"]
+    }
+  }
+}
+```
+
+and the Codex form, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.dreamer]
+command = "dream"
+args = ["mcp", "--level", "elsewhere"]
+```
+
+`dream` must be on the client's `PATH`, or give its full path. The
+server connects to the running daemon and starts it if it is not
+running.
+
+Codex passes an MCP server only a few of its own environment variables.
+If you run Dreamer with `DREAMER_RUNTIME_DIR` or another `DREAMER_*`
+variable set, give it to the server too (`codex mcp add --env
+DREAMER_RUNTIME_DIR=... dreamer -- dream mcp ...`).
+
+## The Dreamer plugin
+
+The repository is also a plugin marketplace. The `dreamer` plugin bundles
+this MCP server (at the `elsewhere` level) with Dreamer's three skills:
+`dreamer-config`, `dreamer-manage`, and `dreamer-apps`.
+
+Claude Code:
+
+```sh
+claude plugin marketplace add probablyrobot/dreamer
+claude plugin install dreamer@dreamer
+```
+
+Codex:
+
+```sh
+codex plugin marketplace add probablyrobot/dreamer
+```
+
+Then install `dreamer` from the plugin list (`/plugins`).
+
+The plugin runs the `dream` on your `PATH`, so install Dreamer first. If
+you only want the skills, `dream skills install` writes them without a
+plugin.
+
+## Choose what the agent may do
+
+The options decide the server's [grant](grants.md), which the daemon
+checks on every call:
+
+```sh
+dream mcp --level observe                        # read, search, and watch; never act
+dream mcp --level own                            # also act in panes the agent created
+dream mcp --level elsewhere                      # also act in your panes, after you approve
+dream mcp --level elsewhere --web-inspect        # also read and drive pages in web panes
+dream mcp --method terminal.read --pane %3       # only reading pane 3
+dream mcp                                        # no options: your full authority
+```
+
+Use a `--level` for an agent. Without any option the server holds the
+authority of the user who started it, and nothing asks before it acts.
+[Narrowing](#narrowing) lists every option and the methods each level
+holds.
+
+At the `elsewhere` level, an action on a pane the agent did not create
+waits for your answer, for up to 60 seconds, before it runs or fails; see
+[Act levels and approvals](grants.md#act-levels-and-approvals).
+`dream approvals` lists what is waiting. Answer with `dream approvals
+allow ID` (add `--pane` to stop asking for that pane) or `dream approvals
+deny ID`.
 
 ## Terminal tools
 
@@ -42,11 +134,6 @@ watch starts (and the line being written, such as a prompt); quiet
 counts from the pane's last output, which may be before the watch.
 `exit` means the pane's program ended: a job's or run's program, or a
 program whose pane tmux reports dead.
-
-At the `elsewhere` level, an action on a pane this session did not create
-waits for the user's answer (up to 60 s) before it runs or fails; see
-[Act levels and approvals](grants.md#act-levels-and-approvals). Answer
-with `dream approvals`.
 
 ## Collector tools
 
@@ -216,8 +303,8 @@ daemon (`app_new`, `app_check`, `app_preview`, `app_test`) are always
 listed, and `app_install` when the server may install. The server reads
 its grant once it has narrowed, so an agent session's grant counts too.
 
-Calling a tool that is not listed is still refused by the daemon, as
-before, with a tool error saying why.
+Calling a tool that is not listed is still refused by the daemon, with a
+tool error saying why.
 
 ## Narrowing
 
@@ -237,8 +324,13 @@ those are `tmux.topology`, `terminal.list`, `terminal.read`,
 `memory.get`, and `memory.remember`; `own` and `elsewhere` add
 `terminal.input`, `terminal.run`, `actions.submit`, `jobs.start`,
 `jobs.cancel`, `collect.stop`, `memory.update`, `memory.forget`,
-`apps.launch`, `apps.tree`, `apps.capture`, `daemon.status`, and
-`daemon.version`. `--web-inspect` adds `web.inspect`, for the
+`apps.launch`, `apps.tree`, `apps.capture`, `web.open`, `web.navigate`,
+`daemon.status`, and `daemon.version`. `--web-inspect` adds `web.inspect`, for the
 [page tools](#page-tools), to whichever of these the grant holds.
 
-The daemon works the same with no MCP client at all.
+## How it works
+
+The server is built on the official Rust SDK for MCP (`rmcp`, pinned in
+the [dependency baseline](dependency-baseline.md)), which speaks MCP
+protocol versions up to 2026-07-28. It holds one ordinary connection to
+the daemon, so the daemon works the same with no MCP client at all.

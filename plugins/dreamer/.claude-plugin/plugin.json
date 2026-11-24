@@ -1,0 +1,10 @@
+{
+  "name": "dreamer",
+  "version": "0.9.0",
+  "description": "Configure and manage the Dreamer terminal, build pane apps, and see and drive your panes through Dreamer's MCP server.",
+  "author": { "name": "Dreamer developers" },
+  "homepage": "https://github.com/probablyrobot/dreamer",
+  "repository": "https://github.com/probablyrobot/dreamer",
+  "license": "Apache-2.0",
+  "keywords": ["terminal", "tmux", "dreamer"]
+}

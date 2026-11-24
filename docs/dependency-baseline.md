@@ -1,9 +1,19 @@
 # Dependency baseline
 
-Pinned native dependencies and toolchains. The machine-readable source of
-truth is [`deps/baseline.toml`](../deps/baseline.toml); this page explains it.
+The toolchains and native dependencies Dreamer is built with, each pinned
+to an exact version. Read this page before you change a pin or add a
+dependency. The machine-readable source of truth is
+[`deps/baseline.toml`](../deps/baseline.toml); this page explains it.
 Changing any pin means re-running the parser, renderer, ABI, and native smoke
-tests on both verification lanes.
+tests on both verification lanes: Linux CI and the macOS gate.
+
+To fetch and build what a build of this repository needs:
+
+```sh
+cargo xtask deps prepare
+```
+
+[Using the pins](#using-the-pins) lists the other commands.
 
 ## Rust
 
@@ -52,7 +62,7 @@ Zig on `PATH` is not used.
 
 ### Prebuilt archives (crates.io builds)
 
-A build of `ghostty-sys` from crates.io has no `deps/baseline.toml` beside
+A build of `dreamer-ghostty-sys` from crates.io has no `deps/baseline.toml` beside
 it and no prepared cache. It uses a prebuilt `libghostty-vt` instead,
 pinned in `crates/ghostty-sys/prebuilt.toml`:
 
@@ -70,8 +80,9 @@ A build inside the repository never downloads; it links the prepared cache.
 `cargo xtask deps prebuilt` builds the three targets (Zig cross-compiles
 the Linux ones on the Mac), packs the archives into
 `target/ghostty-prebuilt/`, and rewrites the pins. Upload the archives to
-the release it names. `cargo xtask deps prepare` fails while the pins name
-another libghostty-vt than this baseline.
+the release it names. `cargo xtask deps prebuilt --check` fails while the
+pins name another libghostty-vt than this baseline, and `cargo xtask deps
+prepare` runs that check first.
 
 ### Code linked into libghostty-vt
 
@@ -214,7 +225,7 @@ font crate, so the headless crates may use it.
 source in `Cargo.lock` (optional ones too) before it builds anything, so
 every build needs read access to it, with or without the feature:
 
-- On a development machine, the owner's own git login. Set
+- On a development machine, your own git login. Set
   `CARGO_NET_GIT_FETCH_WITH_CLI=true` so Cargo fetches through `git` and
   its credential helper (for example `gh auth setup-git`). Dreamer never
   reads a credential store itself.
@@ -283,8 +294,8 @@ graph uses are repeated in our `[patch.crates-io]` at zed's pinned revisions:
 revision, re-copy them from zed's `Cargo.toml` at the new revision and check
 that `Cargo.lock` has no `[[patch.unused]]` entries.
 
-Only `crates/app` may depend on GPUI. Headless crates must not (see
-`AGENTS.md`).
+Only `crates/app` may depend on GPUI. Headless crates must not, and
+`cargo xtask headless --check` fails if one does.
 
 ### macOS build requirements
 
@@ -379,10 +390,13 @@ file disagree.
 ## Using the pins
 
 ```sh
-cargo xtask deps prepare                     # host target
+cargo xtask deps prepare                     # fonts, Zig, and libghostty-vt for the host target
 cargo xtask deps prepare --target <triple>   # cross targets
 cargo xtask deps path                        # print the install prefix
+cargo xtask deps tmux                        # build the tmux baseline, print its path
+cargo xtask deps fonts                       # fetch and check the bundled fonts
 cargo xtask deps web                         # CEF, cmake, and Ninja for web panes (macOS arm64)
+cargo xtask deps prebuilt [--check]          # pack (or check the pins of) the crates.io archives
 cargo xtask bindings [--check]
 ```
 
@@ -399,7 +413,7 @@ Runtime dependencies on the user's machine, not bundled. See
 | CLI | Tested | Read by the adapter |
 | --- | --- | --- |
 | Claude Code (`claude`) | 2.1.325 | Major version 2 |
-| Codex (`codex`) | Not run yet | Documented `exec --json` events |
+| Codex (`codex`) | 0.170.0 | `exec --json` events |
 | `curl` (API adapters only) | 8.x (macOS 8.7.1 here) | `--config -`, `--no-buffer`, `--write-out` |
 
 pi is installed by Dreamer, not by the user, and follows its newest release
@@ -407,11 +421,21 @@ unless `agents.pi.version` pins one ([agents.md](agents.md#pi-installed-by-dream
 The install was run against pi 1.5.1 and 1.5.2 (darwin-arm64); it reads
 `pi --version` and `pi auth check --json`. It needs `curl` and `tar`.
 
-## Pending pins
+## tmux
 
-| Item | Pinned by |
+| Item | Value |
 | --- | --- |
-| tmux | Baseline 3.8 (runtime dependency, not bundled); CI build of 3.8 lands with the tmux integration tests |
+| Baseline | 3.8 |
+| Source | `tmux-3.8.tar.gz` from the tmux GitHub release, SHA-256 `e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e` |
+
+tmux is a runtime dependency on the user's machine and is not bundled.
+The tests run against the baseline: `cargo xtask deps tmux` builds it
+from the pinned source into the dependency cache, never system-wide, and
+prints the executable's path, which CI passes to the tests as
+`DREAMER_TMUX`. Building it needs a C compiler, make, pkg-config, bison,
+and the libevent and ncurses headers. `cargo xtask doctor` fails when the
+tmux it finds (`DREAMER_TMUX`, else `tmux` on `PATH`) is older than the
+baseline.
 
 ## Terminal color schemes
 

@@ -1,9 +1,12 @@
 # Wire protocol
 
-Dreamer clients (the GUI, `dream`, extensions) talk to `dreamerd` using
-the protocol in `crates/wire`, over its Unix socket or over SSH through
-`dream bridge --stdio` ([cli.md](cli.md)). It does not depend on tmux's
-protocol or on Ghostty's C ABI.
+Dreamer clients (the desktop app, `dream`, extensions) talk to `dreamerd`
+using the binary protocol in `crates/wire`, over its Unix socket or over
+SSH through `dream bridge --stdio` ([cli.md](cli.md#bridge)). You need
+this page if you are writing a native client in another language. For
+scripts, the JSON-RPC endpoint is simpler
+([api.md](api.md#json-rpc-endpoint)). The protocol does not depend on
+tmux's protocol or on Ghostty's C ABI.
 
 ## Byte layout
 
@@ -82,8 +85,9 @@ responses, events) always go first. Bulk messages (checkpoints, history,
 artifacts) are cut into chunks, so priority traffic waits behind at most one
 chunk. The daemon takes forward data (`forward.data`, see
 [remote.md](remote.md#forwards)) into the bulk queue only when both queues
-are empty, so it never waits ahead of anything else. A single socket still has transport-level head-of-line blocking; the
-queues only decide the order in which Dreamer writes.
+are empty, so it never waits ahead of anything else. A single socket
+still has transport-level head-of-line blocking; the queues only decide
+the order in which Dreamer writes.
 
 ## Evolution
 

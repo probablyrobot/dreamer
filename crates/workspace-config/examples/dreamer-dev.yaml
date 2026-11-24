@@ -2,7 +2,7 @@
 # with `dream workspace up dreamer-dev`.
 version: 1
 name: dreamer-dev
-root: ~/Devel/dreamer
+root: ~/src/dreamer
 env:
   RUST_LOG: info
 

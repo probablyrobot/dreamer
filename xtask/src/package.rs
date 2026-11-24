@@ -267,7 +267,8 @@ fn sha256_of(path: &Path) -> Result<String, String> {
 fn linux_tarball(root: &Path) -> Result<(PathBuf, String, &'static str), String> {
     if !cfg!(target_os = "linux") {
         return Err(
-            "the Linux tarball is built on Linux (CI builds it on every pull request)".into(),
+            "the Linux tarball is built on Linux (or in a container: --platform linux --container)"
+                .into(),
         );
     }
     let version = version(root)?;

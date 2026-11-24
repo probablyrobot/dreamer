@@ -74,6 +74,7 @@ jobs:
       - run: cargo xtask api --check
       - run: cargo xtask schemes --check
       - run: cargo xtask icons --check
+      - run: cargo xtask plugin --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # The embedded Kosmonaut memory provider is behind a feature; the
       # line above checks the build without it.
