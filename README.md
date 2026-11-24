@@ -1,4 +1,4 @@
-# dreamer
+# Dreamer
 
 <img src="packaging/icons/linux/128.png" width="96" height="96" alt="Dreamer icon: a halftone moon">
 
