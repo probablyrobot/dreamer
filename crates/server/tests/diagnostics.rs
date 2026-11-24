@@ -162,7 +162,16 @@ async fn diagnostics_are_off_until_turned_on_then_time_every_daemon_stage() {
         f.pump(Duration::from_millis(50)).await.expect("pump");
     }
 
-    let d = diagnostics(&c).await;
+    // The client can see the output before the daemon has recorded how
+    // long sending it took, so wait for every stage to have a sample.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let d = loop {
+        let d = diagnostics(&c).await;
+        if d.stages.iter().all(|s| s.count > 0) || Instant::now() >= deadline {
+            break d;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     assert!(d.enabled);
     // Every daemon stage, in path order; the replica's are the client's.
     let names: Vec<&str> = d.stages.iter().map(|s| s.stage.as_str()).collect();
