@@ -222,7 +222,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "api-gen"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "app-model"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-api",
  "dreamer-app-protocol",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "app-script"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "app-model",
  "dreamer-api",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "bench"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-api",
  "dreamer-client",
@@ -1048,7 +1048,7 @@ dependencies = [
 
 [[package]]
 name = "cef-sys"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "cef",
  "objc2 0.6.5",
@@ -1773,7 +1773,7 @@ checksum = "fd8e701084c37e7ef62d3f9e453b618130cbc0ef3573847785952a3ac3f746bf"
 
 [[package]]
 name = "dreamer-api"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "mlua",
  "prost",
@@ -1783,7 +1783,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-app"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "app-model",
  "async-channel",
@@ -1806,7 +1806,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-app-protocol"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-view-tree",
  "serde",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-api",
  "dreamer-app-protocol",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-client"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-api",
  "dreamer-platform",
@@ -1856,29 +1856,29 @@ dependencies = [
 
 [[package]]
 name = "dreamer-domain"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "dreamer-ghostty-sys"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "sha2 0.10.9",
 ]
 
 [[package]]
 name = "dreamer-perf"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "dreamer-platform"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "rustix",
 ]
 
 [[package]]
 name = "dreamer-providers"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-platform",
  "serde",
@@ -1889,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-sdk"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-api",
  "dreamer-app-protocol",
@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-server"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "app-model",
  "dreamer-api",
@@ -1934,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-termapp"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "app-model",
  "app-script",
@@ -1951,11 +1951,11 @@ dependencies = [
 
 [[package]]
 name = "dreamer-terminal-core"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "dreamer-terminal-ghostty"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-ghostty-sys",
  "dreamer-terminal-core",
@@ -1964,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-tmux-backend"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-domain",
  "dreamer-perf",
@@ -1977,14 +1977,14 @@ dependencies = [
 
 [[package]]
 name = "dreamer-tmux-protocol"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "dreamer-view-tree"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-web-component"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-platform",
  "serde_json",
@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-wire"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-terminal-core",
  "prost",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-workspace-config"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-terminal-core",
  "serde",
@@ -2019,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "dreamer-workspace-host"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-api",
  "dreamer-domain",
@@ -2645,7 +2645,7 @@ dependencies = [
 
 [[package]]
 name = "ghostty-bindgen"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bindgen",
 ]
@@ -4136,7 +4136,7 @@ checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
 
 [[package]]
 name = "matcher"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "regex",
 ]
@@ -4205,7 +4205,7 @@ dependencies = [
 
 [[package]]
 name = "memory"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "kosmonaut",
  "prost",
@@ -4257,7 +4257,7 @@ dependencies = [
 
 [[package]]
 name = "mirror"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-domain",
  "dreamer-perf",
@@ -5396,7 +5396,7 @@ dependencies = [
 
 [[package]]
 name = "procreg"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-platform",
 ]
@@ -6078,7 +6078,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "replica"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "async-channel",
  "dreamer-api",
@@ -6405,7 +6405,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "script-runtime"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-api",
  "mlua",
@@ -7519,7 +7519,7 @@ dependencies = [
 
 [[package]]
 name = "terminal-render"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-terminal-core",
  "gpui",
@@ -8513,7 +8513,7 @@ dependencies = [
 
 [[package]]
 name = "web-engine"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "cef-sys",
  "dreamer-view-tree",
@@ -9389,7 +9389,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dreamer-web-component",
  "png 0.18.1",
