@@ -354,6 +354,25 @@ covers:
 An artifact with no matching check is listed as not checked. A tree with no
 full macOS gate report is marked "macOS runtime verification incomplete".
 
+### Crates on crates.io
+
+`dreamer-sdk` and the crates it depends on (`dreamer-api`,
+`dreamer-app-protocol`, `dreamer-view-tree`) are published to crates.io with
+the same version. Inside the repository they keep their short dependency
+keys (`api`, `app-protocol`, `view-tree`), declared once in the root
+`Cargo.toml` under `[workspace.dependencies]` with an exact `=X.Y.Z` pin.
+Bump those pins with the workspace version; a mismatch fails to resolve.
+
+After the release is published, from `main` at the release commit:
+
+```sh
+cargo publish --dry-run --locked -p dreamer-view-tree -p dreamer-api -p dreamer-app-protocol -p dreamer-sdk
+cargo publish --locked -p dreamer-view-tree -p dreamer-api -p dreamer-app-protocol -p dreamer-sdk
+```
+
+Cargo publishes them in dependency order. A published version can be yanked
+but never replaced or deleted.
+
 ## Arch Linux
 
 On an Arch system with `base-devel`:

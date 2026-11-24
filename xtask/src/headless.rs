@@ -14,9 +14,9 @@ use crate::util::repo_root;
 /// Packages built and tested for every headless target, including ARM64
 /// Linux. Add each new UI-free crate here.
 pub const PACKAGES: &[&str] = &[
-    "api",
+    "dreamer-api",
     "app-model",
-    "app-protocol",
+    "dreamer-app-protocol",
     "app-script",
     "bench",
     "client",
@@ -39,7 +39,7 @@ pub const PACKAGES: &[&str] = &[
     "terminal-ghostty",
     "tmux-backend",
     "tmux-protocol",
-    "view-tree",
+    "dreamer-view-tree",
     "web-component",
     "wire",
     "workspace-config",

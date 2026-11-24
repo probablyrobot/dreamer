@@ -198,7 +198,8 @@ standard error are read and written apart from drawing and input.
 
 ## The Rust SDK
 
-The `dreamer-sdk` crate (`crates/sdk`) speaks the protocol for Rust apps.
+The `dreamer-sdk` crate (`crates/sdk`, on crates.io as `dreamer-sdk`)
+speaks the protocol for Rust apps.
 `dreamer_sdk::ui` builds trees, and `dreamer_sdk::app` runs the loop:
 
 ```rust

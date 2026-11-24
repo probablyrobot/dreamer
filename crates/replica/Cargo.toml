@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-api = { path = "../api" }
+api.workspace = true
 async-channel = "2.5.0"
 client = { path = "../client" }
 matcher = { path = "../matcher" }

@@ -12,7 +12,7 @@ name = "dreamer-bench"
 path = "src/main.rs"
 
 [dependencies]
-api = { path = "../../crates/api" }
+api.workspace = true
 client = { path = "../../crates/client" }
 perf = { path = "../../crates/perf" }
 platform = { path = "../../crates/platform" }

@@ -1,11 +1,15 @@
 [package]
-name = "view-tree"
+name = "dreamer-view-tree"
 description = "An app's view as a keyed tree of host components, with keyed diffs between versions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme = "README.md"
+keywords = ["dreamer","terminal","ui","view-tree","diff"]
+categories = ["gui","data-structures"]
+publish = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

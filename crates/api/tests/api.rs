@@ -5,6 +5,7 @@ use api::{
     Action, ActionRecord, ActionState, Empty, METHODS, Request, Response, RpcError, SendInput,
     Service, SplitDirection, SplitPane, SubmitAction, VersionInfo, action, dispatch,
 };
+use dreamer_api as api;
 use serde_json::json;
 
 fn submit() -> SubmitAction {
