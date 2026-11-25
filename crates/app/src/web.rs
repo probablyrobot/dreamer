@@ -409,7 +409,7 @@ impl WebPane {
         // the pane paints.
         #[cfg(feature = "web")]
         let (problem, wants_component) = if crate::webcomp::look_now() {
-            (engine::ensure(cx).err(), false)
+            (engine::ensure(window, cx).err(), false)
         } else {
             // An agent's or an app's page waits for it as a click would.
             if crate::webcomp::mode() == workspace_config::WebComponent::Auto {
@@ -420,7 +420,7 @@ impl WebPane {
         #[cfg(not(feature = "web"))]
         let (problem, wants_component) = (
             Some(
-                "This build of Dreamer has no web engine (web panes are built on macOS with the `web` feature)."
+                "This build of Dreamer has no web engine (web panes are built with the `web` feature)."
                     .to_owned(),
             ),
             false,
@@ -1252,6 +1252,7 @@ impl WebPane {
             y: f32::from(bounds.origin.y),
             width: f32::from(bounds.size.width),
             height: f32::from(bounds.size.height),
+            scale: window.scale_factor(),
         };
         // A page through a forward opens once the forward is up.
         let forwarding = self.forward.as_ref().is_some_and(|f| f.local.is_none());
@@ -1592,8 +1593,8 @@ impl Render for WebPane {
         #[cfg(feature = "web")]
         if self.wants_component && crate::webcomp::status() == crate::webcomp::Status::Ready {
             self.wants_component = false;
-            cx.defer_in(window, |w, _, cx| {
-                w.problem = engine::ensure(cx).err();
+            cx.defer_in(window, |w, window, cx| {
+                w.problem = engine::ensure(window, cx).err();
                 cx.notify();
             });
         }
@@ -1636,6 +1637,9 @@ impl Render for WebPane {
             .relative()
             .child(notice)
             .children(snapshot);
+        // A page drawn offscreen (Wayland) gets the pointer through the pane.
+        #[cfg(all(feature = "web", target_os = "linux"))]
+        let page = offscreen::mouse(page, cx);
         #[cfg(feature = "web")]
         let page = {
             let entity = cx.entity();
@@ -1668,6 +1672,9 @@ impl Render for WebPane {
             .on_action(cx.listener(|w, _: &k::Paste, _, cx| w.edit(Edit::Paste, cx)))
             .on_action(cx.listener(|w, _: &k::SelectAll, _, cx| w.edit(Edit::SelectAll, cx)))
             .on_key_down(cx.listener(|w, ev: &KeyDownEvent, _, cx| w.bar_key(ev, cx)));
+        // And the keys, while it has the focus.
+        #[cfg(all(feature = "web", target_os = "linux"))]
+        let base = offscreen::keys(base, cx);
         let base = if self.browser() {
             base.on_action(cx.listener(|w, _: &k::OpenLocation, _, cx| w.open_address(cx)))
                 .on_action(cx.listener(|w, _: &k::Find, _, cx| w.open_find(cx)))
@@ -1684,6 +1691,271 @@ impl Render for WebPane {
             .children(self.download_row(window, cx))
             .child(page)
     }
+}
+
+/// Linux, Wayland: a page drawn offscreen gets its pointer and keys from
+/// the pane, which forwards them to Chromium. (On macOS and X11 the page's
+/// own surface takes them.)
+#[cfg(all(feature = "web", target_os = "linux"))]
+mod offscreen {
+    use gpui::{
+        Context, InteractiveElement as _, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers,
+        MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
+        ScrollEvent, Window,
+    };
+    use web_engine::{Button, Mouse, flags};
+
+    use super::WebPane;
+
+    /// Pixels a wheel notch scrolls, when the wheel reports lines.
+    const LINE: f32 = 40.0;
+
+    fn modifiers(m: &Modifiers) -> u32 {
+        let mut f = 0;
+        if m.shift {
+            f |= flags::SHIFT;
+        }
+        if m.control {
+            f |= flags::CONTROL;
+        }
+        if m.alt {
+            f |= flags::ALT;
+        }
+        if m.platform {
+            f |= flags::COMMAND;
+        }
+        f
+    }
+
+    fn button(b: MouseButton) -> Option<Button> {
+        match b {
+            MouseButton::Left => Some(Button::Left),
+            MouseButton::Middle => Some(Button::Middle),
+            MouseButton::Right => Some(Button::Right),
+            _ => None,
+        }
+    }
+
+    impl WebPane {
+        /// Send `mouse` at `at` (window coordinates) to the page, if it is
+        /// drawn offscreen and shown.
+        fn forward_mouse(&self, mouse: Mouse, at: Point<Pixels>, m: &Modifiers) -> bool {
+            let Some(v) = self.view.as_ref().filter(|v| v.takes_forwarded_input()) else {
+                return false;
+            };
+            let Some(r) = v.placed().filter(|_| self.live) else {
+                return false;
+            };
+            let (x, y) = (f32::from(at.x) - r.x, f32::from(at.y) - r.y);
+            v.send_mouse(mouse, x, y, modifiers(m));
+            true
+        }
+
+        fn mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+            let Some(b) = button(ev.button) else { return };
+            let clicks = ev.click_count as u32;
+            if self.forward_mouse(
+                Mouse::Down { button: b, clicks },
+                ev.position,
+                &ev.modifiers,
+            ) {
+                // A click in the page focuses it, and its pane.
+                if let Some(v) = &self.view {
+                    v.focus();
+                }
+                let pane = self.pane;
+                let _ = self
+                    .workspace
+                    .update(cx, |ws, cx| ws.page_focused(pane, window, cx));
+                cx.stop_propagation();
+            }
+        }
+
+        /// The key typed into the page, if it should go there: not while the
+        /// browser's bar has the keys, and not a key of one of Dreamer's
+        /// own shortcuts.
+        fn forward_key(&self, k: &Keystroke, down: bool, window: &Window) -> bool {
+            let Some(v) = self.view.as_ref().filter(|v| v.takes_forwarded_input()) else {
+                return false;
+            };
+            if self.bar.keys || !v.has_focus() {
+                return false;
+            }
+            if !window
+                .possible_bindings_for_input(std::slice::from_ref(k))
+                .is_empty()
+            {
+                return false;
+            }
+            let Some(key) = super::forwarded_key(k, down) else {
+                return false;
+            };
+            v.send_key(&key);
+            true
+        }
+    }
+
+    pub(super) fn mouse(page: gpui::Div, cx: &mut Context<WebPane>) -> gpui::Div {
+        page.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|w, ev: &MouseDownEvent, window, cx| w.mouse_down(ev, window, cx)),
+        )
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|w, ev: &MouseDownEvent, window, cx| w.mouse_down(ev, window, cx)),
+        )
+        .on_mouse_down(
+            MouseButton::Middle,
+            cx.listener(|w, ev: &MouseDownEvent, window, cx| w.mouse_down(ev, window, cx)),
+        )
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|w, ev: &MouseUpEvent, _, cx| {
+                let clicks = ev.click_count as u32;
+                let up = Mouse::Up {
+                    button: Button::Left,
+                    clicks,
+                };
+                if w.forward_mouse(up, ev.position, &ev.modifiers) {
+                    cx.stop_propagation();
+                }
+            }),
+        )
+        .on_mouse_up(
+            MouseButton::Right,
+            cx.listener(|w, ev: &MouseUpEvent, _, cx| {
+                let clicks = ev.click_count as u32;
+                let up = Mouse::Up {
+                    button: Button::Right,
+                    clicks,
+                };
+                if w.forward_mouse(up, ev.position, &ev.modifiers) {
+                    cx.stop_propagation();
+                }
+            }),
+        )
+        .on_mouse_up(
+            MouseButton::Middle,
+            cx.listener(|w, ev: &MouseUpEvent, _, cx| {
+                let clicks = ev.click_count as u32;
+                let up = Mouse::Up {
+                    button: Button::Middle,
+                    clicks,
+                };
+                if w.forward_mouse(up, ev.position, &ev.modifiers) {
+                    cx.stop_propagation();
+                }
+            }),
+        )
+        .on_mouse_move(cx.listener(|w, ev: &MouseMoveEvent, _, _| {
+            w.forward_mouse(Mouse::Move, ev.position, &ev.modifiers);
+        }))
+        .on_scroll(cx.listener(|w, ev: &ScrollEvent, _, cx| {
+            let (dx, dy) = match ev.delta {
+                ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
+                ScrollDelta::Lines(l) => (l.x * LINE, l.y * LINE),
+            };
+            if w.forward_mouse(Mouse::Wheel { dx, dy }, ev.position, &ev.modifiers) {
+                cx.stop_propagation();
+            }
+        }))
+    }
+
+    pub(super) fn keys(base: gpui::Div, cx: &mut Context<WebPane>) -> gpui::Div {
+        base.on_key_down(cx.listener(|w, ev: &KeyDownEvent, window, cx| {
+            if w.forward_key(&ev.keystroke, true, window) {
+                cx.stop_propagation();
+            }
+        }))
+        .on_key_up(cx.listener(|w, ev: &KeyUpEvent, window, cx| {
+            if w.forward_key(&ev.keystroke, false, window) {
+                cx.stop_propagation();
+            }
+        }))
+    }
+}
+
+/// A key as Chromium takes it from a pane that forwards keys to its page:
+/// its Windows virtual key code, and when pressed the text it types (none
+/// with Control, Alt, or the platform key held). `None` for a key Chromium
+/// has no code for here.
+#[cfg(all(feature = "web", target_os = "linux"))]
+fn forwarded_key(k: &gpui::Keystroke, down: bool) -> Option<web_engine::Key> {
+    let key = k.key.as_str();
+    let code = match key {
+        "enter" => 0x0d,
+        "escape" => 0x1b,
+        "backspace" => 0x08,
+        "tab" => 0x09,
+        "space" => 0x20,
+        "pageup" => 0x21,
+        "pagedown" => 0x22,
+        "end" => 0x23,
+        "home" => 0x24,
+        "left" => 0x25,
+        "up" => 0x26,
+        "right" => 0x27,
+        "down" => 0x28,
+        "insert" => 0x2d,
+        "delete" => 0x2e,
+        ";" => 0xba,
+        "=" => 0xbb,
+        "," => 0xbc,
+        "-" => 0xbd,
+        "." => 0xbe,
+        "/" => 0xbf,
+        "`" => 0xc0,
+        "[" => 0xdb,
+        "\\" => 0xdc,
+        "]" => 0xdd,
+        "'" => 0xde,
+        _ => {
+            let mut chars = key.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) if c.is_ascii_alphanumeric() => c.to_ascii_uppercase() as i32,
+                _ => match key.strip_prefix('f').and_then(|n| n.parse::<i32>().ok()) {
+                    Some(n @ 1..=24) => 0x6f + n,
+                    _ => return None,
+                },
+            }
+        }
+    };
+    let m = &k.modifiers;
+    let plain = !m.control && !m.alt && !m.platform;
+    let text = match key {
+        _ if !down || !plain => String::new(),
+        "enter" => "\r".into(),
+        "tab" | "backspace" | "escape" | "delete" => String::new(),
+        "space" => " ".into(),
+        // The character the key typed, else (a keystroke made up rather
+        // than typed) the key itself.
+        _ => k
+            .key_char
+            .clone()
+            .unwrap_or_else(|| match key.chars().count() {
+                1 if m.shift => key.to_uppercase(),
+                1 => key.to_owned(),
+                _ => String::new(),
+            }),
+    };
+    let mut modifiers = 0;
+    for (on, flag) in [
+        (m.shift, web_engine::flags::SHIFT),
+        (m.control, web_engine::flags::CONTROL),
+        (m.alt, web_engine::flags::ALT),
+        (m.platform, web_engine::flags::COMMAND),
+    ] {
+        if on {
+            modifiers |= flag;
+        }
+    }
+    Some(web_engine::Key {
+        down,
+        windows_key_code: code,
+        native_key_code: 0,
+        modifiers,
+        text,
+    })
 }
 
 /// At most `max` characters of `s`, with an ellipsis when cut.
@@ -1874,7 +2146,9 @@ mod engine {
     }
 
     /// Start Chromium in this process unless it runs.
-    pub(super) fn ensure(cx: &mut gpui::App) -> Result<(), String> {
+    /// `window`: any of the app's windows (on Linux, which display server
+    /// pages are drawn for).
+    pub(super) fn ensure(window: &gpui::Window, cx: &mut gpui::App) -> Result<(), String> {
         if web_engine::started() {
             return Ok(());
         }
@@ -1890,7 +2164,7 @@ mod engine {
             workspace_config::WebColor::Display => web_engine::Color::Display,
         };
         let (tx, rx) = async_channel::unbounded::<i64>();
-        web_engine::start(&profile, color, move |delay| {
+        web_engine::start(&profile, color, window, move |delay| {
             let _ = tx.try_send(delay);
         })?;
         // CEF asks for its work (with a delay) from any thread; it runs
@@ -1926,5 +2200,31 @@ mod engine {
         })
         .detach();
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "web", target_os = "linux"))]
+mod offscreen_tests {
+    use super::forwarded_key;
+
+    fn key(s: &'static str, down: bool) -> Option<web_engine::Key> {
+        forwarded_key(&gpui::Keystroke::parse(s).expect("keystroke"), down)
+    }
+
+    #[test]
+    fn keys_reach_an_offscreen_page_as_chromium_names_them() {
+        let a = key("a", true).expect("a");
+        assert_eq!((a.windows_key_code, a.text.as_str()), (0x41, "a"));
+        // Enter types a carriage return; Backspace types nothing.
+        assert_eq!(key("enter", true).expect("enter").text, "\r");
+        let back = key("backspace", true).expect("backspace");
+        assert_eq!((back.windows_key_code, back.text.as_str()), (0x08, ""));
+        // With Control held a key types nothing, and says so.
+        let copy = key("ctrl-c", true).expect("ctrl-c");
+        assert_eq!(copy.text, "");
+        assert_eq!(copy.modifiers, web_engine::flags::CONTROL);
+        // A release types nothing.
+        assert_eq!(key("a", false).expect("a up").text, "");
+        assert_eq!(key("f5", true).expect("f5").windows_key_code, 0x74);
     }
 }

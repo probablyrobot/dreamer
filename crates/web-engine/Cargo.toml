@@ -10,14 +10,27 @@ publish = false
 [features]
 # Chromium through CEF. Needs `cargo xtask deps web` (see cef-sys); without
 # it the crate builds no engine and the desktop says how to get one.
-engine = ["cef-sys/cef", "dep:raw-window-handle"]
+engine = [
+    "cef-sys/cef",
+    "dep:raw-window-handle",
+    "dep:wayland-backend",
+    "dep:wayland-client",
+    "dep:wayland-protocols",
+    "dep:x11rb",
+]
 
 # The helper executable CEF starts for its renderer, GPU, and utility
-# processes. The Dreamer Web component (web-component) holds it in its five
-# helper apps.
+# processes. The Dreamer Web component (web-component) holds it: in its five
+# helper apps on macOS, beside libcef.so on Linux.
 [[bin]]
 name = "dreamer-web-helper"
 path = "src/bin/helper.rs"
+required-features = ["engine"]
+
+# Linux: checks that a Dreamer Web component draws a page, with no
+# display (`cargo xtask web bundle`, `cargo xtask package --platform web`).
+[[example]]
+name = "offscreen"
 required-features = ["engine"]
 
 [dependencies]
@@ -26,6 +39,16 @@ raw-window-handle = { version = "0.6.2", optional = true }
 serde_json = "1.0.154"
 view-tree.workspace = true
 web-component.workspace = true
+
+# Linux: a page's surface. X11: CEF's window, moved over a connection of
+# the engine's own. Wayland: a subsurface on the toolkit's own connection
+# (libwayland, as the toolkit loads it). All already in the lock (the
+# toolkit uses them).
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-backend = { version = "0.3.17", features = ["client_system", "dlopen"], optional = true }
+wayland-client = { version = "0.31.15", optional = true }
+wayland-protocols = { version = "0.32.13", features = ["client"], optional = true }
+x11rb = { version = "0.13.2", optional = true }
 
 [lints]
 workspace = true

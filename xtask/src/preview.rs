@@ -32,6 +32,7 @@ const SCENE: Scene = Scene {
     args: &[],
     after: &[],
     app: None,
+    web: None,
 };
 
 /// The longest a save may take to show in the preview pane.

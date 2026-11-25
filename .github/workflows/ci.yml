@@ -71,6 +71,9 @@ jobs:
       # The Kosmonaut memory provider (a gRPC client) is behind a feature;
       # the line above checks the build without it.
       - run: cargo clippy -p dreamer-memory -p dreamer-server --features dreamer-server/kosmonaut --all-targets --locked -- -D warnings
+      # Web panes are behind a feature too. On Linux their build needs no
+      # CEF (nothing links libcef.so; Dreamer Web is loaded at run time).
+      - run: cargo clippy -p dreamer-app -p web-engine -p cef-sys -p dreamer-web-component --features dreamer-app/web --all-targets --locked -- -D warnings
       - name: Build the pinned tmux baseline
         run: echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
       - run: cargo build --workspace --all-targets --locked

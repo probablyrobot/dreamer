@@ -11,6 +11,7 @@ End users: see [Installing Dreamer](install.md).
 | Linux tarball (any distribution) | `cargo xtask package --platform linux` | `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256` |
 | `.deb` | `cargo xtask package --platform deb` | `target/package/linux/dreamer-<version>-<target>.deb` and its `.sha256` |
 | `.rpm` | `cargo xtask package --platform rpm` | `target/package/linux/dreamer-<version>-<target>.rpm` and its `.sha256` |
+| Dreamer Web for Linux (x86-64) | `cargo xtask package --platform web` | `target/package/linux/dreamer-web/` and `dreamer-web-<version>-x86_64-unknown-linux-gnu.tar.gz`, with a `.sha256` and a `.json` record ([Dreamer Web](#dreamer-web)) |
 | Headless server archive | `cargo xtask package --platform server [--target TRIPLE]` | `target/package/server/dreamer-server-<version>-<target>.tar.gz` and its `.sha256` |
 | Arch Linux | `cargo xtask package --platform arch` | `target/package/arch/`: source tarball, `PKGBUILD`, and, where `makepkg` is installed, `dreamer-<version>-1-<arch>.pkg.tar.zst` |
 
@@ -165,7 +166,39 @@ the app with web panes and the component beside it, in `web-bundle`
 under cargo's target directory. `cargo xtask web smoke` runs the gate's
 web pane check alone.
 
-The Linux component is not built yet: web panes are macOS only so far.
+#### Dreamer Web for Linux
+
+On Linux (x86-64), `cargo xtask package --platform web` builds the
+component from a release build of `dreamer-web-helper` and the pinned
+CEF distribution (fetched, checksum-verified, when missing). Neither
+`dreamer` nor the helper links `libcef.so`: both load it at run time,
+`dreamer` from the installed component and the helper from beside
+itself.
+
+| Path in `dreamer-web/` | Content |
+| --- | --- |
+| `libcef.so` | CEF's library, from the pinned distribution, stripped of debugging and local symbols (1.5 GB to 278 MB) |
+| `dreamer-web-helper` | The helper Chromium runs its renderer, GPU, and utility processes from |
+| `resources.pak`, `chrome_100_percent.pak`, `chrome_200_percent.pak`, `icudtl.dat`, `v8_context_snapshot.bin`, `locales/` | Chromium's resources, ICU data, V8 snapshot, and translations |
+| `libvk_swiftshader.so`, `libvulkan.so.1`, `vk_swiftshader_icd.json` | SwiftShader, Chromium's software GPU |
+| `LICENSE.txt`, `CREDITS.html` | CEF's license and Chromium's third-party notices |
+| `component.json` | The component's Dreamer version, CEF release, and target |
+
+`dreamer-web-<version>-x86_64-unknown-linux-gnu.tar.gz` unpacks to
+`dreamer-web/` (160 MB packed, 378 MB unpacked for 0.10.0). Beside it go
+`<archive>.sha256` and `<archive>.json` (size and SHA-256, the commit,
+the CEF release, and the contents). Before packing, the component is
+checked: the manifest and every file, neither executable linking
+`libcef.so`, the helper loading `libcef.so` from where it sits, and a
+page drawn from it offscreen with no display (`offscreen`, an example of
+the `web-engine` crate, which starts Chromium on its headless platform
+with SwiftShader and reads a pixel of what it paints). The release
+workflow builds it and attaches it beside the base archives.
+
+The Linux tarball, `.deb`, `.rpm`, and Arch package are still built
+without web panes, so they do not grow. With the component installed,
+web panes work in a Linux build with web panes
+([desktop.md](desktop.md#a-build-with-web-panes)).
 
 ## Linux tarball
 
@@ -424,7 +457,8 @@ Then:
 2. **The tag,** created on GitHub. It starts
    `.github/workflows/release.yml`, which builds the x86-64 desktop
    tarball, `.deb`, `.rpm`, and server archive, runs them on fresh
-   containers, and drafts the release with them and `install.sh`.
+   containers, builds the Linux Dreamer Web archive (checked by drawing a
+   page offscreen), and drafts the release with them and `install.sh`.
 3. **The report.**
    - It waits for that run and takes its x86-64 archives back.
    - It writes the build report with the run attached.

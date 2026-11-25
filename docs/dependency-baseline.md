@@ -325,11 +325,21 @@ libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev`
 
 Web panes on the desktop ([desktop.md](desktop.md#web-panes)) embed
 Chromium through the Chromium Embedded Framework (CEF). Only `dreamer`
-built with its `web` feature uses it, and it links only CEF's C++ wrapper:
-the framework itself is loaded at run time from the Dreamer Web component
-([packaging.md](packaging.md#dreamer-web)), which ships apart from the
-app. The macOS release package builds `dreamer` with the feature; the
-default build and the Linux CI build do not. `cargo xtask headless
+built with its `web` feature uses it. On macOS it links only CEF's C++
+wrapper: the framework itself is loaded at run time from the Dreamer Web
+component ([packaging.md](packaging.md#dreamer-web)), which ships apart
+from the app. On Linux it links nothing of CEF: `libcef.so` is in the
+Linux Dreamer Web component too, and `cef-sys` loads it at run time with
+`dlopen` and resolves CEF's C functions from it (`cef_sys::loader`, the
+job CEF's own `libcef_dll_dylib.cc` does on macOS, which CEF builds only
+there). `.cargo/config.toml` replaces the `cef-dll-sys` build script on
+x86-64 Linux (`[target.x86_64-unknown-linux-gnu.cef_dll_wrapper]`), since
+all it does there is link `libcef.so` and copy CEF's files into the
+target directory; the crate's bindings are checked in. So a Linux build
+with the feature needs no CEF distribution, and a CEF function missing
+from the loader fails the link with its name. The macOS release package
+builds `dreamer` with the feature; the default build and the Linux
+packages do not, and Linux CI runs clippy with it. `cargo xtask headless
 --check` fails if `dreamerd`, `dream`, `dreamer-termapp`, or any library
 of theirs could depend on `cef`, `cef-dll-sys`, `cef-sys`, or
 `web-engine`. (`web-component`, which describes the component for `dream
@@ -340,20 +350,27 @@ web install` and the desktop, holds no Chromium and is headless.)
 | Bindings | `cef` crate (tauri-apps/cef-rs) `=156.6.0`, with `cef-dll-sys` 156.6.0; default features off (no sandbox, no bundler, no resources) |
 | CEF | 156.0.30 (`+g6028375`), Chromium 156.0.8078.96 |
 | Distribution (macOS arm64) | `cef_binary_156.0.30+g6028375+chromium-156.0.8078.96_macosarm64_minimal.tar.bz2` from `cef-builds.spotifycdn.com`, SHA-256 `731b599e78c71bf33530d65bfa18963f7d1d59902c1f381f5452188e5116b855` (SHA-1 `6393d8a838d3b29f6b6939b970b5931dde2082aa`, as the CDN's index lists it) |
-| cmake | 4.4.5, `cmake-4.4.5-macos-universal.tar.gz` from Kitware's GitHub release, SHA-256 `679e77a96b9ef9484cc6c1445255fc4f84206b48a65420efbedf16bdab55fbff` |
-| Ninja | 1.13.2, `ninja-mac.zip` from the ninja-build GitHub release, SHA-256 `c99048673aa765960a99cf10c6ddb9f1fad506099ff0a0e137ad8960a88f321b` |
+| Distribution (Linux x86-64) | `cef_binary_156.0.30+g6028375+chromium-156.0.8078.96_linux64_minimal.tar.bz2` from `cef-builds.spotifycdn.com`, SHA-256 `356db99d653698aa9ba78b22965032b4fa5b23ba079ffdbaa5d28a8530f04011` (SHA-1 `0b4c2189e3b93033bbef13add1a86f66849c1e62`, as the CDN's index lists it) |
+| cmake (macOS) | 4.4.5, from Kitware's GitHub release: `cmake-4.4.5-macos-universal.tar.gz`, SHA-256 `679e77a96b9ef9484cc6c1445255fc4f84206b48a65420efbedf16bdab55fbff` |
+| Ninja (macOS) | 1.13.2, from the ninja-build GitHub release: `ninja-mac.zip`, SHA-256 `c99048673aa765960a99cf10c6ddb9f1fad506099ff0a0e137ad8960a88f321b` |
+| Linux surfaces | `x11rb` 0.13.2 (CEF's child window on X11); `wayland-client` 0.31.15, `wayland-backend` 0.3.17, and `wayland-protocols` 0.32.13 (the subsurface on Wayland, on the toolkit's own connection); `ash` 0.38.0 (the GPU copy of Chromium's offscreen frames). All were already in `Cargo.lock` through GPUI |
 | License | CEF: BSD-3-Clause; Chromium's own third-party notices are `CREDITS.html` in the distribution |
 
 `cargo xtask deps web` downloads these into the dependency cache, verifies
 them, and lays CEF out where the `cef-dll-sys` build script looks for it
-(`<cache>/cef/156.0.30/cef_macos_aarch64`, with the `archive.json` that
-script checks the version against). Builds with the feature get that
-directory as `CEF_PATH` and cmake and Ninja first on `PATH`; the build
-script then compiles CEF's C++ wrapper with them. That build script would
+(`<cache>/cef/156.0.30/cef_macos_aarch64`, or `cef_linux_x86_64` with
+Chromium's resources beside `libcef.so`, with the `archive.json` that
+script checks the version against). On macOS, builds with the feature get
+that directory as `CEF_PATH` and cmake and Ninja first on `PATH`; the
+build script then compiles CEF's C++ wrapper with them. On Linux the
+distribution is only what the Dreamer Web component is made from
+(`cargo xtask web bundle`, `cargo xtask package --platform web`). That build script would
 otherwise download CEF from a changing index: `.cargo/config.toml` points
 `CEF_DOWNLOAD_URL` at an address that cannot resolve, so a missing or
-wrong `CEF_PATH` fails the build instead. The archive is 144 MB and the
-unpacked distribution 351 MB, most of it the framework.
+wrong `CEF_PATH` fails the build instead. The macOS archive is 144 MB
+and the unpacked distribution 351 MB, most of it the framework. The
+Linux archive is 333 MB; its `libcef.so` is 1.5 GB with debugging
+symbols, 278 MB as the component has it.
 
 ### Chromium updates
 
@@ -385,6 +402,13 @@ Moving the pin is one change:
    `dream web install` to an empty data directory; and pages drawn with
    it in a real window. Its `package` stage builds the release's two zips
    and adds the component from its zip away from the tree.
+5. On Linux, `cargo xtask deps web`, then `cargo xtask web bundle`: the
+   component built and a page drawn from it offscreen. A new CEF release
+   can add C functions: one the `cef` crate calls but `cef_sys::loader`
+   does not list fails the link with its name, and is added there. On a
+   Linux desktop, `cargo xtask gate linux-desktop`: its `web` runs draw a
+   page in a pane on X11 and on Wayland
+   ([linux-desktop-gate.md](linux-desktop-gate.md)).
 
 A Dreamer release ships its app and its Dreamer Web together, at the
 same version, and Dreamer Web is only usable with the Dreamer of that
@@ -408,7 +432,7 @@ cargo xtask deps prepare --target <triple>   # cross targets
 cargo xtask deps path                        # print the install prefix
 cargo xtask deps tmux                        # build the tmux baseline, print its path
 cargo xtask deps fonts                       # fetch and check the bundled fonts
-cargo xtask deps web                         # CEF, cmake, and Ninja for web panes (macOS arm64)
+cargo xtask deps web                         # CEF for web panes (macOS arm64, Linux x86-64), and cmake and Ninja on macOS
 cargo xtask deps prebuilt [--check]          # pack (or check the pins of) the crates.io archives
 cargo xtask bindings [--check]
 ```

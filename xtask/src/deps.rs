@@ -164,16 +164,19 @@ fn ensure_tmux(manifest: &Manifest) -> Result<PathBuf, String> {
     Ok(bin)
 }
 
-/// The web engine's build inputs: the CEF distribution, unpacked where the
-/// `cef-dll-sys` build script looks (`CEF_PATH/<version>/<dir>`), and the
-/// cmake and Ninja that build CEF's C++ wrapper.
+/// The web engine's inputs: the CEF distribution, unpacked where the
+/// `cef-dll-sys` build script looks (`CEF_PATH/<version>/<dir>`), and, on
+/// macOS, the cmake and Ninja that build CEF's C++ wrapper. On Linux the
+/// build needs none of it (nothing links `libcef.so`); the distribution is
+/// what the Dreamer Web component is made from.
 #[derive(Debug)]
 pub struct WebDeps {
     /// `CEF_PATH` for the build.
     pub cef_path: PathBuf,
     /// The unpacked distribution (holds the framework).
     pub cef_dir: PathBuf,
-    /// The directories holding `cmake` and `ninja`, put first on `PATH`.
+    /// The directories holding `cmake` and `ninja`, put first on `PATH`
+    /// (none on Linux).
     pub tools: Vec<PathBuf>,
 }
 
@@ -191,18 +194,22 @@ impl WebDeps {
         ]
     }
 
-    /// The CEF framework bundle.
+    /// The CEF framework bundle (macOS), or `libcef.so` (Linux).
     pub fn framework(&self) -> PathBuf {
-        self.cef_dir.join("Chromium Embedded Framework.framework")
+        if cfg!(target_os = "macos") {
+            self.cef_dir.join("Chromium Embedded Framework.framework")
+        } else {
+            self.cef_dir.join("libcef.so")
+        }
     }
 }
 
 /// The host the web engine is pinned for, or why there is none.
 fn web_host() -> Result<&'static str, String> {
     match host_triple()? {
-        t @ "aarch64-apple-darwin" => Ok(t),
+        t @ ("aarch64-apple-darwin" | "x86_64-unknown-linux-gnu") => Ok(t),
         other => Err(format!(
-            "web panes build on macOS (arm64) only so far, not on {other}"
+            "web panes build on macOS (arm64) and Linux (x86-64) only so far, not on {other}"
         )),
     }
 }
@@ -213,19 +220,25 @@ fn web_paths(manifest: &Manifest, host: &str) -> Result<WebDeps, String> {
     let cef_dir = cef_path
         .join(manifest.get("cef", "version")?)
         .join(manifest.get("cef", &format!("{host}-dir"))?);
-    let cmake = deps
-        .join("cmake")
-        .join(manifest.get("cmake", "version")?)
-        .join(host)
-        .join(manifest.get("cmake", &format!("{host}-bin"))?);
-    let ninja = deps
-        .join("ninja")
-        .join(manifest.get("ninja", "version")?)
-        .join(host);
+    // Only macOS builds CEF's wrapper library.
+    let tools = if host.ends_with("-apple-darwin") {
+        let cmake = deps
+            .join("cmake")
+            .join(manifest.get("cmake", "version")?)
+            .join(host)
+            .join(manifest.get("cmake", &format!("{host}-bin"))?);
+        let ninja = deps
+            .join("ninja")
+            .join(manifest.get("ninja", "version")?)
+            .join(host);
+        vec![cmake, ninja]
+    } else {
+        Vec::new()
+    };
     Ok(WebDeps {
         cef_path,
         cef_dir,
-        tools: vec![cmake, ninja],
+        tools,
     })
 }
 
@@ -234,37 +247,52 @@ fn web_paths(manifest: &Manifest, host: &str) -> Result<WebDeps, String> {
 pub fn web_deps(manifest: &Manifest) -> Result<Option<WebDeps>, String> {
     let web = web_paths(manifest, web_host()?)?;
     let complete = web.cef_dir.join("archive.json").is_file()
-        && web.framework().is_dir()
-        && web.tools[0].join("cmake").is_file()
-        && web.tools[1].join("ninja").is_file();
+        && web.framework().exists()
+        && tools_present(&web);
     Ok(complete.then_some(web))
 }
 
-/// Fetch (checksum-verified) and unpack the CEF distribution, cmake, and
-/// Ninja for this host.
+/// Whether cmake and Ninja are there, where the build needs them.
+fn tools_present(web: &WebDeps) -> bool {
+    match web.tools.as_slice() {
+        [cmake, ninja] => cmake.join("cmake").is_file() && ninja.join("ninja").is_file(),
+        _ => true,
+    }
+}
+
+/// Fetch (checksum-verified) and unpack the CEF distribution, and on macOS
+/// cmake and Ninja, for this host.
 pub fn ensure_web(manifest: &Manifest) -> Result<WebDeps, String> {
     let host = web_host()?;
     let web = web_paths(manifest, host)?;
     let deps = deps_dir()?;
-    // cmake: the release's universal tarball, its one top directory dropped.
-    if !web.tools[0].join("cmake").is_file() {
+    // cmake: the release's tarball, its one top directory dropped.
+    if let Some(dir) = web.tools.first()
+        && !dir.join("cmake").is_file()
+    {
         let version = manifest.get("cmake", "version")?;
+        let url = manifest.get("cmake", host)?;
         let archive = download(
-            manifest.get("cmake", host)?,
-            &format!("cmake-{version}-macos-universal.tar.gz"),
+            url,
+            url.rsplit('/').next().unwrap_or("cmake.tar.gz"),
             manifest.get("cmake", &format!("{host}-sha256"))?,
         )?;
         extract(&archive, &deps.join("cmake").join(version).join(host), true)?;
     }
     // Ninja: a zip holding the one executable.
-    if !web.tools[1].join("ninja").is_file() {
+    if let Some(dir) = web.tools.get(1)
+        && !dir.join("ninja").is_file()
+    {
         let version = manifest.get("ninja", "version")?;
+        let url = manifest.get("ninja", host)?;
+        let file = url.rsplit('/').next().unwrap_or("ninja.zip");
         let archive = download(
-            manifest.get("ninja", host)?,
-            &format!("ninja-{version}-mac.zip"),
+            url,
+            // `ninja-1.13.2-mac.zip`, as the cache has named it.
+            &format!("ninja-{version}-{}", file.trim_start_matches("ninja-")),
             manifest.get("ninja", &format!("{host}-sha256"))?,
         )?;
-        extract(&archive, &web.tools[1], false)?;
+        extract(&archive, dir, false)?;
     }
     // CEF: laid out as `<version>/<dir>` the way the cef crate's own
     // download does it (the `Release` directory, with the headers, wrapper
@@ -284,6 +312,16 @@ pub fn ensure_web(manifest: &Manifest) -> Result<WebDeps, String> {
         }
         std::fs::rename(staging.join("Release"), &web.cef_dir)
             .map_err(|e| format!("{name} has no Release directory: {e}"))?;
+        // On Linux the resources (`.pak` files, ICU data, locales) go
+        // beside the library, as the cef crate's own download lays them out.
+        let resources = staging.join("Resources");
+        if resources.is_dir() {
+            for entry in std::fs::read_dir(&resources).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                std::fs::rename(entry.path(), web.cef_dir.join(entry.file_name()))
+                    .map_err(|e| format!("{name}: Resources: {e}"))?;
+            }
+        }
         for item in [
             "CMakeLists.txt",
             "cmake",

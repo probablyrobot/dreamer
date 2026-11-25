@@ -1,19 +1,29 @@
-//! CEF on macOS: the framework, the external message pump, and browsers
-//! parented to a window's view.
+//! CEF: starting it, the external message pump, and browsers drawn over a
+//! rectangle of a window. What differs by platform (where Chromium is
+//! loaded from, and the surface a page is drawn in) is in [`mac`] and
+//! [`linux`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::{CString, c_char};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cef_sys::cef::{self, *};
-use cef_sys::mac as appkit;
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use crate::Rect;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod mac;
+#[cfg(target_os = "linux")]
+use linux as platform;
+#[cfg(target_os = "macos")]
+use mac as platform;
 
 // The component's CEF release must be the one these bindings are for: a
 // component checked against it has a framework they can call.
@@ -118,15 +128,16 @@ mod handlers {
                 process_type: Option<&CefString>,
                 command_line: Option<&mut CommandLine>,
             ) {
-                // Chromium's cookie encryption key would otherwise go into
-                // the login keychain, with a prompt.
                 let Some(cl) = command_line else { return };
-                cl.append_switch(Some(&CefString::from("use-mock-keychain")));
+                let browser = process_type.is_none_or(|t| t.to_string().is_empty());
+                // Chromium's cookie encryption key would otherwise go into
+                // the system's keychain or keyring, with a prompt; and the
+                // platform's display server.
+                platform::switches(cl, browser);
                 // The browser process (no process type) draws pages in
                 // sRGB unless `web.color` is `display`; its helpers are
                 // told the same as they launch (below), so a helper never
                 // decides this itself.
-                let browser = process_type.is_none_or(|t| t.to_string().is_empty());
                 if browser {
                     force_srgb(cl);
                 }
@@ -201,6 +212,10 @@ mod handlers {
                     .app
                     .is_none()
                     .then(|| DreamerKeys::new(self.shared.clone()))
+            }
+            // Pages drawn offscreen (Wayland) paint through the surface.
+            fn render_handler(&self) -> Option<RenderHandler> {
+                self.shared.render.clone()
             }
         }
     }
@@ -348,7 +363,7 @@ mod handlers {
                 &self,
                 browser: Option<&mut Browser>,
                 event: Option<&KeyEvent>,
-                _os_event: *mut u8,
+                _os_event: platform::OsEvent<'_>,
                 _is_keyboard_shortcut: Option<&mut i32>,
             ) -> i32 {
                 let (Some(b), Some(e)) = (browser, event) else {
@@ -644,6 +659,7 @@ mod handlers {
         }
         impl FocusHandler {
             fn on_got_focus(&self, _browser: Option<&mut Browser>) {
+                self.shared.focused.store(true, Ordering::Relaxed);
                 self.shared.event(crate::Event::Focus);
             }
         }
@@ -754,17 +770,10 @@ mod handlers {
                 }
                 1
             }
-            // The page's view goes, not the window: by default CEF asks
-            // the window holding a closing browser to close
-            // (`performClose:`). Taking the view out of the window
-            // completes the browser's close.
+            // The page's surface goes, not the window: by default CEF asks
+            // the window holding a closing browser to close.
             fn do_close(&self, browser: Option<&mut Browser>) -> i32 {
-                if let Some(h) = browser.and_then(|b| b.host()) {
-                    // SAFETY: CEF's UI thread is the main thread; the view
-                    // is the closing browser's live view, or null.
-                    unsafe { appkit::remove_from_superview(h.window_handle().cast()) };
-                }
-                1
+                browser.map_or(0, platform::close)
             }
             fn on_before_close(&self, _browser: Option<&mut Browser>) {
                 if !self.shared.closed.swap(true, Ordering::Relaxed) {
@@ -801,6 +810,11 @@ struct Shared {
     blocked: Mutex<Vec<String>>,
     /// Whether the page may ask to save downloads.
     may_download: bool,
+    /// Whether the page has the keyboard focus, as last given or taken
+    /// (where the platform cannot be asked).
+    focused: AtomicBool,
+    /// How a page drawn offscreen paints (Wayland).
+    render: Option<RenderHandler>,
     /// Downloads the page started and Chromium still has, by id.
     downloads: Mutex<HashMap<u32, Download>>,
 }
@@ -885,38 +899,15 @@ static ROOT: OnceLock<PathBuf> = OnceLock::new();
 /// DevTools message ids, unique in the process.
 static MESSAGE: AtomicI32 = AtomicI32::new(1);
 
-/// Load the framework library at `path` (once per process; it stays
-/// loaded: unloading it would pull the framework out from under CEF).
-fn load_framework(path: &Path) -> Result<(), String> {
-    use std::os::unix::ffi::OsStrExt;
-    let name = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| format!("{}: not a usable path", path.display()))?;
-    // The binding takes the string as a reference to its first character.
-    // SAFETY: `name` is NUL-terminated and outlives the call.
-    let first = unsafe { &*name.as_ptr() };
-    if load_library(Some(first)) != 1 {
-        return Err(format!(
-            "the Chromium Embedded Framework at {} did not load",
-            path.display()
-        ));
-    }
-    // Declares the API version the wrapper was built for.
-    let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
-    Ok(())
-}
-
-/// The app bundle the running executable is in (`Dreamer.app` for
-/// `Dreamer.app/Contents/MacOS/dreamer`), if it is in one.
-fn app_bundle(exe: &Path) -> Option<PathBuf> {
-    let bundle = exe.parent()?.parent()?.parent()?;
-    (bundle.extension()? == "app").then(|| bundle.to_path_buf())
-}
-
-/// Start CEF in this process, once: load the framework from Dreamer Web
-/// (the component installed apart from the app, `web/` in Dreamer's data
-/// directory; see [`web_component`]), make the application object answer
-/// CEF's protocol, and initialize with an external message pump. Chromium
-/// runs its helper processes from the component's helper apps.
+/// Start CEF in this process, once, and initialize it with an external
+/// message pump. On macOS the framework is loaded from Dreamer Web (the
+/// component installed apart from the app, `web/` in Dreamer's data
+/// directory; see [`web_component`]), the application object is made to
+/// answer CEF's protocol, and Chromium runs its helper processes from the
+/// component's helper apps. On Linux `libcef.so` is loaded from the same
+/// component, which holds Chromium's resources and the helper too, and
+/// `window` (any of the app's windows) says which display server pages
+/// are drawn for: X11 or Wayland.
 /// `cache_dir` holds Chromium's profile. `color` is the color space pages
 /// are drawn in, for as long as the process runs: Chromium takes it as it
 /// initializes, so a later call's is ignored. `wake` is called from any thread
@@ -930,23 +921,17 @@ fn app_bundle(exe: &Path) -> Option<PathBuf> {
 pub fn start(
     cache_dir: &Path,
     color: crate::Color,
+    window: &impl HasWindowHandle,
     wake: impl Fn(i64) + Send + Sync + 'static,
 ) -> Result<(), String> {
     if let Some(done) = STARTED.with(|s| s.borrow().clone()) {
         return done;
     }
-    let installed = web_component::installed_dir();
-    if let Some(problem) = web_component::check(&installed).problem(&installed) {
-        return Err(problem);
-    }
-    // A copy used in place is linked to: Chromium is told where it really
-    // is, so the helpers find the framework beside themselves.
-    let component = installed.canonicalize().unwrap_or(installed);
+    // The platform's Chromium, loaded; or why not (a missing component is
+    // looked for again on the next call).
+    let chromium = platform::Chromium::find(window)?;
     let result = (|| {
-        load_framework(&component.join(web_component::FRAMEWORK_BINARY))?;
-        // SAFETY: main thread, framework loaded, NSApp exists (inside the
-        // toolkit's run loop), before initialize.
-        unsafe { appkit::adopt_application_protocol()? };
+        chromium.load()?;
         let _ = WAKE.set(Box::new(wake));
         DISPLAY_COLOR.store(color == crate::Color::Display, Ordering::Relaxed);
         std::fs::create_dir_all(cache_dir).map_err(|e| format!("{}: {e}", cache_dir.display()))?;
@@ -956,16 +941,9 @@ pub fn start(
             .canonicalize()
             .unwrap_or_else(|_| cache_dir.to_path_buf());
         let _ = ROOT.set(cache_dir.clone());
-        // The framework and the helper apps are outside the app's bundle,
-        // so CEF is told where. It passes these on to the helpers; the main
-        // bundle is named too, so they take the app's rather than their own.
-        let path = |p: &Path| CefString::from(p.to_string_lossy().as_ref());
-        let exe =
-            std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?;
-        let settings = Settings {
-            framework_dir_path: path(&component.join(web_component::FRAMEWORK)),
-            browser_subprocess_path: path(&web_component::helper_executable(&component, "")),
-            main_bundle_path: app_bundle(&exe).as_deref().map(path).unwrap_or_default(),
+        // Where the framework (or library), its resources, and the helpers
+        // are, as the platform has them.
+        let settings = chromium.settings(Settings {
             // Chromium's sandbox is not set up for these helpers yet.
             no_sandbox: 1,
             external_message_pump: 1,
@@ -975,7 +953,7 @@ pub fn start(
             log_file: CefString::from(cache_dir.join("chromium.log").to_string_lossy().as_ref()),
             log_severity: LogSeverity::WARNING,
             ..Default::default()
-        };
+        })?;
         // Kept for the process: CEF may read its arguments later.
         let argv = Box::leak(Box::new(MainArgv::executable()));
         let main_args = argv.main_args();
@@ -1008,6 +986,8 @@ pub fn started() -> bool {
 pub fn do_work() {
     if started() {
         do_message_loop_work();
+        #[cfg(target_os = "linux")]
+        platform::native_events();
     }
 }
 
@@ -1054,28 +1034,8 @@ pub fn shutdown(timeout: Duration) -> Result<(), String> {
 
 /// The entry point of the helper executable (CEF's renderer, GPU, and
 /// utility processes): returns its exit code.
-///
-/// The helper apps sit beside the framework in the component's directory:
-/// from `dreamer Helper.app/Contents/MacOS/dreamer Helper`, the framework
-/// is three directories up.
 pub fn run_subprocess() -> i32 {
-    let framework = std::env::current_exe()
-        .map_err(|e| format!("cannot find this executable: {e}"))
-        .and_then(|exe| {
-            let dir = exe
-                .ancestors()
-                .nth(4)
-                .ok_or("not inside a helper app")?
-                .to_path_buf();
-            let path = dir.join(web_component::FRAMEWORK_BINARY);
-            if path.is_file() {
-                Ok(path)
-            } else {
-                Err(format!("{} is missing", path.display()))
-            }
-        })
-        .and_then(|path| load_framework(&path));
-    if let Err(e) = framework {
+    if let Err(e) = platform::load_in_helper() {
         eprintln!("dreamer-web-helper: {e}");
         return 1;
     }
@@ -1185,32 +1145,12 @@ pub fn profile_ready(
     Ok(false)
 }
 
-/// The `NSView` of a window, from its handle.
-fn parent_view(window: &impl HasWindowHandle) -> Result<*mut c_void, String> {
-    let handle = window
-        .window_handle()
-        .map_err(|e| format!("no window handle: {e}"))?;
-    match handle.as_raw() {
-        RawWindowHandle::AppKit(h) => Ok(h.ns_view.as_ptr()),
-        _ => Err("not an AppKit window".into()),
-    }
-}
-
-fn frame_of(r: Rect) -> appkit::Frame {
-    appkit::Frame {
-        x: f64::from(r.x),
-        y: f64::from(r.y),
-        width: f64::from(r.width.max(1.0)),
-        height: f64::from(r.height.max(1.0)),
-    }
-}
-
-/// One page, drawn by Chromium in a child view of a window's view. Closed
-/// when dropped.
+/// One page, drawn by Chromium in a surface of its own over a rectangle of
+/// a window. Closed when dropped.
 pub struct WebView {
     browser: Browser,
     shared: Arc<Shared>,
-    parent: *mut c_void,
+    surface: platform::Surface,
     placed: Cell<Option<Rect>>,
     visible: Cell<bool>,
     /// Keeps the DevTools observer registered.
@@ -1234,7 +1174,7 @@ impl WebView {
     /// app's: in its own profile, held to its origins, and with the bridge
     /// on its own origin. Without, it is the browser ([`crate::browser`]).
     pub fn open(
-        window: &impl HasWindowHandle,
+        window: &(impl HasWindowHandle + HasDisplayHandle),
         rect: Rect,
         url: &str,
         app: Option<crate::AppPage>,
@@ -1243,9 +1183,7 @@ impl WebView {
         if !started() {
             return Err("Chromium is not running".into());
         }
-        let parent = parent_view(window)?;
-        // SAFETY: `parent` is the window's live content view; main thread.
-        let frame = unsafe { appkit::from_top_left(parent, frame_of(rect)) };
+        let surface = platform::Surface::new(window, rect)?;
         let (context, ready) = profile(&profile_name(app.as_ref().map(|a| a.app.as_str()))?)?;
         if !ready.done.load(Ordering::Acquire) {
             return Err("the page's browser profile is not ready yet".into());
@@ -1257,19 +1195,10 @@ impl WebView {
             on_event: Mutex::new(Some(Box::new(on_event))),
             may_download: crate::browser::downloads_allowed(app.as_ref()),
             app,
+            render: surface.render_handler(),
             ..Shared::default()
         });
-        let info = WindowInfo {
-            parent_view: parent,
-            bounds: cef::Rect {
-                x: frame.x as i32,
-                y: frame.y as i32,
-                width: frame.width as i32,
-                height: frame.height as i32,
-            },
-            runtime_style: RuntimeStyle::ALLOY,
-            ..Default::default()
-        };
+        let info = surface.window_info(rect);
         let mut client = handlers::DreamerClient::new(shared.clone());
         // An app's page loads once its bridge script is in place.
         let first = if script.is_some() { "about:blank" } else { url };
@@ -1277,7 +1206,12 @@ impl WebView {
             Some(&info),
             Some(&mut client),
             Some(&CefString::from(first)),
-            Some(&BrowserSettings::default()),
+            // A page drawn offscreen (Wayland) paints at up to 60 frames
+            // a second, not CEF's default 30; others ignore it.
+            Some(&BrowserSettings {
+                windowless_frame_rate: 60,
+                ..Default::default()
+            }),
             None,
             context.as_mut(),
         )
@@ -1288,10 +1222,11 @@ impl WebView {
                 shared.clone(),
             )))
         });
+        surface.opened(&browser);
         let view = WebView {
             browser,
             shared,
-            parent,
+            surface,
             placed: Cell::new(None),
             visible: Cell::new(true),
             _devtools: devtools,
@@ -1331,10 +1266,10 @@ impl WebView {
                 }),
             );
         }
-        // Creating the browser makes its view first responder; the pane
+        // Creating the browser may give its surface the keys; the pane
         // takes focus only when Dreamer gives it.
-        // SAFETY: live content view, main thread.
-        unsafe { appkit::make_first_responder(parent) };
+        view.surface.give_focus_back(&view.browser);
+        view.shared.focused.store(false, Ordering::Relaxed);
         Ok(view)
     }
 
@@ -1388,11 +1323,6 @@ impl WebView {
             .unwrap_or_default()
     }
 
-    fn view(&self) -> *mut c_void {
-        self.host()
-            .map_or(std::ptr::null_mut(), |h| h.window_handle().cast())
-    }
-
     /// Keep the view on `rect` (window content coordinates from the top
     /// left). Cheap when nothing changed.
     pub fn place(&self, rect: Rect) {
@@ -1400,12 +1330,7 @@ impl WebView {
             return;
         }
         self.placed.set(Some(rect));
-        // SAFETY: the parent is the window's live content view and the
-        // view is CEF's live child of it (or null); main thread.
-        unsafe {
-            let frame = appkit::from_top_left(self.parent, frame_of(rect));
-            appkit::set_frame(self.view(), frame);
-        }
+        self.surface.place(&self.browser, rect);
         if let Some(h) = self.host() {
             h.was_resized();
         }
@@ -1421,8 +1346,7 @@ impl WebView {
         if self.visible.replace(visible) == visible {
             return;
         }
-        // SAFETY: CEF's live view or null; main thread.
-        unsafe { appkit::set_hidden(self.view(), !visible) };
+        self.surface.set_visible(&self.browser, visible);
         if let Some(h) = self.host() {
             h.was_hidden(i32::from(!visible));
         }
@@ -1441,16 +1365,17 @@ impl WebView {
         if let Some(h) = self.host() {
             h.set_focus(1);
         }
+        self.shared.focused.store(true, Ordering::Relaxed);
         if !self.has_focus() {
-            // SAFETY: CEF's live view or null; main thread.
-            unsafe { appkit::make_first_responder(self.view()) };
+            self.surface.take_focus(&self.browser);
         }
     }
 
-    /// Whether the page's view has the window's keyboard focus now.
+    /// Whether the page's surface has the window's keyboard focus now.
     pub fn has_focus(&self) -> bool {
-        // SAFETY: CEF's live view or null; main thread.
-        unsafe { appkit::has_first_responder(self.view()) }
+        self.surface
+            .has_focus(&self.browser)
+            .unwrap_or_else(|| self.shared.focused.load(Ordering::Relaxed))
     }
 
     /// Take keyboard focus back to the window's own view, if the page has
@@ -1462,8 +1387,8 @@ impl WebView {
         if let Some(h) = self.host() {
             h.set_focus(0);
         }
-        // SAFETY: the window's live content view; main thread.
-        unsafe { appkit::make_first_responder(self.parent) };
+        self.shared.focused.store(false, Ordering::Relaxed);
+        self.surface.give_focus_back(&self.browser);
     }
 
     /// The main frame's address now.
@@ -1543,14 +1468,62 @@ impl WebView {
     /// Press and release mouse button 4 (`back`) or 5 at (`x`, `y`) in the
     /// page, from its top left, through the window. For smoke checks.
     pub fn click_side_button(&self, x: f32, y: f32, back: bool) -> Result<(), String> {
-        // SAFETY: CEF's live view or null; main thread.
-        unsafe {
-            appkit::click_button(
-                self.view(),
-                f64::from(x),
-                f64::from(y),
-                if back { 3 } else { 4 },
-            )
+        self.surface.click_side_button(&self.browser, x, y, back)
+    }
+
+    /// Whether the page is drawn offscreen (Wayland), so it gets mouse and
+    /// key events only through [`WebView::send_mouse`] and
+    /// [`WebView::send_key`]; elsewhere its own surface takes them.
+    pub fn takes_forwarded_input(&self) -> bool {
+        self.shared.render.is_some()
+    }
+
+    /// A mouse event at (`x`, `y`) in the page, in logical pixels from its
+    /// top left. `modifiers` are CEF's event flags.
+    pub fn send_mouse(&self, mouse: crate::Mouse, x: f32, y: f32, modifiers: u32) {
+        let Some(h) = self.host() else { return };
+        let e = MouseEvent {
+            x: x.round() as i32,
+            y: y.round() as i32,
+            modifiers,
+        };
+        match mouse {
+            crate::Mouse::Move => h.send_mouse_move_event(Some(&e), 0),
+            crate::Mouse::Leave => h.send_mouse_move_event(Some(&e), 1),
+            crate::Mouse::Down { button, clicks } | crate::Mouse::Up { button, clicks } => {
+                let up = matches!(mouse, crate::Mouse::Up { .. });
+                let button = match button {
+                    crate::Button::Left => MouseButtonType::LEFT,
+                    crate::Button::Middle => MouseButtonType::MIDDLE,
+                    crate::Button::Right => MouseButtonType::RIGHT,
+                };
+                h.send_mouse_click_event(Some(&e), button, i32::from(up), clicks.max(1) as i32);
+            }
+            crate::Mouse::Wheel { dx, dy } => {
+                h.send_mouse_wheel_event(Some(&e), dx.round() as i32, dy.round() as i32);
+            }
+        }
+    }
+
+    /// A key event for the page (it should have the focus).
+    pub fn send_key(&self, key: &crate::Key) {
+        let Some(h) = self.host() else { return };
+        let event = |type_, character: u16| KeyEvent {
+            type_,
+            modifiers: key.modifiers,
+            windows_key_code: key.windows_key_code,
+            native_key_code: key.native_key_code,
+            character,
+            unmodified_character: character,
+            ..Default::default()
+        };
+        if key.down {
+            h.send_key_event(Some(&event(KeyEventType::RAWKEYDOWN, 0)));
+            for unit in key.text.encode_utf16() {
+                h.send_key_event(Some(&event(KeyEventType::CHAR, unit)));
+            }
+        } else {
+            h.send_key_event(Some(&event(KeyEventType::KEYUP, 0)));
         }
     }
 
@@ -1689,22 +1662,20 @@ impl WebView {
     /// virtual key code, `chars` what it types. The window must be the key
     /// window. For smoke checks.
     pub fn press_key(&self, key_code: u16, chars: &str, command: bool) -> Result<(), String> {
-        // SAFETY: CEF's live view or null; main thread.
-        unsafe { appkit::press_key(self.view(), key_code, chars, command) }
+        self.surface
+            .press_key(&self.browser, key_code, chars, command)
     }
 
     /// Click at (`x`, `y`) in the page, from its top left, through the
     /// window. The window must be the key window. For smoke checks.
     pub fn click(&self, x: f32, y: f32) -> Result<(), String> {
-        // SAFETY: CEF's live view or null; main thread.
-        unsafe { appkit::click(self.view(), f64::from(x), f64::from(y)) }
+        self.surface.click(&self.browser, x, y)
     }
 
     /// An input method's composition in the focused page: `marked` as
     /// marked text, then `committed` in its place. For smoke checks.
     pub fn compose(&self, marked: &str, committed: &str) -> Result<(), String> {
-        // SAFETY: CEF's live view or null; main thread.
-        unsafe { appkit::compose(self.view(), marked, committed) }
+        self.surface.compose(&self.browser, marked, committed)
     }
 
     /// Scroll the page to (`x`, `y`) in CSS pixels: now if it has loaded,
@@ -1736,15 +1707,13 @@ impl WebView {
 
     /// The window server's number for the window holding the view.
     pub fn window_number(&self) -> Option<isize> {
-        // SAFETY: the window's live content view; main thread.
-        unsafe { appkit::window_number(self.parent) }
+        self.surface.window_number()
     }
 
     /// The color space of the screen the view's window is on: what
     /// Chromium draws in with `web.color: display`.
     pub fn screen_color_space(&self) -> Option<crate::ColorSpace> {
-        // SAFETY: the window's live content view; main thread.
-        unsafe { appkit::screen_color_space(self.parent) }
+        self.surface.screen_color_space()
     }
 }
 
@@ -1779,9 +1748,9 @@ impl Drop for WebView {
         if let Ok(mut r) = self.shared.replies.lock() {
             r.clear();
         }
-        // Gone from the screen at once; CEF removes the view as it closes.
-        // SAFETY: CEF's live view or null; main thread.
-        unsafe { appkit::set_hidden(self.view(), true) };
+        // Gone from the screen at once; CEF removes its surface as it
+        // closes.
+        self.surface.set_visible(&self.browser, false);
         if let Some(h) = self.host() {
             h.close_browser(1);
         }

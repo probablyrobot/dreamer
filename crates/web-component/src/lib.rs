@@ -4,15 +4,19 @@
 //! On macOS the component is a directory holding CEF's framework, the five
 //! helper apps Chromium starts its renderer, GPU, and utility processes
 //! from (each signed), and [`MANIFEST`], which names the Dreamer and CEF
-//! versions it was built for. A helper loads the framework from beside
-//! itself, so the directory works wherever it is; Dreamer installs it as
-//! `web/` in its data directory ([`installed_dir`]). Packed, it is
-//! [`archive_name`], a zip whose one top directory is [`TOP`].
+//! versions it was built for. On Linux (x86-64) it holds `libcef.so`,
+//! Chromium's resources (`.pak` files, ICU data, the V8 snapshot, the
+//! locales, SwiftShader), the one helper executable, and the manifest.
+//! Either way a helper loads the library from beside itself, so the
+//! directory works wherever it is; Dreamer installs it as `web/` in its
+//! data directory ([`installed_dir`]), and the desktop loads the library
+//! from there at run time: neither `dreamer` nor the helper links it.
+//! Packed, it is [`archive_name`] (a zip on macOS, a gzipped tarball on
+//! Linux) whose one top directory is [`TOP`].
 //!
 //! The packager (`cargo xtask package`), the installer ([`install`],
 //! which `dream web install` and the desktop share), and the desktop's
-//! engine all read the layout from here. The Linux component (an optional
-//! `dreamer-web` archive) is not built yet: [`TARGET`] is `None` there.
+//! engine all read the layout from here.
 //!
 //! A copy already on the system can be used in place of a download
 //! ([`system_dirs`]): `web/` is then a link to it, made only after the copy
@@ -37,6 +41,8 @@ pub const CEF_VERSION: &str = "156.0.30+g6028375+chromium-156.0.8078.96";
 /// The platform the component is built for on this host, if there is one.
 pub const TARGET: Option<&str> = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
     Some("aarch64-apple-darwin")
+} else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    Some("x86_64-unknown-linux-gnu")
 } else {
     None
 };
@@ -54,8 +60,35 @@ pub const FRAMEWORK: &str = "Chromium Embedded Framework.framework";
 pub const FRAMEWORK_BINARY: &str =
     "Chromium Embedded Framework.framework/Chromium Embedded Framework";
 
-/// The helper executable as cargo builds it; each helper app holds a copy.
+/// The library the desktop and the helpers load, in the component's
+/// directory: the framework's on macOS, `libcef.so` on Linux.
+pub const LIBRARY: &str = if cfg!(target_os = "macos") {
+    FRAMEWORK_BINARY
+} else {
+    "libcef.so"
+};
+
+/// The helper executable as cargo builds it; on macOS each helper app holds
+/// a copy, on Linux it is in the component's directory as it is.
 pub const HELPER_EXE: &str = "dreamer-web-helper";
+
+/// Linux: what the component holds besides its manifest, from the CEF
+/// distribution (all but the helper). Chromium finds its resources, ICU
+/// data, and V8 snapshot where it is told (the component's directory) and
+/// SwiftShader beside `libcef.so`, its software GPU when there is no other.
+pub const LINUX_FILES: [&str; 11] = [
+    "libcef.so",
+    HELPER_EXE,
+    "icudtl.dat",
+    "v8_context_snapshot.bin",
+    "resources.pak",
+    "chrome_100_percent.pak",
+    "chrome_200_percent.pak",
+    "locales/en-US.pak",
+    "libvk_swiftshader.so",
+    "libvulkan.so.1",
+    "vk_swiftshader_icd.json",
+];
 
 /// The helper apps, by the suffix of their name (`dreamer Helper
 /// (GPU).app`) and the end of their bundle identifier. Chromium finds the
@@ -73,8 +106,8 @@ pub const HOW_TO_ADD: &str = "Add it from the web pane, with \"Add Dreamer Web\"
 
 /// About how much the component's archive is to download, and how much it
 /// takes installed, in megabytes (decimal), for what people are asked.
-pub const DOWNLOAD_MB: u32 = 150;
-pub const INSTALLED_MB: u32 = 334;
+pub const DOWNLOAD_MB: u32 = if cfg!(target_os = "macos") { 150 } else { 160 };
+pub const INSTALLED_MB: u32 = if cfg!(target_os = "macos") { 334 } else { 378 };
 
 /// The variable that says where to download the component from instead
 /// of the release ([`download_url`]).
@@ -90,7 +123,34 @@ pub fn helper_app(suffix: &str) -> String {
     format!("{}.app", helper_name(suffix))
 }
 
-/// The executable of the helper app with `suffix` in component `dir`.
+/// The helper CEF is given to start its processes from, in component
+/// `dir`: the first helper app's executable on macOS (Chromium finds the
+/// others beside it), the helper itself on Linux.
+pub fn helper(dir: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        helper_executable(dir, "")
+    } else {
+        dir.join(HELPER_EXE)
+    }
+}
+
+/// The files a complete component on this platform holds besides its
+/// manifest, relative to its directory.
+pub fn required_files() -> Vec<PathBuf> {
+    if cfg!(target_os = "macos") {
+        let mut files = vec![PathBuf::from(FRAMEWORK_BINARY)];
+        files.extend(
+            HELPERS
+                .iter()
+                .map(|(suffix, _)| helper_executable(Path::new(""), suffix)),
+        );
+        files
+    } else {
+        LINUX_FILES.iter().map(PathBuf::from).collect()
+    }
+}
+
+/// The macOS executable of the helper app with `suffix` in component `dir`.
 pub fn helper_executable(dir: &Path, suffix: &str) -> PathBuf {
     let name = helper_name(suffix);
     dir.join(helper_app(suffix))
@@ -154,9 +214,29 @@ pub fn system_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// The archive of the component for Dreamer `version` on `target`.
+/// The archive of the component for Dreamer `version` on `target`: a zip
+/// for macOS, a gzipped tarball for Linux (as the platform's base package
+/// is).
 pub fn archive_name(version: &str, target: &str) -> String {
-    format!("dreamer-web-{version}-{target}.zip")
+    format!(
+        "dreamer-web-{version}-{target}.{}",
+        archive_extension(target)
+    )
+}
+
+/// The extension of the component's archive for `target`.
+pub fn archive_extension(target: &str) -> &'static str {
+    if target.contains("-apple-") {
+        "zip"
+    } else {
+        "tar.gz"
+    }
+}
+
+/// Whether `name` (a path or an address) names an archive of the
+/// component rather than a directory.
+pub fn is_archive(name: &str) -> bool {
+    name.ends_with(".zip") || name.ends_with(".tar.gz")
 }
 
 /// Where a release publishes that archive (its checksum is beside it, with
@@ -169,11 +249,12 @@ pub fn release_url(version: &str, target: &str) -> String {
     )
 }
 
-/// The archive's address given `base`: `base` itself when it names a
-/// `.zip`, else this version's archive in the directory `base` names.
+/// The archive's address given `base`: `base` itself when it names an
+/// archive ([`is_archive`]), else this version's archive in the directory
+/// `base` names.
 pub fn archive_url(base: &str, target: &str) -> String {
     let base = base.trim();
-    if base.ends_with(".zip") {
+    if is_archive(base) {
         base.to_owned()
     } else {
         format!(
@@ -292,12 +373,9 @@ pub fn check_for(dir: &Path, want: Option<&Manifest>) -> State {
     if want != Some(&found) {
         return State::Other(found);
     }
-    if !dir.join(FRAMEWORK_BINARY).is_file() {
-        return State::Broken(format!("{FRAMEWORK_BINARY} is missing"));
-    }
-    for (suffix, _) in HELPERS {
-        if !helper_executable(dir, suffix).is_file() {
-            return State::Broken(format!("{} is missing", helper_app(suffix)));
+    for file in required_files() {
+        if !dir.join(&file).is_file() {
+            return State::Broken(format!("{} is missing", file.display()));
         }
     }
     State::Ready(found)
@@ -337,13 +415,11 @@ mod tests {
     }
 
     /// A component directory with every file the check looks for.
-    fn lay_out(dir: &Path, manifest: &Manifest) {
-        std::fs::create_dir_all(dir.join(FRAMEWORK)).expect("framework dir");
-        std::fs::write(dir.join(FRAMEWORK_BINARY), b"").expect("framework");
-        for (suffix, _) in HELPERS {
-            let exe = helper_executable(dir, suffix);
-            std::fs::create_dir_all(exe.parent().expect("parent")).expect("helper dir");
-            std::fs::write(exe, b"").expect("helper");
+    pub(crate) fn lay_out(dir: &Path, manifest: &Manifest) {
+        for file in required_files() {
+            let path = dir.join(file);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+            std::fs::write(path, b"").expect("file");
         }
         std::fs::write(dir.join(MANIFEST), manifest.to_json()).expect("write");
     }
@@ -374,8 +450,14 @@ mod tests {
         assert_eq!(check(&dir), State::Other(older));
 
         std::fs::write(dir.join(MANIFEST), this.to_json()).expect("write");
-        std::fs::remove_file(helper_executable(&dir, " (GPU)")).expect("write");
-        assert!(matches!(check(&dir), State::Broken(why) if why.contains("(GPU)")));
+        let helper = helper(&dir);
+        std::fs::remove_file(&helper).expect("remove");
+        let name = helper
+            .file_name()
+            .expect("name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(matches!(check(&dir), State::Broken(why) if why.contains(&name)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -406,6 +488,18 @@ mod tests {
         assert_eq!(
             archive_url("file:///tmp/d", t),
             format!("file:///tmp/d/{zip}")
+        );
+        // Linux's is a tarball.
+        let linux = "x86_64-unknown-linux-gnu";
+        let tarball = archive_name(VERSION, linux);
+        assert!(tarball.ends_with(".tar.gz"), "{tarball}");
+        assert_eq!(
+            archive_url(&format!("https://example.com/{tarball}"), linux),
+            format!("https://example.com/{tarball}")
+        );
+        assert_eq!(
+            archive_url("https://example.com/web", linux),
+            format!("https://example.com/web/{tarball}")
         );
         // Without the variable: the setting, then the release.
         if std::env::var_os(URL_ENV).is_none() {

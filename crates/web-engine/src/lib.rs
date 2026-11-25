@@ -1,17 +1,30 @@
 //! Web views for the desktop: Chromium, through the Chromium Embedded
 //! Framework, drawing one page into a rectangle of a window.
 //!
-//! Chromium draws to the screen itself: on macOS each view is CEF's own
-//! `NSView`, a child of the window's view, kept on the pane's rectangle. It
-//! sits above everything the toolkit draws, so the caller hides it while an
-//! overlay covers the pane, and can draw the page's capture instead.
+//! Chromium draws to the screen itself, in a surface of its own kept on the
+//! pane's rectangle:
+//!
+//! - **macOS:** CEF's own `NSView`, a child of the window's view.
+//! - **Linux, X11:** CEF's own X11 window, a child of the window's.
+//! - **Linux, Wayland:** CEF cannot be parented there, so it renders
+//!   offscreen on the GPU; each frame is copied on the GPU into a buffer of
+//!   ours (CEF takes its own back when the paint call returns), and that
+//!   buffer is attached to a subsurface of the window's surface. The
+//!   compositor draws it; the toolkit never sees the pixels. Input reaches
+//!   the page through [`WebView`]'s `send_*` calls, from the pane.
+//!
+//! The surface sits above everything the toolkit draws, so the caller hides
+//! it while an overlay covers the pane, and can draw the page's capture
+//! instead.
 //!
 //! CEF's browser process is this process; its renderer, GPU, and utility
-//! processes run the helper executable (`dreamer-web-helper`) from the
-//! helper apps of Dreamer Web, the component that holds Chromium apart from
-//! the app ([`web_component`]): the framework is loaded from there when the
-//! first page opens, and a missing component is an error saying how to add
-//! it. CEF's work is pumped from the caller's event loop:
+//! processes run the helper executable (`dreamer-web-helper`), which is in
+//! Dreamer Web, the component that holds Chromium apart from the app
+//! ([`web_component`]): on macOS in its helper apps, beside the framework;
+//! on Linux beside `libcef.so` and Chromium's resources. The framework (or
+//! `libcef.so`, which nothing links) is loaded from there when the first
+//! page opens, and a missing component is an error saying how to add it.
+//! CEF's work is pumped from the caller's event loop:
 //! [`start`] takes a function CEF calls, from any thread, when it wants
 //! [`do_work`] called on the main thread.
 //!
@@ -30,15 +43,20 @@
 #![allow(unsafe_code)]
 
 /// Whether this build can show web pages.
-pub const AVAILABLE: bool = cfg!(all(feature = "engine", target_os = "macos"));
+pub const AVAILABLE: bool = cfg!(all(
+    feature = "engine",
+    any(target_os = "macos", target_os = "linux")
+));
 
-/// A rectangle in a window's content, in logical pixels from its top left.
+/// A rectangle in a window's content, in logical pixels from its top left,
+/// and the window's scale (device pixels per logical pixel).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    pub scale: f32,
 }
 
 /// One of Chromium's own edit commands, which the desktop's edit shortcuts
@@ -50,6 +68,60 @@ pub enum Edit {
     Copy,
     Paste,
     SelectAll,
+}
+
+/// A mouse button, for input forwarded to a page drawn offscreen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Button {
+    Left,
+    Middle,
+    Right,
+}
+
+/// A mouse event forwarded to a page drawn offscreen (Wayland).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mouse {
+    Move,
+    /// The pointer left the page.
+    Leave,
+    Down {
+        button: Button,
+        clicks: u32,
+    },
+    Up {
+        button: Button,
+        clicks: u32,
+    },
+    /// A wheel turn, in pixels (positive `dy` scrolls up).
+    Wheel {
+        dx: f32,
+        dy: f32,
+    },
+}
+
+/// A key forwarded to a page drawn offscreen (Wayland): pressed or
+/// released, as Chromium names keys (Windows virtual key codes), with the
+/// text it types when pressed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Key {
+    pub down: bool,
+    pub windows_key_code: i32,
+    pub native_key_code: i32,
+    /// Chromium's event flags ([`flags`]).
+    pub modifiers: u32,
+    pub text: String,
+}
+
+/// Chromium's event flags, for [`Key::modifiers`] and
+/// `WebView::send_mouse`.
+pub mod flags {
+    pub const SHIFT: u32 = 1 << 1;
+    pub const CONTROL: u32 = 1 << 2;
+    pub const ALT: u32 = 1 << 3;
+    pub const LEFT_BUTTON: u32 = 1 << 4;
+    pub const MIDDLE_BUTTON: u32 = 1 << 5;
+    pub const RIGHT_BUTTON: u32 = 1 << 6;
+    pub const COMMAND: u32 = 1 << 7;
 }
 
 /// What a page tells the pane drawing it, on the main thread.
@@ -137,13 +209,61 @@ pub fn srgb_to(rgba: &mut [u8], width: u32, height: u32, to: &ColorSpace) -> Res
     cef_sys::color::convert_rgba(rgba, width as usize, height as usize, &srgb, to)
 }
 
+/// A color space. Linux draws windows without color management, so every
+/// page and capture is taken as sRGB there.
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, Copy)]
+pub struct ColorSpace(());
+
+#[cfg(not(target_os = "macos"))]
+impl ColorSpace {
+    pub fn srgb() -> Option<Self> {
+        Some(ColorSpace(()))
+    }
+
+    /// No profile is read on Linux.
+    pub fn from_icc(_profile: &[u8]) -> Option<Self> {
+        None
+    }
+
+    pub fn is_srgb(&self) -> bool {
+        true
+    }
+
+    pub fn is_wide_gamut(&self) -> bool {
+        false
+    }
+}
+
+/// Nothing to convert on Linux: see [`ColorSpace`].
+#[cfg(not(target_os = "macos"))]
+pub fn capture_to_srgb(
+    _rgba: &mut [u8],
+    _width: u32,
+    _height: u32,
+    _from: &ColorSpace,
+) -> Result<(), String> {
+    Ok(())
+}
+
+/// Nothing to convert on Linux: see [`ColorSpace`].
+#[cfg(not(target_os = "macos"))]
+pub fn srgb_to(
+    _rgba: &mut [u8],
+    _width: u32,
+    _height: u32,
+    _to: &ColorSpace,
+) -> Result<(), String> {
+    Ok(())
+}
+
 pub mod browser;
 pub mod site;
 pub use site::{AppPage, BridgeCall};
 
-#[cfg(all(feature = "engine", target_os = "macos"))]
+#[cfg(all(feature = "engine", any(target_os = "macos", target_os = "linux")))]
 mod engine;
-#[cfg(all(feature = "engine", target_os = "macos"))]
+#[cfg(all(feature = "engine", any(target_os = "macos", target_os = "linux")))]
 pub use engine::{
     WebView, color, do_work, profile_ready, run_subprocess, shutdown, start, started,
 };

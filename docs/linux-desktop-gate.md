@@ -45,7 +45,21 @@ on Linux, and before a release.
    the run must also show that a finished selection became the primary
    selection. A window that does not refresh is reported as NOT RUN, as
    for the workspace smoke.
-7. Writes `target/gate/linux-desktop/<commit>.json` (the commit's first
+7. Last, when `cargo xtask deps web` has provisioned the pinned CEF,
+   builds the app with web panes and the Dreamer Web component
+   (`cargo xtask web bundle`, which also checks that the component draws
+   a page offscreen), adds the component to the scene's own data
+   directory, and, on each backend, opens a one-color
+   page in a pane beside a terminal (the `web-pane` scene) and captures
+   Dreamer's window: the run passes only if the capture shows the page's
+   color. On X11 the page is Chromium's own child window; on Wayland it is
+   a subsurface the compositor draws. The captures are
+   `target/gate/linux-desktop/web-pane-wayland.png` and
+   `web-pane-x11.png`. Without CEF, outside Hyprland (captures use
+   `hyprctl` and `grim`), or with the display asleep, the `web` runs are
+   reported as NOT RUN. `cargo xtask screenshot --scene web-pane [--x11]`
+   makes the same capture alone.
+8. Writes `target/gate/linux-desktop/<commit>.json` (the commit's first
    12 characters) with distribution,
    kernel, desktop, session type, compositor, which X server answered the
    X11 runs (`xwayland` or `xorg`), whether the run was over SSH, and each
@@ -101,3 +115,8 @@ and the windowing and font development packages:
 | Ubuntu 24.04 | `build-essential pkg-config libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev` |
 
 A working Vulkan driver for the GPU is needed at run time.
+
+The web runs also need the system libraries Chromium links (NSS, ATK,
+CUPS, ALSA, and others a desktop usually has): `ldd
+target/web-bundle/dreamer-web/libcef.so | grep 'not found'` lists any
+that are missing.

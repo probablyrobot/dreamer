@@ -48,8 +48,13 @@ cargo build --locked -p dreamer-app -p dreamer-server -p dreamer-cli -p dreamer-
 
 Run the desktop from the checkout with `cargo run -p dreamer-app`.
 
-Web panes on macOS need one more step, `cargo xtask deps web`, which
-fetches the pinned Chromium Embedded Framework.
+Web panes (macOS arm64 and Linux x86-64) are the `web` feature of
+`dreamer-app`. On macOS building it needs one more step, `cargo xtask
+deps web`, which fetches the pinned Chromium Embedded Framework; on
+Linux it builds as is (`cargo build -p dreamer-app --features web`), and
+Chromium comes at run time from the Dreamer Web component. `cargo xtask
+deps web` then `cargo xtask web bundle` builds the desktop with web panes
+and that component ([desktop.md](desktop.md#a-build-with-web-panes)).
 
 ## The layout
 

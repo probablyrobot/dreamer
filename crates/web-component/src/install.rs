@@ -4,8 +4,8 @@
 //! An install finds the component (a copy already on the system, an
 //! archive downloaded or given, or an unpacked directory), checks it (its
 //! manifest names this Dreamer and its CEF release, every file is there,
-//! the framework and each helper app pass `codesign --verify --strict`,
-//! and a helper loads the framework from where it sits), and only then
+//! on macOS the framework and each helper app pass `codesign --verify
+//! --strict`, and a helper loads the library from where it sits), and only then
 //! swaps it in by a rename next to where it goes. On any failure the copy
 //! that was there stays as it was.
 //!
@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use crate::{
     FRAMEWORK, HELPERS, Manifest, NAME, State, TOP, URL_ENV, VERSION, archive_name, check_for,
-    helper_app, helper_executable, linked_to,
+    helper_app, linked_to,
 };
 
 /// Where an install takes the component from.
@@ -70,8 +70,8 @@ pub enum Step {
         total: Option<u64>,
     },
     Unpacking,
-    /// Checking the manifest, the signatures, and that a helper loads the
-    /// framework.
+    /// Checking the manifest, the signatures (macOS), and that a helper
+    /// loads the library.
     Checking,
     /// Swapping it in.
     Installing,
@@ -81,7 +81,10 @@ impl std::fmt::Display for Step {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const MB: u64 = 1_000_000;
         match self {
-            Step::Looking => write!(f, "Looking for {NAME} on this Mac"),
+            Step::Looking if cfg!(target_os = "macos") => {
+                write!(f, "Looking for {NAME} on this Mac")
+            }
+            Step::Looking => write!(f, "Looking for {NAME} on this computer"),
             Step::Downloading {
                 got,
                 total: Some(total),
@@ -129,8 +132,8 @@ pub struct Installer {
     pub want: Manifest,
     /// Copies already on the system to try first ([`Source::Find`]).
     pub system: Vec<PathBuf>,
-    /// The checks beyond the files being there (signatures, and the helper
-    /// loading the framework): [`verify_signed`] for real installs.
+    /// The checks beyond the files being there (signatures on macOS, and
+    /// the helper loading the library): [`verify_signed`] for real installs.
     pub verify: fn(&Path) -> Result<(), String>,
 }
 
@@ -233,7 +236,7 @@ impl Installer {
             Source::Archive(zip) => {
                 verify_sum(zip, None)?;
                 progress(Step::Unpacking);
-                unzip(zip, staging)?;
+                unpack(zip, staging)?;
                 Origin::Archive(zip.clone())
             }
             Source::Find(url) | Source::Download(url) => {
@@ -243,7 +246,7 @@ impl Installer {
                     .map_err(|e| download_failed(&format!("{url}.sha256"), &e))?;
                 verify_sum(&zip, Some(&sum))?;
                 progress(Step::Unpacking);
-                unzip(&zip, staging)?;
+                unpack(&zip, staging)?;
                 let _ = std::fs::remove_file(&zip);
                 Origin::Downloaded(url.clone())
             }
@@ -338,7 +341,7 @@ pub fn remove(dir: &Path) -> Result<Option<Origin>, String> {
 }
 
 fn unsupported() -> String {
-    format!("{NAME} is built for macOS on Apple Silicon only so far")
+    format!("{NAME} is built for macOS on Apple Silicon and Linux on x86-64 only so far")
 }
 
 /// A name in the data directory no other install (in this process or
@@ -395,7 +398,7 @@ fn download_failed(url: &str, why: &str) -> String {
     format!(
         "{NAME} could not be downloaded from {url} ({why}). If it is not published there or \
          cannot be reached from here, set {URL_ENV} or `web.url` in dreamer.yaml to where the \
-         archive is, or install one you have with `dream web install FILE.zip`."
+         archive is, or install one you have with `dream web install ARCHIVE`."
     )
 }
 
@@ -487,8 +490,20 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     run(cmd.arg(from).arg(to), "copying the component").map(drop)
 }
 
-fn unzip(zip: &Path, into: &Path) -> Result<(), String> {
-    let mut cmd = if cfg!(target_os = "macos") {
+/// Unpack the archive `zip` into `into`: a gzipped tarball (by its first
+/// bytes, whatever its name) with `tar`, else a zip, with `ditto` on macOS
+/// or `unzip` elsewhere.
+fn unpack(zip: &Path, into: &Path) -> Result<(), String> {
+    let mut magic = [0u8; 2];
+    let tarball = std::fs::File::open(zip)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .is_ok()
+        && magic == [0x1f, 0x8b];
+    let mut cmd = if tarball {
+        let mut c = Command::new("tar");
+        c.arg("-xzf").arg(zip).arg("-C").arg(into);
+        c
+    } else if cfg!(target_os = "macos") {
         let mut c = Command::new("ditto");
         c.args(["-x", "-k"]).arg(zip).arg(into);
         c
@@ -552,19 +567,23 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
         .collect::<String>())
 }
 
-/// The checks of a real component beyond its files: the framework and
-/// each helper app pass `codesign --verify --strict`, and a helper loads
-/// the framework from where it sits.
+/// The checks of a real component beyond its files: on macOS the
+/// framework and each helper app pass `codesign --verify --strict` (Linux
+/// has no signatures to check; the archive's checksum is), and a helper
+/// loads the library from where it sits.
 pub fn verify_signed(dir: &Path) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
+    if crate::TARGET.is_none() {
         return Err(unsupported());
     }
-    let mut signed = vec![dir.join(FRAMEWORK)];
-    signed.extend(
-        HELPERS
-            .iter()
-            .map(|(suffix, _)| dir.join(helper_app(suffix))),
-    );
+    let mut signed = Vec::new();
+    if cfg!(target_os = "macos") {
+        signed.push(dir.join(FRAMEWORK));
+        signed.extend(
+            HELPERS
+                .iter()
+                .map(|(suffix, _)| dir.join(helper_app(suffix))),
+        );
+    }
     for path in signed {
         run(
             Command::new("codesign")
@@ -574,15 +593,17 @@ pub fn verify_signed(dir: &Path) -> Result<(), String> {
         )?;
     }
     // With no process type, CEF's entry point returns at once (-1): this
-    // checks only that the helper finds and loads the framework.
-    let helper = helper_executable(dir, "");
+    // checks only that the helper finds and loads the library (on Linux
+    // that also finds the system libraries Chromium needs, or names the
+    // one missing).
+    let helper = crate::helper(dir);
     let out = Command::new(&helper)
         .output()
         .map_err(|e| format!("{}: {e}", helper.display()))?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     if out.status.code() != Some(255) || stderr.contains("dreamer-web-helper:") {
         return Err(format!(
-            "the helper did not load the framework ({}): {}",
+            "the helper did not load the library ({}): {}",
             out.status,
             stderr.trim()
         ));
@@ -628,7 +649,6 @@ pub fn describe(dir: &Path, m: &Manifest) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FRAMEWORK_BINARY, MANIFEST};
 
     struct Temp(PathBuf);
     impl Temp {
@@ -657,17 +677,7 @@ mod tests {
         }
     }
 
-    /// A fake component: every file the check looks for, with `manifest`.
-    fn lay_out(dir: &Path, manifest: &Manifest) {
-        std::fs::create_dir_all(dir.join(FRAMEWORK)).expect("framework dir");
-        std::fs::write(dir.join(FRAMEWORK_BINARY), b"framework").expect("framework");
-        for (suffix, _) in HELPERS {
-            let exe = helper_executable(dir, suffix);
-            std::fs::create_dir_all(exe.parent().expect("parent")).expect("helper dir");
-            std::fs::write(exe, b"helper").expect("helper");
-        }
-        std::fs::write(dir.join(MANIFEST), manifest.to_json()).expect("manifest");
-    }
+    use crate::tests::lay_out;
 
     fn installer(root: &Path, system: Vec<PathBuf>) -> Installer {
         Installer {
@@ -678,19 +688,29 @@ mod tests {
         }
     }
 
-    /// A zip of `dir` (as `dreamer-web/`) and its `.sha256`, beside it.
-    #[cfg(target_os = "macos")]
+    /// An archive of `dir` (as `dreamer-web/`) and its `.sha256`, beside
+    /// it: a zip on macOS, a tarball on Linux, as releases have them.
     fn zip_of(dir: &Path, to: &Path) {
         let top = dir.parent().expect("parent").join(TOP);
         if top != dir {
             std::fs::rename(dir, &top).expect("rename");
         }
-        let ok = Command::new("ditto")
-            .args(["-c", "-k", "--keepParent"])
-            .arg(&top)
-            .arg(to)
-            .status()
-            .expect("ditto");
+        let ok = if cfg!(target_os = "macos") {
+            Command::new("ditto")
+                .args(["-c", "-k", "--keepParent"])
+                .arg(&top)
+                .arg(to)
+                .status()
+        } else {
+            Command::new("tar")
+                .arg("-C")
+                .arg(top.parent().expect("parent"))
+                .arg("-czf")
+                .arg(to)
+                .arg(TOP)
+                .status()
+        }
+        .expect("archiver");
         assert!(ok.success());
         let sum = sha256_file(to).expect("sum");
         std::fs::write(
@@ -815,14 +835,17 @@ mod tests {
         assert_eq!(i.check(&i.dest), State::Ready(want()));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn an_archive_downloads_with_progress_and_is_checked_against_its_sum() {
         let t = Temp::new("zip");
         let i = installer(&t.0, Vec::new());
         let src = t.0.join("src");
         lay_out(&src, &want());
-        let zip = t.0.join("served/dreamer-web.zip");
+        let zip = t.0.join(if cfg!(target_os = "macos") {
+            "served/dreamer-web.zip"
+        } else {
+            "served/dreamer-web.tar.gz"
+        });
         std::fs::create_dir_all(zip.parent().expect("parent")).expect("served");
         zip_of(&src, &zip);
         let size = std::fs::metadata(&zip).expect("zip").len();

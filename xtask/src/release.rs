@@ -10,8 +10,9 @@
 //!    tarball and server archive in an ARM64 container; run the ARM64
 //!    archives on fresh containers.
 //! 2. Create the tag on GitHub, which starts `release.yml`: it builds the
-//!    x86-64 archives, runs them on fresh containers, and drafts the
-//!    release with them.
+//!    x86-64 archives, runs them on fresh containers, builds the Linux
+//!    Dreamer Web archive (checked by drawing a page offscreen), and
+//!    drafts the release with them.
 //! 3. Wait for that run, take its x86-64 archives and fresh-check record
 //!    back from the draft, write the build report with the run attached,
 //!    and add the Mac's artifacts and the report to the draft.
@@ -361,6 +362,10 @@ fn finish(root: &Path, out: &Path, tag: &str, commit: &str) -> Result<(), String
         ),
         (
             "dreamer-*-x86_64-unknown-linux-gnu.rpm*",
+            format!("{out_s}/linux"),
+        ),
+        (
+            "dreamer-web-*-x86_64-unknown-linux-gnu.tar.gz*",
             format!("{out_s}/linux"),
         ),
         ("fresh-amd64.json", out_s.clone()),

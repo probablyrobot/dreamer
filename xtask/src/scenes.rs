@@ -34,6 +34,9 @@ pub(crate) struct Scene {
     /// which the desktop draws natively; on the right started from a
     /// shell, unregistered, so the desktop shows its terminal interface.
     pub(crate) app: Option<&'static str>,
+    /// A web page opened in a new pane once the app is up (`dream web
+    /// open`): the scene needs the app built with web panes.
+    pub(crate) web: Option<&'static str>,
 }
 
 const SCENES: &[Scene] = &[
@@ -45,6 +48,7 @@ const SCENES: &[Scene] = &[
         args: &[],
         after: &[],
         app: None,
+        web: None,
     },
     Scene {
         name: "theme-switch",
@@ -57,6 +61,7 @@ const SCENES: &[Scene] = &[
         // not restored yet.
         after: &[],
         app: None,
+        web: None,
     },
     Scene {
         name: "dense-splits",
@@ -72,6 +77,7 @@ const SCENES: &[Scene] = &[
         args: &[],
         after: &[],
         app: None,
+        web: None,
     },
     Scene {
         name: "sidebar-open",
@@ -85,6 +91,7 @@ const SCENES: &[Scene] = &[
         args: &["--open-sidebar"],
         after: &[],
         app: None,
+        web: None,
     },
     Scene {
         name: "command-palette",
@@ -94,6 +101,7 @@ const SCENES: &[Scene] = &[
         args: &["--open-palette"],
         after: &[],
         app: None,
+        web: None,
     },
     Scene {
         name: "error-state",
@@ -103,6 +111,7 @@ const SCENES: &[Scene] = &[
         args: &[],
         after: &[&["copy-mode", "-t", "%1"]],
         app: None,
+        web: None,
     },
     Scene {
         name: "app-components",
@@ -112,8 +121,28 @@ const SCENES: &[Scene] = &[
         args: &[],
         after: &[],
         app: Some(COMPONENTS_APP),
+        web: None,
+    },
+    Scene {
+        name: "web-pane",
+        what: "a web page drawn by Chromium in a pane beside a terminal",
+        setup: &[],
+        type_all: Some("echo terminal beside a web page"),
+        args: &[],
+        after: &[],
+        app: None,
+        web: Some(WEB_PAGE),
     },
 ];
+
+/// The `web-pane` scene's page: one color (`WEB_PAGE_COLOR`) over all of
+/// it, and a heading.
+const WEB_PAGE: &str = "data:text/html,<title>Dreamer web pane</title>\
+<body style='margin:0;background:%233a7d44;color:white;font:32px sans-serif'>\
+<h1 style='margin:24px'>Drawn by Chromium in a pane</h1></body>";
+
+/// The `web-pane` page's color, which no scheme of the scene uses.
+pub const WEB_PAGE_COLOR: u32 = 0x3a_7d_44;
 
 /// The reference app with every text, input, and status component.
 pub const COMPONENTS_APP: &str = "examples/apps/components/app.toml";
@@ -155,6 +184,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     for skin in ["dark", "light"] {
         for scene in SCENES {
             if only.as_deref().is_some_and(|o| o != scene.name) {
+                continue;
+            }
+            // Needs the app built with web panes: `screenshot --scene web-pane`.
+            if scene.web.is_some() {
                 continue;
             }
             let capture = format!("{}-{skin}-{os}.png", scene.name);
@@ -208,6 +241,18 @@ pub(crate) fn launch(
     skin: &str,
     extra: &str,
 ) -> Result<Running, String> {
+    launch_on(root, scene, skin, extra, false)
+}
+
+/// Like [`launch`]; with `x11`, the app runs on X11 (`WAYLAND_DISPLAY`
+/// removed: under a Wayland desktop that is XWayland).
+pub(crate) fn launch_on(
+    root: &Path,
+    scene: &Scene,
+    skin: &str,
+    extra: &str,
+    x11: bool,
+) -> Result<Running, String> {
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
     let id = format!("{}-{skin}-{}", scene.name, std::process::id());
     let socket = format!("dreamer-scene-{id}");
@@ -260,7 +305,28 @@ pub(crate) fn launch(
         }
     }
     t(&["select-window", "-t", "main:0"]);
-    let app = Command::new(root.join("target/debug/dreamer"))
+    // A scene with a page gets a data directory of its own, with the
+    // Dreamer Web component `cargo xtask web bundle` built added to it.
+    let data = dir.join("data");
+    if scene.web.is_some() {
+        let component = crate::web::linux_component_dir(root);
+        if component.is_dir() {
+            crate::web::dream_at(
+                &crate::util::cargo_target(root).join("debug/dream"),
+                &["web", "install"],
+                Some(&component),
+                &[("DREAMER_DATA_DIR", data.clone().into_os_string())],
+            )?;
+        }
+    }
+    let mut app = Command::new(crate::util::cargo_target(root).join("debug/dreamer"));
+    if x11 {
+        app.env_remove("WAYLAND_DISPLAY");
+    }
+    if scene.web.is_some() {
+        app.env("DREAMER_DATA_DIR", &data);
+    }
+    let app = app
         .arg("--workspace")
         .args(scene.args)
         .args(["-L", &socket, "--tmux", &tmux])
@@ -280,6 +346,9 @@ pub(crate) fn launch(
     if let Some(app) = scene.app {
         show_app(root, &dir, &tmux, &socket, app)?;
     }
+    if let Some(url) = scene.web {
+        open_web(root, &dir, url)?;
+    }
     Ok(Running {
         app,
         tmux,
@@ -288,12 +357,88 @@ pub(crate) fn launch(
     })
 }
 
+/// Open `url` in a new pane of session `main` with the scene's `dream web
+/// open`, once the app's daemon answers.
+fn open_web(root: &Path, dir: &Path, url: &str) -> Result<(), String> {
+    let rt = dir.join("rt");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !rt.join("dreamerd.sock").exists() {
+        if std::time::Instant::now() > deadline {
+            return Err("the scene's daemon did not start".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let out = Command::new(crate::util::cargo_target(root).join("debug/dream"))
+        .args(["web", "open", url, "--session", "main"])
+        .env("DREAMER_RUNTIME_DIR", &rt)
+        .env("DREAMER_STATE_DIR", dir.join("st"))
+        .env("DREAMER_CONFIG_DIR", dir.join("config"))
+        .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
+        .output()
+        .map_err(|e| format!("dream web open: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "dream web open: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Capture the `web-pane` scene (the app built with web panes; Linux) on
+/// X11 (`x11`) or Wayland, at `path`, and check that the page was drawn:
+/// the capture is Dreamer's window and shows the page's color. A busy
+/// machine may take a while to start Chromium, so the window is captured
+/// again for up to 20 s while the page is missing. What it found.
+pub fn capture_web(root: &Path, x11: bool, path: &Path) -> Result<String, String> {
+    let scene = SCENES
+        .iter()
+        .find(|s| s.name == "web-pane")
+        .ok_or("no web-pane scene")?;
+    // Builds the component too, which the scene adds to its own data
+    // directory.
+    crate::web::linux_bundle(root, crate::package::Profile::Debug)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let running = launch_on(root, scene, "dark", "", x11)?;
+    let check = |p: &Path| -> Result<String, String> {
+        let window = share_near(p, 0x14_16_1a, 3)?;
+        let page = share_of(p, WEB_PAGE_COLOR)?;
+        let found = format!(
+            "Dreamer's background {:.1}%, the page's #3a7d44 {:.1}%",
+            window * 100.0,
+            page * 100.0
+        );
+        if window < 0.01 {
+            Err(format!(
+                "the capture does not show Dreamer's window ({found})"
+            ))
+        } else if page < 0.02 {
+            Err(format!("the page was not drawn ({found})"))
+        } else {
+            Ok(found)
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut result = capture_window(running.app.id(), path, 4.0).and_then(|()| check(path));
+    while result
+        .as_ref()
+        .is_err_and(|e| e.contains("the page was not drawn"))
+        && std::time::Instant::now() < deadline
+    {
+        result = capture_window(running.app.id(), path, 1.0).and_then(|()| check(path));
+    }
+    running.finish();
+    result
+}
+
 /// Show the app package `app` in a new window of session `main`, once the
 /// app's daemon answers: registered (`dream app run`) on the left, and
 /// started from a shell on the right. Both get only the scene's private
 /// directories.
 fn show_app(root: &Path, dir: &Path, tmux: &str, socket: &str, app: &str) -> Result<(), String> {
-    let debug = root.join("target/debug");
+    let debug = crate::util::cargo_target(root).join("debug");
     let manifest = root.join(app);
     let rt = dir.join("rt");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -349,7 +494,7 @@ fn show_app(root: &Path, dir: &Path, tmux: &str, socket: &str, app: &str) -> Res
 
 const SCREENSHOT_USAGE: &str = "\
 usage: cargo xtask screenshot [--scene NAME] [--skin dark|light] [--out DIR]
-                              [--settings YAML] [--settle SECONDS]
+                              [--settings YAML] [--settle SECONDS] [--x11]
        cargo xtask screenshot --switch THEME [--out DIR]
 
 Opens a reference scene (default single-pane) against an isolated tmux
@@ -357,6 +502,12 @@ server and saves a PNG of the app's own window, at device resolution, to
 DIR (default target/screenshots). --settings is appended to the scene's
 dreamer.yaml, e.g. --settings 'font: {size: 15, letter_spacing: -0.3}'.
 Only Dreamer's window is captured: on macOS with screencapture, on Linux\nunder Hyprland (Wayland or XWayland) with grim.
+
+--x11 runs the app on X11 (WAYLAND_DISPLAY removed; XWayland under a
+Wayland desktop). The web-pane scene (Linux) builds the app with web panes
+(`cargo xtask deps web` first), opens a one-color page in a pane, and
+checks that the capture shows it; it is saved as web-pane-wayland.png or
+web-pane-x11.png.
 
 --switch opens the theme-switch scene in the dark scheme, captures it,
 changes terminal.theme to THEME in the running window's dreamer.yaml (as
@@ -376,6 +527,7 @@ pub fn screenshot(args: &[String]) -> Result<(), String> {
     let mut extra = String::new();
     let mut settle = 2.0f64;
     let mut switch: Option<String> = None;
+    let mut x11 = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || {
@@ -389,6 +541,7 @@ pub fn screenshot(args: &[String]) -> Result<(), String> {
             "--out" => out = PathBuf::from(value()?),
             "--settings" => extra = value()?,
             "--switch" => switch = Some(value()?),
+            "--x11" => x11 = true,
             "--settle" => {
                 settle = value()?
                     .parse()
@@ -436,10 +589,26 @@ pub fn screenshot(args: &[String]) -> Result<(), String> {
         }
         return Ok(());
     }
+    if scene.web.is_some() {
+        if cfg!(target_os = "macos") {
+            return Err(
+                "screenshot: the web-pane scene is for Linux; on macOS, `cargo xtask web smoke`"
+                    .into(),
+            );
+        }
+        let backend = if x11 { "x11" } else { "wayland" };
+        let path = out.join(format!("{}-{backend}.png", scene.name));
+        let found = capture_web(&root, x11, &path)?;
+        println!("screenshot: {} ({found})", path.display());
+        return Ok(());
+    }
+    if x11 && cfg!(target_os = "macos") {
+        return Err("screenshot: --x11 is for Linux".into());
+    }
     build(&root)?;
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let path = out.join(format!("{}-{skin}.png", scene.name));
-    let running = launch(&root, scene, &skin, &extra)?;
+    let running = launch_on(&root, scene, &skin, &extra, x11)?;
     let result = capture_window(running.app.id(), &path, settle);
     running.finish();
     result?;
@@ -849,7 +1018,7 @@ fn capture_window(pid: u32, path: &Path, settle: f64) -> Result<(), String> {
 
 /// Every output is off (DPMS), so nothing is drawn: Linux under Hyprland.
 /// macOS reports a locked screen instead (`package::screen_locked`).
-fn display_asleep() -> bool {
+pub(crate) fn display_asleep() -> bool {
     if cfg!(target_os = "macos") {
         return false;
     }
