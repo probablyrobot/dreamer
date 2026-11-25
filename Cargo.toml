@@ -9,7 +9,6 @@ edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
 repository = "https://github.com/probablyrobot/dreamer"
-publish = false
 
 # GPUI is pinned to one upstream zed revision; gpui and its platform crates
 # must always move together. See docs/dependency-baseline.md.

@@ -191,8 +191,8 @@ fn preview(path: &str, args: &[&str]) -> Result<String, String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h))
-        .map_err(|e| e.to_string())?;
+    // The test backend cannot fail: its error type is `Infallible`.
+    let Ok(mut terminal) = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h));
     if manifest.draws_own_view() {
         // A process or script app's first view, from its code, with no
         // daemon.
@@ -200,21 +200,17 @@ fn preview(path: &str, args: &[&str]) -> Result<String, String> {
             std::path::Path::new(path),
             Some(app_script::engine()),
         ))?;
-        terminal
-            .draw(|f| {
-                view::draw_tree(
-                    &tree,
-                    &app_model::embeds::Embeds::default(),
-                    &mut view::ViewState::default(),
-                    f,
-                )
-            })
-            .map_err(|e| e.to_string())?;
+        let Ok(_) = terminal.draw(|f| {
+            view::draw_tree(
+                &tree,
+                &app_model::embeds::Embeds::default(),
+                &mut view::ViewState::default(),
+                f,
+            )
+        });
     } else {
         let app = rt.block_on(app_model::preview(std::path::Path::new(path)))?;
-        terminal
-            .draw(|f| view::draw(&app, f))
-            .map_err(|e| e.to_string())?;
+        let Ok(_) = terminal.draw(|f| view::draw(&app, f));
     }
     Ok(screen_text(&terminal))
 }
@@ -340,18 +336,16 @@ fn replay(path: &str, args: &[&str]) -> Result<Vec<String>, String> {
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h))
-        .map_err(|e| e.to_string())?;
+    // The test backend cannot fail: its error type is `Infallible`.
+    let Ok(mut terminal) = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h));
     let mut state = view::ViewState::default();
     let mut screens = Vec::new();
     let manifest_path = std::path::Path::new(path);
     if manifest.draws_own_view() {
         let mut each = |tree: &view_tree::Frame| {
-            terminal
-                .draw(|f| {
-                    view::draw_tree(tree, &app_model::embeds::Embeds::default(), &mut state, f)
-                })
-                .map_err(|e| e.to_string())?;
+            let Ok(_) = terminal.draw(|f| {
+                view::draw_tree(tree, &app_model::embeds::Embeds::default(), &mut state, f)
+            });
             screens.push(screen_text(&terminal) + &tree_notes(Some(tree)));
             Ok(())
         };
@@ -368,9 +362,7 @@ fn replay(path: &str, args: &[&str]) -> Result<Vec<String>, String> {
             .map(|(n, e)| as_input(e).map_err(|e| format!("event {}: {e}", n + 1)))
             .collect::<Result<Vec<_>, _>>()?;
         let mut each = |app: &app_model::App| {
-            terminal
-                .draw(|f| view::draw_with(app, &mut state, f))
-                .map_err(|e| e.to_string())?;
+            let Ok(_) = terminal.draw(|f| view::draw_with(app, &mut state, f));
             screens.push(screen_text(&terminal) + &tree_notes(app.frame().as_ref()));
             Ok(())
         };
