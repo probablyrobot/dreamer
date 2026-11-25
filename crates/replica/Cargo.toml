@@ -11,7 +11,7 @@ publish = false
 api.workspace = true
 async-channel = "2.5.0"
 client.workspace = true
-matcher = { path = "../matcher" }
+matcher.workspace = true
 perf.workspace = true
 wire.workspace = true
 prost = "0.14.5"

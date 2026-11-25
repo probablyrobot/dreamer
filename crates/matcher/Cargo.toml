@@ -1,11 +1,16 @@
 [package]
-name = "matcher"
+name = "dreamer-matcher"
 description = "The Rust match stage: literal sets and bounded regular expressions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
+
+# Published as dreamer-matcher; the library keeps its short name.
+[lib]
+name = "matcher"
 
 [dependencies]
 regex = "1.13.1"

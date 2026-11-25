@@ -1,11 +1,16 @@
 [package]
-name = "mirror"
+name = "dreamer-mirror"
 description = "Canonical pane mirrors in the daemon: cold attach, ordered ingestion, VT owner workers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
+
+# Published as dreamer-mirror; the library keeps its short name.
+[lib]
+name = "mirror"
 
 [dependencies]
 domain.workspace = true

@@ -238,8 +238,8 @@ dependencies = [
  "dreamer-client",
  "dreamer-platform",
  "dreamer-providers",
+ "dreamer-script-runtime",
  "dreamer-view-tree",
- "script-runtime",
  "serde",
  "serde_json",
  "tokio",
@@ -1795,6 +1795,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "dreamer-matcher"
+version = "0.11.0"
+dependencies = [
+ "regex",
+]
+
+[[package]]
+name = "dreamer-memory"
+version = "0.11.0"
+dependencies = [
+ "prost",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
+name = "dreamer-mirror"
+version = "0.11.0"
+dependencies = [
+ "dreamer-domain",
+ "dreamer-perf",
+ "dreamer-platform",
+ "dreamer-terminal-ghostty",
+ "dreamer-tmux-backend",
+ "dreamer-tmux-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "dreamer-perf"
 version = "0.11.0"
 
@@ -1806,6 +1840,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dreamer-procreg"
+version = "0.11.0"
+dependencies = [
+ "dreamer-platform",
+]
+
+[[package]]
 name = "dreamer-providers"
 version = "0.11.0"
 dependencies = [
@@ -1813,6 +1854,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
+name = "dreamer-script-runtime"
+version = "0.11.0"
+dependencies = [
+ "dreamer-api",
+ "mlua",
+ "rustix",
+ "serde_json",
  "tokio",
 ]
 
@@ -1839,9 +1891,14 @@ dependencies = [
  "dreamer-api",
  "dreamer-client",
  "dreamer-domain",
+ "dreamer-matcher",
+ "dreamer-memory",
+ "dreamer-mirror",
  "dreamer-perf",
  "dreamer-platform",
+ "dreamer-procreg",
  "dreamer-providers",
+ "dreamer-script-runtime",
  "dreamer-terminal-core",
  "dreamer-terminal-ghostty",
  "dreamer-tmux-backend",
@@ -1849,13 +1906,8 @@ dependencies = [
  "dreamer-wire",
  "dreamer-workspace-config",
  "dreamer-workspace-host",
- "matcher",
- "memory",
- "mirror",
- "procreg",
  "prost",
  "replica",
- "script-runtime",
  "serde_json",
  "tokio",
  "ureq",
@@ -3926,13 +3978,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
 
 [[package]]
-name = "matcher"
-version = "0.11.0"
-dependencies = [
- "regex",
-]
-
-[[package]]
 name = "maybe-rayon"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3977,20 +4022,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memory"
-version = "0.11.0"
-dependencies = [
- "prost",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_norway",
- "tokio",
- "tonic",
- "tonic-prost",
-]
-
-[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4026,19 +4057,6 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mirror"
-version = "0.11.0"
-dependencies = [
- "dreamer-domain",
- "dreamer-perf",
- "dreamer-platform",
- "dreamer-terminal-ghostty",
- "dreamer-tmux-backend",
- "dreamer-tmux-protocol",
- "tokio",
 ]
 
 [[package]]
@@ -5098,13 +5116,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "procreg"
-version = "0.11.0"
-dependencies = [
- "dreamer-platform",
-]
-
-[[package]]
 name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5599,10 +5610,10 @@ dependencies = [
  "async-channel",
  "dreamer-api",
  "dreamer-client",
+ "dreamer-matcher",
  "dreamer-perf",
  "dreamer-terminal-ghostty",
  "dreamer-wire",
- "matcher",
  "prost",
  "tokio",
  "unicode-width",
@@ -5932,17 +5943,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "script-runtime"
-version = "0.11.0"
-dependencies = [
- "dreamer-api",
- "mlua",
- "rustix",
- "serde_json",
- "tokio",
-]
 
 [[package]]
 name = "seahash"

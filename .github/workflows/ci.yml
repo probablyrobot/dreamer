@@ -70,7 +70,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # The Kosmonaut memory provider (a gRPC client) is behind a feature;
       # the line above checks the build without it.
-      - run: cargo clippy -p memory -p dreamer-server --features dreamer-server/kosmonaut --all-targets --locked -- -D warnings
+      - run: cargo clippy -p dreamer-memory -p dreamer-server --features dreamer-server/kosmonaut --all-targets --locked -- -D warnings
       - name: Build the pinned tmux baseline
         run: echo "DREAMER_TMUX=$(cargo xtask deps tmux | tail -n 1)" >> "$GITHUB_ENV"
       - run: cargo build --workspace --all-targets --locked
@@ -131,5 +131,5 @@ jobs:
         run: |
           server="$HOME/.cache/dreamer/kosmonaut-server/kosmonaut-server"
           if [ -x "$server" ]; then export DREAMER_KOSMONAUT_SERVER="$server"; fi
-          cargo test --locked -p memory --features kosmonaut
+          cargo test --locked -p dreamer-memory --features kosmonaut
           cargo test --locked -p dreamer-server --features kosmonaut --test memory

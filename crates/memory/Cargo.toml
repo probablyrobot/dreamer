@@ -1,11 +1,16 @@
 [package]
-name = "memory"
+name = "dreamer-memory"
 description = "Durable memory: the provider interface and the files, sqlite, and Kosmonaut providers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
+
+# Published as dreamer-memory; the library keeps its short name.
+[lib]
+name = "memory"
 
 [features]
 # The `kosmonaut` provider: a Kosmonaut server over gRPC. Off by default,

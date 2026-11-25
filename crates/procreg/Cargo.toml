@@ -1,11 +1,16 @@
 [package]
-name = "procreg"
+name = "dreamer-procreg"
 description = "The host process registry: same-user processes, pane association, and agent runs, by evidence"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+publish = true
+
+# Published as dreamer-procreg; the library keeps its short name.
+[lib]
+name = "procreg"
 
 [dependencies]
 platform.workspace = true

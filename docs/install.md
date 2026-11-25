@@ -161,6 +161,12 @@ over SSH. See [Remote hosts](remote.md).
 
 ### Rust developers
 
+`dream` and `dreamerd` build from crates.io; neither needs Zig:
+
+```sh
+cargo install dreamer-cli dreamer-server
+```
+
 The SDK for writing extensions and apps in Rust is on crates.io:
 
 ```sh

@@ -485,16 +485,24 @@ full macOS gate report is marked "macOS runtime verification incomplete".
 
 ### Crates on crates.io
 
-Two groups are published to crates.io, with the workspace version:
+Three groups are published to crates.io, with the workspace version:
 
 - **The SDK:** `dreamer-sdk` and the crates it depends on (`dreamer-api`,
   `dreamer-app-protocol`, `dreamer-view-tree`).
 - **The CLI:** `dreamer-cli`, which installs `dream`, and the crates under
   it, each named `dreamer-<directory>` (`dreamer-tmux-backend`,
   `dreamer-ghostty-sys`, and so on).
+- **The server:** `dreamer-server`, which installs `dreamerd`, and the
+  crates under it that the CLI does not already bring (`dreamer-memory`,
+  `dreamer-mirror`, `dreamer-matcher`, `dreamer-procreg`,
+  `dreamer-script-runtime`).
 
-`cargo install dreamer-cli` needs no Zig: `dreamer-ghostty-sys` takes the
-prebuilt libghostty-vt pinned in its `prebuilt.toml` (see
+The desktop app is not published: crates.io refuses git dependencies, and
+GPUI is pinned by git revision.
+
+`cargo install dreamer-cli` and `cargo install dreamer-server` need no Zig:
+`dreamer-ghostty-sys` takes the prebuilt libghostty-vt pinned in its
+`prebuilt.toml` (see
 [the dependency baseline](dependency-baseline.md#prebuilt-archives-cratesio-builds)).
 
 Inside the repository every published crate keeps its short dependency
