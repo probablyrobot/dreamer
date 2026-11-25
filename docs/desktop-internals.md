@@ -124,19 +124,35 @@ framework, and then runs `dreamer --smoke-web DIR` from the bundle
 against an isolated tmux server with private daemon, desktop, and
 configuration directories:
 
-- first, adding Dreamer Web as a person would (`dreamer
-  --smoke-web-install`, its own run of the desktop): the private data
-  directory starts empty, and `DREAMER_WEB_URL` names a `file://`
-  directory holding the zip and `.sha256` made from the bundle's
-  component (copies already on the Mac are not used). The tab strip
-  must show the first-start offer (`web.component: ask`); a web pane
-  must show **Add Dreamer Web**; its button is pressed (the click's own
-  handler, not a synthetic OS event); the install's progress must reach
-  the end with the component ready; the offer must be gone; and the
-  page must then load in that pane and draw frames, with no restart.
+- first, adding Dreamer Web as a person would, in four runs of the
+  desktop (`dreamer --smoke-web-install HOW`), each with an empty private
+  data directory. `DREAMER_WEB_URL` names a `file://` directory holding
+  the zip and `.sha256` made from the bundle's component, and copies
+  already on the Mac are never looked at: the list of system locations
+  is replaced by `DREAMER_WEB_SYSTEM_DIRS`, empty except in the last run.
+  Buttons are pressed through their click's own handler, not a synthetic
+  OS event.
+  - `offer`: the tab strip must show the first-start offer
+    (`web.component: ask`); a web pane opened then must show **Add
+    Dreamer Web**; the offer's **Add** is pressed; the install's
+    progress must reach the end with the component downloaded and ready,
+    and the answer kept; the offer must be gone; and the waiting page
+    must then load and draw frames, with no restart. The rest of the
+    check runs with the component this installed.
+  - `later`: the offer again; **Later** must hide it, add nothing, and be
+    kept in `web-component-offer`; a web pane must then show **Add
+    Dreamer Web**, whose button adds it; and the page must load.
+  - `remembered`: a start with the desktop state `later` left and still
+    no component must not offer it again, and a web pane must still show
+    its button.
+  - `system`: with `DREAMER_WEB_SYSTEM_DIRS` naming the component `later`
+    added (a private directory standing in for a copy on the system) and
+    `DREAMER_WEB_URL` naming a directory with nothing in it, the first
+    start must link `web/` to that copy, with no offer and no download,
+    and a web page must load with it.
+
   Each passed check is a `smoke: web install:` line, and the gate wants
-  all five. The rest of the check runs with the component this
-  installed;
+  all fourteen;
 - the smoke opens a `data:` page beside the session's shell pane: one
   screen of `#2a6fdb`, then three screens of `#d9822b`, and a title that
   counts animation frames and reports the scroll position;

@@ -113,6 +113,12 @@ pub const INSTALLED_MB: u32 = if cfg!(target_os = "macos") { 334 } else { 378 };
 /// of the release ([`download_url`]).
 pub const URL_ENV: &str = "DREAMER_WEB_URL";
 
+/// For tests: the variable that replaces where copies already on the
+/// system are looked for ([`system_dirs`]) with its own list of
+/// directories (`:`-separated; relative entries are ignored), so a check
+/// can offer a copy of its own and never reads a real system location.
+pub const SYSTEM_DIRS_ENV: &str = "DREAMER_WEB_SYSTEM_DIRS";
+
 /// The name of a helper app's executable: `dreamer Helper (GPU)`.
 pub fn helper_name(suffix: &str) -> String {
     format!("dreamer Helper{suffix}")
@@ -189,7 +195,13 @@ pub fn linked_to(dir: &Path) -> Option<PathBuf> {
 ///   `DREAMER_DATA_DIR` points elsewhere.
 ///
 /// A system Chrome or Chromium browser is not CEF, and is never used.
+///
+/// [`SYSTEM_DIRS_ENV`], when set, replaces all of these
+/// ([`system_dirs_override`]).
 pub fn system_dirs() -> Vec<PathBuf> {
+    if let Some(dirs) = system_dirs_override() {
+        return dirs;
+    }
     let mut dirs: Vec<PathBuf> = if cfg!(target_os = "macos") {
         vec![PathBuf::from("/Library/Application Support/Dreamer/web")]
     } else {
@@ -212,6 +224,20 @@ pub fn system_dirs() -> Vec<PathBuf> {
         }
     }
     dirs
+}
+
+/// The directories [`SYSTEM_DIRS_ENV`] names, when it is set.
+pub fn system_dirs_override() -> Option<Vec<PathBuf>> {
+    dirs_from(std::env::var_os(SYSTEM_DIRS_ENV).as_deref())
+}
+
+/// The absolute directories in a `:`-separated list, if there is a list.
+fn dirs_from(list: Option<&std::ffi::OsStr>) -> Option<Vec<PathBuf>> {
+    list.map(|l| {
+        std::env::split_paths(l)
+            .filter(|p| p.is_absolute())
+            .collect()
+    })
 }
 
 /// The archive of the component for Dreamer `version` on `target`: a zip
@@ -459,6 +485,21 @@ mod tests {
             .into_owned();
         assert!(matches!(check(&dir), State::Broken(why) if why.contains(&name)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_test_list_of_system_copies_keeps_only_absolute_directories() {
+        use std::ffi::OsStr;
+        assert_eq!(dirs_from(None), None);
+        assert_eq!(dirs_from(Some(OsStr::new(""))), Some(Vec::new()));
+        assert_eq!(
+            dirs_from(Some(OsStr::new("/tmp/a/web:relative/web::/tmp/b"))),
+            Some(vec![PathBuf::from("/tmp/a/web"), PathBuf::from("/tmp/b")])
+        );
+        // Set, it is the whole list: none of the real locations.
+        if let Some(only) = system_dirs_override() {
+            assert_eq!(system_dirs(), only);
+        }
     }
 
     #[test]

@@ -1726,8 +1726,10 @@ struct Args {
     web_restart: bool,
     /// The web color smoke (`web.color`), and where its captures go.
     web_color: Option<std::path::PathBuf>,
-    /// The web pane smoke's first run: Dreamer Web added from a web pane.
-    web_install: bool,
+    /// The web pane smoke's first runs: Dreamer Web added at the first
+    /// start, the way this names (`offer`, `later`, `remembered`,
+    /// `system`).
+    web_install: Option<String>,
     /// Parts of the workspace to open at start (`sidebar`, `palette`).
     open: Vec<String>,
     /// `dreamerd` options for a daemon started on demand.
@@ -1785,7 +1787,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--smoke-web-install" => {
                 a.smoke = true;
                 a.workspace = true;
-                a.web_install = true;
+                a.web_install = Some(value("--smoke-web-install")?);
             }
             "--smoke-workspace-restore" => {
                 a.smoke = true;
@@ -1960,10 +1962,10 @@ fn main() -> ExitCode {
         // Dreamer Web: found, used in place, or offered once (not in smoke
         // runs, which bring their own, but for the one that adds it: from
         // its own download, never from a copy of the user's).
-        if args.web_install {
+        if args.web_install.is_some() {
             webcomp::without_system_copies();
         }
-        if workspace_mode && (!args.smoke || args.web_install) {
+        if workspace_mode && (!args.smoke || args.web_install.is_some()) {
             webcomp::startup(cx);
         }
 
@@ -1998,7 +2000,15 @@ fn main() -> ExitCode {
             }
             let run = match (args.restore, args.clipboard, &args.web) {
                 _ if args.web_restart => workspace::SmokeRun::WebRestart,
-                _ if args.web_install => workspace::SmokeRun::WebInstall,
+                _ if args.web_install.is_some() => {
+                    match workspace::InstallSmoke::parse(args.web_install.as_deref()) {
+                        Ok(how) => workspace::SmokeRun::WebInstall(how),
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            std::process::exit(2);
+                        }
+                    }
+                }
                 _ if args.web_color.is_some() => {
                     workspace::SmokeRun::WebColor(args.web_color.clone().unwrap_or_default())
                 }
