@@ -91,7 +91,7 @@ people want:
 
 ## Status
 
-Dreamer is at version 0.11 and changes quickly. macOS on Apple Silicon is
+Dreamer is at version 0.12 and changes quickly. macOS on Apple Silicon is
 the most used platform. Linux packages are built and checked for every
 release; web panes are not available on Linux yet.
 [Terminal compatibility](docs/terminal-compatibility.md) and
