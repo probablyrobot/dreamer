@@ -33,6 +33,19 @@ Font (Mono variant), and the four other families listed in the
 license. tmux is not bundled. Dreamer is tested against the tmux baseline
 in [dependency-baseline.md](dependency-baseline.md).
 
+Linux executables ship without debug info. The release profile keeps line
+tables, which on Linux the linker writes into each executable; the Linux
+packages are built with `CARGO_PROFILE_RELEASE_STRIP=debuginfo`, so the
+linker leaves them out (for 0.12.0 on x86-64, `dreamer` goes from 253 MB
+to 49 MB and the tarball from 168 MB to 66 MB). The symbol table stays,
+so a panic's backtrace still names functions. Each packaged executable is
+checked with `readelf -S`, and the build fails if a debug info section
+(`.debug_info`, `.debug_line`, and the like) is left or the symbol table
+is missing. This applies to the tarball, the `.deb`, the `.rpm`, the
+server archive for Linux targets, and the Dreamer Web helper. On macOS
+the line tables stay in cargo's object files and never reach the app.
+The Arch package is stripped by `makepkg`.
+
 ## macOS app
 
 ```sh
@@ -178,7 +191,7 @@ itself.
 | Path in `dreamer-web/` | Content |
 | --- | --- |
 | `libcef.so` | CEF's library, from the pinned distribution, stripped of debugging and local symbols (1.5 GB to 278 MB) |
-| `dreamer-web-helper` | The helper Chromium runs its renderer, GPU, and utility processes from |
+| `dreamer-web-helper` | The helper Chromium runs its renderer, GPU, and utility processes from, without debug info |
 | `resources.pak`, `chrome_100_percent.pak`, `chrome_200_percent.pak`, `icudtl.dat`, `v8_context_snapshot.bin`, `locales/` | Chromium's resources, ICU data, V8 snapshot, and translations |
 | `libvk_swiftshader.so`, `libvulkan.so.1`, `vk_swiftshader_icd.json` | SwiftShader, Chromium's software GPU |
 | `LICENSE.txt`, `CREDITS.html` | CEF's license and Chromium's third-party notices |
