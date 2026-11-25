@@ -233,7 +233,7 @@ fn in_scene(
                      & Security > Screen & System Audio Recording): {e}"
                 )));
             }
-            Err(e) if e.contains("did not draw version") => {
+            Err(e) if e.contains("did not draw version") || e.contains("is not on the screen") => {
                 return Ok(Outcome::NotRun(format!(
                     "the window stopped repainting (screen locked, or not in front): {e}"
                 )));
