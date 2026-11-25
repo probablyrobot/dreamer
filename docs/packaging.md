@@ -366,7 +366,9 @@ archive unpacks to one directory, `dreamer-server-<version>-<target>/`:
 
 There are no GUI, font, or graphics files.
 [remote.md](remote.md#installing-a-server) describes how `dream hosts
-install` puts an archive on a host.
+install` puts an archive on a host. No package carries these archives:
+each release publishes them, and `dream hosts install` downloads the one
+a host needs from the release of its own version.
 
 After packing, the archive is unpacked in a temporary directory away from
 the tree. Each executable runs with `--version`, on this host or through
@@ -377,9 +379,23 @@ Vulkan, GL, EGL, fontconfig, FreeType, HarfBuzz, AppKit, Metal, CoreText,
 CoreGraphics, QuartzCore). An archive for another architecture with no
 runner set is packed but not run or checked, and the command says so.
 
+On a Mac the command builds `aarch64-apple-darwin`. Its executables keep
+the ad hoc signature the linker gives them, unless you sign them:
+
+```sh
+cargo xtask package --platform server --target aarch64-apple-darwin \
+  --sign "Developer ID Application: …" --notarize dreamer-notary
+```
+
+`--sign` signs `dreamerd`, `dream`, and `dreamer-termapp` with Developer
+ID under the hardened runtime, as the app's executables are, and
+`--notarize` sends them to Apple's notary service. A tarball cannot hold
+a notarization ticket, so Gatekeeper looks it up online. Either way every
+executable must pass `codesign --verify --strict`, before packing and
+again after unpacking.
+
 The weekly Linux workflow builds and uploads `x86_64-unknown-linux-gnu`
-and `aarch64-unknown-linux-gnu` as workflow artifacts. On a Mac the
-command builds `aarch64-apple-darwin`.
+and `aarch64-unknown-linux-gnu` as workflow artifacts.
 
 ## Arch Linux
 
@@ -468,6 +484,8 @@ Then:
      notarized, and stapled, with their `.sha256` and signing records.
    - Web pages drawn with that app and component (`cargo xtask web smoke
      --packaged`), so keep the screen unlocked while it runs.
+   - The macOS server archive, its executables Developer ID signed and
+     notarized.
    - The ARM64 desktop tarball, `.deb`, `.rpm`, and server archive, built
      in an ARM64 container.
    - All of them run on fresh containers (`--fresh`).
@@ -491,7 +509,8 @@ cargo xtask release vX.Y.Z --resume
 ```
 
 It checks that the tag is this commit and that `target/package` holds this
-release's notarized macOS zip and ARM64 fresh record. It then does step 3
+release's notarized macOS zip, macOS server archive, and ARM64 fresh
+record. It then does step 3
 again, without rebuilding or retagging.
 
 The release stays a draft until you publish it. Every archive and package
@@ -508,6 +527,7 @@ A finished draft holds these files:
 | `dreamer-<version>-<target>.deb`, `.sha256` | x86-64 from the workflow, ARM64 from the Mac |
 | `dreamer-<version>-<target>.rpm`, `.sha256` | x86-64 from the workflow, ARM64 from the Mac |
 | `dreamer-server-<version>-<target>.tar.gz`, `.sha256` | x86-64 from the workflow, ARM64 from the Mac |
+| `dreamer-server-<version>-aarch64-apple-darwin.tar.gz`, `.sha256` | The Mac |
 | `install.sh` | The workflow |
 | `fresh-amd64.json`, `fresh-arm64.json`, `fresh-macos.json` | The fresh-check records |
 | `build-report.md`, `build-report.json` | The Mac |

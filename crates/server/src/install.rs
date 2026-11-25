@@ -2,6 +2,14 @@
 //! SSH, choose the archive for its OS and architecture, show the plan, and
 //! carry out exactly that plan.
 //!
+//! The archive is taken from a directory of archives when there is one
+//! with it (given, `DREAMER_SERVER_ARTIFACTS`, beside the daemon, or the
+//! cache of earlier downloads), else downloaded from this version's
+//! release ([`URL_ENV`] names another place) with the `curl` executable,
+//! as Dreamer Web is: the daemon opens no network sockets of its own. A
+//! download is checked against the release's `.sha256` before it is kept
+//! or sent.
+//!
 //! Everything on the host runs as fixed POSIX scripts under `sh`, with the
 //! variable parts as quoted arguments (`client::ssh::script_command`).
 //! Nothing changes outside `~/.local/share/dreamer`: no root, no package
@@ -96,19 +104,279 @@ pub fn target_for(os: &str, arch: &str) -> Option<&'static str> {
     }
 }
 
-/// The archives directory: given, else `DREAMER_SERVER_ARTIFACTS`, else
+/// The variable that says where to download server archives from instead
+/// of this version's release: an address (`https://…`, or `file://…`) of
+/// a directory holding them and their `.sha256` files.
+pub const URL_ENV: &str = "DREAMER_SERVER_URL";
+
+/// The archive of the server for `version` on `target`, as a release
+/// publishes it (its checksum beside it, with `.sha256` added).
+pub fn archive_name(version: &str, target: &str) -> String {
+    format!("dreamer-server-{version}-{target}.tar.gz")
+}
+
+/// Where the release of `version` publishes `file`.
+pub fn release_url(version: &str, file: &str) -> String {
+    format!(
+        "{}/releases/download/v{version}/{file}",
+        env!("CARGO_PKG_REPOSITORY")
+    )
+}
+
+/// Where to download `file` from: the directory [`URL_ENV`] names, else
+/// this version's release.
+fn download_url(version: &str, file: &str) -> String {
+    match std::env::var(URL_ENV) {
+        Ok(base) if !base.trim().is_empty() => {
+            format!("{}/{file}", base.trim().trim_end_matches('/'))
+        }
+        _ => release_url(version, file),
+    }
+}
+
+/// The archives directory named for this install: given, else
+/// `DREAMER_SERVER_ARTIFACTS`. Either is used alone, and nothing is
+/// downloaded.
+fn named_dir(given: Option<&str>) -> Option<PathBuf> {
+    given
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("DREAMER_SERVER_ARTIFACTS").map(PathBuf::from))
+        .filter(|d| !d.as_os_str().is_empty())
+}
+
 /// `share/dreamer/server` beside this daemon's `bin`.
-fn artifacts_dir(given: Option<&str>) -> PathBuf {
-    if let Some(d) = given {
-        return PathBuf::from(d);
-    }
-    if let Some(d) = std::env::var_os("DREAMER_SERVER_ARTIFACTS") {
-        return PathBuf::from(d);
-    }
+fn beside_daemon() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|e| Some(e.parent()?.parent()?.join("share/dreamer/server")))
         .unwrap_or_else(|| PathBuf::from("share/dreamer/server"))
+}
+
+/// Where downloaded archives are kept: `server-archives/` in Dreamer's
+/// data directory.
+pub fn cache_dir() -> PathBuf {
+    platform::data_dir().join("server-archives")
+}
+
+/// Where a plan takes the archive from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
+    /// An archive on this machine, checked against its `.sha256`.
+    Local(PathBuf),
+    /// The archive at this address, to download into [`cache_dir`].
+    Download(String),
+}
+
+/// The archive `file` with its SHA-256 and size: from the named directory
+/// if there is one, else from beside the daemon or the cache if it is
+/// there, else to download (its SHA-256 from the `.sha256` published
+/// beside it, its size from the server).
+async fn locate(
+    given: Option<&str>,
+    file: &str,
+    version: &str,
+    target: &str,
+) -> Result<(Source, String, u64), RpcError> {
+    if let Some(dir) = named_dir(given) {
+        return local(&dir.join(file), target).await;
+    }
+    for dir in [beside_daemon(), cache_dir()] {
+        if dir.join(file).is_file() {
+            return local(&dir.join(file), target).await;
+        }
+    }
+    let url = download_url(version, file);
+    let sum_url = format!("{url}.sha256");
+    let unavailable = |why: String| {
+        err(
+            code::NOT_FOUND,
+            format!(
+                "{file} is not on this machine and could not be found at {url} ({why}). If it is \
+                 not published there or cannot be reached from here, set {URL_ENV} to where it \
+                 is, or give a directory that has it (--artifacts DIR or \
+                 DREAMER_SERVER_ARTIFACTS); `cargo xtask package --platform server --target \
+                 {target}` builds one"
+            ),
+        )
+    };
+    let listed = fetch_text(&sum_url).await.map_err(unavailable)?;
+    let sum = listed
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if sum.len() != 64 || !sum.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(unavailable(format!("{sum_url} holds no SHA-256")));
+    }
+    let size = content_length(&url)
+        .await
+        .ok_or_else(|| unavailable("the server did not say its size".into()))?;
+    Ok((Source::Download(url), sum, size))
+}
+
+/// An archive on this machine, its size, and its SHA-256, which must be
+/// the one its `.sha256` lists.
+async fn local(archive: &Path, target: &str) -> Result<(Source, String, u64), RpcError> {
+    let file = archive
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let size = std::fs::metadata(archive)
+        .map_err(|e| {
+            err(
+                code::NOT_FOUND,
+                format!(
+                    "{}: {e}; build it with `cargo xtask package --platform server --target {target}`, \
+                     or leave out the directory to download it from the release",
+                    archive.display()
+                ),
+            )
+        })?
+        .len();
+    let listed = std::fs::read_to_string(archive.with_file_name(format!("{file}.sha256")))
+        .map_err(|e| err(code::NOT_FOUND, format!("{file}.sha256: {e}")))?;
+    let listed = listed
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let actual = sha256(archive).await.map_err(|e| err(code::INTERNAL, e))?;
+    if !actual.eq_ignore_ascii_case(&listed) {
+        return Err(err(
+            code::PRECONDITION,
+            format!("{file} does not match its .sha256 (corrupted or replaced)"),
+        ));
+    }
+    Ok((Source::Local(archive.to_path_buf()), actual, size))
+}
+
+fn curl(url: &str) -> Command {
+    let mut c = Command::new("curl");
+    c.args(["-fsSL", "--retry", "2", "--connect-timeout", "20"])
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    c
+}
+
+/// The text at `url` (a `.sha256` file).
+async fn fetch_text(url: &str) -> Result<String, String> {
+    let out = tokio::time::timeout(Duration::from_secs(60), curl(url).output())
+        .await
+        .map_err(|_| "no answer within 60 s".to_owned())?
+        .map_err(|e| format!("curl: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let said = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+        Err(if said.is_empty() {
+            format!("curl: {}", out.status)
+        } else {
+            said
+        })
+    }
+}
+
+/// The size `url` says it has, if it says.
+async fn content_length(url: &str) -> Option<u64> {
+    let out = tokio::time::timeout(Duration::from_secs(60), curl(url).arg("-I").output())
+        .await
+        .ok()?
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // After redirects, the last response's length is the file's.
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| v.trim().parse::<u64>().ok())
+                .flatten()
+        })
+        .next_back()
+}
+
+/// Download `url` into [`cache_dir`] as `file`, saying how far it got
+/// every so often, and keep it only if it has `size` bytes and SHA-256
+/// `sum`. Returns where it is kept.
+async fn download(url: &str, file: &str, sum: &str, size: u64) -> Result<PathBuf, String> {
+    const MB: u64 = 1_000_000;
+    let dir = cache_dir();
+    if let Some(data) = dir.parent() {
+        platform::private_dir(data)?;
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let part = dir.join(format!(".{file}.{}.part", std::process::id()));
+    let result = async {
+        crate::log::info(format!(
+            "hosts: downloading {file} ({} MB) from {url}",
+            size.div_ceil(MB)
+        ));
+        let mut child = curl(url)
+            .arg("-o")
+            .arg(&part)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("curl: {e}"))?;
+        let started = tokio::time::Instant::now();
+        let status = loop {
+            match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+                Ok(status) => break status.map_err(|e| format!("curl: {e}"))?,
+                Err(_) if started.elapsed() > Duration::from_secs(30 * 60) => {
+                    return Err("the download did not finish within 30 minutes".to_owned());
+                }
+                Err(_) => {
+                    let got = std::fs::metadata(&part).map_or(0, |m| m.len());
+                    crate::log::info(format!(
+                        "hosts: downloading {file}: {} of {} MB",
+                        got / MB,
+                        size.div_ceil(MB)
+                    ));
+                }
+            }
+        };
+        if !status.success() {
+            let mut said = String::new();
+            if let Some(mut e) = child.stderr.take() {
+                use tokio::io::AsyncReadExt as _;
+                let _ = e.read_to_string(&mut said).await;
+            }
+            let said = said.trim();
+            return Err(if said.is_empty() {
+                format!("curl: {status}")
+            } else {
+                said.to_owned()
+            });
+        }
+        let got = std::fs::metadata(&part).map_or(0, |m| m.len());
+        if got != size {
+            return Err(format!("{got} bytes came, and the plan said {size}"));
+        }
+        let actual = sha256(&part).await?;
+        if !actual.eq_ignore_ascii_case(sum) {
+            return Err(format!(
+                "its SHA-256 is {actual}, and the release's checksum says {sum}"
+            ));
+        }
+        let kept = dir.join(file);
+        std::fs::write(
+            dir.join(format!("{file}.sha256")),
+            format!("{sum}  {file}\n"),
+        )
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::rename(&part, &kept).map_err(|e| format!("{}: {e}", kept.display()))?;
+        crate::log::info(format!("hosts: downloaded and checked {file}"));
+        Ok(kept)
+    }
+    .await;
+    if result.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    result.map_err(|e| format!("downloading {file} from {url}: {e}; nothing was installed"))
 }
 
 /// SHA-256 of a local file with the system's tool.
@@ -149,6 +417,15 @@ pub async fn plan(
     remote: &Remote,
     artifacts: Option<&str>,
 ) -> Result<api::InstallPlan, RpcError> {
+    Ok(plan_from(name, remote, artifacts).await?.0)
+}
+
+/// The plan, and where its archive comes from.
+async fn plan_from(
+    name: &str,
+    remote: &Remote,
+    artifacts: Option<&str>,
+) -> Result<(api::InstallPlan, Source), RpcError> {
     let probe = run(remote, PROBE, &[], None, Duration::from_secs(60))
         .await
         .map_err(|e| err(code::UNAVAILABLE, format!("probing `{name}`: {e}")))?;
@@ -166,35 +443,34 @@ pub async fn plan(
         )
     })?;
     let version = env!("CARGO_PKG_VERSION").to_owned();
-    let dir = artifacts_dir(artifacts);
-    let file = format!("dreamer-server-{version}-{target}.tar.gz");
-    let archive = dir.join(&file);
-    let size = std::fs::metadata(&archive)
-        .map_err(|e| {
-            err(
-                code::NOT_FOUND,
-                format!(
-                    "{}: {e}; build it with `cargo xtask package --platform server --target {target}`",
-                    archive.display()
-                ),
-            )
-        })?
-        .len();
-    let listed = std::fs::read_to_string(dir.join(format!("{file}.sha256")))
-        .map_err(|e| err(code::NOT_FOUND, format!("{file}.sha256: {e}")))?;
-    let listed = listed
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .to_owned();
-    let actual = sha256(&archive).await.map_err(|e| err(code::INTERNAL, e))?;
-    if actual != listed {
-        return Err(err(
-            code::PRECONDITION,
-            format!("{file} does not match its .sha256 (corrupted or replaced)"),
-        ));
-    }
+    let file = archive_name(&version, target);
+    let (source, actual, size) = locate(artifacts, &file, &version, target).await?;
     let remote_dir = format!("{BASE}/versions/{version}");
+    let mut steps = Vec::new();
+    let archive = match &source {
+        Source::Local(path) => path.display().to_string(),
+        Source::Download(url) => {
+            steps.push(format!(
+                "Download {file} ({size} bytes) from {url} into {}, and check its SHA-256 against the release's: {actual}",
+                cache_dir().display()
+            ));
+            url.clone()
+        }
+    };
+    steps.extend([
+        format!(
+            "Send {file} ({size} bytes) to {} over SSH",
+            remote.destination
+        ),
+        format!("Check its SHA-256 on the host: {actual}"),
+        format!("Unpack it into ~/{remote_dir}"),
+        format!(
+            "Point ~/{BASE}/current at it with one atomic rename; earlier versions stay in ~/{BASE}/versions"
+        ),
+        format!(
+            "Run ~/{BASE}/current/bin/dream --version there. Nothing outside ~/{BASE} changes: no root, no package manager, no shell profiles"
+        ),
+    ]);
     let mut p = api::InstallPlan {
         name: name.to_owned(),
         destination: remote.destination.clone(),
@@ -204,28 +480,15 @@ pub async fn plan(
         home,
         installed: (installed != "none").then_some(installed),
         version: version.clone(),
-        archive: archive.display().to_string(),
-        sha256: actual.clone(),
+        archive,
+        sha256: actual,
         size,
-        remote_dir: remote_dir.clone(),
-        steps: vec![
-            format!(
-                "Send {file} ({size} bytes) to {} over SSH",
-                remote.destination
-            ),
-            format!("Check its SHA-256 on the host: {actual}"),
-            format!("Unpack it into ~/{remote_dir}"),
-            format!(
-                "Point ~/{BASE}/current at it with one atomic rename; earlier versions stay in ~/{BASE}/versions"
-            ),
-            format!(
-                "Run ~/{BASE}/current/bin/dream --version there. Nothing outside ~/{BASE} changes: no root, no package manager, no shell profiles"
-            ),
-        ],
+        remote_dir,
+        steps,
         plan_id: String::new(),
     };
     p.plan_id = plan_id(&p);
-    Ok(p)
+    Ok((p, source))
 }
 
 /// Carry out the plan with id `plan_id`, if probing again gives the same.
@@ -235,14 +498,25 @@ pub async fn install(
     artifacts: Option<&str>,
     plan_id: &str,
 ) -> Result<api::InstallResult, RpcError> {
-    let p = plan(name, remote, artifacts).await?;
+    let (p, source) = plan_from(name, remote, artifacts).await?;
     if p.plan_id != plan_id {
         return Err(err(
             code::CONFLICT,
             "the plan changed since it was reviewed; review it again",
         ));
     }
-    let data = std::fs::read(&p.archive).map_err(|e| err(code::INTERNAL, e.to_string()))?;
+    let archive = match source {
+        Source::Local(path) => path,
+        Source::Download(url) => download(
+            &url,
+            &archive_name(&p.version, &p.target),
+            &p.sha256,
+            p.size,
+        )
+        .await
+        .map_err(|e| err(code::UNAVAILABLE, e))?,
+    };
+    let data = std::fs::read(&archive).map_err(|e| err(code::INTERNAL, e.to_string()))?;
     let out = run(
         remote,
         INSTALL,
@@ -301,7 +575,17 @@ pub fn older(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{installed_version, older, target_for};
+    use super::{archive_name, installed_version, older, release_url, target_for};
+
+    #[test]
+    fn a_release_publishes_each_targets_archive_under_its_version() {
+        let file = archive_name("0.12.0", "aarch64-apple-darwin");
+        assert_eq!(file, "dreamer-server-0.12.0-aarch64-apple-darwin.tar.gz");
+        assert_eq!(
+            release_url("0.12.0", &file),
+            "https://github.com/probablyrobot/dreamer/releases/download/v0.12.0/dreamer-server-0.12.0-aarch64-apple-darwin.tar.gz"
+        );
+    }
 
     #[test]
     fn versions_are_read_and_compared_as_numbers() {

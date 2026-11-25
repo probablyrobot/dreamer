@@ -2732,7 +2732,7 @@ pub struct HostSubscribe {
 pub struct InstallPlanParams {
     #[prost(string, tag = "1")]
     pub name: String,
-    /// Directory of server archives on this machine; default DREAMER_SERVER_ARTIFACTS, else share/dreamer/server beside this daemon.
+    /// Directory of server archives on this machine, used with no download; default DREAMER_SERVER_ARTIFACTS. With neither, the archive is taken from share/dreamer/server beside this daemon or the downloads kept in the data directory, else downloaded from this version's release (or DREAMER_SERVER_URL).
     #[prost(string, optional, tag = "2")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifacts: Option<String>,
@@ -2762,6 +2762,7 @@ pub struct InstallPlan {
     /// The version that would be installed (this daemon's own).
     #[prost(string, tag = "8")]
     pub version: String,
+    /// The archive on this machine, or the address hosts.install downloads it from.
     #[prost(string, tag = "9")]
     pub archive: String,
     #[prost(string, tag = "10")]

@@ -2661,6 +2661,7 @@
         "description": "What hosts.install would do, for review: found by probing the host through SSH. Installing requires this plan's id, so nothing different from what was reviewed can be installed.",
         "properties": {
           "archive": {
+            "description": "The archive on this machine, or the address hosts.install downloads it from.",
             "type": "string"
           },
           "destination": {
@@ -2716,7 +2717,7 @@
       "InstallPlanParams": {
         "properties": {
           "artifacts": {
-            "description": "Directory of server archives on this machine; default DREAMER_SERVER_ARTIFACTS, else share/dreamer/server beside this daemon.",
+            "description": "Directory of server archives on this machine, used with no download; default DREAMER_SERVER_ARTIFACTS. With neither, the archive is taken from share/dreamer/server beside this daemon or the downloads kept in the data directory, else downloaded from this version's release (or DREAMER_SERVER_URL).",
             "type": "string"
           },
           "name": {
@@ -6790,7 +6791,7 @@
           }
         },
         {
-          "description": "Directory of server archives on this machine; default DREAMER_SERVER_ARTIFACTS, else share/dreamer/server beside this daemon.",
+          "description": "Directory of server archives on this machine, used with no download; default DREAMER_SERVER_ARTIFACTS. With neither, the archive is taken from share/dreamer/server beside this daemon or the downloads kept in the data directory, else downloaded from this version's release (or DREAMER_SERVER_URL).",
           "name": "artifacts",
           "schema": {
             "type": "string"

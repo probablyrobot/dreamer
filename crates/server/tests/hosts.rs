@@ -55,13 +55,14 @@ impl Two {
                 r#"#!/bin/sh
 while [ "$1" != -- ]; do shift; done
 echo $$ > '{pid}'
-export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
+export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}' DREAMER_DATA_DIR='{data}'
 export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
 exec /bin/sh -c "exec $3"
 "#,
                 pid = root.join("bridge-pid").display(),
                 rt = root.join("far/rt").display(),
                 st = root.join("far/st").display(),
+                data = root.join("far/data").display(),
                 daemon = EXE,
             ),
         )
@@ -74,6 +75,13 @@ exec /bin/sh -c "exec $3"
             .env("DREAMER_RUNTIME_DIR", root.join("rt"))
             .env("DREAMER_STATE_DIR", root.join("st"))
             .env("DREAMER_CONFIG_DIR", root.join("config"))
+            .env("DREAMER_DATA_DIR", root.join("data"))
+            // Server archives are "downloaded" from here, never the network.
+            .env(
+                "DREAMER_SERVER_URL",
+                format!("file://{}", root.join("release").display()),
+            )
+            .env_remove("DREAMER_SERVER_ARTIFACTS")
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1")
             .env("DREAMER_SSH", &ssh)
             .env("DREAMER_TEST_BACKOFF_MS", "100")
@@ -455,7 +463,7 @@ fn fake_host_env(two: &Two, old: &str, env: &str) -> PathBuf {
 while [ "$1" != -- ]; do shift; done
 echo $$ > '{pid}'
 export HOME='{home}' PATH='{fakebin}':"$PATH"
-export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}'
+export DREAMER_RUNTIME_DIR='{rt}' DREAMER_STATE_DIR='{st}' DREAMER_DATA_DIR='{data}'
 export DREAMER_FORBID_DEFAULT_TMUX=1 DREAMER_DAEMON='{daemon}'
 {env}
 exec /bin/sh -c "exec $3"
@@ -465,6 +473,7 @@ exec /bin/sh -c "exec $3"
             fakebin = fakebin.display(),
             rt = root.join("far/rt").display(),
             st = root.join("far/st").display(),
+            data = root.join("far/data").display(),
             daemon = EXE,
         ),
     );
@@ -707,6 +716,115 @@ async fn an_incompatible_host_is_refused_in_the_handshake_and_an_upgrade_fixes_i
         s.remote.map(|v| v.build_family),
         Some(wire::Identity::current("test").build_family)
     );
+}
+
+async fn install_plan(c: &Client) -> Result<api::InstallPlan, client::ClientError> {
+    match c
+        .call(Request::HostsInstallPlan(api::InstallPlanParams {
+            name: "devbox".into(),
+            artifacts: None,
+        }))
+        .await?
+    {
+        Response::HostsInstallPlan(p) => Ok(p),
+        other => panic!("{other:?}"),
+    }
+}
+
+async fn install(c: &Client, plan_id: &str) -> Result<api::InstallResult, client::ClientError> {
+    match c
+        .call(Request::HostsInstall(api::InstallParams {
+            name: "devbox".into(),
+            artifacts: None,
+            plan_id: plan_id.into(),
+        }))
+        .await?
+    {
+        Response::HostsInstall(r) => Ok(r),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_no_archive_here_the_releases_is_downloaded_checked_and_kept() {
+    let two = Two::new();
+    let artifacts = fake_host_with(&two, "0.0.9");
+    let c = two.client().await;
+    connect_devbox(&two, &c).await;
+    let version = env!("CARGO_PKG_VERSION");
+    let file = format!("dreamer-server-{version}-x86_64-unknown-linux-gnu.tar.gz");
+    let current = || {
+        std::fs::read_link(two.root.join("far/home/.local/share/dreamer/current")).expect("current")
+    };
+
+    // Not published: the plan says where it looked and what to do.
+    let e = install_plan(&c).await.expect_err("nothing published");
+    assert!(
+        e.to_string().contains("DREAMER_SERVER_URL") && e.to_string().contains(&file),
+        "{e}"
+    );
+
+    // Published (the stand-in release is a file:// directory).
+    let release = two.root.join("release");
+    std::fs::create_dir_all(&release).expect("release");
+    for f in [file.clone(), format!("{file}.sha256")] {
+        std::fs::copy(artifacts.join(&f), release.join(&f)).expect("publish");
+    }
+    let sum_file = release.join(format!("{file}.sha256"));
+    let sum = std::fs::read_to_string(&sum_file).expect("sum");
+    let p = install_plan(&c).await.expect("plan");
+    assert_eq!(
+        p.archive,
+        format!("file://{}/{file}", release.display()),
+        "{p:?}"
+    );
+    assert_eq!(
+        p.size,
+        std::fs::metadata(release.join(&file)).expect("size").len()
+    );
+    assert_eq!(Some(p.sha256.as_str()), sum.split_whitespace().next());
+    assert!(p.steps[0].starts_with(&format!("Download {file}")), "{p:?}");
+
+    // The release's checksum changed after the review: refused.
+    let wrong = format!("{}  {file}\n", "0".repeat(64));
+    std::fs::write(&sum_file, &wrong).expect("change the sum");
+    let e = install(&c, &p.plan_id).await.expect_err("changed");
+    assert!(e.to_string().contains("review it again"), "{e}");
+
+    // A plan whose checksum the download does not match installs nothing
+    // and keeps nothing.
+    let bad = install_plan(&c).await.expect("plan with the wrong sum");
+    let e = install(&c, &bad.plan_id).await.expect_err("mismatch");
+    assert!(
+        e.to_string().contains("SHA-256") && e.to_string().contains("nothing was installed"),
+        "{e}"
+    );
+    let cache = two.root.join("data/server-archives");
+    assert!(!cache.join(&file).exists());
+    assert_eq!(current(), PathBuf::from("versions/0.0.9"));
+
+    // The right one is downloaded, checked, kept, and installed.
+    std::fs::write(&sum_file, &sum).expect("restore the sum");
+    let p = install_plan(&c).await.expect("plan");
+    let r = install(&c, &p.plan_id).await.expect("install");
+    assert_eq!(r.version, version);
+    assert_eq!(current(), PathBuf::from(format!("versions/{version}")));
+    assert_eq!(
+        std::fs::read(cache.join(&file)).expect("kept"),
+        std::fs::read(artifacts.join(&file)).expect("archive")
+    );
+    let left: Vec<_> = std::fs::read_dir(&cache)
+        .expect("cache")
+        .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().into_owned()))
+        .filter(|n| n.ends_with(".part"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    // Kept: the next plan takes it from the cache, with the release gone.
+    std::fs::remove_dir_all(&release).expect("unpublish");
+    let p = install_plan(&c).await.expect("plan from the cache");
+    assert_eq!(p.archive, cache.join(&file).display().to_string());
+    assert!(p.steps[0].starts_with("Send"), "{p:?}");
 }
 
 async fn connect_devbox(two: &Two, c: &Client) -> api::HostStatus {
