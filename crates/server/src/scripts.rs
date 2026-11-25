@@ -13,6 +13,7 @@
 //! it is parked. A reload starts the new source first and swaps only once
 //! it has loaded, so a bad update leaves the last-good version running.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -266,6 +267,7 @@ async fn start(state: &Arc<State>, e: &Entry, source: String) -> Result<Running,
         source,
         events: e.events.clone(),
         limits: e.limits,
+        state: state.clone(),
     };
     std::thread::Builder::new()
         .name(format!("script-{}", e.name))
@@ -283,14 +285,36 @@ struct Job {
     source: String,
     events: Vec<String>,
     limits: Limits,
+    state: Arc<State>,
 }
 
 /// The script's calls, made on its own connection.
-struct ClientHost(Rc<client::Client>);
+struct ClientHost {
+    client: Rc<client::Client>,
+    state: Arc<State>,
+    /// The filter whose `filters.matched` event `on_event` is handling.
+    cause: Rc<RefCell<Option<String>>>,
+}
+
+/// The text a `terminal.input` request types, if it types text.
+fn typed_text(r: &api::Request) -> Option<(u32, String)> {
+    let api::Request::TerminalInput(i) = r else {
+        return None;
+    };
+    match &i.event {
+        Some(api::terminal_input::Event::Text(t)) => Some((i.pane, t.text.clone())),
+        Some(api::terminal_input::Event::Paste(p)) => {
+            Some((i.pane, String::from_utf8_lossy(&p.data).into_owned()))
+        }
+        _ => None,
+    }
+}
 
 impl Host for ClientHost {
     fn call(&self, method: String, params: serde_json::Value) -> HostFuture {
-        let c = self.0.clone();
+        let c = self.client.clone();
+        let cause = self.cause.borrow().clone();
+        let state = self.state.clone();
         Box::pin(async move {
             let request = api::Request::from_json(&method, params).map_err(|e| HostError {
                 code: match e {
@@ -299,6 +323,14 @@ impl Host for ClientHost {
                 },
                 message: e.to_string(),
             })?;
+            // Typing in answer to a filter's match is that filter's own
+            // input, for its loop protection. Recorded before the input
+            // goes out, so its echo can never come back first.
+            if let Some(filter) = &cause
+                && let Some((pane, text)) = typed_text(&request)
+            {
+                state.filters.caused_input(filter, pane, &text);
+            }
             match c.call(request).await {
                 Ok(r) => Ok(r.to_json()),
                 Err(client::ClientError::Rpc(e)) => Err(HostError {
@@ -335,6 +367,7 @@ fn worker(
     };
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
+        let cause: Rc<RefCell<Option<String>>> = Rc::default();
         let setup = async {
             let stream = tokio::net::UnixStream::from_std(stream).map_err(|e| e.to_string())?;
             let (r, w) = stream.into_split();
@@ -343,8 +376,15 @@ fn worker(
                 .map_err(|e| e.to_string())?;
             let pushed = client.pushed().ok_or("no event stream")?;
             let client = Rc::new(client);
-            let script = Script::with_host(job.limits, Rc::new(ClientHost(client.clone())))
-                .map_err(|e| e.to_string())?;
+            let script = Script::with_host(
+                job.limits,
+                Rc::new(ClientHost {
+                    client: client.clone(),
+                    state: job.state.clone(),
+                    cause: cause.clone(),
+                }),
+            )
+            .map_err(|e| e.to_string())?;
             script
                 .run(&job.name, &job.source)
                 .await
@@ -396,7 +436,12 @@ fn worker(
                         }));
                     }
                     for e in items {
-                        match script.handle("on_event", &e).await {
+                        *cause.borrow_mut() = (e["kind"] == crate::events::kind::FILTER_MATCHED)
+                            .then(|| e["subject"].as_str().map(str::to_owned))
+                            .flatten();
+                        let handled = script.handle("on_event", &e).await;
+                        cause.borrow_mut().take();
+                        match handled {
                             Ok(_) => {
                                 let _ = reports.send(Report::Handled);
                             }

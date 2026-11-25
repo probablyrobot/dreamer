@@ -10,7 +10,10 @@
 //! - matches acted on are rate-limited per filter;
 //! - lines that echo input the filter itself typed are skipped;
 //! - a circuit breaker trips (pauses) a filter whose triggers come faster
-//!   than its breaker allows in any 10 s, and records why.
+//!   than its breaker allows in any 10 s, and records why;
+//! - input a script types while handling one of the filter's
+//!   `filters.matched` events counts as the filter's own: its echo is
+//!   skipped, and it is a trigger for the breaker.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -40,6 +43,9 @@ struct Filter {
     /// Installed by the user's own client, not by an app with
     /// `filters.manage`; no app may change it.
     by_owner: bool,
+    /// Input scripts typed in answer to this filter's matches, not yet
+    /// taken in by its run: (pane, text, when).
+    caused: Mutex<Vec<(u32, String, Instant)>>,
 }
 
 impl Filter {
@@ -141,6 +147,21 @@ impl Filters {
         Ok(f.status())
     }
 
+    /// A script handling a `filters.matched` event from filter `name` is
+    /// typing `text` into `pane`. The filter takes it as its own input:
+    /// its echo is not matched, and it counts as one of the filter's
+    /// triggers, so a rule that feeds itself through a script trips the
+    /// breaker like one that types directly.
+    pub fn caused_input(&self, name: &str, pane: u32, text: &str) {
+        let Ok(f) = self.get(name) else { return };
+        if let Ok(mut c) = f.caused.lock() {
+            // Bounded: a run that is not taking these in is not running.
+            if c.len() < 1024 {
+                c.push((pane, text.trim().to_owned(), Instant::now()));
+            }
+        }
+    }
+
     pub fn remove_all(&self) {
         let names: Vec<String> = self
             .entries
@@ -226,6 +247,7 @@ pub async fn install(state: &Arc<State>, spec: api::FilterSpec) -> Result<Filter
         active,
         removed: std::sync::atomic::AtomicBool::new(false),
         by_owner: crate::leases::caller().is_none_or(|c| c.owner),
+        caused: Mutex::new(Vec::new()),
     });
     let (started, ready) = oneshot::channel();
     tokio::spawn(supervise(state.clone(), filter.clone(), started));
@@ -326,6 +348,11 @@ async fn run(
     let mut refilled = Instant::now();
     let mut triggers: VecDeque<Instant> = VecDeque::new();
     let mut own: Vec<(u32, String, Instant)> = Vec::new();
+    // What scripts typed while this filter was stopped is not a trigger
+    // of this run.
+    if let Ok(mut c) = f.caused.lock() {
+        c.clear();
+    }
     loop {
         let item = tokio::select! {
             changed = active.changed() => {
@@ -350,6 +377,21 @@ async fn run(
         }
         for (index, line) in d.lines.iter().enumerate() {
             let now = Instant::now();
+            let caused = f
+                .caused
+                .lock()
+                .map(|mut c| std::mem::take(&mut *c))
+                .unwrap_or_default();
+            if !caused.is_empty() {
+                f.update(|s| s.triggered += caused.len() as u64);
+                for (pane, text, at) in caused {
+                    triggers.push_back(now);
+                    own.push((pane, text, at));
+                }
+                if tripped(state, f, &mut triggers, breaker, now) {
+                    return Ok(());
+                }
+            }
             own.retain(|(_, _, at)| now.duration_since(*at) < OWN_INPUT);
             if own.iter().any(|(pane, text, _)| {
                 *pane == d.pane && !text.is_empty() && line.contains(text.as_str())
@@ -393,29 +435,44 @@ async fn run(
             for _ in 0..fired {
                 triggers.push_back(now);
             }
-            while triggers
-                .front()
-                .is_some_and(|t| now.duration_since(*t) > WINDOW)
-            {
-                triggers.pop_front();
-            }
-            if triggers.len() > breaker {
-                let why = format!(
-                    "tripped: {} triggers within {} s (more than {breaker}); a loop?",
-                    triggers.len(),
-                    WINDOW.as_secs()
-                );
-                log::warn(format!("filters: `{}` {why}", f.spec.name));
-                state.events.filter_tripped(&f.spec.name, &why);
-                f.update(|s| {
-                    s.state = FilterState::Tripped as i32;
-                    s.reason = Some(why);
-                });
-                f.active.send_replace(false);
+            if tripped(state, f, &mut triggers, breaker, now) {
                 return Ok(());
             }
         }
     }
+}
+
+/// Trip the filter if more than `breaker` triggers fell within the last
+/// window: record why, and stop it until `filters.resume`.
+fn tripped(
+    state: &Arc<State>,
+    f: &Arc<Filter>,
+    triggers: &mut VecDeque<Instant>,
+    breaker: usize,
+    now: Instant,
+) -> bool {
+    while triggers
+        .front()
+        .is_some_and(|t| now.duration_since(*t) > WINDOW)
+    {
+        triggers.pop_front();
+    }
+    if triggers.len() <= breaker {
+        return false;
+    }
+    let why = format!(
+        "tripped: {} triggers within {} s (more than {breaker}); a loop?",
+        triggers.len(),
+        WINDOW.as_secs()
+    );
+    log::warn(format!("filters: `{}` {why}", f.spec.name));
+    state.events.filter_tripped(&f.spec.name, &why);
+    f.update(|s| {
+        s.state = FilterState::Tripped as i32;
+        s.reason = Some(why);
+    });
+    f.active.send_replace(false);
+    true
 }
 
 /// Act on one matched line; the number of triggers fired.

@@ -128,6 +128,10 @@ report, restart) is up to whoever hosts the script.
   the script's global `on_event(event)` is called for each event, with the
   event record. A gap arrives as an event of kind `events.gap` with `first`
   and `last`. Receiving events needs `events.subscribe` in the grant.
+- **Filter loops.** Text a script types while handling a
+  `filters.matched` event counts as that filter's own input, so a script
+  that keeps feeding a filter its own match trips the filter's circuit
+  breaker ([filters.md](filters.md#loops)).
 - **Errors.** An error in `on_event` is counted and kept as the last
   error; the script keeps running.
 - **Budgets.** A budget overrun in `on_event` terminates the instance

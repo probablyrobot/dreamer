@@ -1,6 +1,7 @@
 //! Filters through a real daemon: a derived stream of matched
 //! lines, output a plain tmux client sees unchanged, and a self-triggering
-//! rule stopped by the circuit breaker.
+//! rule stopped by the circuit breaker, whether the filter types itself or
+//! a script handling its matches does.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -309,6 +310,107 @@ async fn a_self_triggering_filter_is_tripped() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(count(), settled, "no more triggers after the trip");
     assert!(settled <= 8, "{settled} pongs");
+}
+
+/// Each `LOOP` the filter reports makes the script type a command that
+/// prints `LOOP` again.
+const FEEDER: &str = r#"
+function on_event(e)
+  dreamer.terminal.input({ pane = e.pane, event = { text = { text = "echo LOOP\n" } } })
+end
+"#;
+
+#[tokio::test]
+async fn a_rule_that_feeds_itself_through_a_script_is_tripped() {
+    let s = Setup::new();
+    let mut c = s.client().await;
+    let mut rx = c.pushed().expect("pushed");
+    let pane = pane0(&c).await;
+    call(
+        &c,
+        Request::EventsSubscribe(api::EventSubscribe {
+            kinds: vec!["filters.tripped".into()],
+            ..api::EventSubscribe::default()
+        }),
+    )
+    .await
+    .expect("events");
+    // The filter itself only records events; the script handler types.
+    call(
+        &c,
+        Request::FiltersInstall(api::FilterSpec {
+            name: "looper".into(),
+            panes: vec![pane],
+            pattern: "^LOOP$".into(),
+            event: true,
+            breaker: Some(5),
+            per_second: Some(100),
+            grant: grant(&["taps.subscribe"], &[pane]),
+            ..api::FilterSpec::default()
+        }),
+    )
+    .await
+    .expect("install");
+    call(
+        &c,
+        Request::ScriptsLoad(api::ScriptLoad {
+            name: "feeder".into(),
+            source: FEEDER.into(),
+            grant: grant(&["events.subscribe", "terminal.input"], &[pane]),
+            events: vec!["filters.matched".into()],
+            limits: None,
+        }),
+    )
+    .await
+    .expect("load");
+    s.tmux(&["send-keys", "-t", &format!("%{pane}"), "echo LOOP", "Enter"]);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let tripped = loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Some(Pushed::Event { topic, payload, .. })) if topic == "events.batch" => {
+                let b = api::EventBatch::decode(payload.as_slice()).expect("batch");
+                if let Some(e) = b.events.into_iter().find(|e| e.kind == "filters.tripped") {
+                    break e;
+                }
+            }
+            Ok(Some(_)) => {}
+            other => panic!("the loop was never stopped: {other:?}"),
+        }
+    };
+    assert_eq!(tripped.subject.as_deref(), Some("looper"));
+    let st = status(&c, "looper").await;
+    assert_eq!(st.state, api::FilterState::Tripped as i32, "{st:?}");
+    assert!(st.reason.clone().unwrap_or_default().contains("a loop?"));
+    assert!(
+        (6..=8).contains(&st.triggered),
+        "the script's typing counts as the filter's triggers: {st:?}"
+    );
+    assert!(
+        st.skipped_own >= 1,
+        "the echo of what the script typed is not matched: {st:?}"
+    );
+    // With the filter stopped, the script hears nothing and the pane
+    // stops filling.
+    let count = || {
+        s.tmux
+            .run_checked(&[
+                "capture-pane",
+                "-p",
+                "-S",
+                "-200",
+                "-t",
+                &format!("%{pane}"),
+            ])
+            .expect("capture")
+            .lines()
+            .filter(|l| *l == "LOOP")
+            .count()
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let settled = count();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(count(), settled, "no more input after the trip");
+    assert!(settled <= 10, "{settled} lines of LOOP");
 }
 
 async fn decorations(c: &Client, pane: u32) -> Vec<api::Decoration> {
