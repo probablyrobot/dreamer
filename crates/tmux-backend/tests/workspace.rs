@@ -210,3 +210,75 @@ windows:
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+async fn pane_format(conn: &Connection, pane: &str, format: &str) -> String {
+    let r = conn
+        .execute(
+            TmuxCommand::new("display-message")
+                .flag("-p")
+                .opt("-t", pane)
+                .format(format),
+        )
+        .await
+        .expect("display-message");
+    lines(&r[0]).join(" ")
+}
+
+/// A kept pane shows everything its program wrote and how it ended, even
+/// when the program exits at once (#236), and still names the program
+/// while it runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_kept_pane_shows_all_output_of_a_program_that_exits_at_once() {
+    const SHORT: usize = 6;
+    let server = TmuxServer::start(160, 50, "sleep 600").expect("tmux");
+    server
+        .run_checked(&["set-option", "-g", "default-shell", "/bin/sh"])
+        .expect("shell");
+    let (conn, _events) = Connection::spawn(config(&server)).await.expect("connect");
+
+    let mut yaml =
+        String::from("version: 1\nname: kept\nwindows:\n  - arrange: tiled\n    panes:\n");
+    for i in 0..SHORT {
+        yaml += &format!(
+            "      - {{ keep: true, shell: 'printf \"kept-%s:%s\\n\" {i} \"$(pwd)\"; exit 3' }}\n"
+        );
+    }
+    yaml += "      - { keep: true, exec: [sleep, '600'] }\n";
+    let dir = std::env::temp_dir().join(format!("dreamer-ws-kept-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let path = dir.join("kept.yaml");
+    std::fs::write(&path, yaml).expect("write");
+    let plan = workspace_config::load(&path).expect("valid workspace");
+    let applied = apply(&conn, &plan).await.expect("apply");
+    let panes = &applied.windows[0].1;
+    assert_eq!(panes.len(), SHORT + 1);
+
+    for (i, pane) in panes[..SHORT].iter().enumerate() {
+        let pane = pane.to_string();
+        wait_for_text(&conn, &pane, &format!("kept-{i}")).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let state = pane_format(&conn, &pane, "#{pane_dead} #{pane_dead_status}").await;
+            if state == "1 3" {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "{pane}: {state}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    let sleeper = panes[SHORT].to_string();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let command = pane_format(&conn, &sleeper, "#{pane_current_command}").await;
+        if command == "sleep" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{sleeper}: {command}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
