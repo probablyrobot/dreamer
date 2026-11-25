@@ -41,7 +41,13 @@ build() {
   export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/usr/src/debug/$pkgname"
   export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$srcdir=/usr/src/debug/$pkgname"
   export CXXFLAGS="${CXXFLAGS:-} -ffile-prefix-map=$srcdir=/usr/src/debug/$pkgname"
-  cargo build --release --locked -p dreamer-app -p dreamer-server -p dreamer-cli -p dreamer-termapp
+  # Web panes on x86-64, where Dreamer Web exists. Chromium is not in the
+  # package: users add it with `dream web install`, and nothing links it.
+  local features=()
+  if [[ $CARCH == x86_64 ]]; then
+    features=(--features dreamer-app/web)
+  fi
+  cargo build --release --locked -p dreamer-app -p dreamer-server -p dreamer-cli -p dreamer-termapp "${features[@]}"
 }
 
 check() {

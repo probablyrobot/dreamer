@@ -93,7 +93,8 @@ people want:
 
 Dreamer is at version 0.12 and changes quickly. macOS on Apple Silicon is
 the most used platform. Linux packages are built and checked for every
-release; web panes are not available on Linux yet.
+release; on x86-64 they include web panes, with Chromium added by
+`dream web install`. Linux on ARM64 has no web panes yet.
 [Terminal compatibility](docs/terminal-compatibility.md) and
 [performance](docs/performance.md) record what is tested and measured.
 

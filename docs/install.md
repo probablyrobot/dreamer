@@ -187,9 +187,9 @@ dream web status
 dream web remove
 ```
 
-It is available for macOS (Apple Silicon) and Linux (x86-64), where it
-takes effect in a Dreamer built with web panes; the Linux packages are
-built without them so far. See [Dreamer Web](desktop.md#dreamer-web).
+It is available for macOS (Apple Silicon) and Linux (x86-64). The x86-64
+Linux packages (tarball, `.deb`, `.rpm`, and Arch) are built with web
+panes; Linux on ARM64 has none yet. See [Dreamer Web](desktop.md#dreamer-web).
 
 ## Set up your agents
 

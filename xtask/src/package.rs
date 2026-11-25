@@ -18,13 +18,15 @@
 //! - `cargo xtask package --platform linux` (on Linux) writes
 //!   `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256`: a
 //!   self-contained release that `packaging/install.sh` installs into the
-//!   user's home directory.
+//!   user's home directory. On x86-64 the desktop is built with web panes;
+//!   Chromium is not in the tarball (nor in the `.deb`, `.rpm`, or Arch
+//!   package): users add the component below with `dream web install`.
 //! - `cargo xtask package --platform web` (on Linux, x86-64) writes
 //!   `target/package/linux/dreamer-web/` and
 //!   `dreamer-web-<version>-x86_64-unknown-linux-gnu.tar.gz` (with
 //!   `.sha256` and `.json`): the Dreamer Web component for Linux
-//!   ([`crate::web`]), checked by drawing a page offscreen from it. The
-//!   base packages above stay without web panes. This needs `cargo xtask
+//!   ([`crate::web`]), checked by drawing a page offscreen from it. This
+//!   needs `cargo xtask
 //!   deps web`'s pinned CEF distribution, fetched (checksum-verified) when
 //!   missing.
 //! - `cargo xtask package --platform server [--target TRIPLE]` writes
@@ -309,6 +311,12 @@ fn linux_tarball(root: &Path) -> Result<(PathBuf, String, &'static str), String>
             ),
         )
         .current_dir(root);
+    // Web panes, where Dreamer Web exists (x86-64). Nothing links
+    // libcef.so: `dreamer` loads it from the component at run time.
+    let web = triple == crate::web::LINUX_TARGET;
+    if web {
+        cargo.args(["--features", "dreamer-app/web"]);
+    }
     if !cargo
         .status()
         .map_err(|e| format!("cargo build: {e}"))?
@@ -335,6 +343,16 @@ fn linux_tarball(root: &Path) -> Result<(PathBuf, String, &'static str), String>
             &crate::util::cargo_target(root).join("release").join(exe),
             &stage.join("bin").join(exe),
         )?;
+    }
+    // `dreamer` must start without Dreamer Web installed.
+    let linked = linked_libraries(&stage.join("bin/dreamer"), triple)?;
+    if let Some(cef) = linked.iter().find(|l| l.contains("libcef")) {
+        return Err(format!(
+            "dreamer links {cef}; Chromium belongs in Dreamer Web"
+        ));
+    }
+    if web {
+        println!("package: dreamer built with web panes (Chromium comes from `dream web install`)");
     }
     let fonts = crate::deps::ensure_fonts(&crate::manifest::Manifest::load()?)?;
     for entry in std::fs::read_dir(&fonts)
