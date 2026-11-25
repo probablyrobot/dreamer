@@ -75,7 +75,8 @@ it with `filters.remove`.
 ## Loops
 
 A filter whose output produces its own match would run forever. Three
-things stop that:
+things stop that, whether the filter types the input itself or a
+[script](scripts.md) does in answer to its `filters.matched` events:
 
 - **Its own input is not matched.** Lines that contain the text the filter
   typed, within 5 s, are skipped (`skipped_own`): the shell echoing its
@@ -85,6 +86,12 @@ things stop that:
   10 s trip the filter. It stops, its state becomes `tripped` with the
   reason, a `filters.tripped` event is recorded, and it stays stopped until
   `filters.resume`.
+
+Text or a paste a script types while its `on_event` handles one of the
+filter's `filters.matched` events counts as the filter's own: its echo is
+skipped, and each one is a trigger for the breaker. Recording events on
+their own is not a trigger, so a filter pane watching a busy log is not
+tripped by it.
 
 Messages a filter sends also carry the broker's causal depth limit
 ([messages.md](messages.md#loops-and-limits)).
