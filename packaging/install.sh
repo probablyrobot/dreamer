@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://github.com/probablyrobot/dreamer/releases/latest/download/install.sh | sh
 #
-#   sh install.sh --version 0.11.0
+#   sh install.sh --version 0.12.0
 #   sh install.sh --from dreamer-x86_64-unknown-linux-gnu.tar.gz
 #   sh install.sh --uninstall
 #

@@ -15,7 +15,7 @@ the Rust side of its two program interfaces:
 
 ```toml
 [dependencies]
-dreamer-sdk = "0.11"
+dreamer-sdk = "0.12"
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 

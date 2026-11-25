@@ -205,7 +205,7 @@ Dreamer crate your program adds:
 
 ```toml
 [dependencies]
-dreamer-sdk = "0.11"
+dreamer-sdk = "0.12"
 ```
 
 `dreamer_sdk::ui` builds trees, and `dreamer_sdk::app` runs the loop:
