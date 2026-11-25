@@ -11,6 +11,15 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # A pull request that changes how the release is built runs it all
+  # except the draft, so packaging changes are checked before a tag.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - xtask/src/package.rs
+      - xtask/src/web.rs
+      - xtask/src/fresh.rs
+      - packaging/**
 
 permissions:
   contents: write
@@ -43,6 +52,7 @@ jobs:
       - name: Dreamer Web for Linux
         run: cargo xtask package --platform web
       - name: Draft the release with the archives
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
