@@ -157,11 +157,21 @@ async fn mirror_has(c: &Client, pane: u32, line: &str) -> bool {
 async fn wait_mirror(c: &Client, pane: u32, line: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !mirror_has(c, pane, line).await {
-        assert!(
-            Instant::now() < deadline,
-            "the mirror of %{pane} never showed {line:?}; tmux did; status {:?}",
-            mirror(c, pane).await
-        );
+        if Instant::now() >= deadline {
+            // What the mirror holds, or why it could not be read, so a
+            // failure tells a missing line from a failed read.
+            let read = c
+                .call(Request::TerminalRead(api::ReadParams {
+                    pane,
+                    history: Some(200),
+                    endpoint: None,
+                }))
+                .await;
+            panic!(
+                "the mirror of %{pane} never showed {line:?}; tmux did; status {:?}; read {read:?}",
+                mirror(c, pane).await
+            );
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
