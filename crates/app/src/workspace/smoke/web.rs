@@ -525,6 +525,7 @@ pub(crate) async fn run(
         y: TAB_STRIP + 8.0,
         width: palette_right.min(resized.x + resized.width) - resized.x.max(palette_left),
         height: 36.0,
+        scale: resized.scale,
     };
     if palette.width < 16.0 {
         fail("the palette does not cross the web pane");

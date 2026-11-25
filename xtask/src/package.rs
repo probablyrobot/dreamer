@@ -19,6 +19,14 @@
 //!   `target/package/linux/dreamer-<target>.tar.gz` and its `.sha256`: a
 //!   self-contained release that `packaging/install.sh` installs into the
 //!   user's home directory.
+//! - `cargo xtask package --platform web` (on Linux, x86-64) writes
+//!   `target/package/linux/dreamer-web/` and
+//!   `dreamer-web-<version>-x86_64-unknown-linux-gnu.tar.gz` (with
+//!   `.sha256` and `.json`): the Dreamer Web component for Linux
+//!   ([`crate::web`]), checked by drawing a page offscreen from it. The
+//!   base packages above stay without web panes. This needs `cargo xtask
+//!   deps web`'s pinned CEF distribution, fetched (checksum-verified) when
+//!   missing.
 //! - `cargo xtask package --platform server [--target TRIPLE]` writes
 //!   `target/package/server/dreamer-server-<version>-<target>.tar.gz` and
 //!   its `.sha256`: the headless server and CLI (`dreamerd`, `dream`,
@@ -108,14 +116,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "deb" => return deb_package(&repo_root()).map(drop),
         "rpm" => return rpm_package(&repo_root()).map(drop),
         "server" => return server_archive(&repo_root(), target).map(drop),
+        "web" if cfg!(target_os = "linux") => return linux_web_archive(&repo_root()).map(drop),
         "macos" => {}
         "current" if cfg!(target_os = "macos") => {}
         "current" => {
-            return Err("on Linux, choose a package: --platform linux, deb, rpm, or arch".into());
+            return Err(
+                "on Linux, choose a package: --platform linux, deb, rpm, arch, server, or web"
+                    .into(),
+            );
         }
         other => {
             return Err(format!(
-                "unknown platform `{other}` (macos, arch, linux, deb, rpm, server)"
+                "unknown platform `{other}` (macos, arch, linux, deb, rpm, server, web)"
             ));
         }
     }
@@ -393,6 +405,38 @@ fn linux_tarball(root: &Path) -> Result<(PathBuf, String, &'static str), String>
         tarball.display()
     );
     Ok((stage, version, triple))
+}
+
+/// Linux: the Dreamer Web component and its archive, in
+/// `target/package/linux`, from a release build of the helper (and of the
+/// offscreen check that verifies it).
+fn linux_web_archive(root: &Path) -> Result<PathBuf, String> {
+    if crate::deps::host_triple()? != crate::web::LINUX_TARGET {
+        return Err(format!(
+            "Dreamer Web for Linux is built on {}",
+            crate::web::LINUX_TARGET
+        ));
+    }
+    let web = crate::deps::ensure_web(&crate::manifest::Manifest::load()?)?;
+    let version = version(root)?;
+    crate::web::build_linux(
+        root,
+        Profile::Release,
+        &["web-engine"],
+        &[format!(
+            "--remap-path-prefix={}=/usr/src/dreamer",
+            root.display()
+        )],
+    )?;
+    let bin = bin_dir(root, Profile::Release);
+    let out = root.join("target/package/linux");
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let component = crate::web::build_linux_component(&out, &bin, &web, &version)?;
+    crate::web::verify_linux_component(&component, &bin.join("examples/offscreen"))?;
+    let archive = crate::web::linux_component_archive(&component, &out, &version)?;
+    println!("package: {}", component.display());
+    println!("package: {} ({})", archive.display(), size(&archive));
+    Ok(archive)
 }
 
 /// The files a system package installs, under `dest/usr`, from the

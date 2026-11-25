@@ -46,15 +46,17 @@ commands:
   bindings [--check]           regenerate (or check) the libghostty-vt Rust bindings
   deps prepare|path [--target <triple>]
                                fetch, verify, and build pinned native dependencies
-  deps web                     fetch and verify the web engine's (CEF, cmake, Ninja; macOS)
+  deps web                     fetch and verify the web engine's (CEF; cmake and Ninja on macOS)
   web bundle [--release] [--install]
-                               the desktop with web panes and the Dreamer Web component beside it (macOS)
+                               the desktop with web panes and the Dreamer Web component beside it
+                               (Linux x86-64: also checked by drawing a page offscreen)
   web smoke [--packaged]       draw web panes in that bundle, or in target/package's app and component
   headless [--cargo-args]      list the packages of the headless build
   hooks install|status         use the versioned git hooks in .githooks/
-  package --platform macos|arch|linux|deb|rpm|server|current [--debug] [--source-only] [--nodeps] [--target T]
+  package --platform macos|arch|linux|deb|rpm|server|web|current [--debug] [--source-only] [--nodeps] [--target T]
           [--sign ID [--notarize PROFILE]]
                                build a package (macOS: zips of the app and of Dreamer Web, with signing records; ad hoc unless signed with Developer ID)
+                               (web: Linux x86-64, the Dreamer Web archive)
   package --platform linux --container [--arch arm64|amd64]
                                the Linux archives built in an ubuntu:24.04 container
   package --fresh [--arch arm64|amd64]
@@ -67,7 +69,7 @@ commands:
   schemes [--check]            generate the terminal color scheme table from the vendored files
   remote-acceptance            section 18.2 remote cases through a private, unprivileged sshd
   scenes [NAME]                open the design review's reference scenes in both skins, to capture
-  screenshot [--scene NAME] [--skin dark|light] [--settings YAML]
+  screenshot [--scene NAME] [--skin dark|light] [--settings YAML] [--x11]
                                capture Dreamer's own window in a reference scene (macOS; Linux under Hyprland)
   gate linux-desktop [--allow-missing wayland|x11]
                                real-display smoke on a Linux desktop (second machine)

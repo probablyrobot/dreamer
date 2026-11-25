@@ -1,7 +1,9 @@
 # Draft a GitHub release for a version tag with the x86-64 Linux archives:
 # the generic desktop tarball (which packaging/install.sh downloads) and
 # the headless server archive, each checked on fresh ubuntu:24.04
-# containers first. The macOS zip and the ARM64 archives are built and
+# containers first, and the Linux Dreamer Web component (Chromium for web
+# panes, which `dream web install` adds), checked by drawing a page with
+# it offscreen. The macOS zip and the ARM64 archives are built and
 # checked on the development Mac (no macOS or ARM64 runners) and added by
 # `cargo xtask release`, with the build report; see docs/packaging.md.
 name: release
@@ -36,6 +38,10 @@ jobs:
       - run: cargo xtask package --platform server
       - name: The archives and packages on fresh containers
         run: cargo xtask package --fresh --arch amd64
+      # The pinned CEF distribution, checksum-verified; the component is
+      # checked by drawing a page from it with no display.
+      - name: Dreamer Web for Linux
+        run: cargo xtask package --platform web
       - name: Draft the release with the archives
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,5 +57,8 @@ jobs:
             target/package/linux/dreamer-*-x86_64-unknown-linux-gnu.deb.sha256 \
             target/package/linux/dreamer-*-x86_64-unknown-linux-gnu.rpm \
             target/package/linux/dreamer-*-x86_64-unknown-linux-gnu.rpm.sha256 \
+            target/package/linux/dreamer-web-*-x86_64-unknown-linux-gnu.tar.gz \
+            target/package/linux/dreamer-web-*-x86_64-unknown-linux-gnu.tar.gz.sha256 \
+            target/package/linux/dreamer-web-*-x86_64-unknown-linux-gnu.tar.gz.json \
             target/package/fresh-amd64.json \
             packaging/install.sh

@@ -542,9 +542,11 @@ windows only.
 
 ## Web panes
 
-macOS only so far, and only with [Dreamer Web](#dreamer-web) added. A
-web pane shows one web page in a pane's rectangle, drawn by Chromium
-itself, and is
+With [Dreamer Web](#dreamer-web) added: on macOS, and on Linux (X11 and
+Wayland) in a [build with web panes](#a-build-with-web-panes) (the
+release's Linux packages are built without them so far). A web pane
+shows one web page in
+a pane's rectangle, drawn by Chromium itself, and is
 the [browser](#the-browser): its chrome shows only when asked for. In tmux
 it is an ordinary pane, so splits, resizes, zoom, moving it, and keeping
 it across desktop restarts all come from tmux.
@@ -565,13 +567,18 @@ it across desktop restarts all come from tmux.
   position (`@dreamer_web_scroll`) there: when the page leaves the
   screen, and every few seconds while it is shown. When the address
   there changes otherwise (`dream browser --pane`), the page loads it.
-- **What the desktop draws.** Chromium's own view, placed over the pane's
-  rectangle and moved with it on every layout change: splits, resizes,
-  zoom. It is hidden, not closed, while the pane is not shown (another
+- **What the desktop draws.** Chromium's own surface, placed over the
+  pane's rectangle and moved with it on every layout change: splits,
+  resizes, zoom. On macOS that is Chromium's own view; on X11, Chromium's
+  own child window; on Wayland, where Chromium cannot be put inside
+  another program's window, Chromium renders the page offscreen on the
+  GPU, each frame is copied on the GPU into a buffer of Dreamer's, and the
+  compositor draws that buffer in a subsurface of the window (the pixels
+  never pass through Dreamer's renderer). It is hidden, not closed, while the pane is not shown (another
   tab, or another pane zoomed). A native view is drawn above anything
   Dreamer draws, so while the command palette or the context menu is
   open, web panes show a snapshot of the page taken as it opened, and the
-  live page comes back when it closes. Pages are drawn in sRGB, as the
+  live page comes back when it closes. On macOS, pages are drawn in sRGB, as the
   terminals are, and color matched to the display as the window is, so a
   page's colors look as the same colors do in a terminal, and the
   snapshot has the live page's colors. With `web.color: display`
@@ -580,7 +587,8 @@ it across desktop restarts all come from tmux.
   video, CSS `color(display-p3 ...)`) keep their saturation; the snapshot
   is converted from that space to sRGB before it is drawn, so for as long
   as it shows those colors are clamped. Chromium takes the setting as it starts, so a
-  change applies once Dreamer restarts.
+  change applies once Dreamer restarts. Linux draws windows without color
+  management, so there pages, like terminals, are drawn as sRGB.
 - **Focus.** Clicking the page focuses its pane, here and in tmux; keys
   then go to the page. Focusing another pane (a click, the palette, the
   find bar, the drawer, tmux's prefix keys) takes the keys back, and
@@ -589,14 +597,19 @@ it across desktop restarts all come from tmux.
   methods go to Chromium as in Chrome. Dreamer's own shortcuts still
   work while a page
   has the keys: Cmd+J shows the drawer from inside a page, for example.
-  See [Menus and shortcuts](#menus-and-shortcuts).
+  See [Menus and shortcuts](#menus-and-shortcuts). On Wayland the page's
+  surface takes no input itself: the pane passes the mouse buttons, the
+  pointer's moves, the wheel, and keys on to Chromium (a key of one of
+  Dreamer's shortcuts stays Dreamer's). Input methods, a `<select>`'s
+  list, and drag and drop are not passed on there yet.
 - **Copy and paste.** In a page, Cmd+C, Cmd+X, Cmd+V, and Cmd+A
   (Ctrl+Shift+C, X, V, and A on Linux) are Chromium's own copy, cut,
   paste, and select all, so the clipboard, rich and HTML contents
   included, works as in Chrome. Cmd+X and Cmd+A are taken only in a page;
   elsewhere they still reach the program in the pane.
-- **Where pages run.** On this Mac, in the desktop's process and
-  Chromium's helper processes, which run from Dreamer Web's helper apps;
+- **Where pages run.** On this machine, in the desktop's process and
+  Chromium's helper processes, which run from Dreamer Web: its helper
+  apps on macOS, its `dreamer-web-helper` on Linux;
   Chromium's profiles are in `web/` in the desktop's state directory. See
   [Pages of a remote host](#pages-of-a-remote-host) for web panes in a
   host's window.
@@ -765,9 +778,11 @@ extension ([agents.md](agents.md#dreamers-tools-inside-pi)).
 
 Chromium is not in the Dreamer package. It is a separate component,
 Dreamer Web, so an install that only wants terminals stays small: the
-Dreamer zip is the same with or without it, and Dreamer Web is about
-150 MB to download and 334 MB installed. You add it once, in any of
-these ways; they all run the same installer:
+Dreamer package is the same with or without it. Dreamer Web is about
+150 MB to download and 334 MB installed on macOS (a zip), and 160 MB to
+download and 378 MB installed on Linux x86-64 (a gzipped tarball). You
+add it once, in any of these ways; they all run the same installer
+(the sizes quoted below are the Mac's):
 
 - **At the first start.** When Dreamer opens without it, the tab strip
   offers it once: "Add web panes? Dreamer Web, about 150 MB", with
@@ -795,24 +810,29 @@ Nothing is downloaded until you choose one of these, unless
 | `auto` | Adds it without asking, at the start and whenever a web pane needs it (for managed setups) |
 | `never` | Offers nothing. Web panes say it is turned off; the palette's "Add Dreamer Web" and `dream web install` still add it |
 
-An install downloads the Dreamer Web zip of your Dreamer's version with
-`curl`, checks its SHA-256 against the `.sha256` published beside it,
+An install downloads the Dreamer Web archive of your Dreamer's version
+with `curl` (on Linux, `dreamer-web-<version>-x86_64-unknown-linux-gnu.tar.gz`,
+unpacked with `tar`), checks its SHA-256 against the `.sha256` published
+beside it,
 checks the component, and installs it in `web/` of Dreamer's data
 directory (`~/.local/share/dreamer/web` unless `DREAMER_DATA_DIR` or
 `XDG_DATA_HOME` says otherwise). See [cli.md](cli.md#dreamer-web) for
-installing from a zip or directory you already have, `dream web status`,
+installing from an archive or directory you already have, `dream web status`,
 and `dream web remove`.
 
 - **Where it downloads from.** The release of your Dreamer version, unless
   `DREAMER_WEB_URL` (first) or `web.url` in `dreamer.yaml` names another
-  place: the zip's own address, or a directory's that holds it (with its
+  place: the archive's own address, or a directory's that holds it (with its
   `.sha256` beside it), over `https`, `http`, or `file`. A failed download
   says so and names these settings.
 - **A copy already on this machine** is used in place, before anything is
   downloaded: Dreamer then links `web/` to it instead of copying it. It is
   looked for at the first start and at every install, in
-  `/Library/Application Support/Dreamer/web` (a copy an administrator
-  installed for every user of the Mac), then in the default Dreamer data
+  `/Library/Application Support/Dreamer/web` on macOS (a copy an
+  administrator installed for every user of the Mac), in
+  `/usr/lib/dreamer-web`, `/usr/lib/cef`, and `/opt/cef` on Linux (a
+  distribution's copy, laid out as the component, with its
+  `component.json`), then in the default Dreamer data
   directory (`~/.local/share/dreamer/web`) when `DREAMER_DATA_DIR`
   points elsewhere. It must be exactly this Dreamer version's component,
   not writable by other users, and pass the same checks as an install;
@@ -821,15 +841,27 @@ and `dream web remove`.
   only the link. A Chrome or Chromium browser on the system is not
   Chromium Embedded Framework and is never used.
 
-- **What it holds.** CEF's framework (`Chromium Embedded
-  Framework.framework`), the five helper apps Chromium runs its renderer,
-  GPU, and utility processes from (`dreamer Helper.app`, `dreamer Helper
-  (GPU).app`, `(Renderer)`, `(Plugin)`, `(Alerts)`), each signed, CEF's
-  license and Chromium's notices (`LICENSE.txt`, `CREDITS.html`), and
+- **What it holds.** On macOS, CEF's framework (`Chromium Embedded
+  Framework.framework`) and the five helper apps Chromium runs its
+  renderer, GPU, and utility processes from (`dreamer Helper.app`,
+  `dreamer Helper (GPU).app`, `(Renderer)`, `(Plugin)`, `(Alerts)`), each
+  signed. On Linux, `libcef.so` (stripped of debugging symbols),
+  Chromium's resources (`resources.pak`, `chrome_100_percent.pak`,
+  `chrome_200_percent.pak`, `icudtl.dat`, `v8_context_snapshot.bin`,
+  `locales/`), SwiftShader (`libvk_swiftshader.so`, `libvulkan.so.1`,
+  `vk_swiftshader_icd.json`, Chromium's software GPU), and one helper
+  executable, `dreamer-web-helper`. Both have CEF's license and
+  Chromium's notices (`LICENSE.txt`, `CREDITS.html`), and
   `component.json`, which names the Dreamer version and CEF release it
   was built for.
 - **Loaded on first use.** Chromium starts with the first web pane, from
-  the installed component, not with the app.
+  the installed component, not with the app. Neither `dreamer` nor the
+  helper links Chromium: `dreamer` loads the framework (macOS) or
+  `libcef.so` (Linux) from the component when the first page opens, and
+  the helper loads it from beside itself. On Linux `libcef.so` needs the
+  system libraries Chromium needs (NSS, ATK, CUPS, ALSA, GBM, and others
+  a desktop usually has); a missing one is named when the install checks
+  the component, and in the web pane.
 - **Without it,** the rest of Dreamer works as before. A web pane that
   is waiting for it draws its page as soon as it is added; there is no
   need to restart.
@@ -837,7 +869,7 @@ and `dream web remove`.
   must be the one of the same Dreamer version (and CEF release). After
   updating Dreamer, web panes say which version is installed and which is
   needed, and offer to add this version's.
-- **Signing.** The component is signed like the app: Developer ID
+- **Signing (macOS).** The component is signed like the app: Developer ID
   signed and notarized in a release, ad hoc in a local build
   ([packaging.md](packaging.md#signing-for-distribution)). `dream web
   install` downloads with `curl`, which does not mark the file as
@@ -863,17 +895,14 @@ and `dream web remove`.
   `web.open` returns as soon as the pane exists, as the desktop's own
   web panes do (they show the button instead).
 - **Not yet.** An app's web view does not wait: it shows the button like
-  any web pane. On Linux, web panes and the component are not built yet;
-  the installer already knows where a distribution's copy would be
-  (`/usr/lib/dreamer-web`, or CEF of exactly the pinned release in
-  `/usr/lib/cef` or `/opt/cef`).
+  any web pane. Linux on ARM64 has no Dreamer Web.
 
 ### A build with web panes
 
 To build Dreamer with web panes yourself:
 
 ```sh
-cargo xtask deps web                  # the pinned CEF, cmake, and Ninja, checksum-verified
+cargo xtask deps web                  # the pinned CEF (and on macOS cmake and Ninja), checksum-verified
 cargo xtask web bundle [--install]    # in target/web-bundle (add --release for a release build)
 ```
 
@@ -886,6 +915,22 @@ later); then run `Dreamer.app/Contents/MacOS/dreamer`. `cargo xtask
 package` makes the release's two zips the same way
 ([packaging.md](packaging.md#dreamer-web)). See
 [dependency-baseline.md](dependency-baseline.md#web-engine) for the pins.
+
+On Linux (x86-64), building with the `web` feature needs nothing more
+than any other build: nothing links `libcef.so` (the workspace's
+`.cargo/config.toml` keeps the `cef-dll-sys` build script from linking
+it), and the CEF calls are resolved when `dreamer` loads the library from
+Dreamer Web. `cargo xtask web bundle` builds `dreamer` with its `web`
+feature and the other executables in cargo's target directory
+(`target/debug`, or `target/release` with `--release`), and the Dreamer
+Web component from the pinned CEF distribution in
+`target/web-bundle/dreamer-web`. It checks the component: the helper
+loads `libcef.so` from beside itself, and a page is drawn offscreen with
+no display (`offscreen`, an example of the `web-engine` crate, with
+Chromium on its headless platform and SwiftShader). `--install` then
+installs it with the build's own `dream web install`; or run `dream web
+install target/web-bundle/dreamer-web` yourself. `dreamer` without it
+says in a web pane how to add it.
 
 ## Command palette
 

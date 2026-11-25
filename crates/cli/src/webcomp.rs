@@ -1,4 +1,4 @@
-//! `dream web install [FILE.zip | DIR | URL]`, `dream web status`, and
+//! `dream web install [ARCHIVE | DIR | URL]`, `dream web status`, and
 //! `dream web remove`: Dreamer Web, the Chromium component that web panes
 //! need, which is installed apart from the app (see the `web-component`
 //! crate, whose installer the desktop shares).
@@ -14,7 +14,7 @@ use web_component::install::{Installer, Origin, Source, Step, describe, remove a
 use web_component::{NAME, State, check, installed_dir};
 
 pub const USAGE: &str =
-    "usage: dream web install [FILE.zip | DIR | URL] | dream web status | dream web remove";
+    "usage: dream web install [ARCHIVE | DIR | URL] | dream web status | dream web remove";
 
 /// Whether the component is installed and is this Dreamer's.
 pub fn status() -> Result<(), String> {

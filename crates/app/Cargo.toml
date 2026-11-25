@@ -12,9 +12,11 @@ name = "dreamer"
 path = "src/main.rs"
 
 [features]
-# Web panes drawn by Chromium (CEF). macOS only so far; needs `cargo xtask
-# deps web` to build. Chromium itself is the Dreamer Web component, loaded
-# from where `dream web install` puts it (see crates/web-component).
+# Web panes drawn by Chromium (CEF), on macOS and Linux. Chromium itself is
+# the Dreamer Web component, loaded at run time from where `dream web
+# install` puts it (see crates/web-component). On macOS the build needs
+# `cargo xtask deps web`; on Linux it needs nothing more (libcef.so is not
+# linked).
 web = ["web-engine/engine", "dep:futures-lite"]
 
 [dependencies]

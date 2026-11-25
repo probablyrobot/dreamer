@@ -1009,7 +1009,9 @@ dependencies = [
 name = "cef-sys"
 version = "0.11.0"
 dependencies = [
+ "ash",
  "cef",
+ "libc",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]
@@ -7802,6 +7804,10 @@ dependencies = [
  "dreamer-web-component",
  "raw-window-handle",
  "serde_json",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "x11rb",
 ]
 
 [[package]]

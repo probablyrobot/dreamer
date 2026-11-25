@@ -10,3 +10,12 @@ MACOSX_DEPLOYMENT_TARGET = "15.0"
 # source: this address cannot resolve, so that download fails instead.
 # `cargo xtask deps web` provides the distribution (deps/baseline.toml).
 CEF_DOWNLOAD_URL = "https://cef-downloads-are-disabled.invalid"
+
+# Linux: Dreamer never links libcef.so. Chromium is the Dreamer Web
+# component, installed apart from the app, and `cef-sys` loads it at run
+# time (`cef_sys::loader`). This replaces the `cef-dll-sys` build script
+# there (`links = "cef_dll_wrapper"`): on Linux it only links libcef.so and
+# copies CEF's files into the target directory, so a build with web panes
+# needs no CEF distribution, cmake, or Ninja. The bindings are in the crate.
+[target.x86_64-unknown-linux-gnu.cef_dll_wrapper]
+rustc-link-lib = []

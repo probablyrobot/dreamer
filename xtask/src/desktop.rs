@@ -5,7 +5,9 @@
 //! Builds the tested revision, then for each display backend that the
 //! session offers (native Wayland via `WAYLAND_DISPLAY`, X11 via `DISPLAY`
 //! with `WAYLAND_DISPLAY` removed) launches the app's smoke run on the
-//! built-in demo and on every renderer fixture. Writes a report to
+//! built-in demo and on every renderer fixture, and last, when `cargo xtask
+//! deps web` provisioned CEF, a web page in a pane on each backend (the
+//! app built with web panes, captured). Writes a report to
 //! `target/gate/linux-desktop/<commit>.json`. Both backends are required
 //! unless `--allow-missing wayland|x11` is given for one of them.
 
@@ -359,12 +361,96 @@ pub fn run(args: &[String]) -> Result<(), String> {
         });
     }
 
+    // A web page in a pane, on each backend: last, because it builds the
+    // app with web panes.
+    for (backend, available) in backends {
+        if available {
+            let run = web_pane(&root, backend);
+            if !run.passed {
+                problems.push(if run.not_run {
+                    format!("{backend} web: not run: {}", run.detail)
+                } else {
+                    format!("{backend} web: {}", run.detail)
+                });
+            }
+            runs.push(run);
+        }
+    }
+
     let report = write_report(&commit, dirty, &runs)?;
     println!("linux-desktop: report {report}");
     if problems.is_empty() {
         Ok(())
     } else {
         Err(problems.join("\n"))
+    }
+}
+
+/// The same page in a pane on `backend`: Chromium draws it (a child X11
+/// window on X11, a subsurface on Wayland), and a capture of the window
+/// shows the page's color. Not run without the pinned CEF (`cargo xtask
+/// deps web`), outside Hyprland (captures need it), or with the display
+/// asleep.
+fn web_pane(root: &std::path::Path, backend: &'static str) -> Run {
+    let started = Instant::now();
+    let not_run = |why: String| Run {
+        backend,
+        input: "web".into(),
+        passed: false,
+        not_run: true,
+        millis: started.elapsed().as_millis(),
+        detail: why,
+    };
+    let provisioned = crate::manifest::Manifest::load()
+        .and_then(|m| crate::deps::web_deps(&m))
+        .ok()
+        .flatten()
+        .is_some();
+    if !provisioned {
+        let r = not_run("the web engine is not provisioned (cargo xtask deps web)".into());
+        println!(
+            "linux-desktop: {backend:<7} {:<18} NOT RUN ({})",
+            "web", r.detail
+        );
+        return r;
+    }
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        let r = not_run("captures need Hyprland so far".into());
+        println!(
+            "linux-desktop: {backend:<7} {:<18} NOT RUN ({})",
+            "web", r.detail
+        );
+        return r;
+    }
+    if crate::scenes::display_asleep() {
+        let r = not_run("the display is asleep; wake it and run again".into());
+        println!(
+            "linux-desktop: {backend:<7} {:<18} NOT RUN ({})",
+            "web", r.detail
+        );
+        return r;
+    }
+    let path = crate::util::cargo_target(root)
+        .join("gate/linux-desktop")
+        .join(format!("web-pane-{backend}.png"));
+    let result = crate::scenes::capture_web(root, backend == "x11", &path);
+    let passed = result.is_ok();
+    let detail = match result {
+        Ok(found) => format!("{} ({found})", path.display()),
+        Err(e) => e,
+    };
+    println!(
+        "linux-desktop: {backend:<7} {:<18} {}",
+        "web",
+        if passed { "passed" } else { "FAILED" }
+    );
+    Run {
+        backend,
+        input: "web".into(),
+        passed,
+        not_run: false,
+        millis: started.elapsed().as_millis(),
+        detail,
     }
 }
 

@@ -214,14 +214,15 @@ next starts its web panes, and the command says so.
 
 The desktop draws web pages with Chromium, which is not part of the
 Dreamer package: it is a separate component, Dreamer Web, about 150 MB to
-download and 330 MB installed ([desktop.md](desktop.md#dreamer-web)).
-macOS on Apple Silicon only so far.
+download and 330 MB installed on macOS, 160 MB and 380 MB on Linux
+([desktop.md](desktop.md#dreamer-web)). macOS on Apple Silicon and Linux
+on x86-64 only so far. On macOS it is a zip, on Linux a gzipped tarball.
 
 | Command | Does |
 | --- | --- |
-| `dream web install` | Uses a copy already on this machine in place, if there is one ([desktop.md](desktop.md#dreamer-web)); otherwise downloads the Dreamer Web zip of this Dreamer's version, checks it against the `.sha256` published beside it, and installs it. It downloads from `DREAMER_WEB_URL` if set, else `web.url` in `dreamer.yaml`, else the GitHub release |
-| `dream web install URL` | Downloads from `URL` (`https://`, `http://`, or `file://`): the zip's address, or a directory's that holds it; its `.sha256` must be beside it. Does not look for a copy on this machine |
-| `dream web install FILE.zip` | Installs from a zip you already have (a release asset, or one `cargo xtask package` built). Checked against `FILE.zip.sha256` if that file exists |
+| `dream web install` | Uses a copy already on this machine in place, if there is one ([desktop.md](desktop.md#dreamer-web)); otherwise downloads the Dreamer Web archive of this Dreamer's version, checks it against the `.sha256` published beside it, and installs it. It downloads from `DREAMER_WEB_URL` if set, else `web.url` in `dreamer.yaml`, else the GitHub release |
+| `dream web install URL` | Downloads from `URL` (`https://`, `http://`, or `file://`): the archive's address, or a directory's that holds it; its `.sha256` must be beside it. Does not look for a copy on this machine |
+| `dream web install ARCHIVE` | Installs from an archive you already have (a release asset, or one `cargo xtask package` built). Checked against `ARCHIVE.sha256` if that file exists |
 | `dream web install DIR` | Installs from an unpacked component directory (`cargo xtask web bundle` builds one) |
 | `dream web status` | Says which Dreamer Web is installed and where, and, for a copy used in place, where that copy is; fails, saying why and how to add it, when it is missing or is another version's |
 | `dream web remove` | Removes it (for a copy used in place, only the link to it). Web panes then offer to add it again |
@@ -229,9 +230,11 @@ macOS on Apple Silicon only so far.
 The desktop adds the component with the same installer, from a web
 pane, the first-start offer, or the palette. Before installing, it checks
 that the component is the one this Dreamer needs (its `component.json`
-names the same Dreamer version and CEF release), that the framework and
-each helper app pass `codesign --verify --strict`, and that a helper
-loads the framework. It unpacks next to the installed copy and swaps it
+names the same Dreamer version and CEF release), on macOS that the
+framework and each helper app pass `codesign --verify --strict`, and that
+the helper loads the framework (or `libcef.so`) from where it sits; on
+Linux that also finds every system library Chromium needs, or names the
+missing one. It unpacks next to the installed copy and swaps it
 in only when all of that passed; on any failure the installed copy stays
 as it was. One install runs at a time per data directory; a second one
 says so and stops. It goes in `web/` of Dreamer's data directory

@@ -15,9 +15,18 @@
 //!
 //! `cargo xtask package` makes the same two things for a release, as two
 //! artifacts: the base zip and [`zip_component`]'s. The pinned CEF
-//! distribution, cmake, and Ninja come from `cargo xtask deps web`. macOS
-//! only so far; the Linux component (#330's `dreamer-web` archive) is not
-//! built yet.
+//! distribution, cmake, and Ninja come from `cargo xtask deps web`.
+//!
+//! On Linux (x86-64) `cargo xtask web bundle [--release] [--install]`
+//! builds `dreamer` with web panes (which links no Chromium: it loads
+//! `libcef.so` from the component at run time) and the other executables,
+//! and the component beside them in `<target>/web-bundle/dreamer-web`
+//! ([`build_linux_component`]): `libcef.so` (stripped) and Chromium's
+//! resources from the CEF distribution, the helper, and the manifest. It is
+//! checked ([`verify_linux_component`]): the helper loads the library, and
+//! a page is drawn offscreen with no display. `cargo xtask package
+//! --platform web` makes the release's archive of it
+//! ([`linux_component_archive`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -29,8 +38,11 @@ use crate::deps::WebDeps;
 use crate::package::Profile;
 use crate::util::{cargo_target, repo_root};
 
-/// The platform the component is built for.
+/// The platform the component is built for on macOS.
 const TARGET: &str = "aarch64-apple-darwin";
+
+/// The platform the component is built for on Linux.
+pub const LINUX_TARGET: &str = "x86_64-unknown-linux-gnu";
 
 pub fn run(args: &[String]) -> Result<(), String> {
     const USAGE: &str =
@@ -54,6 +66,28 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         _ => return Err(USAGE.into()),
     };
+    if cfg!(target_os = "linux") {
+        if smoke_too {
+            return Err(
+                "on Linux, web panes are checked by `cargo xtask gate linux-desktop`".into(),
+            );
+        }
+        let (bin, component) = linux_bundle(&repo_root(), profile)?;
+        println!("web: {}", bin.join("dreamer").display());
+        println!("web: {}", component.display());
+        if install {
+            print!(
+                "{}",
+                dream_at(
+                    &bin.join("dream"),
+                    &["web", "install"],
+                    Some(&component),
+                    &[]
+                )?
+            );
+        }
+        return Ok(());
+    }
     let web = provisioned()?
         .ok_or("the web engine's dependencies are not provisioned: run `cargo xtask deps web`")?;
     let root = repo_root();
@@ -116,6 +150,283 @@ pub fn provisioned() -> Result<Option<WebDeps>, String> {
     crate::deps::web_deps(&crate::manifest::Manifest::load()?)
 }
 
+/// Linux: build `dreamer` with web panes, the helper, the other
+/// executables, and the offscreen check; then the component, from the
+/// pinned CEF distribution (`cargo xtask deps web`, which the build itself
+/// does not need), in `<target>/web-bundle/dreamer-web`, and verify it.
+/// The directory of the executables, and the component's.
+pub fn linux_bundle(root: &Path, profile: Profile) -> Result<(PathBuf, PathBuf), String> {
+    let web = crate::deps::web_deps(&crate::manifest::Manifest::load()?)?
+        .ok_or("the web engine's dependencies are not provisioned: run `cargo xtask deps web`")?;
+    build_linux(
+        root,
+        profile,
+        &[
+            "dreamer-app",
+            "web-engine",
+            "dreamer-server",
+            "dreamer-cli",
+            "dreamer-termapp",
+        ],
+        &[],
+    )?;
+    let bin = crate::package::bin_dir(root, profile);
+    let component = build_linux_component(
+        &cargo_target(root).join("web-bundle"),
+        &bin,
+        &web,
+        &crate::package::version(root)?,
+    )?;
+    verify_linux_component(&component, &bin.join("examples/offscreen"))?;
+    Ok((bin, component))
+}
+
+/// Where `cargo xtask web bundle` leaves the Linux component.
+pub fn linux_component_dir(root: &Path) -> PathBuf {
+    cargo_target(root).join("web-bundle").join(TOP)
+}
+
+/// Linux: `cargo build` of `packages` with web panes, and the offscreen
+/// check, with `rustflags` added.
+pub fn build_linux(
+    root: &Path,
+    profile: Profile,
+    packages: &[&str],
+    rustflags: &[String],
+) -> Result<(), String> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let mut builds = vec![
+        vec!["--bins".to_owned()],
+        vec![
+            "--package".to_owned(),
+            "web-engine".to_owned(),
+            "--example".to_owned(),
+            "offscreen".to_owned(),
+        ],
+    ];
+    for p in packages {
+        builds[0].extend(["--package".to_owned(), (*p).to_owned()]);
+    }
+    for args in builds {
+        let features = if args.iter().any(|a| a == "dreamer-app") {
+            "dreamer-app/web,web-engine/engine"
+        } else {
+            "web-engine/engine"
+        };
+        let mut cmd = Command::new(&cargo);
+        cmd.args(["build", "--locked"]);
+        if profile == Profile::Release {
+            cmd.arg("--release");
+        }
+        cmd.args(&args)
+            .args(["--features", features])
+            .current_dir(root);
+        if !rustflags.is_empty() {
+            let mut flags = std::env::var("RUSTFLAGS").unwrap_or_default();
+            for f in rustflags {
+                flags.push(' ');
+                flags.push_str(f);
+            }
+            cmd.env("RUSTFLAGS", flags.trim());
+        }
+        let status = cmd.status().map_err(|e| format!("cargo build: {e}"))?;
+        if !status.success() {
+            return Err("building with web panes failed".into());
+        }
+    }
+    Ok(())
+}
+
+/// Linux: build the component as `out/dreamer-web`: `libcef.so`, stripped
+/// of its debugging and local symbols (1.5 GB to 0.28 GB), and Chromium's resources from the CEF
+/// distribution, `dreamer-web-helper` from `bin_dir`, CEF's license and
+/// Chromium's notices, and the manifest naming Dreamer `version` and the
+/// CEF release.
+pub fn build_linux_component(
+    out: &Path,
+    bin_dir: &Path,
+    web: &WebDeps,
+    version: &str,
+) -> Result<PathBuf, String> {
+    check_pinned_cef()?;
+    let dir = out.join(TOP);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(dir.join("locales")).map_err(|e| e.to_string())?;
+    let copy = |from: &Path, to: &Path| -> Result<(), String> {
+        std::fs::copy(from, to)
+            .map(drop)
+            .map_err(|e| format!("copy {}: {e}", from.display()))
+    };
+    for f in web_component::LINUX_FILES {
+        match f {
+            "libcef.so" => {
+                run_checked(
+                    Command::new("strip")
+                        .arg("--strip-unneeded")
+                        .arg("-o")
+                        .arg(dir.join(f))
+                        .arg(web.cef_dir.join(f)),
+                    "strip libcef.so",
+                )?;
+            }
+            HELPER_EXE => copy(&bin_dir.join(f), &dir.join(f))?,
+            // Every locale, not only the one the check looks for.
+            f if f.starts_with("locales/") => {}
+            f => copy(&web.cef_dir.join(f), &dir.join(f))?,
+        }
+    }
+    let locales = web.cef_dir.join("locales");
+    for entry in std::fs::read_dir(&locales)
+        .map_err(|e| format!("{}: {e}", locales.display()))?
+        .flatten()
+    {
+        copy(&entry.path(), &dir.join("locales").join(entry.file_name()))?;
+    }
+    for notice in ["LICENSE.txt", "CREDITS.html"] {
+        copy(&web.cef_dir.join(notice), &dir.join(notice))?;
+    }
+    let manifest = web_component::Manifest {
+        version: version.to_owned(),
+        cef: web_component::CEF_VERSION.to_owned(),
+        target: LINUX_TARGET.to_owned(),
+    };
+    std::fs::write(dir.join(MANIFEST), manifest.to_json()).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// The release the component claims is the one the build used.
+fn check_pinned_cef() -> Result<(), String> {
+    let baseline = crate::manifest::Manifest::load()?;
+    let pinned = baseline.get("cef", "version")?;
+    if web_component::CEF_VERSION.starts_with(&format!("{pinned}+")) {
+        Ok(())
+    } else {
+        Err(format!(
+            "web_component::CEF_VERSION is {}, but deps/baseline.toml pins CEF {pinned}",
+            web_component::CEF_VERSION
+        ))
+    }
+}
+
+/// Linux: the component is this build's and complete, the helper loads
+/// `libcef.so` from beside itself, and `offscreen` (the web engine's
+/// example, built with it) draws a page from it with no display. Neither
+/// executable links `libcef.so`.
+pub fn verify_linux_component(dir: &Path, offscreen: &Path) -> Result<(), String> {
+    match web_component::check(dir) {
+        State::Ready(_) => {}
+        other => {
+            return Err(format!(
+                "{}: {}",
+                dir.display(),
+                other.problem(dir).unwrap_or_default()
+            ));
+        }
+    }
+    let helper = web_component::helper(dir);
+    for exe in [&helper, &offscreen.to_path_buf()] {
+        let dynamic = run_checked(Command::new("readelf").arg("-d").arg(exe), "readelf -d")?;
+        if dynamic.contains("[libcef.so]") {
+            return Err(format!("{} links libcef.so", exe.display()));
+        }
+    }
+    let out = Command::new(&helper)
+        .output()
+        .map_err(|e| format!("{}: {e}", helper.display()))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.code() != Some(255) || stderr.contains("dreamer-web-helper:") {
+        return Err(format!(
+            "the helper did not load libcef.so ({}): {}",
+            out.status,
+            stderr.trim()
+        ));
+    }
+    // No display: Chromium draws for none, offscreen.
+    let out = Command::new(offscreen)
+        .arg(dir)
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .output()
+        .map_err(|e| format!("{}: {e}", offscreen.display()))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        return Err(format!(
+            "the component drew no page offscreen: {}{}",
+            stdout.trim(),
+            tail(&String::from_utf8_lossy(&out.stderr), 20)
+        ));
+    }
+    println!("web: {}", stdout.trim());
+    println!(
+        "web: {}: libcef.so (loaded at run time, linked by nothing) and the helper; {}",
+        dir.display(),
+        du(dir)
+    );
+    Ok(())
+}
+
+/// The last `n` lines of `text`, after a newline, for errors.
+fn tail(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..]
+        .iter()
+        .fold(String::new(), |acc, l| acc + "\n" + l)
+}
+
+/// Linux: pack the component as the release's
+/// `dreamer-web-<version>-x86_64-unknown-linux-gnu.tar.gz` in `out`, with
+/// its `.sha256` and its record (`.json`).
+pub fn linux_component_archive(dir: &Path, out: &Path, version: &str) -> Result<PathBuf, String> {
+    let name = web_component::archive_name(version, LINUX_TARGET);
+    let archive = out.join(&name);
+    let _ = std::fs::remove_file(&archive);
+    let parent = dir
+        .parent()
+        .ok_or("the component has no parent directory")?;
+    let top = dir.file_name().ok_or("the component has no name")?;
+    run_checked(
+        Command::new("tar")
+            .arg("-C")
+            .arg(parent)
+            .args(["--owner=0", "--group=0", "--numeric-owner", "-czf"])
+            .arg(&archive)
+            .arg(top),
+        "tar",
+    )?;
+    let sha = crate::util::sha256_file(&archive)?;
+    std::fs::write(
+        out.join(format!("{name}.sha256")),
+        format!("{sha}  {name}\n"),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut contents: Vec<String> = web_component::LINUX_FILES
+        .iter()
+        .filter(|f| !f.starts_with("locales/"))
+        .map(|f| (*f).to_owned())
+        .collect();
+    contents.push("locales/".into());
+    let record = serde_json::json!({
+        "artifact": name,
+        "bytes": std::fs::metadata(&archive).map_or(0, |m| m.len()),
+        "sha256": sha,
+        "target": LINUX_TARGET,
+        "version": version,
+        "commit": crate::package::commit(&repo_root()),
+        "component": TOP,
+        "cef": web_component::CEF_VERSION,
+        "contents": contents,
+    });
+    std::fs::write(
+        out.join(format!("{name}.json")),
+        serde_json::to_string_pretty(&record).map_err(|e| e.to_string())? + "\n",
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(archive)
+}
+
 /// Build and verify the development bundle, and the component beside it,
 /// in `root`'s target directory.
 pub fn bundle(root: &Path, profile: Profile, web: &WebDeps) -> Result<(PathBuf, PathBuf), String> {
@@ -164,15 +475,7 @@ pub fn build_component(
     web: &WebDeps,
     version: &str,
 ) -> Result<PathBuf, String> {
-    // The release the component claims is the one the build used.
-    let baseline = crate::manifest::Manifest::load()?;
-    let pinned = baseline.get("cef", "version")?;
-    if !web_component::CEF_VERSION.starts_with(&format!("{pinned}+")) {
-        return Err(format!(
-            "web_component::CEF_VERSION is {}, but deps/baseline.toml pins CEF {pinned}",
-            web_component::CEF_VERSION
-        ));
-    }
+    check_pinned_cef()?;
     let dir = out.join(TOP);
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -437,7 +740,17 @@ pub fn dream(
     extra: Option<&Path>,
     env: &[(&str, OsString)],
 ) -> Result<String, String> {
-    let mut cmd = Command::new(app.join("Contents/MacOS/dream"));
+    dream_at(&app.join("Contents/MacOS/dream"), args, extra, env)
+}
+
+/// Run the `dream` executable at `exe`, as [`dream`] does.
+pub fn dream_at(
+    exe: &Path,
+    args: &[&str],
+    extra: Option<&Path>,
+    env: &[(&str, OsString)],
+) -> Result<String, String> {
+    let mut cmd = Command::new(exe);
     cmd.args(args);
     if let Some(p) = extra {
         cmd.arg(p);
