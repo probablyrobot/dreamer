@@ -655,10 +655,18 @@ the mirrors hold after each demotion round.
 
 Each scenario runs for `--seconds S` (300 by default; the paste at least
 until it is delivered). Once a second it samples the daemon's RSS, its
-heap in use, and the host's journal. The result file keeps these curves
-under `curves`. The table gives the values before the load, at the peak,
-and at the end, and the RSS change over the second half, which shows
-whether memory was still growing.
+heap in use, the host's journal, and, on macOS, its physical footprint
+(`ri_phys_footprint` from `proc_pid_rusage`). The result file keeps these
+curves under `curves`, with the columns `seconds`, `rss_mib`, `heap_mib`,
+`journal_mib`, and `footprint_mib`; a value that cannot be read, such as
+the footprint on Linux, is `null`. The table gives the values before the
+load, at the peak, and at the end, and the RSS change over the second
+half, which shows whether memory was still growing. On macOS it also
+gives the footprint's peak, its value at the end, and its change over the
+second half. RSS counts free pages the allocator keeps mapped and has not
+handed back; the footprint, which is what the kernel charges the process
+for, does not, so RSS can climb while the heap and the footprint stay
+flat. The footprint is reported only; the bounds below are on RSS.
 
 Each scenario also states a bound on RSS, built from the daemon's
 budgets, and records under `bounds` whether the peak stayed under it:

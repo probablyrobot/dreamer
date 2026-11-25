@@ -9,7 +9,9 @@
 //!
 //! Each runs for `--seconds` (300 by default; the paste runs at least
 //! until it is delivered) and samples, once a second, the daemon's
-//! resident size, its heap in use, and the host's journal. Each scenario
+//! resident size, its heap in use, the host's journal, and on macOS its
+//! physical footprint (which leaves out free pages the allocator keeps
+//! mapped, where resident size counts them). Each scenario
 //! states a bound on resident size, built from the daemon's own budgets,
 //! and records whether the peak stayed under it.
 //!
@@ -226,7 +228,7 @@ struct Curve {
     pid: u32,
     t0: Instant,
     next: Instant,
-    samples: Vec<[f64; 4]>,
+    samples: Vec<[f64; 5]>,
 }
 
 impl Curve {
@@ -240,8 +242,9 @@ impl Curve {
         }
     }
 
-    /// Wait for the next second, then sample: time, RSS, heap in use, and
-    /// the host's journal, in seconds and MiB (NaN when not available).
+    /// Wait for the next second, then sample: time, RSS, heap in use, the
+    /// host's journal, and the physical footprint (macOS), in seconds and
+    /// MiB (NaN when not available).
     async fn tick(&mut self, c: &Client) -> Result<(), String> {
         tokio::time::sleep_until(self.next.into()).await;
         self.next = (self.next + Duration::from_secs(1)).max(Instant::now());
@@ -250,8 +253,14 @@ impl Curve {
         let journal = journal(c)
             .await
             .map_or(f64::NAN, |l| l.host_journal_bytes as f64 / MIB);
-        self.samples
-            .push([self.t0.elapsed().as_secs_f64(), rss, heap, journal]);
+        let footprint = platform::phys_footprint(self.pid).map_or(f64::NAN, |b| b as f64 / MIB);
+        self.samples.push([
+            self.t0.elapsed().as_secs_f64(),
+            rss,
+            heap,
+            journal,
+            footprint,
+        ]);
         Ok(())
     }
 
@@ -267,18 +276,18 @@ impl Curve {
         self.samples.last().map_or(f64::NAN, |s| s[i])
     }
 
-    /// RSS at the end less RSS halfway through: whether it still grows.
-    fn second_half_growth(&self) -> f64 {
+    /// Column `i` at the end less halfway through: whether it still grows.
+    fn second_half_growth(&self, i: usize) -> f64 {
         let mid = self
             .samples
             .get(self.samples.len() / 2)
-            .map_or(f64::NAN, |s| s[1]);
-        self.last(1) - mid
+            .map_or(f64::NAN, |s| s[i]);
+        self.last(i) - mid
     }
 
     fn json(&self) -> Value {
         json!({
-            "columns": ["seconds", "rss_mib", "heap_mib", "journal_mib"],
+            "columns": ["seconds", "rss_mib", "heap_mib", "journal_mib", "footprint_mib"],
             "samples": self
                 .samples
                 .iter()
@@ -319,9 +328,19 @@ impl Rows {
         self.put("daemon RSS at the end", curve.last(1), "MiB");
         self.put(
             "RSS change over the second half",
-            curve.second_half_growth(),
+            curve.second_half_growth(1),
             "MiB",
         );
+        // Measurement only: the bound stays on RSS.
+        if curve.peak(4).is_finite() {
+            self.put("daemon footprint, peak", curve.peak(4), "MiB");
+            self.put("daemon footprint at the end", curve.last(4), "MiB");
+            self.put(
+                "footprint change over the second half",
+                curve.second_half_growth(4),
+                "MiB",
+            );
+        }
         self.put("heap in use before", before.1, "MiB");
         self.put("heap in use, peak", curve.peak(2), "MiB");
         self.put("heap in use at the end", curve.last(2), "MiB");
