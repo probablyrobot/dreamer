@@ -146,6 +146,32 @@ pub enum MirrorState {
 /// The Cold panes of one connection.
 pub(crate) type ColdSet = std::sync::Arc<std::sync::Mutex<std::collections::HashSet<TmuxPaneId>>>;
 
+/// How many [`Watch`]es each pane of one connection has.
+type Watched = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<TmuxPaneId, usize>>>;
+
+/// A follower that reads a pane by looking at its mirror now and then
+/// instead of subscribing to its records (a text or meta tap). While one is
+/// held the pane counts as followed: it does not go Cold, on its own or
+/// when asked.
+#[derive(Debug)]
+pub struct Watch {
+    pane: TmuxPaneId,
+    watched: Watched,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        if let Ok(mut w) = self.watched.lock()
+            && let Some(n) = w.get_mut(&self.pane)
+        {
+            *n -= 1;
+            if *n == 0 {
+                w.remove(&self.pane);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MirrorStatus {
     pub pane: TmuxPaneId,
@@ -249,6 +275,7 @@ pub struct MirrorHost {
     retention: Retention,
     host_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     cold: ColdSet,
+    watched: Watched,
     /// The control connection, for tmux's paste buffers.
     conn: Connection,
     /// Bumped with the buffer's name whenever tmux reports a paste buffer
@@ -344,6 +371,7 @@ impl MirrorHost {
                 retention: config.retention,
                 host_bytes,
                 cold,
+                watched: Watched::default(),
                 conn: tmux,
                 buffers,
                 written: std::sync::Arc::default(),
@@ -454,10 +482,36 @@ impl MirrorHost {
         }
     }
 
+    /// Count as a follower of `pane` until the returned [`Watch`] is
+    /// dropped, without subscribing to its records.
+    pub fn watch(&self, pane: TmuxPaneId) -> Watch {
+        if let Ok(mut w) = self.watched.lock() {
+            *w.entry(pane).or_default() += 1;
+        }
+        Watch {
+            pane,
+            watched: self.watched.clone(),
+        }
+    }
+
+    /// How many [`Watch`]es `pane` has.
+    fn watchers(&self, pane: TmuxPaneId) -> usize {
+        self.watched
+            .lock()
+            .map_or(0, |w| w.get(&pane).copied().unwrap_or(0))
+    }
+
     /// Put a pane in the Cold tier: its mirror and journal are dropped, and
     /// its output is discarded before any VT work. Refused while anything
     /// follows the pane (a view, a tap, a filter).
     pub async fn set_cold(&self, pane: TmuxPaneId) -> Result<(), String> {
+        let n = self.watchers(pane);
+        if n > 0 {
+            return Err(format!(
+                "pane %{} has {n} subscriber(s) (a view, tap, or filter); it stays warm",
+                pane.0
+            ));
+        }
         let (reply, answer) = oneshot::channel();
         self.control
             .send(Control::Cool { pane, reply })
@@ -473,7 +527,8 @@ impl MirrorHost {
     /// `cold_after`, there are more than `warm_limit` of them, or all
     /// mirrors together hold more than `warm_memory`. A pane that gains a
     /// follower meanwhile is refused and stays Warm. Panes in `keep` count
-    /// as followed (a harness drawer while it is hidden).
+    /// as followed (a harness drawer while it is hidden), as do panes with
+    /// a [`Watch`].
     pub async fn apply_policy(
         &self,
         policy: TierPolicy,
@@ -492,7 +547,7 @@ impl MirrorHost {
             .sum();
         let mut unfollowed: Vec<(TmuxPaneId, Duration, u64)> = live
             .into_iter()
-            .filter(|m| !keep.contains(&m.pane))
+            .filter(|m| !keep.contains(&m.pane) && self.watchers(m.pane) == 0)
             .filter_map(|m| {
                 m.live
                     .filter(|l| l.followers == 0 && l.tier == Tier::Warm && l.error.is_none())
