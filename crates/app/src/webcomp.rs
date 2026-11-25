@@ -153,18 +153,27 @@ pub(crate) fn report_to(to: async_channel::Sender<api::WebComponentState>) {
 }
 
 /// A smoke run adds the component itself: copies already on the system
-/// (the user's own) are neither used nor linked.
+/// (the user's own) are neither used nor linked; only one the run offers
+/// in a directory of its own ([`web_component::SYSTEM_DIRS_ENV`]).
 pub(crate) fn without_system_copies() {
     with(|s| s.no_system_copies = true);
 }
 
-/// This build's installer, without the system's copies in a smoke run.
+/// This build's installer; in a smoke run, with no copies on the system
+/// but those the run named.
 fn installer(no_system_copies: bool) -> Result<Installer, String> {
     let mut i = Installer::for_this_build()?;
     if no_system_copies {
-        i.system.clear();
+        i.system = web_component::system_dirs_override().unwrap_or_default();
     }
     Ok(i)
+}
+
+/// Whether the status was looked at: at the start, or as a web pane
+/// opened.
+#[cfg_attr(not(feature = "web"), allow(dead_code))]
+pub(crate) fn looked() -> bool {
+    with(|s| s.looked)
 }
 
 /// What is installed now: a manifest read and a few files looked at.
@@ -266,7 +275,7 @@ pub(crate) fn add(cx: &mut App) {
 }
 
 /// Where the answer to the first-start offer is kept.
-fn answer_path() -> Option<PathBuf> {
+pub(crate) fn answer_path() -> Option<PathBuf> {
     workspace_config::desktop_state::state_dir().map(|d| d.join("web-component-offer"))
 }
 
@@ -326,17 +335,37 @@ pub(crate) fn startup(cx: &mut App) {
                 s.looked = true;
             });
             publish();
-            if now != Status::Ready {
-                match mode() {
-                    WebComponent::Auto => add(cx),
-                    WebComponent::Ask if !answered => with(|s| s.offer = true),
-                    _ => {}
-                }
+            match at_start(&now, mode(), answered) {
+                AtStart::Add => add(cx),
+                AtStart::Offer => with(|s| s.offer = true),
+                AtStart::Nothing => {}
             }
             cx.refresh_windows();
         });
     })
     .detach();
+}
+
+/// What the start does once it looked for the component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AtStart {
+    Nothing,
+    /// Add it, without asking (`web.component: auto`).
+    Add,
+    /// Offer it in the tab strip.
+    Offer,
+}
+
+/// What the start does with the component's status `now`, given
+/// `web.component` and whether the offer was answered at an earlier start
+/// (an answer, "Add" or "Later", is never asked again).
+fn at_start(now: &Status, mode: WebComponent, answered: bool) -> AtStart {
+    match (now, mode) {
+        (Status::Ready | Status::Adding(_), _) | (_, WebComponent::Never) => AtStart::Nothing,
+        (_, WebComponent::Auto) => AtStart::Add,
+        (_, WebComponent::Ask) if answered => AtStart::Nothing,
+        (_, WebComponent::Ask) => AtStart::Offer,
+    }
 }
 
 fn size_label() -> String {
@@ -382,23 +411,42 @@ pub(crate) fn offer(t: &Theme) -> Option<gpui::Div> {
                     .child(format!("Dreamer Web was not added: {}", shorten(&why, 60))),
             )
             .child(strip_button("web-offer-retry", "Try again", t.accent, add))
-            .child(strip_button("web-offer-later", "Later", t.muted, |cx| {
-                answer(cx, "later");
-            })),
+            .child(strip_button(
+                "web-offer-later",
+                "Later",
+                t.muted,
+                press_offer_later,
+            )),
         _ => row
             .child(
                 div()
                     .text_color(c(t.muted))
                     .child(format!("Add web panes? Dreamer Web, {}", size_label())),
             )
-            .child(strip_button("web-offer-add", "Add", t.accent, |cx| {
-                answer(cx, "yes");
-                add(cx);
-            }))
-            .child(strip_button("web-offer-later", "Later", t.muted, |cx| {
-                answer(cx, "later");
-            })),
+            .child(strip_button(
+                "web-offer-add",
+                "Add",
+                t.accent,
+                press_offer_add,
+            ))
+            .child(strip_button(
+                "web-offer-later",
+                "Later",
+                t.muted,
+                press_offer_later,
+            )),
     })
+}
+
+/// The first-start offer's "Add": remembered, and the component added.
+pub(crate) fn press_offer_add(cx: &mut App) {
+    answer(cx, "yes");
+    add(cx);
+}
+
+/// The first-start offer's "Later": remembered, and nothing added.
+pub(crate) fn press_offer_later(cx: &mut App) {
+    answer(cx, "later");
 }
 
 /// What a web pane waiting for the component shows.
@@ -498,5 +546,35 @@ fn shorten(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {
         Some((at, _)) => format!("{}…", &s[..at]),
         None => s.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_start_offers_only_what_is_missing_and_never_asks_twice() {
+        let missing = [
+            Status::Missing(None),
+            Status::Missing(Some("for another Dreamer".into())),
+            Status::Failed("no network".into()),
+        ];
+        for now in &missing {
+            assert_eq!(at_start(now, WebComponent::Ask, false), AtStart::Offer);
+            // "Later" (or "Add") at an earlier start: not offered again;
+            // the web pane's button and the palette still add it.
+            assert_eq!(at_start(now, WebComponent::Ask, true), AtStart::Nothing);
+            assert_eq!(at_start(now, WebComponent::Auto, false), AtStart::Add);
+            assert_eq!(at_start(now, WebComponent::Auto, true), AtStart::Add);
+            assert_eq!(at_start(now, WebComponent::Never, false), AtStart::Nothing);
+        }
+        // There already (a copy on the system used in place counts), or
+        // being added: nothing to offer or add.
+        for now in [Status::Ready, Status::Adding(Step::Looking)] {
+            for mode in [WebComponent::Ask, WebComponent::Auto, WebComponent::Never] {
+                assert_eq!(at_start(&now, mode, false), AtStart::Nothing);
+            }
+        }
     }
 }

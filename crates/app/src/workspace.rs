@@ -3077,9 +3077,38 @@ pub(crate) enum SmokeRun {
     /// page's snapshot, in the color space `web.color` names.
     #[cfg_attr(not(feature = "web"), allow(dead_code))]
     WebColor(PathBuf),
-    /// `--smoke-web-install`: with no Dreamer Web, the first-start offer,
-    /// and the component added from a web pane's button.
-    WebInstall,
+    /// `--smoke-web-install HOW`: with no Dreamer Web at the first start,
+    /// the component added (or found) the way `HOW` says.
+    #[cfg_attr(not(feature = "web"), allow(dead_code))]
+    WebInstall(InstallSmoke),
+}
+
+/// How `--smoke-web-install` adds Dreamer Web at a first start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallSmoke {
+    /// The first-start offer's "Add", a web pane waiting for it.
+    Offer,
+    /// The offer's "Later", then the web pane's button.
+    Later,
+    /// A start after "Later": no offer, the pane's button still there.
+    Remembered,
+    /// A copy already on the system (one the gate offers in a private
+    /// directory), used in place with no download.
+    System,
+}
+
+impl InstallSmoke {
+    pub(crate) fn parse(how: Option<&str>) -> Result<InstallSmoke, String> {
+        match how {
+            Some("offer") => Ok(InstallSmoke::Offer),
+            Some("later") => Ok(InstallSmoke::Later),
+            Some("remembered") => Ok(InstallSmoke::Remembered),
+            Some("system") => Ok(InstallSmoke::System),
+            other => Err(format!(
+                "--smoke-web-install takes offer, later, remembered, or system, not {other:?}"
+            )),
+        }
+    }
 }
 
 /// What a window shows first.
@@ -3460,13 +3489,13 @@ pub(crate) fn open_via(
                 .spawn(async move |cx| smoke::web::color(any, weak, out, cx).await)
                 .detach(),
             #[cfg(feature = "web")]
-            SmokeRun::WebInstall => cx
-                .spawn(async move |cx| smoke::web::install(any, weak, cx).await)
+            SmokeRun::WebInstall(how) => cx
+                .spawn(async move |cx| smoke::web::install(any, weak, how, cx).await)
                 .detach(),
             #[cfg(not(feature = "web"))]
             SmokeRun::Web(_)
             | SmokeRun::WebRestart
-            | SmokeRun::WebInstall
+            | SmokeRun::WebInstall(_)
             | SmokeRun::WebColor(_) => {
                 let _ = daemon;
                 eprintln!("smoke: this build has no web engine (the `web` feature)");

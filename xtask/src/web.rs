@@ -846,11 +846,20 @@ const APP_CHECKS: usize = 8;
 const INSPECT_CHECKS: usize = 5;
 
 /// The install checks the web smoke reports passing (`smoke: web
-/// install:`), in its first run, with no Dreamer Web: the tab strip offers
-/// it, a web pane shows "Add Dreamer Web", its button adds it from
-/// `DREAMER_WEB_URL`, the offer is then gone, and the page loads and draws
-/// in that pane with no restart.
-const INSTALL_CHECKS: usize = 5;
+/// install:`), in its first four runs, each starting with no Dreamer Web
+/// (`--smoke-web-install HOW`):
+///
+/// - `offer` (5): the tab strip offers it, a web pane shows "Add Dreamer
+///   Web", the offer's "Add" adds it from `DREAMER_WEB_URL`, the offer is
+///   then gone, and the waiting page loads and draws with no restart;
+/// - `later` (5): the offer again, its "Later" hides it, adds nothing, and
+///   is kept; a web pane shows its button, which adds it; the page loads;
+/// - `remembered` (2), a start with the desktop state `later` left: no
+///   offer, and a web pane still shows its button;
+/// - `system` (2), with the copy `later` added named as one on the system
+///   and a download address that holds nothing: the first start links it
+///   in place with no offer and no download, and a page loads with it.
+const INSTALL_CHECKS: usize = 14;
 
 /// The name the smoke's agent sends the form.
 const SENT_NAME: &str = "Ada Lovelace";
@@ -901,9 +910,14 @@ fn with_color(config: &Path, mode: &str) -> Result<(), String> {
 ///
 /// Chromium comes from `component`, added first as a user adds Dreamer
 /// Web: the smoke's private data directory starts empty, and its first run
-/// (`--smoke-web-install`) presses a web pane's "Add Dreamer Web", which
-/// downloads the zip made here from `component` (`DREAMER_WEB_URL`, a
-/// `file://` directory). The other runs use what it installed.
+/// (`--smoke-web-install offer`) presses the first-start offer's "Add",
+/// which downloads the zip made here from `component` (`DREAMER_WEB_URL`,
+/// a `file://` directory). Three more runs, each with an empty data
+/// directory of its own, add it after "Later" from a web pane's button,
+/// check that "Later" is kept at the next start, and find the copy the
+/// second one added as a copy on the system ([`INSTALL_CHECKS`]); copies
+/// really on the Mac are never looked at. The other runs use what the
+/// first one installed.
 pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> {
     use std::os::unix::fs::PermissionsExt as _;
     let tmux = std::env::var("DREAMER_TMUX").unwrap_or_else(|_| "tmux".into());
@@ -956,12 +970,33 @@ pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> 
             .env("DREAMER_DESKTOP_STATE_DIR", root.join("desktop"))
             .env("DREAMER_CONFIG_DIR", root.join("config"))
             .env("DREAMER_DATA_DIR", root.join("data"))
+            .env(web_component::SYSTEM_DIRS_ENV, "")
             .env("DREAMER_FORBID_DEFAULT_TMUX", "1");
         c
     };
-    // Dreamer Web added from a web pane; then the pages; then the browser
-    // after a restart: a new desktop process on the same profile. Each run
-    // once the one before it passed.
+    // Dreamer Web added at a first start, `how`, with the data directory
+    // and desktop state named (each run's own but where one is the
+    // previous run's on purpose). Only the `system` run is given a copy on
+    // the "system": the one `later` added, in this private directory.
+    let zip_url = format!("file://{}", zips.display());
+    let nothing = root.join("nothing");
+    let install = |how: &str, data: &str, desktop: &str| {
+        let mut c = dreamer(&["--smoke-web-install".as_ref(), how.as_ref()]);
+        c.env("DREAMER_DATA_DIR", root.join(data))
+            .env("DREAMER_DESKTOP_STATE_DIR", root.join(desktop))
+            .env(web_component::URL_ENV, &zip_url);
+        if how == "system" {
+            c.env(web_component::SYSTEM_DIRS_ENV, root.join("data-later/web"))
+                .env(
+                    web_component::URL_ENV,
+                    format!("file://{}", nothing.display()),
+                );
+        }
+        c
+    };
+    // Dreamer Web added at the first start, four ways; then the pages;
+    // then the browser after a restart: a new desktop process on the same
+    // profile. Each run once the one before it passed.
     let then = |before: std::io::Result<std::process::Output>, mut next: Command| match before {
         Ok(first) if first.status.success() => next.output().map(|again| {
             let mut stdout = first.stdout;
@@ -970,12 +1005,14 @@ pub fn smoke(app: &Path, component: &Path, out: &Path) -> Result<Smoke, String> 
         }),
         other => other,
     };
-    let mut adding = dreamer(&["--smoke-web-install".as_ref()]);
-    adding.env(web_component::URL_ENV, format!("file://{}", zips.display()));
+    let _ = std::fs::create_dir_all(&nothing);
     let result = then(
-        adding.output(),
-        dreamer(&["--smoke-web".as_ref(), out.as_os_str()]),
+        install("offer", "data", "desktop").output(),
+        install("later", "data-later", "desktop-later"),
     );
+    let result = then(result, install("remembered", "data-again", "desktop-later"));
+    let result = then(result, install("system", "data-system", "desktop-system"));
+    let result = then(result, dreamer(&["--smoke-web".as_ref(), out.as_os_str()]));
     let result = then(result, dreamer(&["--smoke-web-restart".as_ref()]));
     // `web.color`, a run for each: Chromium takes it as it starts. The
     // configuration is written before each run starts.
