@@ -542,9 +542,10 @@ windows only.
 
 ## Web panes
 
-With [Dreamer Web](#dreamer-web) added: on macOS, and on Linux (X11 and
-Wayland) in a [build with web panes](#a-build-with-web-panes) (the
-release's Linux packages are built without them so far). A web pane
+With [Dreamer Web](#dreamer-web) added: on macOS, and on Linux x86-64
+(X11 and Wayland) in the release's packages or any
+[build with web panes](#a-build-with-web-panes). Linux on ARM64 has no
+web panes yet. A web pane
 shows one web page in
 a pane's rectangle, drawn by Chromium itself, and is
 the [browser](#the-browser): its chrome shows only when asked for. In tmux

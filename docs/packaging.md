@@ -195,10 +195,14 @@ the `web-engine` crate, which starts Chromium on its headless platform
 with SwiftShader and reads a pixel of what it paints). The release
 workflow builds it and attaches it beside the base archives.
 
-The Linux tarball, `.deb`, `.rpm`, and Arch package are still built
-without web panes, so they do not grow. With the component installed,
-web panes work in a Linux build with web panes
-([desktop.md](desktop.md#a-build-with-web-panes)).
+On x86-64, the Linux tarball, `.deb`, `.rpm`, and Arch package are built
+with web panes (the `web` feature), as the Mac app is. Chromium is not in
+them, and `dreamer` does not link `libcef.so`: it loads it from the
+component when a web pane opens, so `dreamer` starts and works without
+the component, and web panes work once `dream web install` (or the
+button in a web pane) adds it. `cargo xtask package --platform linux`
+fails if `dreamer` links `libcef`. The ARM64 packages are built without
+web panes, since there is no Dreamer Web for ARM64 Linux yet.
 
 ## Linux tarball
 
