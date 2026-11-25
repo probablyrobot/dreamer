@@ -76,7 +76,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             return Err(format!("cargo {} failed", step.join(" ")));
         }
     }
-    let exe = root.join("target/debug/dreamer");
+    let exe = crate::util::cargo_target(&root).join("debug/dreamer");
     let fixtures_dir = root.join("crates/terminal-ghostty/tests/fixtures/snapshot-src");
     let mut inputs: Vec<Option<String>> = vec![None];
     let mut names: Vec<String> = std::fs::read_dir(&fixtures_dir)

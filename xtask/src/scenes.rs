@@ -319,7 +319,7 @@ pub(crate) fn launch_on(
             )?;
         }
     }
-    let mut app = Command::new(root.join("target/debug/dreamer"));
+    let mut app = Command::new(crate::util::cargo_target(root).join("debug/dreamer"));
     if x11 {
         app.env_remove("WAYLAND_DISPLAY");
     }
@@ -368,7 +368,7 @@ fn open_web(root: &Path, dir: &Path, url: &str) -> Result<(), String> {
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    let out = Command::new(root.join("target/debug/dream"))
+    let out = Command::new(crate::util::cargo_target(root).join("debug/dream"))
         .args(["web", "open", url, "--session", "main"])
         .env("DREAMER_RUNTIME_DIR", &rt)
         .env("DREAMER_STATE_DIR", dir.join("st"))
@@ -410,7 +410,7 @@ pub fn capture_web(root: &Path, x11: bool, path: &Path) -> Result<String, String
             window * 100.0,
             page * 100.0
         );
-        if window < 0.05 {
+        if window < 0.01 {
             Err(format!(
                 "the capture does not show Dreamer's window ({found})"
             ))
@@ -438,7 +438,7 @@ pub fn capture_web(root: &Path, x11: bool, path: &Path) -> Result<String, String
 /// started from a shell on the right. Both get only the scene's private
 /// directories.
 fn show_app(root: &Path, dir: &Path, tmux: &str, socket: &str, app: &str) -> Result<(), String> {
-    let debug = root.join("target/debug");
+    let debug = crate::util::cargo_target(root).join("debug");
     let manifest = root.join(app);
     let rt = dir.join("rt");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

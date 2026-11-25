@@ -116,7 +116,51 @@ fn open(path: &Path) -> Result<(), String> {
     for (slot, f) in TABLE.iter().zip(found) {
         slot.store(f, Ordering::Release);
     }
+    // GLib, which `libcef.so` links, is loaded with it: its main loop is
+    // found now, not loaded again.
+    // SAFETY: the name is NUL-terminated; `RTLD_NOLOAD` only looks the
+    // library up.
+    let glib = unsafe {
+        libc::dlopen(
+            c"libglib-2.0.so.0".as_ptr(),
+            libc::RTLD_NOW | libc::RTLD_LOCAL | libc::RTLD_NOLOAD,
+        )
+    };
+    if !glib.is_null() {
+        // SAFETY: `glib` is open; the name is NUL-terminated.
+        let f = unsafe { libc::dlsym(glib, c"g_main_context_iteration".as_ptr()) };
+        GLIB_ITERATION.store(f, Ordering::Release);
+    }
     Ok(())
+}
+
+/// GLib's `g_main_context_iteration`, once [`load`] found it.
+static GLIB_ITERATION: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Dispatch what is ready on GLib's default main context, without waiting,
+/// at most `max` times; call it on the thread that runs CEF's work.
+///
+/// Chromium's browser process reads its X11 connection from a GLib source
+/// on that context. With CEF's external message pump (the embedder calls
+/// `cef_do_message_loop_work`), Chromium runs its tasks but never iterates
+/// GLib's loop; a GTK app's main loop would. Without this, the events of
+/// CEF's and Chromium's windows (configure, expose, input) are never
+/// handled.
+pub fn dispatch_glib(max: usize) {
+    let f = GLIB_ITERATION.load(Ordering::Acquire);
+    if f.is_null() {
+        return;
+    }
+    // SAFETY: `f` is `g_main_context_iteration` from the GLib loaded in
+    // this process: `gboolean (GMainContext *context, gboolean may_block)`.
+    let iteration: unsafe extern "C" fn(*mut c_void, i32) -> i32 =
+        unsafe { std::mem::transmute(f) };
+    for _ in 0..max {
+        // SAFETY: NULL is the default context; 0 never blocks.
+        if unsafe { iteration(std::ptr::null_mut(), 0) } == 0 {
+            break;
+        }
+    }
 }
 
 /// `dlerror`'s message.

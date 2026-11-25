@@ -986,6 +986,8 @@ pub fn started() -> bool {
 pub fn do_work() {
     if started() {
         do_message_loop_work();
+        #[cfg(target_os = "linux")]
+        platform::native_events();
     }
 }
 

@@ -3,8 +3,10 @@
 //! the helper beside the library); a page's surface on either display
 //! server.
 //!
-//! - **X11:** CEF's own X11 window, a child of the toolkit's window, moved
-//!   and shown over the X connection of this module.
+//! - **X11:** CEF's own X11 window, in a window of ours (a child of the
+//!   toolkit's window, in the screen's default visual), moved and shown
+//!   over the X connection of this module. Chromium's own X events are
+//!   dispatched after CEF's work ([`native_events`]).
 //! - **Wayland:** CEF cannot be parented to a Wayland surface, so it renders
 //!   offscreen on the GPU (shared textures). Each frame it lends (a dmabuf)
 //!   is copied on the GPU into a buffer of ours ([`cef_sys::dmabuf`]), and
@@ -52,6 +54,17 @@ pub(super) fn switches(cl: &mut CommandLine, browser: bool) {
             Some(&CefString::from("ozone-platform")),
             Some(&CefString::from(ozone)),
         );
+    }
+}
+
+/// After CEF's work: on X11, the events of Chromium's X connection, which
+/// it reads from GLib's main loop (see [`cef_sys::loader::dispatch_glib`]).
+/// Offscreen pages (Wayland) get their input from the pane, not from
+/// Chromium's connection.
+pub(super) fn native_events() {
+    if SERVER.load(Ordering::Relaxed) == X11 {
+        // Bounded: the toolkit's own events wait behind these.
+        cef_sys::loader::dispatch_glib(64);
     }
 }
 
@@ -125,8 +138,9 @@ pub(super) fn load_in_helper() -> Result<(), String> {
 }
 
 /// A closing browser. An offscreen page has no window: CEF closes it. A
-/// windowed page's X11 window is destroyed here, which completes the close
-/// (CEF would otherwise ask the toplevel window to close).
+/// windowed page's X11 window is destroyed here, with the window of ours
+/// holding it, which completes the close (CEF would otherwise ask the
+/// toplevel window to close).
 pub(super) fn close(browser: &mut Browser) -> i32 {
     let Some(window) = browser.host().map(|h| h.window_handle()) else {
         return 0;
@@ -136,7 +150,9 @@ pub(super) fn close(browser: &mut Browser) -> i32 {
     }
     x11::with(|c| {
         use x11rb::protocol::xproto::ConnectionExt as _;
-        let _ = c.destroy_window(window as u32);
+        // Destroying the holder destroys CEF's window in it too.
+        let window = x11::holder_of(c, window as u32).unwrap_or(window as u32);
+        let _ = c.destroy_window(window);
         let _ = x11rb::connection::Connection::flush(c);
     });
     1
@@ -144,8 +160,9 @@ pub(super) fn close(browser: &mut Browser) -> i32 {
 
 /// A page's surface.
 pub(super) enum Surface {
-    /// CEF's child window of the toolkit's X11 window (its id).
-    X11 { parent: u32 },
+    /// CEF's window, in `holder`: a window of ours, a child of the
+    /// toolkit's X11 window `parent` (see [`x11::holder`]).
+    X11 { parent: u32, holder: u32 },
     /// A subsurface of the toolkit's Wayland surface.
     Wayland(Arc<wayland::Page>),
 }
@@ -160,13 +177,14 @@ impl Surface {
         let handle = window
             .window_handle()
             .map_err(|e| format!("no window handle: {e}"))?;
+        let x11 = |parent: u32| {
+            let holder = x11::with(|c| x11::holder(c, parent, device(rect)))
+                .ok_or("no connection to the X server")??;
+            Ok(Surface::X11 { parent, holder })
+        };
         match handle.as_raw() {
-            RawWindowHandle::Xcb(h) => Ok(Surface::X11 {
-                parent: h.window.get(),
-            }),
-            RawWindowHandle::Xlib(h) => Ok(Surface::X11 {
-                parent: h.window as u32,
-            }),
+            RawWindowHandle::Xcb(h) => x11(h.window.get()),
+            RawWindowHandle::Xlib(h) => x11(h.window as u32),
             RawWindowHandle::Wayland(h) => {
                 let display = window
                     .display_handle()
@@ -195,9 +213,14 @@ impl Surface {
 
     pub(super) fn window_info(&self, rect: Rect) -> WindowInfo {
         match self {
-            Surface::X11 { parent } => WindowInfo {
-                parent_window: std::ffi::c_ulong::from(*parent),
-                bounds: device(rect),
+            // All of the holder, which is on `rect`.
+            Surface::X11 { holder, .. } => WindowInfo {
+                parent_window: std::ffi::c_ulong::from(*holder),
+                bounds: cef::Rect {
+                    x: 0,
+                    y: 0,
+                    ..device(rect)
+                },
                 runtime_style: RuntimeStyle::ALLOY,
                 ..Default::default()
             },
@@ -218,19 +241,19 @@ impl Surface {
 
     pub(super) fn place(&self, browser: &Browser, rect: Rect) {
         match self {
-            Surface::X11 { .. } => {
-                let Some(child) = child_window(browser) else {
-                    return;
-                };
+            Surface::X11 { holder, .. } => {
                 let r = device(rect);
+                let child = child_window(browser);
                 x11::with(|c| {
                     use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt as _};
-                    let aux = ConfigureWindowAux::new()
-                        .x(r.x)
-                        .y(r.y)
+                    let size = ConfigureWindowAux::new()
                         .width(r.width.max(1) as u32)
                         .height(r.height.max(1) as u32);
-                    let _ = c.configure_window(child, &aux);
+                    let _ = c.configure_window(*holder, &size.x(r.x).y(r.y));
+                    // CEF's window fills the holder.
+                    if let Some(child) = child {
+                        let _ = c.configure_window(child, &size.x(0).y(0));
+                    }
                     let _ = x11rb::connection::Connection::flush(c);
                 });
             }
@@ -245,16 +268,14 @@ impl Surface {
 
     pub(super) fn set_visible(&self, browser: &Browser, visible: bool) {
         match self {
-            Surface::X11 { .. } => {
-                let Some(child) = child_window(browser) else {
-                    return;
-                };
+            // CEF maps its window; the holder shows or hides it.
+            Surface::X11 { holder, .. } => {
                 x11::with(|c| {
                     use x11rb::protocol::xproto::ConnectionExt as _;
                     let _ = if visible {
-                        c.map_window(child)
+                        c.map_window(*holder)
                     } else {
-                        c.unmap_window(child)
+                        c.unmap_window(*holder)
                     };
                     let _ = x11rb::connection::Connection::flush(c);
                 });
@@ -286,7 +307,7 @@ impl Surface {
 
     /// Give the keys back to the toolkit's window.
     pub(super) fn give_focus_back(&self, browser: &Browser) {
-        if let Surface::X11 { parent } = self {
+        if let Surface::X11 { parent, .. } = self {
             let inside = child_window(browser)
                 .and_then(|child| x11::with(|c| x11::focus_inside(c, child)))
                 .unwrap_or(false);
@@ -342,6 +363,17 @@ impl Surface {
     }
 }
 
+impl Drop for Surface {
+    /// A holder CEF never put its window in (the browser was not created)
+    /// goes now; one with CEF's window goes as the browser closes
+    /// ([`close`]).
+    fn drop(&mut self) {
+        if let Surface::X11 { holder, .. } = self {
+            x11::with(|c| x11::drop_if_empty(c, *holder));
+        }
+    }
+}
+
 /// `rect` in device pixels, as X11 places windows.
 fn device(rect: Rect) -> cef::Rect {
     let s = if rect.scale > 0.0 { rect.scale } else { 1.0 };
@@ -363,12 +395,105 @@ mod x11 {
     //! This module's own connection to the X server, for CEF's windows.
 
     use std::cell::RefCell;
+    use std::sync::Mutex;
 
-    use x11rb::protocol::xproto::ConnectionExt as _;
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, CreateWindowAux, WindowClass};
     use x11rb::rust_connection::RustConnection;
 
     thread_local! {
         static CONNECTION: RefCell<Option<RustConnection>> = const { RefCell::new(None) };
+    }
+
+    /// The holders made and not yet destroyed.
+    static HOLDERS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+    /// A window for CEF's window, in `parent` on `rect`, shown.
+    ///
+    /// CEF creates its window in the screen's default visual (depth 24)
+    /// and, for that visual, with the colormap `CopyFromParent`. The X
+    /// server refuses that (`BadMatch`) when the parent's visual is another
+    /// one, as the toolkit's window has (32-bit ARGB, for translucency):
+    /// CEF's window would never exist, and Chromium could draw nowhere. So
+    /// CEF's parent is this window instead, in the default visual, with the
+    /// default colormap given explicitly (and a border pixel), which X
+    /// allows under a parent of any depth.
+    pub(super) fn holder(
+        c: &RustConnection,
+        parent: u32,
+        rect: cef_sys::cef::Rect,
+    ) -> Result<u32, String> {
+        let err = |e: &dyn std::fmt::Display| format!("X11: a window for the page: {e}");
+        let root = c
+            .get_geometry(parent)
+            .map_err(|e| err(&e))?
+            .reply()
+            .map_err(|e| err(&e))?
+            .root;
+        let screen = c
+            .setup()
+            .roots
+            .iter()
+            .find(|s| s.root == root)
+            .ok_or_else(|| err(&"the window's screen is unknown"))?;
+        let id = c.generate_id().map_err(|e| err(&e))?;
+        let aux = CreateWindowAux::new()
+            .border_pixel(screen.black_pixel)
+            .colormap(screen.default_colormap);
+        let clamp = |v: i32| v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        let size = |v: i32| v.clamp(1, i32::from(u16::MAX)) as u16;
+        c.create_window(
+            screen.root_depth,
+            id,
+            parent,
+            clamp(rect.x),
+            clamp(rect.y),
+            size(rect.width),
+            size(rect.height),
+            0,
+            WindowClass::INPUT_OUTPUT,
+            screen.root_visual,
+            &aux,
+        )
+        .map_err(|e| err(&e))?
+        .check()
+        .map_err(|e| err(&e))?;
+        let _ = c.map_window(id);
+        let _ = c.flush();
+        if let Ok(mut h) = HOLDERS.lock() {
+            h.push(id);
+        }
+        Ok(id)
+    }
+
+    /// The holder `window` (CEF's) is in, now forgotten: it is about to be
+    /// destroyed.
+    pub(super) fn holder_of(c: &RustConnection, window: u32) -> Option<u32> {
+        let parent = c.query_tree(window).ok()?.reply().ok()?.parent;
+        forget(parent).then_some(parent)
+    }
+
+    /// Destroy `holder` if nothing is in it.
+    pub(super) fn drop_if_empty(c: &RustConnection, holder: u32) {
+        let empty = c
+            .query_tree(holder)
+            .ok()
+            .and_then(|r| r.reply().ok())
+            .is_some_and(|t| t.children.is_empty());
+        if empty && forget(holder) {
+            let _ = c.destroy_window(holder);
+            let _ = c.flush();
+        }
+    }
+
+    /// Whether `window` was a holder still known.
+    fn forget(window: u32) -> bool {
+        let Ok(mut h) = HOLDERS.lock() else {
+            return false;
+        };
+        let known = h.len();
+        h.retain(|w| *w != window);
+        h.len() != known
     }
 
     /// Run `f` with the connection, made on first use; `None` without an
