@@ -268,6 +268,54 @@ pub fn heap_in_use() -> Option<u64> {
     }
 }
 
+/// A process's physical footprint on macOS, in bytes: the memory the
+/// kernel charges it for (dirty and compressed pages, as Activity Monitor
+/// shows), which leaves out free pages the allocator still has mapped but
+/// that resident size counts. `None` elsewhere, or when the process is
+/// gone or belongs to another user.
+#[allow(unsafe_code)]
+pub fn phys_footprint(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        /// `struct rusage_info_v2` from <sys/resource.h>, field for field.
+        #[repr(C)]
+        #[derive(Default)]
+        struct RusageInfoV2 {
+            uuid: [u8; 16],
+            user_time: u64,
+            system_time: u64,
+            pkg_idle_wkups: u64,
+            interrupt_wkups: u64,
+            pageins: u64,
+            wired_size: u64,
+            resident_size: u64,
+            phys_footprint: u64,
+            /// From `ri_proc_start_abstime` to `ri_diskio_byteswritten`.
+            rest: [u64; 10],
+        }
+        const RUSAGE_INFO_V2: std::ffi::c_int = 2;
+        unsafe extern "C" {
+            fn proc_pid_rusage(
+                pid: std::ffi::c_int,
+                flavor: std::ffi::c_int,
+                buffer: *mut RusageInfoV2,
+            ) -> std::ffi::c_int;
+        }
+        let pid = std::ffi::c_int::try_from(pid).ok()?;
+        let mut info = RusageInfoV2::default();
+        // SAFETY: for RUSAGE_INFO_V2 the kernel writes at most
+        // `sizeof(struct rusage_info_v2)` bytes, which is the size of the
+        // struct we own and pass.
+        let rc = unsafe { proc_pid_rusage(pid, RUSAGE_INFO_V2, &mut info) };
+        (rc == 0).then_some(info.phys_footprint)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +359,28 @@ mod tests {
         let err = private_dir(&dir).expect_err("open dir refused");
         assert!(err.contains("must be 0700"), "{err}");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The rusage struct is hand-written; a wrong layout would read another
+    /// field. A block written page by page must show in the footprint. The
+    /// heap test may hold its own 128 MiB meanwhile, hence the upper bound.
+    #[test]
+    fn phys_footprint_follows_a_written_block() {
+        const BLOCK: u64 = 128 << 20;
+        const SLACK: u64 = 32 << 20;
+        let me = std::process::id();
+        if !cfg!(target_os = "macos") {
+            assert_eq!(phys_footprint(me), None);
+            return;
+        }
+        let before = phys_footprint(me).expect("footprint of this process");
+        let block = vec![1u8; BLOCK as usize];
+        let during = phys_footprint(me).unwrap_or(0);
+        assert!(
+            during + SLACK >= before + BLOCK && during <= before + 2 * BLOCK + SLACK,
+            "{before} then {during} with 128 MiB more written"
+        );
+        drop(block);
     }
 
     #[test]
