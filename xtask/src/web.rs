@@ -161,6 +161,7 @@ pub fn linux_bundle(root: &Path, profile: Profile) -> Result<(PathBuf, PathBuf),
     build_linux(
         root,
         profile,
+        false,
         &[
             "dreamer-app",
             "web-engine",
@@ -187,10 +188,12 @@ pub fn linux_component_dir(root: &Path) -> PathBuf {
 }
 
 /// Linux: `cargo build` of `packages` with web panes, and the offscreen
-/// check, with `rustflags` added.
+/// check, with `rustflags` added; with `ship`, without debug info
+/// ([`crate::package::strip_debuginfo`]).
 pub fn build_linux(
     root: &Path,
     profile: Profile,
+    ship: bool,
     packages: &[&str],
     rustflags: &[String],
 ) -> Result<(), String> {
@@ -228,6 +231,9 @@ pub fn build_linux(
                 flags.push_str(f);
             }
             cmd.env("RUSTFLAGS", flags.trim());
+        }
+        if ship {
+            crate::package::strip_debuginfo(&mut cmd);
         }
         let status = cmd.status().map_err(|e| format!("cargo build: {e}"))?;
         if !status.success() {

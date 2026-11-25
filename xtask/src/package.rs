@@ -311,6 +311,7 @@ fn linux_tarball(root: &Path) -> Result<(PathBuf, String, &'static str), String>
             ),
         )
         .current_dir(root);
+    strip_debuginfo(&mut cargo);
     // Web panes, where Dreamer Web exists (x86-64). Nothing links
     // libcef.so: `dreamer` loads it from the component at run time.
     let web = triple == crate::web::LINUX_TARGET;
@@ -343,6 +344,7 @@ fn linux_tarball(root: &Path) -> Result<(PathBuf, String, &'static str), String>
             &crate::util::cargo_target(root).join("release").join(exe),
             &stage.join("bin").join(exe),
         )?;
+        check_stripped(&stage.join("bin").join(exe))?;
     }
     // `dreamer` must start without Dreamer Web installed.
     let linked = linked_libraries(&stage.join("bin/dreamer"), triple)?;
@@ -440,6 +442,7 @@ fn linux_web_archive(root: &Path) -> Result<PathBuf, String> {
     crate::web::build_linux(
         root,
         Profile::Release,
+        true,
         &["web-engine"],
         &[format!(
             "--remap-path-prefix={}=/usr/src/dreamer",
@@ -450,6 +453,7 @@ fn linux_web_archive(root: &Path) -> Result<PathBuf, String> {
     let out = root.join("target/package/linux");
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     let component = crate::web::build_linux_component(&out, &bin, &web, &version)?;
+    check_stripped(&component.join(web_component::HELPER_EXE))?;
     crate::web::verify_linux_component(&component, &bin.join("examples/offscreen"))?;
     let archive = crate::web::linux_component_archive(&component, &out, &version)?;
     println!("package: {}", component.display());
@@ -583,7 +587,7 @@ fn rpm_package(root: &Path) -> Result<PathBuf, String> {
              License: Apache-2.0\nURL: https://github.com/probablyrobot/dreamer\n\
              Requires: tmux, libwayland-client, vulkan-loader, fontconfig, libxkbcommon-x11\n\
              Recommends: mesa-vulkan-drivers\n\
-             # Built and stripped by cargo already.\n\
+             # Built by cargo with debug info stripped and symbols kept.\n\
              %global debug_package %{{nil}}\n%global __os_install_post %{{nil}}\n\
              %define _build_id_links none\n%define _binary_payload w19.zstdio\n\n\
              %description\n{PACKAGE_DESCRIPTION}\n\n\
@@ -646,6 +650,9 @@ pub fn server_archive(root: &Path, target: Option<String>) -> Result<PathBuf, St
             ),
         )
         .current_dir(root);
+    if triple.contains("linux") {
+        strip_debuginfo(&mut cargo);
+    }
     if !cargo
         .status()
         .map_err(|e| format!("cargo build: {e}"))?
@@ -672,6 +679,9 @@ pub fn server_archive(root: &Path, target: Option<String>) -> Result<PathBuf, St
     };
     for exe in SERVER_EXECUTABLES {
         copy(&built.join(exe), &stage.join("bin").join(exe))?;
+        if triple.contains("linux") {
+            check_stripped(&stage.join("bin").join(exe))?;
+        }
     }
     if triple.contains("linux") {
         copy(
@@ -780,6 +790,36 @@ fn check_server_archive(
     })();
     let _ = std::fs::remove_dir_all(&away);
     result
+}
+
+/// Linux release builds that ship leave out debug info. The release
+/// profile keeps line tables, which on Linux the linker writes into the
+/// executable (most of `dreamer`'s size); on macOS they stay in the object
+/// files. The linker drops them here, so no `strip` for the target is
+/// needed, and keeps the symbol table, so backtraces still name functions.
+pub fn strip_debuginfo(cargo: &mut Command) {
+    cargo.env("CARGO_PROFILE_RELEASE_STRIP", "debuginfo");
+}
+
+/// A shipped Linux executable has no debug sections but has its symbols.
+fn check_stripped(path: &Path) -> Result<(), String> {
+    let out = run_checked(Command::new("readelf").arg("-SW").arg(path), "readelf")?;
+    let sections: Vec<&str> = out
+        .lines()
+        .filter_map(|l| l.split(']').nth(1)?.split_whitespace().next())
+        .collect();
+    // `.debug_gdb_scripts` is a few loaded bytes naming Rust's debugger
+    // scripts, not debug info.
+    if let Some(debug) = sections
+        .iter()
+        .find(|s| s.starts_with(".debug") && **s != ".debug_gdb_scripts")
+    {
+        return Err(format!("{} carries debug info ({debug})", path.display()));
+    }
+    if !sections.contains(&".symtab") {
+        return Err(format!("{} has no symbol table", path.display()));
+    }
+    Ok(())
 }
 
 /// Shared libraries an executable needs, from its headers.
