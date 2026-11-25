@@ -49,6 +49,44 @@ impl From<CommandError> for ApplyError {
 /// Program for a long-lived placeholder while `remain-on-exit` is set.
 const HOLD: [&str; 2] = ["sleep", "2147483647"];
 
+/// `/bin/sh -c` script that runs a kept pane's program (its arguments) and
+/// exits with the program's status only once tmux has read everything the
+/// program wrote.
+///
+/// tmux decides whether an exited pane still has output to read by asking
+/// the pty how many bytes are waiting. On Linux a pty write reaches that
+/// count through a kernel worker, so when tmux handles the exit first it
+/// closes the pane with the last output still in flight: a short program in
+/// a kept pane can leave "Pane is dead" over a blank screen (#236). A cursor
+/// position query written after the program ends is answered only after
+/// tmux has parsed all output before it, so waiting for the reply (at most
+/// two seconds) closes that window.
+///
+/// Job control (`set -m`) runs the program as the terminal's foreground
+/// process group, so `pane_current_command` still names it and Ctrl-C
+/// reaches only the program. Ctrl-Z stays without effect, as it was when
+/// tmux continued a stopped pane process at once: tmux would not continue a
+/// job of this script, and a stopped job would end the script and the pane.
+/// So the terminal has no suspend key, and the program starts with `TSTP`
+/// ignored in case it sets one. The ignore is set in the job itself because
+/// some shells (bash 3.2, macOS `/bin/sh`) reset it for their jobs.
+const DRAIN: &str = r#"stty susp undef 2>/dev/null; set -m
+/bin/sh -c 'trap "" TSTP; exec "$@"' sh "$@"; s=$?; set +m
+if stty -echo -icanon min 0 time 20 2>/dev/null; then
+  printf '\033[6n'
+  while r=$(dd bs=32 count=1 2>/dev/null) && [ -n "$r" ]; do
+    case $r in *R*) break ;; esac
+  done
+fi
+exit $s"#;
+
+/// The argv for a kept pane's program: `process` under [`DRAIN`].
+fn drained(process: Vec<String>) -> Vec<String> {
+    let mut argv = vec!["/bin/sh".into(), "-c".into(), DRAIN.into(), "sh".into()];
+    argv.extend(process);
+    argv
+}
+
 fn first_line(r: &tmux_protocol::Response) -> String {
     r.body
         .first()
@@ -291,7 +329,7 @@ async fn build_window(
                 for (k, v) in merged_env(&plan.env, &pane.env) {
                     respawn = respawn.opt("-e", format!("{k}={v}"));
                 }
-                for a in process {
+                for a in drained(process) {
                     respawn = respawn.arg(a);
                 }
                 after = after.push(respawn);
