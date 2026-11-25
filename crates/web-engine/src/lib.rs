@@ -20,7 +20,7 @@
 //! CEF's browser process is this process; its renderer, GPU, and utility
 //! processes run the helper executable (`dreamer-web-helper`), which is in
 //! Dreamer Web, the component that holds Chromium apart from the app
-//! ([`web_component`]): on macOS in its helper apps, beside the framework;
+//! (the `web-component` crate): on macOS in its helper apps, beside the framework;
 //! on Linux beside `libcef.so` and Chromium's resources. The framework (or
 //! `libcef.so`, which nothing links) is loaded from there when the first
 //! page opens, and a missing component is an error saying how to add it.
