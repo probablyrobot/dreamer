@@ -6,9 +6,10 @@
 //!
 //! 1. Build the macOS zip and the Dreamer Web zip, Developer ID signed,
 //!    notarized, and stapled; draw pages with them; and add Dreamer Web
-//!    from its zip away from the tree; build the ARM64 Linux desktop
-//!    tarball and server archive in an ARM64 container; run the ARM64
-//!    archives on fresh containers.
+//!    from its zip away from the tree; build the macOS server archive, its
+//!    executables Developer ID signed and notarized; build the ARM64 Linux
+//!    desktop tarball and server archive in an ARM64 container; run the
+//!    ARM64 archives on fresh containers.
 //! 2. Create the tag on GitHub, which starts `release.yml`: it builds the
 //!    x86-64 archives, runs them on fresh containers, builds the Linux
 //!    Dreamer Web archive (checked by drawing a page offscreen), and
@@ -205,10 +206,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .is_some_and(|r| r["signing"]["notarized"] == true);
-        if !zip.is_file() || !notarized || !out.join("fresh-arm64.json").is_file() {
+        let server = out.join(format!(
+            "server/dreamer-server-{version}-aarch64-apple-darwin.tar.gz"
+        ));
+        if !zip.is_file()
+            || !notarized
+            || !server.is_file()
+            || !out.join("fresh-arm64.json").is_file()
+        {
             return Err(format!(
-                "--resume: target/package has no notarized {} or ARM64 fresh record from this release",
-                zip.display()
+                "--resume: target/package has no notarized {}, {}, or ARM64 fresh record from this release",
+                zip.display(),
+                server.display()
             ));
         }
     } else if !tagged.is_empty() {
@@ -279,6 +288,22 @@ fn build_and_tag(
     // Chromium under the hardened runtime: the signed component draws pages.
     crate::web::smoke_packaged(true)?;
     step(&root, &["package", "--fresh", "--platform", "macos"])?;
+    // The macOS server archive, for installing on a Mac over SSH: its
+    // executables signed as the app's are.
+    step(
+        &root,
+        &[
+            "package",
+            "--platform",
+            "server",
+            "--target",
+            "aarch64-apple-darwin",
+            "--sign",
+            &identity,
+            "--notarize",
+            profile,
+        ],
+    )?;
     step(
         &root,
         &[
@@ -409,7 +434,10 @@ fn finish(root: &Path, out: &Path, tag: &str, commit: &str) -> Result<(), String
         ),
         (
             out.join("server"),
-            &["aarch64-unknown-linux-gnu.tar.gz"][..],
+            &[
+                "aarch64-unknown-linux-gnu.tar.gz",
+                "aarch64-apple-darwin.tar.gz",
+            ][..],
         ),
     ] {
         for e in std::fs::read_dir(&dir)

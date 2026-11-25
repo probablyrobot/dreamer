@@ -992,7 +992,7 @@ message HostSubscribe {
 
 message InstallPlanParams {
   string name = 1;
-  // Directory of server archives on this machine; default DREAMER_SERVER_ARTIFACTS, else share/dreamer/server beside this daemon.
+  // Directory of server archives on this machine, used with no download; default DREAMER_SERVER_ARTIFACTS. With neither, the archive is taken from share/dreamer/server beside this daemon or the downloads kept in the data directory, else downloaded from this version's release (or DREAMER_SERVER_URL).
   optional string artifacts = 2;
 }
 
@@ -1009,6 +1009,7 @@ message InstallPlan {
   optional string installed = 7;
   // The version that would be installed (this daemon's own).
   string version = 8;
+  // The archive on this machine, or the address hosts.install downloads it from.
   string archive = 9;
   string sha256 = 10;
   uint64 size = 11;

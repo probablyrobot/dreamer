@@ -722,7 +722,7 @@ declare namespace Dreamer {
 
   interface InstallPlanParams {
     name: string;
-    /** Directory of server archives on this machine; default DREAMER_SERVER_ARTIFACTS, else share/dreamer/server beside this daemon. */
+    /** Directory of server archives on this machine, used with no download; default DREAMER_SERVER_ARTIFACTS. With neither, the archive is taken from share/dreamer/server beside this daemon or the downloads kept in the data directory, else downloaded from this version's release (or DREAMER_SERVER_URL). */
     artifacts?: string;
   }
 
@@ -739,6 +739,7 @@ declare namespace Dreamer {
     installed?: string;
     /** The version that would be installed (this daemon's own). */
     version: string;
+    /** The archive on this machine, or the address hosts.install downloads it from. */
     archive: string;
     sha256: string;
     size: number;

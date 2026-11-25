@@ -142,14 +142,16 @@ It is one reviewable operation:
 1. **Probe.** `hosts.install_plan` runs a fixed script on the host over
    SSH: `uname -s`, `uname -m`, `$HOME`, and the installed `VERSION`, if
    any. Linux x86-64, Linux ARM64, and macOS ARM64 have archives. The
-   archive for that target and this version is taken from the artifacts
-   directory: the one given, else `DREAMER_SERVER_ARTIFACTS`, else
-   `share/dreamer/server` beside the daemon. Its SHA-256 is checked against
-   its `.sha256` here.
+   archive for that target and this exact version is found
+   ([Where the archive comes from](#where-the-archive-comes-from)), with
+   its size and SHA-256.
 2. **Review.** The plan lists every change in plain words, with the
-   archive, its size and SHA-256, and the remote paths. It has an id.
+   archive (a file, or the address it is downloaded from), its size and
+   SHA-256, and the remote paths. It has an id.
 3. **Install.** `hosts.install` probes again and refuses if the plan is no
-   longer the one reviewed. It streams the archive over SSH's standard
+   longer the one reviewed: another host, version, archive, or checksum.
+   An archive to download is downloaded now, and kept only if its size
+   and SHA-256 are the plan's. It streams the archive over SSH's standard
    input to a script that:
    - checks the SHA-256 on the host before unpacking anything;
    - unpacks into `~/.local/share/dreamer/versions/<version>/`, and runs
@@ -160,8 +162,35 @@ It is one reviewable operation:
    A failure at any step leaves the previous version in place and removes
    the partial upload.
 
-Nothing outside `~/.local/share/dreamer` changes: no root, no package
-manager, no shell profiles. Scripts run under `sh` whatever the login
+### Where the archive comes from
+
+The first of these that applies:
+
+1. **A directory you name:** `--artifacts DIR` (the `artifacts` parameter),
+   else `DREAMER_SERVER_ARTIFACTS`. The archive must be there; nothing is
+   downloaded. Use this offline, or for an archive you built
+   (`cargo xtask package --platform server --target TRIPLE`).
+2. **One already on this machine:** in `share/dreamer/server` beside the
+   daemon, or kept from an earlier download in `server-archives/` in
+   Dreamer's data directory (`~/.local/share/dreamer`, or
+   `DREAMER_DATA_DIR`).
+3. **This version's release:**
+   `https://github.com/probablyrobot/dreamer/releases/download/v<version>/dreamer-server-<version>-<target>.tar.gz`.
+   The plan reads the SHA-256 from the `.sha256` published beside it and
+   the size from the server, and says it will download it.
+   `DREAMER_SERVER_URL` names another place to download from: an address
+   (`https://…` or `file://…`) of a directory holding the archives and
+   their `.sha256` files, such as a mirror.
+
+A file on this machine is checked against the `.sha256` beside it when the
+plan is made. A download is made with `curl` (the daemon opens no network
+sockets of its own) into `server-archives/`, and the daemon's log says how
+far it got. If its size or SHA-256 is not the plan's, it is deleted and
+nothing is installed. Otherwise it is kept, so the next install of this
+version to a host of the same kind needs no network.
+
+Nothing outside `~/.local/share/dreamer` on the host changes: no root, no
+package manager, no shell profiles. Scripts run under `sh` whatever the login
 shell is (`sh -c '<script>' sh <arguments>`), and their variable parts are
 quoted arguments, never text pasted into the script.
 

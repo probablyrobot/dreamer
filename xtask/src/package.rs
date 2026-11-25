@@ -34,6 +34,9 @@
 //!   its `.sha256`: the headless server and CLI (`dreamerd`, `dream`,
 //!   `dreamer-termapp`) with nothing graphical, for installing on a host
 //!   over SSH. It is unpacked away from the tree and checked after packing.
+//!   For macOS, `--sign IDENTITY` signs the executables with Developer ID
+//!   under the hardened runtime, and `--notarize PROFILE` notarizes them
+//!   (a tarball holds no ticket; Gatekeeper finds it online).
 //! - `cargo xtask package --platform arch [--source-only] [--nodeps]` writes
 //!   `target/package/arch/` with a `git archive` source tarball and a
 //!   PKGBUILD, then runs `makepkg` when it is available.
@@ -96,7 +99,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
         );
     }
     if signing.identity.is_some()
-        && (fresh || container || !matches!(platform.as_str(), "macos" | "current"))
+        && (fresh
+            || container
+            || !matches!(platform.as_str(), "macos" | "current" | "server")
+            || (platform == "server"
+                && !target
+                    .as_deref()
+                    .unwrap_or(crate::deps::host_triple()?)
+                    .contains("-apple-")))
     {
         return Err("--sign and --notarize apply to the macOS packages".into());
     }
@@ -117,7 +127,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         "linux" => return linux_tarball(&repo_root()).map(drop),
         "deb" => return deb_package(&repo_root()).map(drop),
         "rpm" => return rpm_package(&repo_root()).map(drop),
-        "server" => return server_archive(&repo_root(), target).map(drop),
+        "server" => return server_archive(&repo_root(), target, &signing).map(drop),
         "web" if cfg!(target_os = "linux") => return linux_web_archive(&repo_root()).map(drop),
         "macos" => {}
         "current" if cfg!(target_os = "macos") => {}
@@ -625,8 +635,14 @@ fn rpm_package(root: &Path) -> Result<PathBuf, String> {
 pub const SERVER_EXECUTABLES: [&str; 3] = ["dreamerd", "dream", "dreamer-termapp"];
 
 /// The headless server archive for `target` (default: this host), checked
-/// after packing. Returns the archive's path.
-pub fn server_archive(root: &Path, target: Option<String>) -> Result<PathBuf, String> {
+/// after packing. For macOS the executables are signed as `signing` says
+/// (ad hoc, as the linker leaves them, by default). Returns the archive's
+/// path.
+pub fn server_archive(
+    root: &Path,
+    target: Option<String>,
+    signing: &Signing,
+) -> Result<PathBuf, String> {
     let version = version(root)?;
     let host = crate::deps::host_triple()?;
     let triple = target.unwrap_or_else(|| host.to_owned());
@@ -683,6 +699,11 @@ pub fn server_archive(root: &Path, target: Option<String>) -> Result<PathBuf, St
             check_stripped(&stage.join("bin").join(exe))?;
         }
     }
+    if triple.contains("-apple-") {
+        sign_server(&stage, &out, signing)?;
+    } else if signing.identity.is_some() {
+        return Err(format!("{triple}: only macOS executables are signed"));
+    }
     if triple.contains("linux") {
         copy(
             &root.join("packaging/linux/dreamerd.service"),
@@ -737,9 +758,48 @@ pub fn server_archive(root: &Path, target: Option<String>) -> Result<PathBuf, St
     Ok(tarball)
 }
 
+/// Sign the macOS server executables in `stage` with Developer ID under
+/// the hardened runtime, as the app's are, and notarize them, when
+/// `signing` says; then check that every one passes `codesign --verify`.
+fn sign_server(stage: &Path, out: &Path, signing: &Signing) -> Result<(), String> {
+    let bin = stage.join("bin");
+    if let Some(id) = &signing.identity {
+        for exe in SERVER_EXECUTABLES {
+            developer_id_sign(&bin.join(exe), id, None)?;
+            let (kind, team, _) = signing_state(&bin.join(exe));
+            if !kind.starts_with("Developer ID Application:") {
+                return Err(format!(
+                    "`{id}` signed {exe} as `{kind}`; a release needs a Developer ID Application identity"
+                ));
+            }
+            println!("package: {exe} signed by {kind} (team {team}), hardened runtime");
+        }
+    }
+    verify_server(stage)?;
+    if let Some(profile) = &signing.notary {
+        notarize(stage, out, profile)?;
+    }
+    Ok(())
+}
+
+/// Each macOS server executable in `dir/bin` passes `codesign --verify
+/// --strict`.
+fn verify_server(dir: &Path) -> Result<(), String> {
+    for exe in SERVER_EXECUTABLES {
+        run_checked(
+            Command::new("codesign")
+                .args(["--verify", "--strict", "--verbose=1"])
+                .arg(dir.join("bin").join(exe)),
+            "codesign --verify",
+        )?;
+    }
+    Ok(())
+}
+
 /// Unpack the archive away from the tree; run each executable when this
-/// host (or the target's configured runner) can; and check that nothing
-/// graphical is linked.
+/// host (or the target's configured runner) can; check that nothing
+/// graphical is linked; and for macOS, that the signatures survived
+/// packing.
 fn check_server_archive(
     tarball: &Path,
     name: &str,
@@ -758,6 +818,9 @@ fn check_server_archive(
                 .arg(tarball),
             "tar",
         )?;
+        if triple.contains("-apple-") {
+            verify_server(&away.join(name))?;
+        }
         let bin = away.join(name).join("bin");
         let runner_var = format!(
             "CARGO_TARGET_{}_RUNNER",

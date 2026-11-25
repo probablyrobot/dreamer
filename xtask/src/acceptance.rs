@@ -47,7 +47,7 @@ pub fn run(_args: &[String]) -> Result<(), String> {
     let sshd = find(&["/usr/sbin/sshd", "/usr/bin/sshd", "/usr/local/sbin/sshd"])
         .ok_or("no sshd found (install openssh-server); remote acceptance not run")?;
     // This build's server archive, as a host would get it.
-    let archive = crate::package::server_archive(&root, None)?;
+    let archive = crate::package::server_archive(&root, None, &Default::default())?;
     let artifacts = archive.parent().ok_or("archive dir")?.to_path_buf();
     let build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .args([
