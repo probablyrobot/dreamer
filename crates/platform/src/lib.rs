@@ -320,11 +320,20 @@ pub fn phys_footprint(pid: u32) -> Option<u64> {
 mod tests {
     use super::*;
 
+    /// Both readings of a 128 MiB block, in one test and in this order:
+    /// another test's block would move process-wide readings, and once a
+    /// block is freed the allocator may keep its pages, so a later block
+    /// can reuse them without growing the footprint.
+    #[test]
+    fn memory_readings_follow_a_large_block() {
+        footprint_follows_a_written_block();
+        heap_in_use_follows_a_large_allocation();
+    }
+
     /// The allocator statistics are read through hand-written C structs; a
     /// wrong layout would read the wrong field. Other tests share the heap
     /// and allocate or free a little meanwhile, so the block is large and
     /// the bounds leave room for them.
-    #[test]
     fn heap_in_use_follows_a_large_allocation() {
         const BLOCK: u64 = 128 << 20;
         const SLACK: u64 = 32 << 20;
@@ -362,10 +371,8 @@ mod tests {
     }
 
     /// The rusage struct is hand-written; a wrong layout would read another
-    /// field. A block written page by page must show in the footprint. The
-    /// heap test may hold its own 128 MiB meanwhile, hence the upper bound.
-    #[test]
-    fn phys_footprint_follows_a_written_block() {
+    /// field. A block written page by page must show in the footprint.
+    fn footprint_follows_a_written_block() {
         const BLOCK: u64 = 128 << 20;
         const SLACK: u64 = 32 << 20;
         let me = std::process::id();
