@@ -12,8 +12,9 @@
 //! resident size, its heap in use, the host's journal, and on macOS its
 //! physical footprint (which leaves out free pages the allocator keeps
 //! mapped, where resident size counts them). Each scenario
-//! states a bound on resident size, built from the daemon's own budgets,
-//! and records whether the peak stayed under it.
+//! states a bound built from the daemon's own budgets and records whether
+//! the peak stayed under it: the peak footprint where it can be read
+//! (macOS), otherwise the peak resident size.
 //!
 //! ```text
 //! dreamer-bench memory [--scenario output|lagging|paste|extension]...
@@ -146,8 +147,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
     print_table(&report);
     for b in &bounds {
         println!(
-            "{}: peak RSS {:.1} MiB, bound {:.1} MiB: {} ({})",
+            "{}: peak {} {:.1} MiB, bound {:.1} MiB: {} ({})",
             b["scenario"].as_str().unwrap_or(""),
+            b["measured"].as_str().unwrap_or("RSS"),
             b["peak_mib"].as_f64().unwrap_or(f64::NAN),
             b["bound_mib"].as_f64().unwrap_or(f64::NAN),
             if b["met"].as_bool() == Some(true) {
@@ -331,8 +333,11 @@ impl Rows {
             curve.second_half_growth(1),
             "MiB",
         );
-        // Measurement only: the bound stays on RSS.
-        if curve.peak(4).is_finite() {
+        // Where the footprint can be read (macOS) the bound is on it: RSS
+        // there also counts free pages the allocator keeps and the system
+        // has not taken back.
+        let on_footprint = curve.peak(4).is_finite();
+        if on_footprint {
             self.put("daemon footprint, peak", curve.peak(4), "MiB");
             self.put("daemon footprint at the end", curve.last(4), "MiB");
             self.put(
@@ -345,11 +350,16 @@ impl Rows {
         self.put("heap in use, peak", curve.peak(2), "MiB");
         self.put("heap in use at the end", curve.last(2), "MiB");
         self.put("host journal, peak", curve.peak(3), "MiB");
-        self.put("stated bound on RSS", bound, "MiB");
-        let peak = curve.peak(1);
+        self.put("stated bound", bound, "MiB");
+        let (peak, measured) = if on_footprint {
+            (curve.peak(4), "footprint")
+        } else {
+            (curve.peak(1), "RSS")
+        };
         Outcome {
             bound: json!({
                 "scenario": self.tag,
+                "measured": measured,
                 "peak_mib": peak,
                 "bound_mib": bound,
                 "met": peak.is_finite() && peak <= bound,

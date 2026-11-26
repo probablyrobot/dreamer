@@ -142,25 +142,28 @@ A busy Cold pane costs the daemon 26 % of a busy Warm pane's CPU: tmux
 still sends its output, which the daemon reads and drops. tmux's own CPU
 is the same in every tier (14 % for the 16 panes).
 
-**Memory under pressure** (`bench memory`, 300 s a scenario):
+**Memory under pressure** (`bench memory`, 300 s a scenario). The output and
+lagging rows are from 0.12.1 (e9c7e71) on the M3 Max. On macOS the bound is
+checked on the peak footprint (see below):
 
-| Scenario | Peak RSS | Stated bound | Heap in use, peak | Bound |
-| --- | --- | --- | --- | --- |
-| Sustained output, 64 panes | 1,332 MiB | 910 MiB | 319 MiB | **not met** |
-| Lagging viewer, 64 busy panes | 1,438 MiB | 998 MiB | 370 MiB | **not met** |
-| Paste of 10 MiB | 43 MiB | 47 MiB | 12 MiB | met |
-| Extension crash loop (382 crashes) | 8.8 MiB | 40 MiB | 0.6 MiB | met |
+| Scenario | Peak footprint | Peak RSS | Stated bound | Heap in use, peak | Bound |
+| --- | --- | --- | --- | --- | --- |
+| Sustained output, 64 panes | 582 MiB | 1,298 MiB | 910 MiB | 319 MiB | met |
+| Lagging viewer, 64 busy panes | 639 MiB | 2,412 MiB | 998 MiB | 369 MiB | met |
+| Paste of 10 MiB | — | 43 MiB | 47 MiB | 12 MiB | met (on RSS) |
+| Extension crash loop (382 crashes) | — | 8.8 MiB | 40 MiB | 0.6 MiB | met (on RSS) |
 
 - The journal stayed at its 256 MiB host limit, and the heap in use
-  stayed bounded. Every stalled subscription ended as `lagged`, and every
+  stayed flat. Every stalled subscription ended as `lagged`, and every
   resume from its start was answered with a checkpoint.
-- The overrun is outside the Rust heap: about 15.6 MiB a pane against the
-  2 MiB the bound allows for a 2,000-line mirror, and RSS was still
-  growing in the second half (75 MiB in the output scenario). A 90 s run
-  with 16 panes stayed within its bound (218 MiB against 312 MiB), at
-  about 5 MiB a pane outside the heap, so this memory grows with time.
-  It is in the malloc zones; why it outgrows the history limit is not
-  known yet.
+- RSS on macOS climbs far past the footprint (2.4 GiB against 639 MiB in the
+  lagging scenario) because it also counts free pages the allocator keeps
+  and the system has not taken back. On Linux (i9-12900K, glibc), the same
+  64-pane output scenario peaked at 537 MiB RSS against a bound of 917 and
+  was flat over the second half.
+- The footprint still rose 28 to 30 MiB over the second half of each macOS
+  run while the heap stayed flat; whether it levels off over longer runs
+  has not been measured.
 - The paste is delivered at 0.36 MiB/s into a program that reads and
   discards it.
 
@@ -666,12 +669,14 @@ gives the footprint's peak, its value at the end, and its change over the
 second half. RSS counts free pages the allocator keeps mapped and has not
 handed back; the footprint, which is what the kernel charges the process
 for, does not, so RSS can climb while the heap and the footprint stay
-flat. The footprint is reported only; the bounds below are on RSS.
+flat.
 
-Each scenario also states a bound on RSS, built from the daemon's
-budgets, and records under `bounds` whether the peak stayed under it:
+Each scenario also states a bound, built from the daemon's budgets, and
+records under `bounds` whether the peak stayed under it. On macOS the
+peak compared is the footprint's; elsewhere it is RSS's (`measured` in
+the result file says which):
 
-| Scenario | Bound on RSS |
+| Scenario | Bound |
 | --- | --- |
 | `output` | RSS before, plus the journal budget (the host limit, or the pane limit times the panes, whichever is smaller), plus 10 MiB per pane: up to 8 MiB of output held for a busy mirror and about 2 MiB of mirror for 2,000 lines of history |
 | `lagging` | The `output` bound, plus the stalled connection's queue (256 messages of up to 256 KiB) and, per subscription, 4,096 queued records of the average retained size |
