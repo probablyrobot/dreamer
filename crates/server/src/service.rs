@@ -1016,6 +1016,13 @@ impl api::Service for DaemonService {
         ))
     }
 
+    async fn terminal_set_feed(&self, _: api::SetFeed) -> Result<api::FeedSwitch, RpcError> {
+        Err(RpcError::new(
+            code::INVALID_REQUEST,
+            "terminal.set_feed needs a streaming connection to the daemon",
+        ))
+    }
+
     async fn terminal_input(&self, p: api::TerminalInput) -> Result<api::InputResult, RpcError> {
         use api::terminal_input::Event;
         let received = perf::start();

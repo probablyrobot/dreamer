@@ -587,6 +587,55 @@ impl Engine {
         Ok(config.value)
     }
 
+    /// The modes input encoding depends on, as the terminal holds them now.
+    pub fn input_modes(&self) -> Result<terminal_core::InputModes, EngineError> {
+        let dec = |n: u16| self.mode(n, false);
+        let mut flags: GhosttyKittyKeyFlags = 0;
+        let mut screen: GhosttyTerminalScreen::Type = 0;
+        // SAFETY: `term` is live; each key writes the documented type.
+        unsafe {
+            check(
+                "ghostty_terminal_get(kitty_keyboard_flags)",
+                ghostty_terminal_get(
+                    self.term,
+                    GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS,
+                    (&raw mut flags).cast(),
+                ),
+            )?;
+            check(
+                "ghostty_terminal_get(active_screen)",
+                ghostty_terminal_get(
+                    self.term,
+                    GhosttyTerminalData::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+                    (&raw mut screen).cast(),
+                ),
+            )?;
+        }
+        Ok(terminal_core::InputModes {
+            cursor_keys: dec(1)?,
+            keypad_keys: dec(66)?,
+            mouse_x10: dec(9)?,
+            mouse_normal: dec(1000)?,
+            mouse_button: dec(1002)?,
+            mouse_any: dec(1003)?,
+            mouse_utf8: dec(1005)?,
+            mouse_sgr: dec(1006)?,
+            mouse_urxvt: dec(1015)?,
+            mouse_sgr_pixels: dec(1016)?,
+            mouse_alternate_scroll: dec(1007)?,
+            focus_events: dec(1004)?,
+            bracketed_paste: dec(2004)?,
+            kitty_paste_events: dec(5522)?,
+            ignore_keypad_with_numlock: dec(1035)?,
+            alt_esc_prefix: dec(1036)?,
+            alt_sends_escape: dec(1039)?,
+            linefeed: self.mode(20, true)?,
+            keyboard_locked: self.mode(2, true)?,
+            alt_screen: screen != GhosttyTerminalScreen::GHOSTTY_TERMINAL_SCREEN_PRIMARY,
+            kitty_keyboard: flags,
+        })
+    }
+
     /// Cursor position in the active screen, zero-based `(x, y)`.
     pub fn cursor_position(&self) -> Result<(u16, u16), EngineError> {
         let (mut x, mut y) = (0u16, 0u16);

@@ -1226,6 +1226,7 @@ async fn subscribe(
         client: None,
         ended: ended.clone(),
         stamp: None,
+        frames: None,
     };
     host.subscribe(domain::TmuxPaneId(pane), Some(resume), sink)
         .await?;

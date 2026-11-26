@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 64 }
+version: { major: 1, minor: 65 }
 package: dreamer.v1
 
 types:
@@ -453,6 +453,9 @@ types:
   #   event topic `terminal.end`         SubscriptionEnd
   # A checkpoint (bulk) may arrive after records that follow it (events go
   # first); records with sequence <= the checkpoint's are already in it.
+  # In the `frames` feed (only on a connection with the `terminal.frames`
+  # wire feature) there are no checkpoint and no records; instead:
+  #   bulk  topic `terminal.frame`       ScreenFrame (stream = subscription)
 
   - message: TerminalSubscribe
     fields:
@@ -462,12 +465,20 @@ types:
       - { n: 4, name: resume_generation, type: u64, optional: true }
       - { n: 5, name: resume_sequence, type: u64, optional: true }
       - { n: 6, name: client, type: u64, optional: true, doc: "An id the client picks once per window; it names the client in TerminalInput too, so the daemon can address effects such as clipboard writes to exactly one." }
+      - { n: 7, name: feed, type: TerminalFeed, doc: "How to follow the pane; `frames` needs the connection's `terminal.frames` feature. Resuming applies to `stream` only." }
+
+  - enum: TerminalFeed
+    values:
+      - { n: 0, name: unspecified, doc: As stream. }
+      - { n: 1, name: stream, doc: "A checkpoint or a replay, then every record." }
+      - { n: 2, name: frames, doc: "Screen frames built by the daemon, at most one per frame interval; no records." }
 
   - enum: SubscribeMode
     values:
       - { n: 0, name: unspecified }
       - { n: 1, name: checkpoint, doc: A checkpoint follows; records continue after its sequence. }
       - { n: 2, name: replay, doc: "No checkpoint; records continue right after the resume point." }
+      - { n: 3, name: frames, doc: "No checkpoint or records: a full screen frame at `sequence` follows, then frames." }
 
   - message: Subscription
     fields:
@@ -482,6 +493,7 @@ types:
       - { n: 9, name: scrollback_lines, type: u32, doc: "The mirror's scrollback limit; a replica uses the same so both keep the same history." }
       - { n: 10, name: title, type: string, optional: true, doc: "The pane's current title: state, not an event." }
       - { n: 11, name: cwd, type: string, optional: true, doc: "The pane's current working directory: state, not an event." }
+      - { n: 12, name: frame, type: u64, doc: "Frames mode: the number of the full frame that follows." }
 
   - message: TerminalRecord
     doc: One journaled change. A resize when cols and rows are set, otherwise output bytes.
@@ -543,6 +555,145 @@ types:
   - message: Unsubscribe
     fields:
       - { n: 1, name: subscription, type: u64 }
+
+  - message: SetFeed
+    doc: >-
+      Switch a live terminal subscription between `stream` and `frames`.
+      Nothing of the previous feed arrives after the reply.
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: feed, type: TerminalFeed }
+
+  - message: FeedSwitch
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: mode, type: SubscribeMode, doc: "checkpoint (to stream: a checkpoint at `sequence` follows, then records from sequence + 1) or frames (a full frame at `sequence` follows, and no more records)." }
+      - { n: 3, name: sequence, type: u64 }
+      - { n: 4, name: frame, type: u64, doc: "Frames mode: the number of the full frame that follows." }
+
+  - message: ScreenFrame
+    doc: >-
+      The visible screen of a pane on the `frames` feed, read from the
+      daemon's mirror at `sequence`. A full frame carries every row and
+      every optional part; any other carries only what changed since the
+      previous frame of the subscription, whose number is one less.
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: epoch, type: u64 }
+      - { n: 4, name: generation, type: u64 }
+      - { n: 5, name: sequence, type: u64, doc: "The mirror's sequence the frame was taken at: every record up to it is in the frame." }
+      - { n: 6, name: number, type: u64, doc: "Counts the subscription's frames from 1, without gaps." }
+      - { n: 7, name: full, type: bool }
+      - { n: 8, name: cols, type: u32 }
+      - { n: 9, name: rows, type: u32 }
+      - { n: 10, name: top, type: u64, doc: "The first screen row's number counted from the top of the pane's history, as decorations number lines." }
+      - { n: 11, name: total_rows, type: u64, doc: "Rows of history plus the screen." }
+      - { n: 12, name: changed, type: ScreenRow, repeated: true, doc: "Rows that differ from the previous frame (every row in a full frame)." }
+      - { n: 13, name: styles, type: CellStyle, repeated: true, doc: "The styles the rows of this frame use: style 0 is the default style and is not listed, style i is styles[i - 1]." }
+      - { n: 14, name: cursor, type: ScreenCursor }
+      - { n: 15, name: modes, type: InputModes }
+      - { n: 16, name: title, type: string, optional: true, doc: "The title the program set; in a frame that is not full, only when it changed." }
+      - { n: 17, name: colors, type: ScreenColors, doc: "The default colors and palette; in a frame that is not full, only when they changed." }
+      - { n: 18, name: images, type: ScreenImages, doc: "Image placements on the screen; in a frame that is not full, only when they changed." }
+      - { n: 19, name: pixels, type: ImagePixels, repeated: true, doc: "Pixels of the images placed in this frame that were not placed in the last placements sent (all of them in a full frame). A client keeps the pixels of placed images only." }
+      - { n: 20, name: render_hold, type: bool, doc: "The program asked to hold presentation (synchronized output); the frame may be mid-update." }
+
+  - message: ScreenRow
+    doc: >-
+      One screen row. `text` holds the cells' characters in order; `cells`
+      has one value per cell, `chars << 2 | width`: how many characters of
+      `text` the cell holds (0 for a blank cell), and its width (0 narrow,
+      1 wide, 2 the tail of a wide character, 3 the spacer at the end of a
+      row where a wide character wrapped). Cells past the end of `cells`
+      are blank, narrow, and in the default style.
+    fields:
+      - { n: 1, name: index, type: u32, doc: "Row on the screen, from 0 at the top." }
+      - { n: 2, name: text, type: string }
+      - { n: 3, name: cells, type: u32, repeated: true }
+      - { n: 4, name: styles, type: u32, repeated: true, doc: "Runs as pairs (cells, style): consecutive cells and the style they use. Cells past the last run use style 0." }
+
+  - message: CellStyle
+    doc: >-
+      Colors are 0 for the default color, 1 + n for palette color n, and
+      0x1000000 | 0xRRGGBB for a direct color.
+    fields:
+      - { n: 1, name: fg, type: u32 }
+      - { n: 2, name: bg, type: u32 }
+      - { n: 3, name: underline_color, type: u32 }
+      - { n: 4, name: attrs, type: u32, doc: "Bits: 1 bold, 2 italic, 4 faint, 8 blink, 16 inverse, 32 invisible, 64 strikethrough, 128 overline." }
+      - { n: 5, name: underline, type: u32, doc: "0 none, 1 single, 2 double, 3 curly, 4 dotted, 5 dashed." }
+
+  - message: ScreenCursor
+    fields:
+      - { n: 1, name: x, type: u32 }
+      - { n: 2, name: y, type: u32 }
+      - { n: 3, name: visible, type: bool, doc: "Shown and on the screen." }
+      - { n: 4, name: shape, type: u32, doc: "0 block, 1 hollow block, 2 bar, 3 underline." }
+      - { n: 5, name: blinking, type: bool }
+      - { n: 6, name: on_wide_tail, type: bool }
+
+  - message: InputModes
+    doc: "The modes input encoding depends on. Numbers are DEC private modes unless marked ANSI."
+    fields:
+      - { n: 1, name: cursor_keys, type: bool, doc: "Application cursor keys (1)." }
+      - { n: 2, name: keypad_keys, type: bool, doc: "Application keypad (66)." }
+      - { n: 3, name: mouse_x10, type: bool, doc: "Mouse reporting (9)." }
+      - { n: 4, name: mouse_normal, type: bool, doc: "(1000)" }
+      - { n: 5, name: mouse_button, type: bool, doc: "(1002)" }
+      - { n: 6, name: mouse_any, type: bool, doc: "(1003)" }
+      - { n: 7, name: mouse_utf8, type: bool, doc: "Mouse report format (1005)." }
+      - { n: 8, name: mouse_sgr, type: bool, doc: "(1006)" }
+      - { n: 9, name: mouse_urxvt, type: bool, doc: "(1015)" }
+      - { n: 10, name: mouse_sgr_pixels, type: bool, doc: "(1016)" }
+      - { n: 11, name: mouse_alternate_scroll, type: bool, doc: "(1007)" }
+      - { n: 12, name: focus_events, type: bool, doc: "(1004)" }
+      - { n: 13, name: bracketed_paste, type: bool, doc: "(2004)" }
+      - { n: 14, name: kitty_paste_events, type: bool, doc: "(5522)" }
+      - { n: 15, name: ignore_keypad_with_numlock, type: bool, doc: "(1035)" }
+      - { n: 16, name: alt_esc_prefix, type: bool, doc: "(1036)" }
+      - { n: 17, name: alt_sends_escape, type: bool, doc: "(1039)" }
+      - { n: 18, name: linefeed, type: bool, doc: "LNM (ANSI 20)." }
+      - { n: 19, name: keyboard_locked, type: bool, doc: "KAM (ANSI 2)." }
+      - { n: 20, name: alt_screen, type: bool, doc: The alternate screen is active. }
+      - { n: 21, name: kitty_keyboard, type: u32, doc: "The kitty keyboard protocol's flags in effect; 0 when off." }
+
+  - message: ScreenColors
+    fields:
+      - { n: 1, name: foreground, type: u32, doc: "0xRRGGBB." }
+      - { n: 2, name: background, type: u32 }
+      - { n: 3, name: cursor, type: u32, optional: true }
+      - { n: 4, name: palette, type: u32, repeated: true, doc: "256 colors, 0xRRGGBB." }
+
+  - message: ScreenImages
+    fields:
+      - { n: 1, name: placements, type: ImagePlacement, repeated: true, doc: "In draw order within each layer." }
+
+  - message: ImagePlacement
+    doc: "One image drawn on the screen. Pixel values are in canonical cell pixels (10x20 a cell)."
+    fields:
+      - { n: 1, name: image, type: u32, doc: "With generation, names the image's pixels (ImagePixels)." }
+      - { n: 2, name: generation, type: u64 }
+      - { n: 3, name: layer, type: u32, doc: "0 below the background, 1 below the text, 2 above the text." }
+      - { n: 4, name: z, type: i32 }
+      - { n: 5, name: col, type: i32, doc: "Top-left cell on the screen; may be negative." }
+      - { n: 6, name: row, type: i32 }
+      - { n: 7, name: offset_x, type: u32 }
+      - { n: 8, name: offset_y, type: u32 }
+      - { n: 9, name: width, type: u32 }
+      - { n: 10, name: height, type: u32 }
+      - { n: 11, name: source_x, type: u32 }
+      - { n: 12, name: source_y, type: u32 }
+      - { n: 13, name: source_width, type: u32 }
+      - { n: 14, name: source_height, type: u32 }
+
+  - message: ImagePixels
+    fields:
+      - { n: 1, name: image, type: u32 }
+      - { n: 2, name: generation, type: u64 }
+      - { n: 3, name: width, type: u32 }
+      - { n: 4, name: height, type: u32 }
+      - { n: 5, name: rgba, type: bytes, doc: "Straight RGBA, width * height * 4 bytes." }
 
   # ---- input --------------------------------------------------------------
 
@@ -2272,6 +2423,7 @@ methods:
   - { method: terminal.set_tier, params: SetTier, result: Empty, mutation: true, doc: Mark a mirrored pane Hot or Warm. }
   - { method: terminal.subscribe, params: TerminalSubscribe, result: Subscription, doc: "Follow a pane's canonical mirror: checkpoint or replay, then ordered records." }
   - { method: terminal.unsubscribe, params: Unsubscribe, result: Empty }
+  - { method: terminal.set_feed, params: SetFeed, result: FeedSwitch, doc: "Switch a subscription of this connection between the stream and screen frames." }
   - { method: terminal.input, params: TerminalInput, result: InputResult, mutation: true, doc: "Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state." }
   - { method: hosts.connect, params: HostConnect, result: HostStatus, mutation: true, doc: "Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller. With no destination, `name` is a profile from hosts.yaml." }
   - { method: hosts.list, params: Empty, result: HostList, doc: "Every remote host this daemon knows and its state." }
@@ -2377,6 +2529,7 @@ notifications:
   - { topic: terminal.records, payload: RecordBatch, doc: "Records of a terminal or host subscription, in order." }
   - { topic: terminal.checkpoint, payload: CheckpointData, doc: "A subscription's starting snapshot (a bulk stream on the native wire)." }
   - { topic: terminal.end, payload: SubscriptionEnd, doc: "A subscription ended; nothing more follows for it." }
+  - { topic: terminal.frame, payload: ScreenFrame, doc: "A screen frame of a subscription on the frames feed (a bulk record on the native wire)." }
   - { topic: tmux.topology, payload: TopologyUpdate, doc: "The watched topology changed." }
   - { topic: events.batch, payload: EventBatch, doc: "Events of an events.subscribe subscription, after its gap if any." }
   - { topic: messages.deliver, payload: MessageDelivery, doc: "A message for a messages.subscribe subscription." }

@@ -1078,6 +1078,34 @@
         },
         "type": "object"
       },
+      "CellStyle": {
+        "description": "Colors are 0 for the default color, 1 + n for palette color n, and 0x1000000 | 0xRRGGBB for a direct color.",
+        "properties": {
+          "attrs": {
+            "description": "Bits: 1 bold, 2 italic, 4 faint, 8 blink, 16 inverse, 32 invisible, 64 strikethrough, 128 overline.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bg": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fg": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "underline": {
+            "description": "0 none, 1 single, 2 double, 3 curly, 4 dotted, 5 dashed.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "underline_color": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "CheckpointData": {
         "properties": {
           "epoch": {
@@ -2161,6 +2189,28 @@
         },
         "type": "object"
       },
+      "FeedSwitch": {
+        "properties": {
+          "frame": {
+            "description": "Frames mode: the number of the full frame that follows.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/SubscribeMode",
+            "description": "checkpoint (to stream: a checkpoint at `sequence` follows, then records from sequence + 1) or frames (a full frame at `sequence` follows, and no more records)."
+          },
+          "sequence": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subscription": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "FilterInput": {
         "description": "A typed trigger: fixed text typed into a pane. Matched text is never typed.",
         "properties": {
@@ -2623,6 +2673,185 @@
           },
           "subscribe": {
             "$ref": "#/components/schemas/TerminalSubscribe"
+          }
+        },
+        "type": "object"
+      },
+      "ImagePixels": {
+        "properties": {
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "height": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "image": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rgba": {
+            "contentEncoding": "base64",
+            "description": "Straight RGBA, width * height * 4 bytes.",
+            "type": "string"
+          },
+          "width": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ImagePlacement": {
+        "description": "One image drawn on the screen. Pixel values are in canonical cell pixels (10x20 a cell).",
+        "properties": {
+          "col": {
+            "description": "Top-left cell on the screen; may be negative.",
+            "type": "integer"
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "height": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "image": {
+            "description": "With generation, names the image's pixels (ImagePixels).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "layer": {
+            "description": "0 below the background, 1 below the text, 2 above the text.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset_x": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset_y": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "row": {
+            "type": "integer"
+          },
+          "source_height": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_width": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_x": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_y": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "width": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "z": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "InputModes": {
+        "description": "The modes input encoding depends on. Numbers are DEC private modes unless marked ANSI.",
+        "properties": {
+          "alt_esc_prefix": {
+            "description": "(1036)",
+            "type": "boolean"
+          },
+          "alt_screen": {
+            "description": "The alternate screen is active.",
+            "type": "boolean"
+          },
+          "alt_sends_escape": {
+            "description": "(1039)",
+            "type": "boolean"
+          },
+          "bracketed_paste": {
+            "description": "(2004)",
+            "type": "boolean"
+          },
+          "cursor_keys": {
+            "description": "Application cursor keys (1).",
+            "type": "boolean"
+          },
+          "focus_events": {
+            "description": "(1004)",
+            "type": "boolean"
+          },
+          "ignore_keypad_with_numlock": {
+            "description": "(1035)",
+            "type": "boolean"
+          },
+          "keyboard_locked": {
+            "description": "KAM (ANSI 2).",
+            "type": "boolean"
+          },
+          "keypad_keys": {
+            "description": "Application keypad (66).",
+            "type": "boolean"
+          },
+          "kitty_keyboard": {
+            "description": "The kitty keyboard protocol's flags in effect; 0 when off.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kitty_paste_events": {
+            "description": "(5522)",
+            "type": "boolean"
+          },
+          "linefeed": {
+            "description": "LNM (ANSI 20).",
+            "type": "boolean"
+          },
+          "mouse_alternate_scroll": {
+            "description": "(1007)",
+            "type": "boolean"
+          },
+          "mouse_any": {
+            "description": "(1003)",
+            "type": "boolean"
+          },
+          "mouse_button": {
+            "description": "(1002)",
+            "type": "boolean"
+          },
+          "mouse_normal": {
+            "description": "(1000)",
+            "type": "boolean"
+          },
+          "mouse_sgr": {
+            "description": "(1006)",
+            "type": "boolean"
+          },
+          "mouse_sgr_pixels": {
+            "description": "(1016)",
+            "type": "boolean"
+          },
+          "mouse_urxvt": {
+            "description": "(1015)",
+            "type": "boolean"
+          },
+          "mouse_utf8": {
+            "description": "Mouse report format (1005).",
+            "type": "boolean"
+          },
+          "mouse_x10": {
+            "description": "Mouse reporting (9).",
+            "type": "boolean"
           }
         },
         "type": "object"
@@ -4265,6 +4494,197 @@
         },
         "type": "object"
       },
+      "ScreenColors": {
+        "properties": {
+          "background": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cursor": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "foreground": {
+            "description": "0xRRGGBB.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "palette": {
+            "description": "256 colors, 0xRRGGBB.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ScreenCursor": {
+        "properties": {
+          "blinking": {
+            "type": "boolean"
+          },
+          "on_wide_tail": {
+            "type": "boolean"
+          },
+          "shape": {
+            "description": "0 block, 1 hollow block, 2 bar, 3 underline.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "visible": {
+            "description": "Shown and on the screen.",
+            "type": "boolean"
+          },
+          "x": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "y": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ScreenFrame": {
+        "description": "The visible screen of a pane on the `frames` feed, read from the daemon's mirror at `sequence`. A full frame carries every row and every optional part; any other carries only what changed since the previous frame of the subscription, whose number is one less.",
+        "properties": {
+          "changed": {
+            "description": "Rows that differ from the previous frame (every row in a full frame).",
+            "items": {
+              "$ref": "#/components/schemas/ScreenRow"
+            },
+            "type": "array"
+          },
+          "colors": {
+            "$ref": "#/components/schemas/ScreenColors",
+            "description": "The default colors and palette; in a frame that is not full, only when they changed."
+          },
+          "cols": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cursor": {
+            "$ref": "#/components/schemas/ScreenCursor"
+          },
+          "epoch": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "full": {
+            "type": "boolean"
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "images": {
+            "$ref": "#/components/schemas/ScreenImages",
+            "description": "Image placements on the screen; in a frame that is not full, only when they changed."
+          },
+          "modes": {
+            "$ref": "#/components/schemas/InputModes"
+          },
+          "number": {
+            "description": "Counts the subscription's frames from 1, without gaps.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pixels": {
+            "description": "Pixels of the images placed in this frame that were not placed in the last placements sent (all of them in a full frame). A client keeps the pixels of placed images only.",
+            "items": {
+              "$ref": "#/components/schemas/ImagePixels"
+            },
+            "type": "array"
+          },
+          "render_hold": {
+            "description": "The program asked to hold presentation (synchronized output); the frame may be mid-update.",
+            "type": "boolean"
+          },
+          "rows": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sequence": {
+            "description": "The mirror's sequence the frame was taken at: every record up to it is in the frame.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "styles": {
+            "description": "The styles the rows of this frame use: style 0 is the default style and is not listed, style i is styles[i - 1].",
+            "items": {
+              "$ref": "#/components/schemas/CellStyle"
+            },
+            "type": "array"
+          },
+          "subscription": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "The title the program set; in a frame that is not full, only when it changed.",
+            "type": "string"
+          },
+          "top": {
+            "description": "The first screen row's number counted from the top of the pane's history, as decorations number lines.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_rows": {
+            "description": "Rows of history plus the screen.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ScreenImages": {
+        "properties": {
+          "placements": {
+            "description": "In draw order within each layer.",
+            "items": {
+              "$ref": "#/components/schemas/ImagePlacement"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "ScreenRow": {
+        "description": "One screen row. `text` holds the cells' characters in order; `cells` has one value per cell, `chars << 2 | width`: how many characters of `text` the cell holds (0 for a blank cell), and its width (0 narrow, 1 wide, 2 the tail of a wide character, 3 the spacer at the end of a row where a wide character wrapped). Cells past the end of `cells` are blank, narrow, and in the default style.",
+        "properties": {
+          "cells": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "Row on the screen, from 0 at the top.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "styles": {
+            "description": "Runs as pairs (cells, style): consecutive cells and the style they use. Cells past the last run use style 0.",
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
       "ScriptCheck": {
         "properties": {
           "error": {
@@ -4524,6 +4944,19 @@
         },
         "type": "object"
       },
+      "SetFeed": {
+        "description": "Switch a live terminal subscription between `stream` and `frames`. Nothing of the previous feed arrives after the reply.",
+        "properties": {
+          "feed": {
+            "$ref": "#/components/schemas/TerminalFeed"
+          },
+          "subscription": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
       "SetTier": {
         "properties": {
           "endpoint": {
@@ -4692,7 +5125,8 @@
         "enum": [
           "unspecified",
           "checkpoint",
-          "replay"
+          "replay",
+          "frames"
         ],
         "type": "string"
       },
@@ -4712,6 +5146,11 @@
             "type": "string"
           },
           "epoch": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "frame": {
+            "description": "Frames mode: the number of the full frame that follows.",
             "minimum": 0,
             "type": "integer"
           },
@@ -4967,6 +5406,14 @@
           }
         },
         "type": "object"
+      },
+      "TerminalFeed": {
+        "enum": [
+          "unspecified",
+          "stream",
+          "frames"
+        ],
+        "type": "string"
       },
       "TerminalInfo": {
         "description": "One pane, with what an agent needs to choose it.",
@@ -5237,6 +5684,10 @@
           },
           "endpoint": {
             "type": "string"
+          },
+          "feed": {
+            "$ref": "#/components/schemas/TerminalFeed",
+            "description": "How to follow the pane; `frames` needs the connection's `terminal.frames` feature. Resuming applies to `stream` only."
           },
           "pane": {
             "minimum": 0,
@@ -5935,7 +6386,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.64"
+    "version": "1.65"
   },
   "methods": [
     {
@@ -6512,6 +6963,13 @@
             "minimum": 0,
             "type": "integer"
           }
+        },
+        {
+          "description": "How to follow the pane; `frames` needs the connection's `terminal.frames` feature. Resuming applies to `stream` only.",
+          "name": "feed",
+          "schema": {
+            "$ref": "#/components/schemas/TerminalFeed"
+          }
         }
       ],
       "result": {
@@ -6541,6 +6999,33 @@
           "$ref": "#/components/schemas/Empty"
         }
       },
+      "x-mutation": false
+    },
+    {
+      "name": "terminal.set_feed",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "subscription",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "feed",
+          "schema": {
+            "$ref": "#/components/schemas/TerminalFeed"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FeedSwitch"
+        }
+      },
+      "summary": "Switch a subscription of this connection between the stream and screen frames.",
       "x-mutation": false
     },
     {
@@ -10140,6 +10625,13 @@
         "$ref": "#/components/schemas/SubscriptionEnd"
       },
       "summary": "A subscription ended; nothing more follows for it."
+    },
+    {
+      "name": "terminal.frame",
+      "params": {
+        "$ref": "#/components/schemas/ScreenFrame"
+      },
+      "summary": "A screen frame of a subscription on the frames feed (a bulk record on the native wire)."
     },
     {
       "name": "tmux.topology",

@@ -35,6 +35,7 @@ mod log;
 mod memories;
 mod messages;
 mod query;
+mod screen;
 mod scripts;
 mod service;
 mod sessions;
@@ -288,7 +289,10 @@ fn run(args: Args) -> Result<ExitCode, String> {
         let events = Arc::new(events::Events::default());
         let settings = workspace_config::load_settings();
         let state = Arc::new(State {
-            identity: Identity::current("daemon"),
+            identity: Identity {
+                features: vec![wire::feature::TERMINAL_FRAMES.to_owned()],
+                ..Identity::current("daemon")
+            },
             instance: format!("{:x}-{:x}", started_unix_ms, std::process::id()),
             epoch: started_unix_ms,
             started,

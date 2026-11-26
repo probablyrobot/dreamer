@@ -24,6 +24,7 @@ mod follow;
 pub mod forward;
 pub mod hosts;
 pub mod keys;
+pub mod screen;
 pub mod search;
 pub mod topology;
 pub mod via;

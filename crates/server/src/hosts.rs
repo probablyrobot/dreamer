@@ -45,7 +45,7 @@ const BACKOFF_CAP: u64 = 60;
 fn forwardable(method: &str) -> bool {
     !matches!(
         method,
-        "terminal.subscribe" | "terminal.unsubscribe" | "tmux.watch"
+        "terminal.subscribe" | "terminal.unsubscribe" | "terminal.set_feed" | "tmux.watch"
     ) && !method.starts_with("hosts.")
         && !method.starts_with("forward.")
 }
@@ -187,6 +187,13 @@ struct Host {
 pub enum RelayItem {
     Records(api::RecordBatch),
     Checkpoint(api::CheckpointData),
+    Frame(api::ScreenFrame),
+    /// The answer to a switch of feed, in order with the items: everything
+    /// before it is of the previous feed, everything after of the new one.
+    Switched {
+        request: u64,
+        result: Result<api::FeedSwitch, RpcError>,
+    },
     End(api::SubscriptionEnd),
 }
 
@@ -805,8 +812,17 @@ fn attempt(
             host.diag.clone(),
             host.name.clone(),
         ));
-        let connected =
-            Client::over_within(stdout, stdin, "coordinator", 64, CONNECT_TIMEOUT).await;
+        // Frames for relayed panes pass through (the host sends them only
+        // when a subscription asks).
+        let connected = Client::over_features(
+            stdout,
+            stdin,
+            "coordinator",
+            64,
+            CONNECT_TIMEOUT,
+            &[wire::feature::TERMINAL_FRAMES],
+        )
+        .await;
         let mut client = match connected {
             Ok(c) => c,
             Err(e) => {
@@ -1062,9 +1078,15 @@ fn dispatch(host: &Host, link: u64, p: Pushed) {
             }
             return;
         }
-        Pushed::Bulk { topic, data, .. } if topic == "terminal.checkpoint" => {
+        Pushed::Bulk { topic, data, .. } if topic == api::topic::TERMINAL_CHECKPOINT => {
             match api::CheckpointData::decode(data.as_slice()) {
                 Ok(d) => (d.subscription, RelayItem::Checkpoint(d)),
+                Err(_) => return,
+            }
+        }
+        Pushed::Bulk { topic, data, .. } if topic == api::topic::TERMINAL_FRAME => {
+            match api::ScreenFrame::decode(data.as_slice()) {
+                Ok(f) => (f.subscription, RelayItem::Frame(f)),
                 Err(_) => return,
             }
         }
@@ -1095,6 +1117,9 @@ type Current = Arc<Mutex<Option<(Arc<Client>, u64)>>>;
 pub struct Relay {
     pub subscription: api::Subscription,
     pub items: tokio::sync::mpsc::Receiver<RelayItem>,
+    /// Switches of feed: (request id, to frames). The answer comes back
+    /// in `items` as [`RelayItem::Switched`].
+    pub switch: tokio::sync::mpsc::Sender<(u64, bool)>,
     task: tokio::task::JoinHandle<()>,
     current: Current,
 }
@@ -1111,6 +1136,119 @@ impl Drop for Relay {
                     .await;
             });
         }
+    }
+}
+
+/// Which feed a relayed subscription is on, and what of the host's
+/// pushed data belongs to it.
+enum Feed {
+    /// Records, after the checkpoint at `after` (0: any). `checkpoint` is
+    /// set while a switch's checkpoint has not arrived.
+    Stream { after: u64, checkpoint: bool },
+    /// Frames numbered `from` (the host's numbering) on.
+    Frames { from: u64 },
+}
+
+impl Feed {
+    fn of(s: &api::Subscription) -> Feed {
+        if s.mode == api::SubscribeMode::Frames as i32 {
+            Feed::Frames { from: s.frame }
+        } else {
+            Feed::Stream {
+                after: 0,
+                checkpoint: false,
+            }
+        }
+    }
+
+    fn takes_records(&self, b: &mut api::RecordBatch) -> bool {
+        match self {
+            Feed::Frames { .. } => false,
+            Feed::Stream { after, .. } => {
+                // Records at or before the switch's checkpoint are in it.
+                b.records.retain(|r| r.sequence > *after);
+                b.effects.retain(|e| e.sequence > *after);
+                !b.records.is_empty()
+            }
+        }
+    }
+
+    fn takes_checkpoint(&mut self, d: &api::CheckpointData) -> bool {
+        match self {
+            Feed::Frames { .. } => false,
+            Feed::Stream { after, checkpoint } => {
+                let ok = d.sequence >= *after;
+                if ok {
+                    *checkpoint = false;
+                }
+                ok
+            }
+        }
+    }
+
+    fn takes_frame(&self, f: &api::ScreenFrame) -> bool {
+        matches!(self, Feed::Frames { from } if f.number >= *from)
+    }
+
+    fn awaiting_checkpoint(&self) -> bool {
+        matches!(
+            self,
+            Feed::Stream {
+                checkpoint: true,
+                ..
+            }
+        )
+    }
+
+    /// Whether `item` is the first of this feed after a switch to it: the
+    /// full frame, or the checkpoint or a record after it. The end of the
+    /// relay or of the link counts too.
+    fn starts(&self, item: Option<&RelayItem>) -> bool {
+        match (self, item) {
+            (_, None | Some(RelayItem::End(_))) => true,
+            (Feed::Frames { from }, Some(RelayItem::Frame(f))) => f.number >= *from,
+            (Feed::Stream { after, .. }, Some(RelayItem::Checkpoint(d))) => d.sequence >= *after,
+            (Feed::Stream { after, .. }, Some(RelayItem::Records(b))) => {
+                b.records.iter().any(|r| r.sequence > *after)
+            }
+            _ => false,
+        }
+    }
+
+    /// Ask the host to switch: its answer, and the feed it starts.
+    async fn switch(current: &Current, frames: bool) -> Result<(api::FeedSwitch, Feed), RpcError> {
+        let Some((client, remote)) = lock(current).clone() else {
+            return Err(RpcError::new(
+                code::UNAVAILABLE,
+                "the host link is down; try again once it is back",
+            ));
+        };
+        let feed = if frames {
+            api::TerminalFeed::Frames
+        } else {
+            api::TerminalFeed::Stream
+        };
+        let r = client
+            .call(api::Request::TerminalSetFeed(api::SetFeed {
+                subscription: remote,
+                feed: feed as i32,
+            }))
+            .await;
+        let s = match r {
+            Ok(api::Response::TerminalSetFeed(s)) => s,
+            Ok(_) => return Err(RpcError::new(code::INTERNAL, "a reply to another method")),
+            Err(ClientError::Rpc(e)) => return Err(e),
+            Err(e) => return Err(RpcError::new(code::UNAVAILABLE, e.to_string())),
+        };
+        let to = if s.mode == api::SubscribeMode::Frames as i32 {
+            Feed::Frames { from: s.frame }
+        } else {
+            Feed::Stream {
+                after: s.sequence,
+                checkpoint: true,
+            }
+        };
+        Ok((s, to))
     }
 }
 
@@ -1176,20 +1314,88 @@ async fn relay(
     mut instance: Option<String>,
     out: tokio::sync::mpsc::Sender<RelayItem>,
     current: Current,
+    mut switches: tokio::sync::mpsc::Receiver<(u64, bool)>,
 ) {
     let mut last = sub.sequence;
+    let mut feed = Feed::of(&sub);
+    // Frames are numbered here, so numbers keep counting without a gap
+    // when the host's subscription is replaced after a lost link.
+    let mut number: u64 = 0;
+    // A switch the host answered, until the first item of the new feed:
+    // the host's reply overtakes the pushed data before it, so the answer
+    // is passed on only where the new feed starts.
+    let mut switching: Option<(u64, api::FeedSwitch, Feed)> = None;
     loop {
-        let item = match rx.recv().await {
-            Some(RelayItem::Records(b)) => {
+        let next = tokio::select! {
+            biased;
+            Some((request, frames)) = switches.recv(), if switching.is_none() => {
+                match Feed::switch(&current, frames).await {
+                    Ok((s, to)) => {
+                        params.feed = if frames {
+                            api::TerminalFeed::Frames
+                        } else {
+                            api::TerminalFeed::Stream
+                        } as i32;
+                        switching = Some((request, s, to));
+                    }
+                    Err(e) => {
+                        let item = RelayItem::Switched { request, result: Err(e) };
+                        if out.send(item).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                continue;
+            }
+            item = rx.recv() => item,
+        };
+        if switching
+            .as_ref()
+            .is_some_and(|(_, _, to)| to.starts(next.as_ref()))
+            && let Some((request, mut s, to)) = switching.take()
+        {
+            if matches!(to, Feed::Frames { .. }) {
+                s.frame = number + 1;
+            }
+            feed = to;
+            if out
+                .send(RelayItem::Switched {
+                    request,
+                    result: Ok(s),
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        let item = match next {
+            // What does not belong to the feed is dropped.
+            Some(RelayItem::Records(mut b)) => {
+                if !feed.takes_records(&mut b) {
+                    continue;
+                }
                 if let Some(r) = b.records.last() {
                     last = last.max(r.sequence);
                 }
                 RelayItem::Records(b)
             }
             Some(RelayItem::Checkpoint(d)) => {
+                if !feed.takes_checkpoint(&d) {
+                    continue;
+                }
                 last = last.max(d.sequence);
                 RelayItem::Checkpoint(d)
             }
+            Some(RelayItem::Frame(mut f)) => {
+                if !feed.takes_frame(&f) {
+                    continue;
+                }
+                number += 1;
+                f.number = number;
+                RelayItem::Frame(f)
+            }
+            Some(RelayItem::Switched { .. }) => continue,
             Some(e @ RelayItem::End(_)) => {
                 lock(&current).take();
                 let _ = out.send(e).await;
@@ -1198,6 +1404,18 @@ async fn relay(
             None if lagged.load(std::sync::atomic::Ordering::SeqCst) => {
                 let _ = out
                     .send(end(api::EndReason::Lagged, "the relay fell behind"))
+                    .await;
+                return;
+            }
+            None if feed.awaiting_checkpoint() => {
+                // The host switched to the stream, but its checkpoint was
+                // lost with the link: there is nothing to resume from.
+                lock(&current).take();
+                let _ = out
+                    .send(end(
+                        api::EndReason::Lagged,
+                        "the host link dropped before a switch's checkpoint arrived",
+                    ))
                     .await;
                 return;
             }
@@ -1217,6 +1435,19 @@ async fn relay(
                 params.resume_generation = Some(sub.generation);
                 params.resume_sequence = Some(last);
                 match subscribe_remote(&host, &client, g, params.clone()).await {
+                    // On frames there is nothing to resume: the host's new
+                    // subscription starts with a full frame.
+                    Ok((s, r, l)) if s.mode == api::SubscribeMode::Frames as i32 => {
+                        log::info(format!(
+                            "hosts: `{}` pane %{} back on frames",
+                            host.name, s.pane
+                        ));
+                        *lock(&current) = Some((client, s.id));
+                        feed = Feed::of(&s);
+                        (sub, rx, lagged, generation) = (s, r, l, g);
+                        instance = now;
+                        continue;
+                    }
                     Ok((s, r, l)) if s.mode == api::SubscribeMode::Replay as i32 => {
                         log::info(format!(
                             "hosts: `{}` pane %{} resumed after sequence {last}",
@@ -1290,6 +1521,7 @@ impl Hosts {
         touch(&host);
         let current = Arc::new(Mutex::new(Some((client, sub.id))));
         let (out, items) = tokio::sync::mpsc::channel(RELAY_QUEUE);
+        let (switch, switches) = tokio::sync::mpsc::channel(4);
         let task = tokio::spawn(relay(
             host,
             params,
@@ -1300,10 +1532,12 @@ impl Hosts {
             instance,
             out,
             current.clone(),
+            switches,
         ));
         Ok(Relay {
             subscription: sub,
             items,
+            switch,
             task,
             current,
         })
@@ -1348,6 +1582,7 @@ mod tests {
         for m in [
             "terminal.subscribe",
             "terminal.unsubscribe",
+            "terminal.set_feed",
             "tmux.watch",
             "hosts.call",
             "hosts.connect",

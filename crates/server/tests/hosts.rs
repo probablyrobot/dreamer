@@ -6,7 +6,10 @@
 //! The "other host" is a second daemon with its own tmux server and private
 //! directories, reached only through a stand-in `ssh` that runs the remote
 //! command in a shell, as sshd does. Needs `dream` built next to `dreamerd`
-//! (a workspace build or test run does that).
+//! (a workspace build or test run does that). Screen frames pass through
+//! the coordinator too, across switches of feed and a cut link.
+
+mod frames_check;
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -1137,4 +1140,80 @@ async fn a_forward_reaches_the_hosts_loopback_and_closes_with_its_last_hold() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn screen_frames_pass_through_the_coordinator_across_switches_and_a_cut_link() {
+    const FRAMES: &str = wire::feature::TERMINAL_FRAMES;
+    let two = Two::new();
+    let socket = two.root.join("rt/dreamerd.sock");
+    let _ = two.client().await;
+    let mut c = Client::connect_features(&socket, "test", 1 << 20, &[FRAMES])
+        .await
+        .expect("client");
+    assert!(c.has_feature(FRAMES));
+    let mut rx = c.pushed().expect("pushed");
+    connect_devbox(&two, &c).await;
+    let sub = subscribe_devbox(&c).await;
+    let mut check = frames_check::Checker::new(&sub);
+    let shows = |check: &frames_check::Checker, text: &str| {
+        check.view.rows.iter().any(|r| r.text() == text)
+    };
+    two.type_far("seq 1 60000; echo FAR-DONE");
+    for i in 0..20 {
+        tokio::time::sleep(Duration::from_millis(20 + (i % 3) * 15)).await;
+        let feed = if i % 2 == 0 {
+            api::TerminalFeed::Frames
+        } else {
+            api::TerminalFeed::Stream
+        };
+        let Response::TerminalSetFeed(r) = c
+            .call(Request::TerminalSetFeed(api::SetFeed {
+                subscription: sub.id,
+                feed: feed as i32,
+            }))
+            .await
+            .expect("switch")
+        else {
+            panic!("switch");
+        };
+        check.switched(r);
+        while let Ok(p) = rx.try_recv() {
+            check.push(p);
+        }
+    }
+    let Response::TerminalSetFeed(r) = c
+        .call(Request::TerminalSetFeed(api::SetFeed {
+            subscription: sub.id,
+            feed: api::TerminalFeed::Frames as i32,
+        }))
+        .await
+        .expect("switch")
+    else {
+        panic!("switch");
+    };
+    check.switched(r);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !(check.settled() && shows(&check, "FAR-DONE")) {
+        let p = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("the output never finished")
+            .expect("open");
+        check.push(p);
+    }
+    assert!(check.checkpoints >= 10 && check.records > 0, "{check:?}");
+
+    // On frames when the link is cut: the relay comes back on frames with a
+    // full frame, numbered on from the last.
+    let full = check.full_frames;
+    two.cut_ssh();
+    two.type_far("echo after-$((3+4))");
+    while !shows(&check, "after-7") {
+        let p = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("frames never came back after the cut")
+            .expect("open");
+        check.push(p);
+    }
+    assert!(check.full_frames > full, "{check:?}");
 }

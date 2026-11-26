@@ -81,8 +81,8 @@ connection.
 ## Queues
 
 Outgoing frames wait in two queues. Priority frames (input, requests,
-responses, events) always go first. Bulk messages (checkpoints, history,
-artifacts) are cut into chunks, so priority traffic waits behind at most one
+responses, events) always go first. Bulk messages (checkpoints, screen
+frames, history, artifacts) are cut into chunks, so priority traffic waits behind at most one
 chunk. The daemon takes forward data (`forward.data`, see
 [remote.md](remote.md#forwards)) into the bulk queue only when both queues
 are empty, so it never waits ahead of anything else. A single socket
@@ -95,5 +95,15 @@ the order in which Dreamer writes.
   `Hello`, a frame header, and the preamble.
 - New optional behavior is announced in `Hello.features` and
   `Welcome.features`; a side uses a feature only when both list it.
+  `Welcome.features` lists the features both sides listed.
 - A new frame kind needs a feature or a new major version. Receivers treat
   unknown kinds as protocol errors.
+
+## Features
+
+| Feature | What it allows |
+| --- | --- |
+| `terminal.frames` | Terminal subscriptions on the `frames` feed: the daemon sends screen frames (bulk, topic `terminal.frame`) instead of records. A client that does not list it is refused the `frames` feed and never receives a frame. See [mirrors.md](mirrors.md#screen-frames) |
+
+A coordinator lists `terminal.frames` when it connects to a host, so
+frames for a relayed pane pass through it.

@@ -169,13 +169,19 @@
     "SubscribeMode": [
       "unspecified",
       "checkpoint",
-      "replay"
+      "replay",
+      "frames"
     ],
     "TapLevel": [
       "unspecified",
       "raw",
       "text",
       "meta"
+    ],
+    "TerminalFeed": [
+      "unspecified",
+      "stream",
+      "frames"
     ],
     "Tier": [
       "unspecified",
@@ -1095,6 +1101,30 @@
         }
       }
     },
+    "CellStyle": {
+      "fields": {
+        "attrs": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "bg": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "fg": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "underline": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "underline_color": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
     "CheckpointData": {
       "fields": {
         "epoch": {
@@ -1982,6 +2012,26 @@
         }
       }
     },
+    "FeedSwitch": {
+      "fields": {
+        "frame": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "mode": {
+          "repeated": false,
+          "type": "SubscribeMode"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
     "FilterInput": {
       "fields": {
         "pane": {
@@ -2383,6 +2433,178 @@
         "subscribe": {
           "repeated": false,
           "type": "TerminalSubscribe"
+        }
+      }
+    },
+    "ImagePixels": {
+      "fields": {
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "height": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "image": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "rgba": {
+          "repeated": false,
+          "type": "bytes"
+        },
+        "width": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "ImagePlacement": {
+      "fields": {
+        "col": {
+          "repeated": false,
+          "type": "i32"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "height": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "image": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "layer": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "offset_x": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "offset_y": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "row": {
+          "repeated": false,
+          "type": "i32"
+        },
+        "source_height": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "source_width": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "source_x": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "source_y": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "width": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "z": {
+          "repeated": false,
+          "type": "i32"
+        }
+      }
+    },
+    "InputModes": {
+      "fields": {
+        "alt_esc_prefix": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "alt_screen": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "alt_sends_escape": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "bracketed_paste": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "cursor_keys": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "focus_events": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "ignore_keypad_with_numlock": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "keyboard_locked": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "keypad_keys": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "kitty_keyboard": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "kitty_paste_events": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "linefeed": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "mouse_alternate_scroll": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "mouse_any": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "mouse_button": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "mouse_normal": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "mouse_sgr": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "mouse_sgr_pixels": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "mouse_urxvt": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "mouse_utf8": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "mouse_x10": {
+          "repeated": false,
+          "type": "bool"
         }
       }
     },
@@ -3842,6 +4064,166 @@
         }
       }
     },
+    "ScreenColors": {
+      "fields": {
+        "background": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "cursor": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "foreground": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "palette": {
+          "repeated": true,
+          "type": "u32"
+        }
+      }
+    },
+    "ScreenCursor": {
+      "fields": {
+        "blinking": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "on_wide_tail": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "shape": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "visible": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "x": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "y": {
+          "repeated": false,
+          "type": "u32"
+        }
+      }
+    },
+    "ScreenFrame": {
+      "fields": {
+        "changed": {
+          "repeated": true,
+          "type": "ScreenRow"
+        },
+        "colors": {
+          "repeated": false,
+          "type": "ScreenColors"
+        },
+        "cols": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "cursor": {
+          "repeated": false,
+          "type": "ScreenCursor"
+        },
+        "epoch": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "full": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "images": {
+          "repeated": false,
+          "type": "ScreenImages"
+        },
+        "modes": {
+          "repeated": false,
+          "type": "InputModes"
+        },
+        "number": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "pixels": {
+          "repeated": true,
+          "type": "ImagePixels"
+        },
+        "render_hold": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "rows": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "sequence": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "styles": {
+          "repeated": true,
+          "type": "CellStyle"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "title": {
+          "repeated": false,
+          "type": "string"
+        },
+        "top": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "total_rows": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
+    "ScreenImages": {
+      "fields": {
+        "placements": {
+          "repeated": true,
+          "type": "ImagePlacement"
+        }
+      }
+    },
+    "ScreenRow": {
+      "fields": {
+        "cells": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "index": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "styles": {
+          "repeated": true,
+          "type": "u32"
+        },
+        "text": {
+          "repeated": false,
+          "type": "string"
+        }
+      }
+    },
     "ScriptCheck": {
       "fields": {
         "error": {
@@ -4062,6 +4444,18 @@
         }
       }
     },
+    "SetFeed": {
+      "fields": {
+        "feed": {
+          "repeated": false,
+          "type": "TerminalFeed"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        }
+      }
+    },
     "SetTier": {
       "fields": {
         "endpoint": {
@@ -4225,6 +4619,10 @@
           "type": "string"
         },
         "epoch": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "frame": {
           "repeated": false,
           "type": "u64"
         },
@@ -4665,6 +5063,10 @@
         "endpoint": {
           "repeated": false,
           "type": "string"
+        },
+        "feed": {
+          "repeated": false,
+          "type": "TerminalFeed"
         },
         "pane": {
           "repeated": false,
@@ -5369,6 +5771,7 @@
     "terminal.query": "TerminalQuery",
     "terminal.read": "ReadParams",
     "terminal.run": "TerminalRun",
+    "terminal.set_feed": "SetFeed",
     "terminal.set_tier": "SetTier",
     "terminal.subscribe": "TerminalSubscribe",
     "terminal.unsubscribe": "Unsubscribe",
@@ -5644,5 +6047,5 @@
       }
     }
   },
-  "version": "1.64"
+  "version": "1.65"
 }

@@ -252,6 +252,7 @@ async fn raw_subscribe(
         client: None,
         ended: ended.clone(),
         stamp: None,
+        frames: None,
     };
     let started = host.subscribe(id, resume, sink).await.ok()?;
     Some(RawStart { started, rx, ended })
@@ -299,6 +300,8 @@ async fn raw<D: Deliver>(
                 }
                 *sequence
             }
+            // Taps never ask for frames (their sink has no frame link).
+            mirror::Start::Frames(f) => f.sequence,
             mirror::Start::Replay { after, records } => {
                 let mut d = data(tap, pane, generation.0);
                 let mut last = *after;

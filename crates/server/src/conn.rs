@@ -29,6 +29,8 @@ const FORWARD_LANE: usize = 8;
 /// Limits of one pushed batch.
 const BATCH_RECORDS: usize = 512;
 const BATCH_BYTES: usize = 256 << 10;
+/// At most one screen frame per subscription in this time.
+pub const FRAME_INTERVAL: Duration = Duration::from_millis(8);
 
 /// Queue sizes; `DREAMER_TEST_SMALL_QUEUES` shrinks them so tests reach
 /// back-pressure the same way on every platform.
@@ -43,6 +45,7 @@ fn queues() -> (usize, usize) {
 pub const TOPIC_RECORDS: &str = api::topic::TERMINAL_RECORDS;
 pub const TOPIC_END: &str = api::topic::TERMINAL_END;
 pub const TOPIC_CHECKPOINT: &str = api::topic::TERMINAL_CHECKPOINT;
+pub const TOPIC_FRAME: &str = api::topic::TERMINAL_FRAME;
 pub const TOPIC_TOPOLOGY: &str = api::topic::TMUX_TOPOLOGY;
 pub const TOPIC_EVENTS: &str = api::topic::EVENTS_BATCH;
 pub const TOPIC_MESSAGES: &str = api::topic::MESSAGES_DELIVER;
@@ -56,6 +59,19 @@ static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 enum Out {
     Frame(Kind, Vec<u8>),
     Bulk(Vec<u8>),
+    /// Bulk data whose sender is told once its last chunk is written.
+    Acked(Vec<u8>, tokio::sync::oneshot::Sender<()>),
+}
+
+/// A subscription's last bulk message (a checkpoint or a screen frame)
+/// until it is written.
+type Pending = Option<tokio::sync::oneshot::Receiver<()>>;
+
+/// `terminal.set_feed` for a subscription, answered by its own task so the
+/// reply falls exactly between the two feeds.
+struct FeedCtl {
+    request: u64,
+    frames: bool,
 }
 
 #[derive(Clone)]
@@ -68,6 +84,10 @@ struct Conn {
     /// The `tmux.watch` task, once this connection asked for one.
     watch: Arc<Mutex<Option<JoinHandle<()>>>>,
     next_sub: Arc<AtomicU64>,
+    /// Where `terminal.set_feed` reaches each terminal subscription.
+    feeds: Arc<Mutex<HashMap<u64, mpsc::Sender<FeedCtl>>>>,
+    /// The client agreed to the `terminal.frames` feature.
+    frames: bool,
     /// The negotiated frame limit: a reply larger than this is refused
     /// with an error instead of being dropped.
     max_frame: u32,
@@ -195,6 +215,11 @@ pub async fn connection_as(
         watch: Arc::default(),
         sizers: Arc::default(),
         next_sub: Arc::new(AtomicU64::new(1)),
+        feeds: Arc::default(),
+        frames: negotiated
+            .features
+            .iter()
+            .any(|f| f == wire::feature::TERMINAL_FRAMES),
         max_frame: negotiated.limits.max_frame,
         grant: Arc::new(std::sync::Mutex::new(grant)),
         peer_pid,
@@ -355,6 +380,16 @@ pub async fn connection_as(
                         subscribe(&service, &conn, req).await;
                         return;
                     }
+                    if req.method == api::method::TERMINAL_SET_FEED {
+                        // The subscription's task answers.
+                        if let Some(r) = set_feed(&conn, &req).await {
+                            let _ = conn
+                                .out
+                                .send(Out::Frame(Kind::Response, r.encode_to_vec()))
+                                .await;
+                        }
+                        return;
+                    }
                     if req.method == api::method::HOSTS_SUBSCRIBE {
                         host_subscribe(&state, &conn, req).await;
                         return;
@@ -468,10 +503,23 @@ async fn write_loop(
     limits: Limits,
 ) {
     let mut outbox = Outbox::new(limits);
-    let push = |outbox: &mut Outbox, msg: Out| -> Result<(), WireError> {
-        match msg {
-            Out::Frame(kind, payload) => outbox.push_priority(kind, &payload),
-            Out::Bulk(data) => outbox.push_bulk(data),
+    // Senders waiting for their bulk message (by its number) to be out.
+    type Acks = std::collections::VecDeque<(u64, tokio::sync::oneshot::Sender<()>)>;
+    let mut acks = Acks::new();
+    let push = |outbox: &mut Outbox, acks: &mut Acks, msg: Out| match msg {
+        Out::Frame(kind, payload) => outbox.push_priority(kind, &payload),
+        Out::Bulk(data) => outbox.push_bulk(data),
+        Out::Acked(data, ack) => {
+            outbox.push_bulk(data)?;
+            acks.push_back((outbox.bulk_queued(), ack));
+            Ok(())
+        }
+    };
+    let release = |outbox: &Outbox, acks: &mut Acks| {
+        while acks.front().is_some_and(|(n, _)| *n <= outbox.bulk_done()) {
+            if let Some((_, ack)) = acks.pop_front() {
+                let _ = ack.send(());
+            }
         }
     };
     let mut lane_open = true;
@@ -492,21 +540,23 @@ async fn write_loop(
             rx.try_recv().ok()
         };
         if let Some(m) = msg
-            && let Err(e) = push(&mut outbox, m)
+            && let Err(e) = push(&mut outbox, &mut acks, m)
         {
             log::warn(format!("dropping a client that does not read: {e}"));
             return;
         }
-        if let Some(frame) = outbox.next_frame()
-            && w.write_all(&frame).await.is_err()
-        {
-            return;
+        if let Some(frame) = outbox.next_frame() {
+            if w.write_all(&frame).await.is_err() {
+                return;
+            }
+            release(&outbox, &mut acks);
         }
     }
     while let Some(frame) = outbox.next_frame() {
         if w.write_all(&frame).await.is_err() {
             return;
         }
+        release(&outbox, &mut acks);
     }
     let _ = w.flush().await;
 }
@@ -887,6 +937,7 @@ fn bridged(method: &str) -> bool {
     let streams = [
         m::TERMINAL_SUBSCRIBE,
         m::TERMINAL_UNSUBSCRIBE,
+        m::TERMINAL_SET_FEED,
         m::EVENTS_SUBSCRIBE,
         m::EVENTS_UNSUBSCRIBE,
         m::TAPS_SUBSCRIBE,
@@ -1370,6 +1421,13 @@ async fn host_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
             .await;
         }
     };
+    let frames = p
+        .subscribe
+        .as_ref()
+        .is_some_and(|s| s.feed == api::TerminalFeed::Frames as i32);
+    if frames && !conn.frames {
+        return send(failure(id, no_frames())).await;
+    }
     let mut relay = match state.hosts.subscribe(p).await {
         Ok(r) => r,
         Err(e) => return send(failure(id, e)).await,
@@ -1378,10 +1436,31 @@ async fn host_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
     let mut reply = relay.subscription.clone();
     reply.id = local;
     let (go, wait) = tokio::sync::oneshot::channel::<()>();
+    let (ctl_tx, mut ctl) = mpsc::channel::<FeedCtl>(4);
     let c = conn.clone();
     let task = tokio::spawn(async move {
         let _ = wait.await;
-        while let Some(item) = relay.items.recv().await {
+        // The last checkpoint or frame passed on, until it is written: a
+        // switch is answered only after it, as on a local subscription.
+        let mut pending: Pending = None;
+        loop {
+            let item = tokio::select! {
+                biased;
+                Some(f) = ctl.recv() => {
+                    if relay.switch.send((f.request, f.frames)).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
+                () = written(&mut pending), if pending.is_some() => {
+                    pending = None;
+                    continue;
+                }
+                item = relay.items.recv() => match item {
+                    Some(item) => item,
+                    None => return,
+                },
+            };
             let sent = match item {
                 crate::hosts::RelayItem::Records(mut b) => {
                     b.subscription = local;
@@ -1394,11 +1473,39 @@ async fn host_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
                         topic: TOPIC_CHECKPOINT.into(),
                         data: d.encode_to_vec(),
                     };
-                    c.out.send(Out::Bulk(bulk.encode_to_vec())).await.is_ok()
+                    pending = Some(send_acked(&c, bulk.encode_to_vec()).await);
+                    true
+                }
+                crate::hosts::RelayItem::Frame(mut f) => {
+                    f.subscription = local;
+                    let bulk = wire::Bulk {
+                        stream: local,
+                        topic: TOPIC_FRAME.into(),
+                        data: f.encode_to_vec(),
+                    };
+                    pending = Some(send_acked(&c, bulk.encode_to_vec()).await);
+                    true
+                }
+                crate::hosts::RelayItem::Switched { request, result } => {
+                    if let Some(p) = pending.take() {
+                        let _ = p.await;
+                    }
+                    let r = match result {
+                        Ok(mut s) => {
+                            s.subscription = local;
+                            ok(request, s.encode_to_vec())
+                        }
+                        Err(e) => failure(request, e),
+                    };
+                    c.out
+                        .send(Out::Frame(Kind::Response, r.encode_to_vec()))
+                        .await
+                        .is_ok()
                 }
                 crate::hosts::RelayItem::End(mut e) => {
                     e.subscription = local;
                     c.event(TOPIC_END, e.encode_to_vec()).await;
+                    c.feeds.lock().await.remove(&local);
                     c.subs.lock().await.remove(&local);
                     return;
                 }
@@ -1408,6 +1515,7 @@ async fn host_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
             }
         }
     });
+    conn.feeds.lock().await.insert(local, ctl_tx);
     conn.subs.lock().await.insert(local, task);
     send(ok(id, reply.encode_to_vec())).await;
     let _ = go.send(());
@@ -1737,6 +1845,7 @@ async fn unsubscribe(conn: &Conn, req: wire::Request) -> wire::Response {
         Ok(p) => p,
         Err(e) => return failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string())),
     };
+    conn.feeds.lock().await.remove(&p.subscription);
     match conn.subs.lock().await.remove(&p.subscription) {
         Some(task) => {
             task.abort();
@@ -1793,6 +1902,10 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
             .await;
         }
     };
+    let frames = p.feed == api::TerminalFeed::Frames as i32;
+    if frames && !conn.frames {
+        return reply(failure(id, no_frames())).await;
+    }
     let host = match service.mirror_host(p.endpoint.as_deref()).await {
         Ok(h) => h,
         Err(e) => return reply(failure(id, e)).await,
@@ -1816,24 +1929,25 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
     let (tx, rx) = mpsc::channel(queues().0);
     let ended = Arc::new(AtomicU8::new(mirror::end::RUNNING));
     let stamp = Arc::new(perf::Stamp::default());
-    let started = match host
-        .subscribe(
-            pane,
-            resume,
-            mirror::Sink {
-                records: tx,
-                client: p.client,
-                ended: ended.clone(),
-                stamp: Some(stamp.clone()),
-            },
-        )
-        .await
-    {
+    let link = Arc::new(mirror::FrameLink::default());
+    let sink = mirror::Sink {
+        records: tx,
+        client: p.client,
+        ended: ended.clone(),
+        stamp: Some(stamp.clone()),
+        frames: Some(link.clone()),
+    };
+    let started = if frames {
+        host.subscribe_frames(pane, sink).await
+    } else {
+        host.subscribe(pane, resume, sink).await
+    };
+    let started = match started {
         Ok(s) => s,
         Err(e) => return reply(failure(id, RpcError::new(code::UNAVAILABLE, e))).await,
     };
     let sub = conn.next_sub.fetch_add(1, Ordering::Relaxed);
-    let (mode, sequence, bytes, pause_us) = match &started.start {
+    let (mode, sequence, bytes, pause_us, frame) = match &started.start {
         mirror::Start::Checkpoint {
             sequence,
             snapshot,
@@ -1843,8 +1957,10 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
             *sequence,
             snapshot.len() as u64,
             pause.as_micros() as u64,
+            0,
         ),
-        mirror::Start::Replay { after, .. } => (api::SubscribeMode::Replay, *after, 0, 0),
+        mirror::Start::Replay { after, .. } => (api::SubscribeMode::Replay, *after, 0, 0, 0),
+        mirror::Start::Frames(f) => (api::SubscribeMode::Frames, f.sequence, 0, 0, f.number),
     };
     let s = api::Subscription {
         id: sub,
@@ -1858,22 +1974,19 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         scrollback_lines: started.scrollback as u32,
         title: started.title.clone(),
         cwd: started.cwd.clone(),
+        frame,
     };
-    let (pane_id, epoch, generation) = (p.pane, started.epoch.0, started.generation.0);
-    let batch = move |records: Vec<api::TerminalRecord>, effects: Vec<api::TerminalEffect>| {
-        api::RecordBatch {
-            subscription: sub,
-            pane: pane_id,
-            epoch,
-            generation,
-            records,
-            effects,
-        }
+    let head = crate::screen::Head {
+        subscription: sub,
+        pane: p.pane,
+        epoch: started.epoch.0,
+        generation: started.generation.0,
     };
     // Register the stream before replying, so an immediate unsubscribe
     // finds it; it waits for `go` so live records follow the reply and the
     // starting data, never precede them.
-    let (go, wait) = tokio::sync::oneshot::channel::<()>();
+    let (go, wait) = tokio::sync::oneshot::channel::<Pending>();
+    let (ctl_tx, ctl) = mpsc::channel(4);
     let task = tokio::spawn(stream(
         conn.clone(),
         wait,
@@ -1881,36 +1994,22 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         ended,
         stamp,
         host,
-        sub,
-        p.pane,
+        head,
         started.generation,
-        move |r, e| batch(r, e).encode_to_vec(),
+        Feed { link, ctl, frames },
     ));
+    conn.feeds.lock().await.insert(sub, ctl_tx);
     conn.subs.lock().await.insert(sub, task);
     reply(ok(id, s.encode_to_vec())).await;
-    match started.start {
+    let pending = match started.start {
         mirror::Start::Checkpoint {
             sequence, snapshot, ..
-        } => {
-            let data = api::CheckpointData {
-                subscription: sub,
-                pane: p.pane,
-                epoch: started.epoch.0,
-                generation: started.generation.0,
-                sequence,
-                snapshot,
-            };
-            let bulk = wire::Bulk {
-                stream: sub,
-                topic: TOPIC_CHECKPOINT.into(),
-                data: data.encode_to_vec(),
-            };
-            let _ = conn.out.send(Out::Bulk(bulk.encode_to_vec())).await;
-        }
+        } => Some(send_checkpoint(conn, head, sequence, snapshot).await),
         mirror::Start::Replay { records, .. } => {
             for chunk in records.chunks(BATCH_RECORDS) {
                 // Replayed records carry no effects: they already happened.
                 let b = batch(
+                    head,
                     chunk.iter().map(|(s, r)| to_api(*s, r)).collect(),
                     Vec::new(),
                 );
@@ -1921,70 +2020,252 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
                 }
                 conn.event(TOPIC_RECORDS, b.encode_to_vec()).await;
             }
+            None
         }
-    }
-    let _ = go.send(());
+        mirror::Start::Frames(f) => Some(send_frame(conn, head, &f).await),
+    };
+    let _ = go.send(pending);
 }
 
-/// Forward a subscriber's records as batches until its stream ends, then
-/// say why. A client that does not read makes this task wait, the
-/// subscriber queue fill, and the owner end the subscription as lagged.
-#[allow(clippy::too_many_arguments)]
-async fn stream(
-    conn: Conn,
-    go: tokio::sync::oneshot::Receiver<()>,
-    mut rx: mpsc::Receiver<mirror::Live>,
-    ended: Arc<AtomicU8>,
-    stamp: Arc<perf::Stamp>,
-    host: mirror::MirrorHost,
-    sub: u64,
-    pane: u32,
-    generation: domain::PaneGeneration,
-    encode: impl Fn(Vec<api::TerminalRecord>, Vec<api::TerminalEffect>) -> Vec<u8> + Send,
-) {
-    let _ = go.await;
-    let effect = |seq: u64, e: mirror::Effect| api::TerminalEffect {
+fn no_frames() -> RpcError {
+    RpcError::new(
+        code::INVALID_REQUEST,
+        format!(
+            "screen frames need the `{}` feature, which this connection did not ask for",
+            wire::feature::TERMINAL_FRAMES
+        ),
+    )
+}
+
+fn batch(
+    head: crate::screen::Head,
+    records: Vec<api::TerminalRecord>,
+    effects: Vec<api::TerminalEffect>,
+) -> api::RecordBatch {
+    api::RecordBatch {
+        subscription: head.subscription,
+        pane: head.pane,
+        epoch: head.epoch,
+        generation: head.generation,
+        records,
+        effects,
+    }
+}
+
+/// Queue bulk data, to learn when it has been written.
+async fn send_acked(conn: &Conn, data: Vec<u8>) -> tokio::sync::oneshot::Receiver<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // If the writer is gone the receiver resolves at once (sender dropped).
+    let _ = conn.out.send(Out::Acked(data, tx)).await;
+    rx
+}
+
+async fn send_checkpoint(
+    conn: &Conn,
+    head: crate::screen::Head,
+    sequence: u64,
+    snapshot: Vec<u8>,
+) -> tokio::sync::oneshot::Receiver<()> {
+    let data = api::CheckpointData {
+        subscription: head.subscription,
+        pane: head.pane,
+        epoch: head.epoch,
+        generation: head.generation,
+        sequence,
+        snapshot,
+    };
+    let bulk = wire::Bulk {
+        stream: head.subscription,
+        topic: TOPIC_CHECKPOINT.into(),
+        data: data.encode_to_vec(),
+    };
+    send_acked(conn, bulk.encode_to_vec()).await
+}
+
+async fn send_frame(
+    conn: &Conn,
+    head: crate::screen::Head,
+    f: &mirror::ScreenFrame,
+) -> tokio::sync::oneshot::Receiver<()> {
+    let bulk = wire::Bulk {
+        stream: head.subscription,
+        topic: TOPIC_FRAME.into(),
+        data: crate::screen::encode(f, head).encode_to_vec(),
+    };
+    perf::count(perf::Counter::TransferredBytes, bulk.data.len() as u64);
+    send_acked(conn, bulk.encode_to_vec()).await
+}
+
+/// `terminal.set_feed`: hand the switch to the subscription's task, which
+/// replies. `Some` is a reply to send here instead.
+async fn set_feed(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
+    let p = match api::SetFeed::decode(req.payload.as_slice()) {
+        Ok(p) => p,
+        Err(e) => {
+            return Some(failure(
+                req.id,
+                RpcError::new(code::INVALID_PARAMS, e.to_string()),
+            ));
+        }
+    };
+    let frames = p.feed == api::TerminalFeed::Frames as i32;
+    if frames && !conn.frames {
+        return Some(failure(req.id, no_frames()));
+    }
+    let ctl = conn.feeds.lock().await.get(&p.subscription).cloned();
+    let sent = match ctl {
+        Some(ctl) => ctl
+            .send(FeedCtl {
+                request: req.id,
+                frames,
+            })
+            .await
+            .is_ok(),
+        None => false,
+    };
+    (!sent).then(|| {
+        failure(
+            req.id,
+            RpcError::new(
+                code::NOT_FOUND,
+                format!("no terminal subscription {}", p.subscription),
+            ),
+        )
+    })
+}
+
+/// A view subscription's feed: how the owner reaches it for frames, the
+/// switch requests, and which feed it is on.
+struct Feed {
+    link: Arc<mirror::FrameLink>,
+    ctl: mpsc::Receiver<FeedCtl>,
+    frames: bool,
+}
+
+fn effect(seq: u64, e: mirror::Effect) -> api::TerminalEffect {
+    api::TerminalEffect {
         id: e.id,
         sequence: seq,
         bells: e.bells,
         title: e.title,
         cwd: e.cwd,
         clipboard: e.clipboard,
-    };
-    while let Some((seq, r, fx)) = rx.recv().await {
-        let mut records = vec![to_api(seq, &r)];
-        // Command steps (shell integration) are for collectors; an effect
-        // with nothing else is not sent to views.
-        let shown = |e: &mirror::Effect| {
-            e.bells > 0 || e.title.is_some() || e.cwd.is_some() || e.clipboard.is_some()
-        };
-        let mut effects: Vec<api::TerminalEffect> = fx
-            .filter(shown)
-            .map(|e| effect(seq, e))
-            .into_iter()
-            .collect();
-        let mut bytes = records[0].data.len();
-        while records.len() < BATCH_RECORDS && bytes < BATCH_BYTES {
-            match rx.try_recv() {
-                Ok((seq, r, fx)) => {
-                    let r = to_api(seq, &r);
-                    bytes += r.data.len();
-                    records.push(r);
-                    effects.extend(fx.filter(shown).map(|e| effect(seq, e)));
-                }
-                Err(_) => break,
+    }
+}
+
+/// Command steps (shell integration) are for collectors; an effect with
+/// nothing else is not sent to views.
+fn shown(e: &mirror::Effect) -> bool {
+    e.bells > 0 || e.title.is_some() || e.cwd.is_some() || e.clipboard.is_some()
+}
+
+/// Send one batch: `first` and whatever else is queued, within the batch
+/// limits. `false` when the connection is gone.
+async fn forward_batch(
+    conn: &Conn,
+    head: crate::screen::Head,
+    stamp: &perf::Stamp,
+    rx: &mut mpsc::Receiver<mirror::Live>,
+    first: mirror::Live,
+) -> bool {
+    let (seq, r, fx) = first;
+    let mut records = vec![to_api(seq, &r)];
+    let mut effects: Vec<api::TerminalEffect> = fx
+        .filter(shown)
+        .map(|e| effect(seq, e))
+        .into_iter()
+        .collect();
+    let mut bytes = records[0].data.len();
+    while records.len() < BATCH_RECORDS && bytes < BATCH_BYTES {
+        match rx.try_recv() {
+            Ok((seq, r, fx)) => {
+                let r = to_api(seq, &r);
+                bytes += r.data.len();
+                records.push(r);
+                effects.extend(fx.filter(shown).map(|e| effect(seq, e)));
             }
+            Err(_) => break,
         }
-        if !conn.event(TOPIC_RECORDS, encode(records, effects)).await {
-            return;
+    }
+    if !conn
+        .event(TOPIC_RECORDS, batch(head, records, effects).encode_to_vec())
+        .await
+    {
+        return false;
+    }
+    // Diagnostics: from the oldest record of the batch being published
+    // to the batch reaching the connection's writer.
+    if let Some(d) = stamp.take() {
+        perf::record(perf::Stage::Transfer, d);
+    }
+    perf::count(perf::Counter::TransferredBytes, bytes as u64);
+    perf::count(perf::Counter::TransferredBatches, 1);
+    true
+}
+
+/// Wait for a pending bulk message to be written; forever when none is.
+async fn written(pending: &mut Pending) {
+    match pending.as_mut() {
+        Some(rx) => {
+            let _ = rx.await;
         }
-        // Diagnostics: from the oldest record of the batch being published
-        // to the batch reaching the connection's writer.
-        if let Some(d) = stamp.take() {
-            perf::record(perf::Stage::Transfer, d);
+        None => std::future::pending().await,
+    }
+}
+
+/// Forward a subscriber's records as batches, or on frames its screen
+/// frames, until its stream ends, then say why. A client that does not
+/// read makes this task wait, the subscriber queue fill, and the owner end
+/// the subscription as lagged. On frames, the next frame is built only
+/// once the previous one has been written, from the screen as it is then,
+/// and at most one per [`FRAME_INTERVAL`]: screen states in between are
+/// never sent.
+#[allow(clippy::too_many_arguments)]
+async fn stream(
+    conn: Conn,
+    go: tokio::sync::oneshot::Receiver<Pending>,
+    mut rx: mpsc::Receiver<mirror::Live>,
+    ended: Arc<AtomicU8>,
+    stamp: Arc<perf::Stamp>,
+    host: mirror::MirrorHost,
+    head: crate::screen::Head,
+    generation: domain::PaneGeneration,
+    mut feed: Feed,
+) {
+    let mut pending = go.await.ok().flatten();
+    let pane = domain::TmuxPaneId(head.pane);
+    let mut last_frame = tokio::time::Instant::now();
+    let link = feed.link.clone();
+    loop {
+        tokio::select! {
+            biased;
+            Some(c) = feed.ctl.recv() => {
+                if !switch(&conn, &host, head, &stamp, &mut rx, &mut feed, &mut pending, c).await {
+                    return;
+                }
+                last_frame = tokio::time::Instant::now();
+            }
+            () = written(&mut pending), if pending.is_some() => pending = None,
+            () = link.changed.notified(), if feed.frames && pending.is_none() => {
+                tokio::time::sleep_until(last_frame + FRAME_INTERVAL).await;
+                match host.frame(pane, link.clone()).await {
+                    Ok(Some(f)) => {
+                        pending = Some(send_frame(&conn, head, &f).await);
+                        last_frame = tokio::time::Instant::now();
+                    }
+                    Ok(None) => {}
+                    Err(e) => log::warn(format!("pane %{}: no screen frame: {e}", head.pane)),
+                }
+            }
+            item = rx.recv() => match item {
+                Some(first) => {
+                    if !forward_batch(&conn, head, &stamp, &mut rx, first).await {
+                        return;
+                    }
+                }
+                None => break,
+            },
         }
-        perf::count(perf::Counter::TransferredBytes, bytes as u64);
-        perf::count(perf::Counter::TransferredBatches, 1);
     }
     let reason = match ended.load(Ordering::SeqCst) {
         mirror::end::LAGGED => api::EndReason::Lagged,
@@ -1996,7 +2277,7 @@ async fn stream(
                 .status()
                 .await
                 .iter()
-                .any(|s| s.pane.0 == pane && s.generation != generation);
+                .any(|s| s.pane.0 == head.pane && s.generation != generation);
             if respawned {
                 api::EndReason::Respawned
             } else {
@@ -2005,10 +2286,80 @@ async fn stream(
         }
     };
     let end = api::SubscriptionEnd {
-        subscription: sub,
+        subscription: head.subscription,
         reason: reason as i32,
         detail: None,
     };
     conn.event(TOPIC_END, end.encode_to_vec()).await;
-    conn.subs.lock().await.remove(&sub);
+    conn.feeds.lock().await.remove(&head.subscription);
+    conn.subs.lock().await.remove(&head.subscription);
+}
+
+/// Switch feeds between two records and answer the request. Nothing of
+/// the previous feed follows the reply: its last bulk message is written
+/// first, and records the owner sent before the switch go before it.
+#[allow(clippy::too_many_arguments)]
+async fn switch(
+    conn: &Conn,
+    host: &mirror::MirrorHost,
+    head: crate::screen::Head,
+    stamp: &perf::Stamp,
+    rx: &mut mpsc::Receiver<mirror::Live>,
+    feed: &mut Feed,
+    pending: &mut Pending,
+    c: FeedCtl,
+) -> bool {
+    if let Some(p) = pending.take() {
+        let _ = p.await;
+    }
+    let pane = domain::TmuxPaneId(head.pane);
+    let switched = host.set_feed(pane, feed.link.clone(), c.frames).await;
+    if let Ok(mirror::Switched::Frames(_)) = &switched {
+        // Every record still queued is at or before the frame.
+        while let Ok(first) = rx.try_recv() {
+            if !forward_batch(conn, head, stamp, rx, first).await {
+                return false;
+            }
+        }
+    }
+    let respond = |r: wire::Response| conn.out.send(Out::Frame(Kind::Response, r.encode_to_vec()));
+    let answer = |mode: api::SubscribeMode, sequence: u64, frame: u64| {
+        ok(
+            c.request,
+            api::FeedSwitch {
+                subscription: head.subscription,
+                mode: mode as i32,
+                sequence,
+                frame,
+            }
+            .encode_to_vec(),
+        )
+    };
+    match switched {
+        Err(e) => respond(failure(c.request, RpcError::new(code::UNAVAILABLE, e)))
+            .await
+            .is_ok(),
+        Ok(mirror::Switched::Frames(f)) => {
+            if respond(answer(api::SubscribeMode::Frames, f.sequence, f.number))
+                .await
+                .is_err()
+            {
+                return false;
+            }
+            *pending = Some(send_frame(conn, head, &f).await);
+            feed.frames = true;
+            true
+        }
+        Ok(mirror::Switched::Stream { sequence, snapshot }) => {
+            if respond(answer(api::SubscribeMode::Checkpoint, sequence, 0))
+                .await
+                .is_err()
+            {
+                return false;
+            }
+            *pending = Some(send_checkpoint(conn, head, sequence, snapshot).await);
+            feed.frames = false;
+            true
+        }
+    }
 }

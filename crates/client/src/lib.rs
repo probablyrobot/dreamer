@@ -115,11 +115,23 @@ impl Client {
         role: &str,
         pushed_capacity: usize,
     ) -> Result<Client, ClientError> {
+        Client::connect_features(socket, role, pushed_capacity, &[]).await
+    }
+
+    /// Like [`Client::connect_with`], asking for optional wire `features`
+    /// (`wire::feature`). [`Client::has_feature`] says which the daemon
+    /// agreed to.
+    pub async fn connect_features(
+        socket: &Path,
+        role: &str,
+        pushed_capacity: usize,
+        features: &[&str],
+    ) -> Result<Client, ClientError> {
         let stream = UnixStream::connect(socket)
             .await
             .map_err(|e| ClientError::NotRunning(format!("{}: {e}", socket.display())))?;
         let (r, w) = stream.into_split();
-        Client::over(r, w, role, pushed_capacity).await
+        Client::over_features(r, w, role, pushed_capacity, HANDSHAKE_TIMEOUT, features).await
     }
 
     /// Handshake and run over any byte stream: the read and write halves of
@@ -150,8 +162,25 @@ impl Client {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
+        Client::over_features(r, w, role, pushed_capacity, handshake, &[]).await
+    }
+
+    /// Like [`Client::over_within`], asking for optional wire `features`.
+    pub async fn over_features<R, W>(
+        r: R,
+        w: W,
+        role: &str,
+        pushed_capacity: usize,
+        handshake: Duration,
+        features: &[&str],
+    ) -> Result<Client, ClientError>
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
         let mut writer: Writer = Box::new(w);
-        let me = Identity::current(role);
+        let mut me = Identity::current(role);
+        me.features = features.iter().map(|f| (*f).to_owned()).collect();
         let mut reader = Reader::new(r, me.limits);
         let (welcome, limits) =
             tokio::time::timeout(handshake, client_handshake(&mut reader, &mut writer, &me))
@@ -169,6 +198,11 @@ impl Client {
             pushed: Some(push_rx),
             welcome,
         })
+    }
+
+    /// Whether both sides agreed on an optional wire feature.
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.welcome.features.iter().any(|f| f == feature)
     }
 
     /// The stream of pushed events and bulk data. Taken once.
