@@ -268,6 +268,50 @@ pub struct ViewState {
     pub alt_screen: bool,
 }
 
+/// The terminal modes that decide how keys, mouse events, focus, and
+/// pastes are encoded for the application. Mode numbers are DEC private
+/// modes unless marked ANSI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct InputModes {
+    /// Application cursor keys (DECCKM, 1).
+    pub cursor_keys: bool,
+    /// Application keypad (DECNKM, 66).
+    pub keypad_keys: bool,
+    /// Mouse reporting: X10 (9), normal (1000), button-event (1002), and
+    /// any-event (1003) tracking.
+    pub mouse_x10: bool,
+    pub mouse_normal: bool,
+    pub mouse_button: bool,
+    pub mouse_any: bool,
+    /// Mouse report formats: UTF-8 (1005), SGR (1006), urxvt (1015), SGR
+    /// pixels (1016).
+    pub mouse_utf8: bool,
+    pub mouse_sgr: bool,
+    pub mouse_urxvt: bool,
+    pub mouse_sgr_pixels: bool,
+    /// The wheel sends arrow keys on the alternate screen (1007).
+    pub mouse_alternate_scroll: bool,
+    /// Focus in and out reports (1004).
+    pub focus_events: bool,
+    /// Bracketed paste (2004).
+    pub bracketed_paste: bool,
+    /// Paste events of the kitty keyboard protocol (5522).
+    pub kitty_paste_events: bool,
+    /// Keypad keys ignore application mode while Num Lock is on (1035).
+    pub ignore_keypad_with_numlock: bool,
+    /// Alt prefixes the key with ESC (1036), and sends ESC (1039).
+    pub alt_esc_prefix: bool,
+    pub alt_sends_escape: bool,
+    /// Enter sends CR LF (LNM, ANSI 20).
+    pub linefeed: bool,
+    /// The keyboard is locked (KAM, ANSI 2).
+    pub keyboard_locked: bool,
+    /// The alternate screen is active.
+    pub alt_screen: bool,
+    /// The kitty keyboard protocol's flags in effect (0 when off).
+    pub kitty_keyboard: u8,
+}
+
 impl ViewState {
     /// Rows between the viewport's bottom and the active area's bottom;
     /// zero when following new output.

@@ -133,6 +133,68 @@ with a `terminal.end` event that names the reason:
 A slow client never stalls the pane's owner or other subscribers. The owner
 never waits on a subscriber; it ends the one that is behind instead.
 
+## Screen frames
+
+A subscription has a **feed**. `stream`, the default, is the checkpoint or
+replay and every record described above. On `frames`, the pane's owner
+sends no records; the subscription instead gets the visible screen, read
+from the mirror's engine, as `terminal.frame` bulk records (`ScreenFrame`).
+The mirror, its journal, taps, filters, and collectors are the same on
+either feed: frames are only another way to send a view what the mirror
+already holds.
+
+- **Asking.** `frames` is only for a connection whose client listed the
+  `terminal.frames` feature in `Hello` ([wire.md](wire.md#features)).
+  `terminal.subscribe` takes `feed: frames`; without the feature it is
+  refused, and such a client never receives a frame. On `frames` the
+  reply's mode is `frames`: no checkpoint, and a full frame at `sequence`,
+  numbered `frame`, follows.
+- **Switching.** `terminal.set_feed` moves a live subscription of the
+  same connection either way, between two of the pane's records:
+  - to `stream`: the reply names sequence N; a checkpoint at N follows and
+    records from N + 1 (records may arrive before the checkpoint, as at a
+    subscribe);
+  - to `frames`: every record up to N arrives before the reply, which names
+    N and the number of the full frame at N that follows; no record follows.
+
+  Nothing of the previous feed arrives after the reply: the subscription's
+  last checkpoint or frame is written first. A switch to the feed a
+  subscription is already on starts it over the same way; from `stream` to
+  `stream`, records up to N may still follow the reply, and are in the
+  checkpoint.
+- **What a frame holds.** The mirror sequence it was taken at (every record
+  up to it is in the frame); its number, counting the subscription's frames
+  from 1 without a gap across switches; the grid size; the rows that differ
+  from the previous frame sent on the subscription, with their cells and
+  styles; the cursor; the input modes; the title; the default colors and
+  palette; the image placements, with the pixels of every image that was
+  not placed in the last placements sent; whether the program holds presentation (synchronized
+  output). A **full** frame carries every row and every part. The first
+  frame after a subscribe or a switch is full, and so is a frame after the
+  grid size changed. Any other frame applies only on top of the one
+  numbered one less.
+- **Row numbers.** `top` is the first screen row's number counted from the
+  top of the pane's history, the way decorations number lines, so a mark
+  lands on row `mark.row - top`. `total_rows` is history plus the screen.
+- **Input modes.** Application cursor keys and keypad, every mouse
+  reporting mode (9, 1000, 1002, 1003) and report format (1005, 1006, 1015,
+  1016), alternate scroll, focus reports, bracketed paste, kitty paste
+  events, the Num Lock and Alt modes (1035, 1036, 1039), LNM, KAM, the
+  alternate screen, and the kitty keyboard protocol's flags.
+- **Rate.** At most one frame per subscription every 8 ms. A frame is built
+  only after the previous one on the subscription has been written to the
+  socket, from the screen as it is then: screen states that changed in
+  between are never sent, and a slow client gets fewer frames instead of a
+  queue. Only the screen states nobody saw are skipped; no record is.
+- **Remote hosts.** Frames and switches pass through `hosts.subscribe`. The
+  coordinator numbers frames itself, so a relay that comes back after a
+  lost link continues on frames with a full frame numbered after the last.
+  A relay that loses its link after a switch to `stream` but before that
+  switch's checkpoint arrived ends as `lagged`.
+
+The `replica` crate's `screen::ScreenView` keeps a screen from frames by
+these rules and refuses a frame that does not follow the last one.
+
 ## Client replicas
 
 The `replica` crate keeps a client's copy of a pane in step with the

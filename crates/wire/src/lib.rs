@@ -29,6 +29,14 @@ pub const PREAMBLE_LEN: usize = 8;
 pub const PROTOCOL_MAJOR: u16 = 1;
 pub const PROTOCOL_MINOR: u16 = 0;
 
+/// Feature names a side lists in `Hello.features` and `Welcome.features`;
+/// a feature is in use only when both list it.
+pub mod feature {
+    /// The client may be sent screen frames (`terminal.frame`) for a
+    /// terminal subscription in the `frames` feed.
+    pub const TERMINAL_FRAMES: &str = "terminal.frames";
+}
+
 /// Size limits for one connection. Both sides advertise theirs in the
 /// handshake and use the smaller of each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

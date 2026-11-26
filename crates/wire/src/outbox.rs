@@ -16,6 +16,9 @@ pub struct Outbox {
     bulk_bytes: usize,
     /// Bytes of the head bulk message already sent.
     sent: usize,
+    /// Bulk messages queued and fully handed out since the start.
+    bulk_queued: u64,
+    bulk_done: u64,
 }
 
 impl Outbox {
@@ -27,6 +30,8 @@ impl Outbox {
             bulk: VecDeque::new(),
             bulk_bytes: 0,
             sent: 0,
+            bulk_queued: 0,
+            bulk_done: 0,
         }
     }
 
@@ -61,7 +66,21 @@ impl Outbox {
         }
         self.bulk_bytes += message.len();
         self.bulk.push_back(message);
+        self.bulk_queued += 1;
         Ok(())
+    }
+
+    /// Bulk messages queued so far, counting from 1: the number of the
+    /// message just pushed.
+    pub fn bulk_queued(&self) -> u64 {
+        self.bulk_queued
+    }
+
+    /// Bulk messages whose last chunk [`Outbox::next_frame`] has handed
+    /// out. Messages leave in order, so message `n` is out once this is at
+    /// least `n`.
+    pub fn bulk_done(&self) -> u64 {
+        self.bulk_done
     }
 
     pub fn is_empty(&self) -> bool {
@@ -95,6 +114,7 @@ impl Outbox {
             let done = self.bulk.pop_front().map_or(0, |m| m.len());
             self.bulk_bytes -= done;
             self.sent = 0;
+            self.bulk_done += 1;
         }
         Some(frame)
     }

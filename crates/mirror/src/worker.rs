@@ -10,7 +10,9 @@ use std::time::Instant;
 
 use domain::{ConnectionEpoch, PaneGeneration, PaneKey, TmuxPaneId};
 use terminal_ghostty::Engine;
-use terminal_ghostty::core::GridSize;
+use terminal_ghostty::core::{
+    Colors, Cursor, GridSize, ImagePixels, ImagePlacement, InputModes, Row, ViewState,
+};
 use terminal_ghostty::input::{MouseAction, MouseButton};
 use tmux_backend::bootstrap::{Captures, PaneState, restore_engine};
 use tokio::sync::{mpsc, oneshot};
@@ -128,6 +130,53 @@ pub struct Sink {
     /// whoever forwards the records to time the transfer. Marked only while
     /// diagnostics are on.
     pub stamp: Option<Arc<perf::Stamp>>,
+    /// A view that may be switched to screen frames: what names it to the
+    /// owner, and how the owner says the screen changed.
+    pub frames: Option<Arc<FrameLink>>,
+}
+
+/// A view subscription's link to its pane's owner for screen frames. While
+/// the subscription is on frames, the owner sends it no records and wakes
+/// `changed` instead whenever it applies one.
+#[derive(Debug, Default)]
+pub struct FrameLink {
+    pub changed: tokio::sync::Notify,
+}
+
+/// The visible screen of a mirror at `sequence`, as one subscription on
+/// frames needs it: the rows that differ from the previous frame it was
+/// sent, or everything when `full`.
+#[derive(Debug, Clone)]
+pub struct ScreenFrame {
+    /// Counts the subscription's frames from 1.
+    pub number: u64,
+    pub full: bool,
+    pub sequence: u64,
+    pub size: GridSize,
+    /// Where the screen is in the pane's history: `view.offset` numbers
+    /// row 0 the way decorations number lines.
+    pub view: ViewState,
+    /// Changed rows by screen row.
+    pub rows: Vec<(u16, Arc<Row>)>,
+    pub cursor: Cursor,
+    pub modes: InputModes,
+    /// When full, or when it changed.
+    pub title: Option<String>,
+    pub colors: Option<Arc<Colors>>,
+    pub images: Option<Arc<[ImagePlacement]>>,
+    /// Pixels of placed images the subscription has not been sent yet.
+    pub pixels: Vec<Arc<ImagePixels>>,
+    pub render_hold: bool,
+}
+
+/// Where a subscription is after a switch of feed.
+#[derive(Debug)]
+pub enum Switched {
+    /// Back on records: the engine at `sequence`; records continue from
+    /// `sequence + 1`.
+    Stream { sequence: u64, snapshot: Vec<u8> },
+    /// On frames: a full frame; no records follow.
+    Frames(ScreenFrame),
 }
 
 /// How a subscription starts.
@@ -144,6 +193,8 @@ pub enum Start {
         after: u64,
         records: Vec<(u64, Record)>,
     },
+    /// A full screen frame; frames follow instead of records.
+    Frames(ScreenFrame),
 }
 
 #[derive(Debug)]
@@ -322,7 +373,24 @@ pub enum WorkerMsg {
         pane: TmuxPaneId,
         resume: Option<(PaneGeneration, u64)>,
         sink: Sink,
+        /// Start on screen frames (the sink must have a frame link).
+        frames: bool,
         reply: oneshot::Sender<Result<Started, String>>,
+    },
+    /// Switch the subscription with this link to frames or back to records,
+    /// between two records.
+    SetFeed {
+        pane: TmuxPaneId,
+        link: Arc<FrameLink>,
+        frames: bool,
+        reply: oneshot::Sender<Result<Switched, String>>,
+    },
+    /// The next frame for the subscription with this link, if it is on
+    /// frames and the mirror moved on since its last one.
+    Frame {
+        pane: TmuxPaneId,
+        link: Arc<FrameLink>,
+        reply: oneshot::Sender<Result<Option<ScreenFrame>, String>>,
     },
     /// Encode input on the pane's owner, against its current modes.
     Encode {
@@ -359,7 +427,7 @@ struct Mirror {
     error: Option<String>,
     tier: Tier,
     journal: Journal,
-    subscribers: Vec<Sink>,
+    subscribers: Vec<Sub>,
     scrollback: usize,
     title: Option<String>,
     cwd: Option<String>,
@@ -375,6 +443,133 @@ struct Mirror {
     colors_from: u64,
     /// When the pane last wrote anything.
     last_output: Instant,
+}
+
+/// A subscriber, and its screen while it is on frames.
+struct Sub {
+    sink: Sink,
+    /// Frames sent so far, across every period on frames.
+    sent: u64,
+    screen: Option<Screen>,
+}
+
+impl Sub {
+    fn is(&self, link: &Arc<FrameLink>) -> bool {
+        self.sink
+            .frames
+            .as_ref()
+            .is_some_and(|l| Arc::ptr_eq(l, link))
+    }
+}
+
+/// What a subscription on frames was last sent; a frame carries what
+/// differs from it.
+#[derive(Default)]
+struct Screen {
+    sequence: u64,
+    rows: Vec<Arc<Row>>,
+    colors: Option<Arc<Colors>>,
+    images: Option<Arc<[ImagePlacement]>>,
+    pixels: std::collections::HashSet<(u32, u64)>,
+    title: Option<String>,
+}
+
+impl std::ops::Deref for Sub {
+    type Target = Sink;
+    fn deref(&self) -> &Sink {
+        &self.sink
+    }
+}
+
+/// Build the next frame for `sub` from `engine` at `sequence`: `None` when
+/// it is not on frames, or nothing happened since its last frame.
+fn next_frame(
+    engine: &mut Engine,
+    sequence: u64,
+    title: &Option<String>,
+    sub: &mut Sub,
+    full: bool,
+) -> Result<Option<ScreenFrame>, String> {
+    let Some(screen) = sub.screen.as_mut() else {
+        return Ok(None);
+    };
+    if !full && screen.sequence == sequence {
+        return Ok(None);
+    }
+    let f = engine.frame().map_err(|e| format!("frame: {e}"))?;
+    let modes = engine.input_modes().map_err(|e| format!("modes: {e}"))?;
+    // A new size redraws everything, so it is sent as a full frame.
+    let full = full
+        || screen.rows.len() != f.rows.len()
+        || screen.rows.first().map(|r| r.cells.len()) != f.rows.first().map(|r| r.cells.len());
+    if full {
+        *screen = Screen::default();
+    }
+    let rows = f
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(i, row)| {
+            full || screen
+                .rows
+                .get(*i)
+                .is_none_or(|old| !Arc::ptr_eq(old, row) && **old != ***row)
+        })
+        .map(|(i, row)| (i as u16, Arc::clone(row)))
+        .collect();
+    let colors = (full
+        || screen
+            .colors
+            .as_ref()
+            .is_none_or(|c| !Arc::ptr_eq(c, &f.colors) && **c != *f.colors))
+    .then(|| Arc::clone(&f.colors));
+    let images = (full
+        || screen
+            .images
+            .as_ref()
+            .is_none_or(|i| !Arc::ptr_eq(i, &f.images) && **i != *f.images))
+    .then(|| Arc::clone(&f.images));
+    let mut pixels = Vec::new();
+    if let Some(placed) = &images {
+        // The client keeps the pixels of placed images only, so pixels are
+        // sent again for an image that comes back.
+        let mut now = std::collections::HashSet::new();
+        for p in placed.iter() {
+            let key = (p.image.id, p.image.generation);
+            if now.insert(key) && !screen.pixels.contains(&key) {
+                pixels.push(Arc::clone(&p.image));
+            }
+        }
+        screen.pixels = now;
+    }
+    let new_title = (full || screen.title != *title)
+        .then(|| title.clone())
+        .flatten();
+    screen.sequence = sequence;
+    screen.rows.clone_from(&f.rows);
+    if colors.is_some() {
+        screen.colors = Some(Arc::clone(&f.colors));
+    }
+    if images.is_some() {
+        screen.images = Some(Arc::clone(&f.images));
+    }
+    screen.title.clone_from(title);
+    sub.sent += 1;
+    Ok(Some(ScreenFrame {
+        number: sub.sent,
+        full,
+        sequence,
+        size: f.size,
+        view: f.view,
+        rows,
+        cursor: f.cursor,
+        modes,
+        title: new_title,
+        colors,
+        images,
+        pixels,
+        render_hold: f.render_hold,
+    }))
 }
 
 impl Drop for Mirror {
@@ -395,9 +590,24 @@ impl Mirror {
         &mut self,
         resume: Option<(PaneGeneration, u64)>,
         sink: Sink,
+        frames: bool,
     ) -> Result<Started, String> {
         if let Some(e) = &self.error {
             return Err(format!("the mirror failed: {e}"));
+        }
+        if frames {
+            if sink.frames.is_none() {
+                return Err("a subscription on frames needs a frame link".into());
+            }
+            let mut sub = Sub {
+                sink,
+                sent: 0,
+                screen: Some(Screen::default()),
+            };
+            let frame = next_frame(&mut self.engine, self.sequence, &self.title, &mut sub, true)?
+                .ok_or("no frame")?;
+            self.subscribers.push(sub);
+            return Ok(self.started(Start::Frames(frame)));
         }
         let replay = resume
             .filter(|(g, after)| *g == self.generation && *after > self.colors_from)
@@ -426,8 +636,16 @@ impl Mirror {
                 }
             }
         };
-        self.subscribers.push(sink);
-        Ok(Started {
+        self.subscribers.push(Sub {
+            sink,
+            sent: 0,
+            screen: None,
+        });
+        Ok(self.started(start))
+    }
+
+    fn started(&self, start: Start) -> Started {
+        Started {
             scrollback: self.scrollback,
             title: self.title.clone(),
             cwd: self.cwd.clone(),
@@ -435,7 +653,44 @@ impl Mirror {
             epoch: self.epoch,
             generation: self.generation,
             start,
+        }
+    }
+
+    /// Move the subscriber with `link` to frames (a full frame now) or back
+    /// to records (a checkpoint now, records from the next one on).
+    fn set_feed(&mut self, link: &Arc<FrameLink>, frames: bool) -> Result<Switched, String> {
+        if let Some(e) = &self.error {
+            return Err(format!("the mirror failed: {e}"));
+        }
+        let sub = self
+            .subscribers
+            .iter_mut()
+            .find(|s| s.is(link))
+            .ok_or("the subscription has ended")?;
+        if frames {
+            sub.screen = Some(Screen::default());
+            let frame = next_frame(&mut self.engine, self.sequence, &self.title, sub, true)?
+                .ok_or("no frame")?;
+            return Ok(Switched::Frames(frame));
+        }
+        let snapshot = self
+            .engine
+            .snapshot()
+            .map_err(|e| format!("snapshot: {e}"))?;
+        perf::count(perf::Counter::Checkpoints, 1);
+        perf::count(perf::Counter::CheckpointBytes, snapshot.len() as u64);
+        sub.screen = None;
+        Ok(Switched::Stream {
+            sequence: self.sequence,
+            snapshot,
         })
+    }
+
+    fn frame(&mut self, link: &Arc<FrameLink>) -> Result<Option<ScreenFrame>, String> {
+        match self.subscribers.iter_mut().find(|s| s.is(link)) {
+            Some(sub) => next_frame(&mut self.engine, self.sequence, &self.title, sub, false),
+            None => Ok(None),
+        }
     }
 
     /// Hand a committed record to every subscriber. One that is full has
@@ -443,6 +698,14 @@ impl Mirror {
     fn publish(&mut self, seq: u64, record: &Record, effect: Option<Effect>) {
         let focused = self.focused;
         self.subscribers.retain(|s| {
+            // A subscriber on frames gets no records; it is told the screen
+            // changed and asks for a frame when it is ready for one.
+            if s.screen.is_some() {
+                if let Some(link) = &s.sink.frames {
+                    link.changed.notify_one();
+                }
+                return !s.records.is_closed();
+            }
             // A clipboard write goes to exactly one client: the focused one.
             let effect = effect.clone().map(|mut e| {
                 if focused.is_none() || s.client != focused {
@@ -871,12 +1134,29 @@ pub fn spawn(
                         pane,
                         resume,
                         sink,
+                        frames,
                         reply,
                     } => {
                         let r = match mirrors.get_mut(&pane) {
-                            Some(m) => m.subscribe(resume, sink),
+                            Some(m) => m.subscribe(resume, sink, frames),
                             None => Err(format!("pane %{} has no live mirror", pane.0)),
                         };
+                        let _ = reply.send(r);
+                    }
+                    WorkerMsg::SetFeed {
+                        pane,
+                        link,
+                        frames,
+                        reply,
+                    } => {
+                        let r = match mirrors.get_mut(&pane) {
+                            Some(m) => m.set_feed(&link, frames),
+                            None => Err(format!("pane %{} has no live mirror", pane.0)),
+                        };
+                        let _ = reply.send(r);
+                    }
+                    WorkerMsg::Frame { pane, link, reply } => {
+                        let r = mirrors.get_mut(&pane).map_or(Ok(None), |m| m.frame(&link));
                         let _ = reply.send(r);
                     }
                     WorkerMsg::Encode {

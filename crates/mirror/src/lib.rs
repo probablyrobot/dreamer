@@ -29,8 +29,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 pub use journal::Retention;
 pub use terminal_ghostty::input::{MouseAction, MouseButton};
 pub use worker::{
-    Effect, InputEvent, Live, LiveStats, ReadResult, Record, Sink, Start, Started, TailResult,
-    Tier, end,
+    Effect, FrameLink, InputEvent, Live, LiveStats, ReadResult, Record, ScreenFrame, Sink, Start,
+    Started, Switched, TailResult, Tier, end,
 };
 
 #[derive(Debug, Clone)]
@@ -591,6 +591,24 @@ impl MirrorHost {
         resume: Option<(PaneGeneration, u64)>,
         sink: Sink,
     ) -> Result<Started, String> {
+        self.start_subscription(pane, resume, sink, false).await
+    }
+
+    /// Subscribe on screen frames: the start is a full frame
+    /// ([`Start::Frames`]) and no records follow. The sink needs a frame
+    /// link; the subscription can later move to records with
+    /// [`MirrorHost::set_feed`].
+    pub async fn subscribe_frames(&self, pane: TmuxPaneId, sink: Sink) -> Result<Started, String> {
+        self.start_subscription(pane, None, sink, true).await
+    }
+
+    async fn start_subscription(
+        &self,
+        pane: TmuxPaneId,
+        resume: Option<(PaneGeneration, u64)>,
+        sink: Sink,
+        frames: bool,
+    ) -> Result<Started, String> {
         self.awake(pane).await;
         let (reply, answer) = oneshot::channel();
         let w = &self.workers[worker_of(pane, self.workers.len())];
@@ -598,9 +616,48 @@ impl MirrorHost {
             pane,
             resume,
             sink,
+            frames,
             reply,
         })
         .map_err(|_| "the mirror workers have stopped".to_owned())?;
+        answer
+            .await
+            .map_err(|_| "the mirror workers have stopped".to_owned())?
+    }
+
+    /// Switch the subscription with `link` to screen frames or back to
+    /// records, between two of the pane's records.
+    pub async fn set_feed(
+        &self,
+        pane: TmuxPaneId,
+        link: std::sync::Arc<FrameLink>,
+        frames: bool,
+    ) -> Result<Switched, String> {
+        let (reply, answer) = oneshot::channel();
+        let w = &self.workers[worker_of(pane, self.workers.len())];
+        w.urgent(worker::WorkerMsg::SetFeed {
+            pane,
+            link,
+            frames,
+            reply,
+        })
+        .map_err(|_| "the mirror workers have stopped".to_owned())?;
+        answer
+            .await
+            .map_err(|_| "the mirror workers have stopped".to_owned())?
+    }
+
+    /// The next screen frame of the subscription with `link`: `None` when
+    /// it is not on frames or the pane has not changed since its last one.
+    pub async fn frame(
+        &self,
+        pane: TmuxPaneId,
+        link: std::sync::Arc<FrameLink>,
+    ) -> Result<Option<ScreenFrame>, String> {
+        let (reply, answer) = oneshot::channel();
+        let w = &self.workers[worker_of(pane, self.workers.len())];
+        w.urgent(worker::WorkerMsg::Frame { pane, link, reply })
+            .map_err(|_| "the mirror workers have stopped".to_owned())?;
         answer
             .await
             .map_err(|_| "the mirror workers have stopped".to_owned())?

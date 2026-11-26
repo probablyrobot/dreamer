@@ -320,10 +320,13 @@ fn priority_frames_overtake_a_large_transfer_and_bulk_reassembles() {
         "the request goes before the next chunk"
     );
     wire_bytes.extend(next);
+    assert_eq!((out.bulk_queued(), out.bulk_done()), (1, 0));
     while let Some(f) = out.next_frame() {
         assert!(f.len() <= HEADER_LEN + 4096);
         wire_bytes.extend(f);
     }
+    // The transfer counts as out once its last chunk is.
+    assert_eq!((out.bulk_queued(), out.bulk_done()), (1, 1));
     let mut d = Decoder::new(limits);
     d.feed(&wire_bytes);
     let mut seen = Vec::new();

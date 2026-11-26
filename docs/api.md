@@ -106,6 +106,7 @@ bytes. `dream rpc` connects standard input and output to it.
 | `terminal.records` | `RecordBatch` |
 | `terminal.checkpoint` | `CheckpointData` (a bulk stream on the native wire) |
 | `terminal.end` | `SubscriptionEnd` |
+| `terminal.frame` | `ScreenFrame` (a bulk record on the native wire; only with the `terminal.frames` feature, see [wire.md](wire.md#features)) |
 | `tmux.topology` | `TopologyUpdate` |
 | `events.batch` | `EventBatch` |
 | `messages.deliver` | `MessageDelivery` |

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 64;
+pub const PROTOCOL_MINOR: u32 = 65;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -266,12 +266,60 @@ mod tier_json {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
+pub enum TerminalFeed {
+    /// As stream.
+    Unspecified = 0,
+    /// A checkpoint or a replay, then every record.
+    Stream = 1,
+    /// Screen frames built by the daemon, at most one per frame interval; no records.
+    Frames = 2,
+}
+
+impl TerminalFeed {
+    /// The JSON and Luau spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Stream => "stream",
+            Self::Frames => "frames",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unspecified" => Some(Self::Unspecified),
+            "stream" => Some(Self::Stream),
+            "frames" => Some(Self::Frames),
+            _ => None,
+        }
+    }
+}
+
+mod terminal_feed_json {
+    use super::TerminalFeed;
+
+    pub fn serialize<S: serde::Serializer>(v: &i32, s: S) -> Result<S::Ok, S::Error> {
+        match TerminalFeed::try_from(*v) {
+            Ok(e) => s.serialize_str(e.name()),
+            Err(_) => s.serialize_i32(*v),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        crate::json::enum_value(d, |n| TerminalFeed::from_name(n).map(|e| e as i32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
 pub enum SubscribeMode {
     Unspecified = 0,
     /// A checkpoint follows; records continue after its sequence.
     Checkpoint = 1,
     /// No checkpoint; records continue right after the resume point.
     Replay = 2,
+    /// No checkpoint or records: a full screen frame at `sequence` follows, then frames.
+    Frames = 3,
 }
 
 impl SubscribeMode {
@@ -281,6 +329,7 @@ impl SubscribeMode {
             Self::Unspecified => "unspecified",
             Self::Checkpoint => "checkpoint",
             Self::Replay => "replay",
+            Self::Frames => "frames",
         }
     }
 
@@ -289,6 +338,7 @@ impl SubscribeMode {
             "unspecified" => Some(Self::Unspecified),
             "checkpoint" => Some(Self::Checkpoint),
             "replay" => Some(Self::Replay),
+            "frames" => Some(Self::Frames),
             _ => None,
         }
     }
@@ -2300,6 +2350,10 @@ pub struct TerminalSubscribe {
     #[prost(uint64, optional, tag = "6")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client: Option<u64>,
+    /// How to follow the pane; `frames` needs the connection's `terminal.frames` feature. Resuming applies to `stream` only.
+    #[prost(enumeration = "TerminalFeed", tag = "7")]
+    #[serde(with = "terminal_feed_json")]
+    pub feed: i32,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -2335,6 +2389,9 @@ pub struct Subscription {
     #[prost(string, optional, tag = "11")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Frames mode: the number of the full frame that follows.
+    #[prost(uint64, tag = "12")]
+    pub frame: u64,
 }
 
 /// One journaled change. A resize when cols and rows are set, otherwise output bytes.
@@ -2436,6 +2493,295 @@ pub struct SubscriptionEnd {
 pub struct Unsubscribe {
     #[prost(uint64, tag = "1")]
     pub subscription: u64,
+}
+
+/// Switch a live terminal subscription between `stream` and `frames`. Nothing of the previous feed arrives after the reply.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SetFeed {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    #[prost(enumeration = "TerminalFeed", tag = "2")]
+    #[serde(with = "terminal_feed_json")]
+    pub feed: i32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FeedSwitch {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    /// checkpoint (to stream: a checkpoint at `sequence` follows, then records from sequence + 1) or frames (a full frame at `sequence` follows, and no more records).
+    #[prost(enumeration = "SubscribeMode", tag = "2")]
+    #[serde(with = "subscribe_mode_json")]
+    pub mode: i32,
+    #[prost(uint64, tag = "3")]
+    pub sequence: u64,
+    /// Frames mode: the number of the full frame that follows.
+    #[prost(uint64, tag = "4")]
+    pub frame: u64,
+}
+
+/// The visible screen of a pane on the `frames` feed, read from the daemon's mirror at `sequence`. A full frame carries every row and every optional part; any other carries only what changed since the previous frame of the subscription, whose number is one less.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenFrame {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    #[prost(uint64, tag = "3")]
+    pub epoch: u64,
+    #[prost(uint64, tag = "4")]
+    pub generation: u64,
+    /// The mirror's sequence the frame was taken at: every record up to it is in the frame.
+    #[prost(uint64, tag = "5")]
+    pub sequence: u64,
+    /// Counts the subscription's frames from 1, without gaps.
+    #[prost(uint64, tag = "6")]
+    pub number: u64,
+    #[prost(bool, tag = "7")]
+    pub full: bool,
+    #[prost(uint32, tag = "8")]
+    pub cols: u32,
+    #[prost(uint32, tag = "9")]
+    pub rows: u32,
+    /// The first screen row's number counted from the top of the pane's history, as decorations number lines.
+    #[prost(uint64, tag = "10")]
+    pub top: u64,
+    /// Rows of history plus the screen.
+    #[prost(uint64, tag = "11")]
+    pub total_rows: u64,
+    /// Rows that differ from the previous frame (every row in a full frame).
+    #[prost(message, repeated, tag = "12")]
+    pub changed: Vec<ScreenRow>,
+    /// The styles the rows of this frame use: style 0 is the default style and is not listed, style i is styles[i - 1].
+    #[prost(message, repeated, tag = "13")]
+    pub styles: Vec<CellStyle>,
+    #[prost(message, optional, tag = "14")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<ScreenCursor>,
+    #[prost(message, optional, tag = "15")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modes: Option<InputModes>,
+    /// The title the program set; in a frame that is not full, only when it changed.
+    #[prost(string, optional, tag = "16")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The default colors and palette; in a frame that is not full, only when they changed.
+    #[prost(message, optional, tag = "17")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colors: Option<ScreenColors>,
+    /// Image placements on the screen; in a frame that is not full, only when they changed.
+    #[prost(message, optional, tag = "18")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<ScreenImages>,
+    /// Pixels of the images placed in this frame that were not placed in the last placements sent (all of them in a full frame). A client keeps the pixels of placed images only.
+    #[prost(message, repeated, tag = "19")]
+    pub pixels: Vec<ImagePixels>,
+    /// The program asked to hold presentation (synchronized output); the frame may be mid-update.
+    #[prost(bool, tag = "20")]
+    pub render_hold: bool,
+}
+
+/// One screen row. `text` holds the cells' characters in order; `cells` has one value per cell, `chars << 2 | width`: how many characters of `text` the cell holds (0 for a blank cell), and its width (0 narrow, 1 wide, 2 the tail of a wide character, 3 the spacer at the end of a row where a wide character wrapped). Cells past the end of `cells` are blank, narrow, and in the default style.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenRow {
+    /// Row on the screen, from 0 at the top.
+    #[prost(uint32, tag = "1")]
+    pub index: u32,
+    #[prost(string, tag = "2")]
+    pub text: String,
+    #[prost(uint32, repeated, tag = "3")]
+    pub cells: Vec<u32>,
+    /// Runs as pairs (cells, style): consecutive cells and the style they use. Cells past the last run use style 0.
+    #[prost(uint32, repeated, tag = "4")]
+    pub styles: Vec<u32>,
+}
+
+/// Colors are 0 for the default color, 1 + n for palette color n, and 0x1000000 | 0xRRGGBB for a direct color.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CellStyle {
+    #[prost(uint32, tag = "1")]
+    pub fg: u32,
+    #[prost(uint32, tag = "2")]
+    pub bg: u32,
+    #[prost(uint32, tag = "3")]
+    pub underline_color: u32,
+    /// Bits: 1 bold, 2 italic, 4 faint, 8 blink, 16 inverse, 32 invisible, 64 strikethrough, 128 overline.
+    #[prost(uint32, tag = "4")]
+    pub attrs: u32,
+    /// 0 none, 1 single, 2 double, 3 curly, 4 dotted, 5 dashed.
+    #[prost(uint32, tag = "5")]
+    pub underline: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenCursor {
+    #[prost(uint32, tag = "1")]
+    pub x: u32,
+    #[prost(uint32, tag = "2")]
+    pub y: u32,
+    /// Shown and on the screen.
+    #[prost(bool, tag = "3")]
+    pub visible: bool,
+    /// 0 block, 1 hollow block, 2 bar, 3 underline.
+    #[prost(uint32, tag = "4")]
+    pub shape: u32,
+    #[prost(bool, tag = "5")]
+    pub blinking: bool,
+    #[prost(bool, tag = "6")]
+    pub on_wide_tail: bool,
+}
+
+/// The modes input encoding depends on. Numbers are DEC private modes unless marked ANSI.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InputModes {
+    /// Application cursor keys (1).
+    #[prost(bool, tag = "1")]
+    pub cursor_keys: bool,
+    /// Application keypad (66).
+    #[prost(bool, tag = "2")]
+    pub keypad_keys: bool,
+    /// Mouse reporting (9).
+    #[prost(bool, tag = "3")]
+    pub mouse_x10: bool,
+    /// (1000)
+    #[prost(bool, tag = "4")]
+    pub mouse_normal: bool,
+    /// (1002)
+    #[prost(bool, tag = "5")]
+    pub mouse_button: bool,
+    /// (1003)
+    #[prost(bool, tag = "6")]
+    pub mouse_any: bool,
+    /// Mouse report format (1005).
+    #[prost(bool, tag = "7")]
+    pub mouse_utf8: bool,
+    /// (1006)
+    #[prost(bool, tag = "8")]
+    pub mouse_sgr: bool,
+    /// (1015)
+    #[prost(bool, tag = "9")]
+    pub mouse_urxvt: bool,
+    /// (1016)
+    #[prost(bool, tag = "10")]
+    pub mouse_sgr_pixels: bool,
+    /// (1007)
+    #[prost(bool, tag = "11")]
+    pub mouse_alternate_scroll: bool,
+    /// (1004)
+    #[prost(bool, tag = "12")]
+    pub focus_events: bool,
+    /// (2004)
+    #[prost(bool, tag = "13")]
+    pub bracketed_paste: bool,
+    /// (5522)
+    #[prost(bool, tag = "14")]
+    pub kitty_paste_events: bool,
+    /// (1035)
+    #[prost(bool, tag = "15")]
+    pub ignore_keypad_with_numlock: bool,
+    /// (1036)
+    #[prost(bool, tag = "16")]
+    pub alt_esc_prefix: bool,
+    /// (1039)
+    #[prost(bool, tag = "17")]
+    pub alt_sends_escape: bool,
+    /// LNM (ANSI 20).
+    #[prost(bool, tag = "18")]
+    pub linefeed: bool,
+    /// KAM (ANSI 2).
+    #[prost(bool, tag = "19")]
+    pub keyboard_locked: bool,
+    /// The alternate screen is active.
+    #[prost(bool, tag = "20")]
+    pub alt_screen: bool,
+    /// The kitty keyboard protocol's flags in effect; 0 when off.
+    #[prost(uint32, tag = "21")]
+    pub kitty_keyboard: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenColors {
+    /// 0xRRGGBB.
+    #[prost(uint32, tag = "1")]
+    pub foreground: u32,
+    #[prost(uint32, tag = "2")]
+    pub background: u32,
+    #[prost(uint32, optional, tag = "3")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u32>,
+    /// 256 colors, 0xRRGGBB.
+    #[prost(uint32, repeated, tag = "4")]
+    pub palette: Vec<u32>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenImages {
+    /// In draw order within each layer.
+    #[prost(message, repeated, tag = "1")]
+    pub placements: Vec<ImagePlacement>,
+}
+
+/// One image drawn on the screen. Pixel values are in canonical cell pixels (10x20 a cell).
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImagePlacement {
+    /// With generation, names the image's pixels (ImagePixels).
+    #[prost(uint32, tag = "1")]
+    pub image: u32,
+    #[prost(uint64, tag = "2")]
+    pub generation: u64,
+    /// 0 below the background, 1 below the text, 2 above the text.
+    #[prost(uint32, tag = "3")]
+    pub layer: u32,
+    #[prost(int32, tag = "4")]
+    pub z: i32,
+    /// Top-left cell on the screen; may be negative.
+    #[prost(int32, tag = "5")]
+    pub col: i32,
+    #[prost(int32, tag = "6")]
+    pub row: i32,
+    #[prost(uint32, tag = "7")]
+    pub offset_x: u32,
+    #[prost(uint32, tag = "8")]
+    pub offset_y: u32,
+    #[prost(uint32, tag = "9")]
+    pub width: u32,
+    #[prost(uint32, tag = "10")]
+    pub height: u32,
+    #[prost(uint32, tag = "11")]
+    pub source_x: u32,
+    #[prost(uint32, tag = "12")]
+    pub source_y: u32,
+    #[prost(uint32, tag = "13")]
+    pub source_width: u32,
+    #[prost(uint32, tag = "14")]
+    pub source_height: u32,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImagePixels {
+    #[prost(uint32, tag = "1")]
+    pub image: u32,
+    #[prost(uint64, tag = "2")]
+    pub generation: u64,
+    #[prost(uint32, tag = "3")]
+    pub width: u32,
+    #[prost(uint32, tag = "4")]
+    pub height: u32,
+    /// Straight RGBA, width * height * 4 bytes.
+    #[prost(bytes = "vec", tag = "5")]
+    #[serde(with = "crate::json::base64")]
+    pub rgba: Vec<u8>,
 }
 
 /// A key press, encoded by the daemon with the pane's current keyboard modes.
@@ -5762,6 +6108,7 @@ pub mod method {
     pub const TERMINAL_SET_TIER: &str = "terminal.set_tier";
     pub const TERMINAL_SUBSCRIBE: &str = "terminal.subscribe";
     pub const TERMINAL_UNSUBSCRIBE: &str = "terminal.unsubscribe";
+    pub const TERMINAL_SET_FEED: &str = "terminal.set_feed";
     pub const TERMINAL_INPUT: &str = "terminal.input";
     pub const HOSTS_CONNECT: &str = "hosts.connect";
     pub const HOSTS_LIST: &str = "hosts.list";
@@ -6031,6 +6378,13 @@ pub const METHODS: &[MethodInfo] = &[
         result: "Empty",
         mutation: false,
         doc: "",
+    },
+    MethodInfo {
+        name: "terminal.set_feed",
+        params: "SetFeed",
+        result: "FeedSwitch",
+        mutation: false,
+        doc: "Switch a subscription of this connection between the stream and screen frames.",
     },
     MethodInfo {
         name: "terminal.input",
@@ -6739,6 +7093,7 @@ pub enum Request {
     TerminalSetTier(SetTier),
     TerminalSubscribe(TerminalSubscribe),
     TerminalUnsubscribe(Unsubscribe),
+    TerminalSetFeed(SetFeed),
     TerminalInput(TerminalInput),
     HostsConnect(HostConnect),
     HostsList(Empty),
@@ -6864,6 +7219,7 @@ impl Request {
             Self::TerminalSetTier(_) => "terminal.set_tier",
             Self::TerminalSubscribe(_) => "terminal.subscribe",
             Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
+            Self::TerminalSetFeed(_) => "terminal.set_feed",
             Self::TerminalInput(_) => "terminal.input",
             Self::HostsConnect(_) => "hosts.connect",
             Self::HostsList(_) => "hosts.list",
@@ -6990,6 +7346,7 @@ impl Request {
             Self::TerminalSetTier(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalSetFeed(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalInput(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsConnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
@@ -7125,6 +7482,7 @@ impl Request {
             "terminal.unsubscribe" => {
                 Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
             }
+            "terminal.set_feed" => Ok(Self::TerminalSetFeed(::prost::Message::decode(bytes)?)),
             "terminal.input" => Ok(Self::TerminalInput(::prost::Message::decode(bytes)?)),
             "hosts.connect" => Ok(Self::HostsConnect(::prost::Message::decode(bytes)?)),
             "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
@@ -7265,6 +7623,7 @@ impl Request {
             Self::TerminalSetTier(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalSetFeed(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalInput(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsConnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -7398,6 +7757,7 @@ impl Request {
             "terminal.set_tier" => Ok(Self::TerminalSetTier(serde_json::from_value(value)?)),
             "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
             "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
+            "terminal.set_feed" => Ok(Self::TerminalSetFeed(serde_json::from_value(value)?)),
             "terminal.input" => Ok(Self::TerminalInput(serde_json::from_value(value)?)),
             "hosts.connect" => Ok(Self::HostsConnect(serde_json::from_value(value)?)),
             "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
@@ -7536,6 +7896,7 @@ pub enum Response {
     TerminalSetTier(Empty),
     TerminalSubscribe(Subscription),
     TerminalUnsubscribe(Empty),
+    TerminalSetFeed(FeedSwitch),
     TerminalInput(InputResult),
     HostsConnect(HostStatus),
     HostsList(HostList),
@@ -7661,6 +8022,7 @@ impl Response {
             Self::TerminalSetTier(_) => "terminal.set_tier",
             Self::TerminalSubscribe(_) => "terminal.subscribe",
             Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
+            Self::TerminalSetFeed(_) => "terminal.set_feed",
             Self::TerminalInput(_) => "terminal.input",
             Self::HostsConnect(_) => "hosts.connect",
             Self::HostsList(_) => "hosts.list",
@@ -7787,6 +8149,7 @@ impl Response {
             Self::TerminalSetTier(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalSetFeed(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalInput(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsConnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
@@ -7922,6 +8285,7 @@ impl Response {
             "terminal.unsubscribe" => {
                 Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
             }
+            "terminal.set_feed" => Ok(Self::TerminalSetFeed(::prost::Message::decode(bytes)?)),
             "terminal.input" => Ok(Self::TerminalInput(::prost::Message::decode(bytes)?)),
             "hosts.connect" => Ok(Self::HostsConnect(::prost::Message::decode(bytes)?)),
             "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
@@ -8062,6 +8426,7 @@ impl Response {
             Self::TerminalSetTier(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalSetFeed(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalInput(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsConnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -8195,6 +8560,7 @@ impl Response {
             "terminal.set_tier" => Ok(Self::TerminalSetTier(serde_json::from_value(value)?)),
             "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
             "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
+            "terminal.set_feed" => Ok(Self::TerminalSetFeed(serde_json::from_value(value)?)),
             "terminal.input" => Ok(Self::TerminalInput(serde_json::from_value(value)?)),
             "hosts.connect" => Ok(Self::HostsConnect(serde_json::from_value(value)?)),
             "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
@@ -8421,6 +8787,11 @@ pub trait Service: Sync {
         &self,
         params: Unsubscribe,
     ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
+    /// Switch a subscription of this connection between the stream and screen frames.
+    fn terminal_set_feed(
+        &self,
+        params: SetFeed,
+    ) -> impl ::core::future::Future<Output = Result<FeedSwitch, RpcError>> + Send;
     /// Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state.
     fn terminal_input(
         &self,
@@ -8963,6 +9334,10 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .terminal_unsubscribe(p)
             .await
             .map(Response::TerminalUnsubscribe),
+        Request::TerminalSetFeed(p) => service
+            .terminal_set_feed(p)
+            .await
+            .map(Response::TerminalSetFeed),
         Request::TerminalInput(p) => service.terminal_input(p).await.map(Response::TerminalInput),
         Request::HostsConnect(p) => service.hosts_connect(p).await.map(Response::HostsConnect),
         Request::HostsList(p) => service.hosts_list(p).await.map(Response::HostsList),
@@ -9164,6 +9539,8 @@ pub mod topic {
     pub const TERMINAL_CHECKPOINT: &str = "terminal.checkpoint";
     /// A subscription ended; nothing more follows for it.
     pub const TERMINAL_END: &str = "terminal.end";
+    /// A screen frame of a subscription on the frames feed (a bulk record on the native wire).
+    pub const TERMINAL_FRAME: &str = "terminal.frame";
     /// The watched topology changed.
     pub const TMUX_TOPOLOGY: &str = "tmux.topology";
     /// Events of an events.subscribe subscription, after its gap if any.
@@ -9186,6 +9563,7 @@ pub enum Notification {
     TerminalRecords(RecordBatch),
     TerminalCheckpoint(CheckpointData),
     TerminalEnd(SubscriptionEnd),
+    TerminalFrame(ScreenFrame),
     TmuxTopology(TopologyUpdate),
     EventsBatch(EventBatch),
     MessagesDeliver(MessageDelivery),
@@ -9201,6 +9579,7 @@ impl Notification {
             Self::TerminalRecords(_) => "terminal.records",
             Self::TerminalCheckpoint(_) => "terminal.checkpoint",
             Self::TerminalEnd(_) => "terminal.end",
+            Self::TerminalFrame(_) => "terminal.frame",
             Self::TmuxTopology(_) => "tmux.topology",
             Self::EventsBatch(_) => "events.batch",
             Self::MessagesDeliver(_) => "messages.deliver",
@@ -9216,6 +9595,7 @@ impl Notification {
             Self::TerminalRecords(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalCheckpoint(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalEnd(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalFrame(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
             Self::EventsBatch(v) => ::prost::Message::encode_to_vec(v),
             Self::MessagesDeliver(v) => ::prost::Message::encode_to_vec(v),
@@ -9231,6 +9611,7 @@ impl Notification {
             "terminal.records" => Ok(Self::TerminalRecords(::prost::Message::decode(bytes)?)),
             "terminal.checkpoint" => Ok(Self::TerminalCheckpoint(::prost::Message::decode(bytes)?)),
             "terminal.end" => Ok(Self::TerminalEnd(::prost::Message::decode(bytes)?)),
+            "terminal.frame" => Ok(Self::TerminalFrame(::prost::Message::decode(bytes)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
             "events.batch" => Ok(Self::EventsBatch(::prost::Message::decode(bytes)?)),
             "messages.deliver" => Ok(Self::MessagesDeliver(::prost::Message::decode(bytes)?)),
@@ -9249,6 +9630,7 @@ impl Notification {
             Self::TerminalRecords(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalCheckpoint(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalEnd(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalFrame(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::EventsBatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MessagesDeliver(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -9264,6 +9646,7 @@ impl Notification {
             "terminal.records" => Ok(Self::TerminalRecords(serde_json::from_value(value)?)),
             "terminal.checkpoint" => Ok(Self::TerminalCheckpoint(serde_json::from_value(value)?)),
             "terminal.end" => Ok(Self::TerminalEnd(serde_json::from_value(value)?)),
+            "terminal.frame" => Ok(Self::TerminalFrame(serde_json::from_value(value)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
             "events.batch" => Ok(Self::EventsBatch(serde_json::from_value(value)?)),
             "messages.deliver" => Ok(Self::MessagesDeliver(serde_json::from_value(value)?)),

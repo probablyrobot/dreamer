@@ -161,6 +161,9 @@ impl Service for Fixed {
     async fn terminal_unsubscribe(&self, _: api::Unsubscribe) -> Result<Empty, RpcError> {
         Ok(Empty {})
     }
+    async fn terminal_set_feed(&self, _: api::SetFeed) -> Result<api::FeedSwitch, RpcError> {
+        Ok(api::FeedSwitch::default())
+    }
     async fn terminal_input(&self, _: api::TerminalInput) -> Result<api::InputResult, RpcError> {
         Ok(api::InputResult::default())
     }

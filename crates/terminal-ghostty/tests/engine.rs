@@ -250,6 +250,32 @@ fn modes_cursor_and_scrollback_are_queryable() {
 }
 
 #[test]
+fn input_modes_follow_what_the_application_set() {
+    let mut e = engine();
+    let m = e.input_modes().expect("modes");
+    assert_eq!(
+        (m.cursor_keys, m.bracketed_paste, m.alt_screen, m.mouse_sgr),
+        (false, false, false, false)
+    );
+    assert_eq!(m.kitty_keyboard, 0);
+    // DECCKM, DECNKM, any-event mouse in SGR, focus, bracketed paste, the
+    // alternate screen, LNM, and kitty keyboard flags 1|4.
+    e.feed(
+        b"\x1b[?1h\x1b[?66h\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h\x1b[?1049h\x1b[20h\x1b[>5u",
+    )
+    .expect("feed");
+    let m = e.input_modes().expect("modes");
+    assert!(m.cursor_keys && m.keypad_keys && m.mouse_any && m.mouse_sgr);
+    assert!(m.focus_events && m.bracketed_paste && m.alt_screen && m.linefeed);
+    assert!(!m.mouse_normal && !m.mouse_utf8 && !m.keyboard_locked);
+    assert_eq!(m.kitty_keyboard, 5);
+    e.feed(b"\x1b[<u\x1b[?1049l\x1b[?1l").expect("feed");
+    let m = e.input_modes().expect("modes");
+    assert!(!m.cursor_keys && !m.alt_screen);
+    assert_eq!(m.kitty_keyboard, 0);
+}
+
+#[test]
 fn screen_text_includes_scrollback() {
     let mut e = engine();
     for i in 0..30 {
