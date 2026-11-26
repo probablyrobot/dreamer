@@ -870,7 +870,11 @@ fn shape_row(
                     && row.cells[x].style == style
                 {
                     let t = &row.cells[x].text;
-                    text.push_str(if t.is_empty() { " " } else { t });
+                    text.push_str(if t.is_empty() || is_image_placeholder(t) {
+                        " "
+                    } else {
+                        t
+                    });
                     x += 1;
                 }
                 if text.trim().is_empty()
@@ -933,6 +937,12 @@ fn shape_row(
         }
     }
     out
+}
+
+/// A Kitty Unicode placeholder cell (U+10EEEE and its diacritics): the
+/// engine places the image under it, so the cell paints no glyph.
+fn is_image_placeholder(text: &str) -> bool {
+    text.starts_with('\u{10EEEE}')
 }
 
 fn text_run(cell: &Cell, len: usize, font: &Font, colors: &Colors, fg: Hsla) -> TextRun {

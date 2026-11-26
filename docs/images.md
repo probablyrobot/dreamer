@@ -16,7 +16,7 @@ release.
 | File, temporary-file, and shared-memory transmission (`t=f`, `t=t`, `t=s`) | Refused on every engine |
 | Placements: position, cell offset, size, source crop, z-index and layer | In frames |
 | Delete and replace | Supported |
-| Virtual (Unicode placeholder) placements | In frames: each row of placeholder cells is a placement of that row of the image, below text, and moves with the text (`a_virtual_placement_is_drawn_where_its_placeholder_cells_are`). The placeholder characters stay in the cells' text; whether the renderer paints a glyph for them has not been checked in a window |
+| Virtual (Unicode placeholder) placements | In frames: each row of placeholder cells is a placement of that row of the image, below text, and moves with the text (`a_virtual_placement_is_drawn_where_its_placeholder_cells_are`). The placeholder characters stay in the cells' text, and the renderer paints no glyph for them (renderer fixture `image-virtual.vt`) |
 | Relative placements | Read and drawn like other placements; not covered by fixtures yet |
 | Animation | Frames show the current animation frame; playback is not driven yet |
 
