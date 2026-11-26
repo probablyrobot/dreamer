@@ -192,8 +192,12 @@ already holds.
   A relay that loses its link after a switch to `stream` but before that
   switch's checkpoint arrived ends as `lagged`.
 
-The `replica` crate's `screen::ScreenView` keeps a screen from frames by
-these rules and refuses a frame that does not follow the last one.
+The daemon encodes frames with `client::frames::encode`. The `replica`
+crate's `screen::ScreenView` keeps a screen from frames by these rules,
+refuses a frame that does not follow the last one, and gives the renderer
+the same frame an engine would for that screen. The desktop's view on
+frames is built on it
+([desktop-internals.md](desktop-internals.md#screen-frames)).
 
 ## Client replicas
 

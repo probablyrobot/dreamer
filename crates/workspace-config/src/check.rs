@@ -356,6 +356,14 @@ pub const SCHEMA: &[Key] = &[
         live: false,
     },
     Key {
+        path: "render.frames",
+        kind: "off | on | always",
+        default: "off",
+        doc: "Whether desktop windows may show a pane from the daemon's screen frames instead of following every byte the pane writes with their own terminal engine. off follows every byte; on accepts frames for a pane the daemon switches to them; always follows every pane the window shows on frames, for checks: such a pane has no local scrollback, selection, or search. Applies to panes a window starts following after the change. DREAMER_RENDER_FRAMES, when set, comes first.",
+        example: "on",
+        live: false,
+    },
+    Key {
         path: "memory.sqlite.path",
         kind: "absolute path or ~/path",
         default: "<data dir>/memory.sqlite",

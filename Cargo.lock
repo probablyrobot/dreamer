@@ -1779,6 +1779,7 @@ version = "0.13.0"
 dependencies = [
  "dreamer-api",
  "dreamer-platform",
+ "dreamer-terminal-core",
  "dreamer-wire",
  "prost",
  "rustix",

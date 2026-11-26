@@ -1,5 +1,18 @@
-//! Following a pane over a daemon connection.
+//! Following a pane over a daemon connection, on records or on screen
+//! frames (`docs/mirrors.md`).
+//!
+//! On frames the follower keeps a [`ScreenView`] instead of an engine.
+//! Switching follows the daemon's sequence rules, and never shows rows over
+//! a hole:
+//! - to frames: the replica goes on with the records up to the switch,
+//!   and gives way to the screen when the full frame at that sequence
+//!   arrives;
+//! - to records: the screen stays until the checkpoint at the switch's
+//!   sequence restores, and the records after it apply on top;
+//! - a frame that does not apply (out of order, undecodable) ends the
+//!   frames: the follower subscribes again on records, from a checkpoint.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -8,7 +21,30 @@ use client::{Client, ClientError, Pushed};
 use prost::Message as _;
 use tokio::sync::mpsc::Receiver;
 
+use crate::screen::ScreenView;
 use crate::{Outcome, Replica, ReplicaError};
+
+/// Whether a follower's view may be fed screen frames instead of records.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Frames {
+    /// Records only: the connection does not offer `terminal.frames`.
+    #[default]
+    Off,
+    /// The connection offers `terminal.frames`; a subscription starts on
+    /// records and follows a switch.
+    On,
+    /// Every subscription asks for frames.
+    Always,
+}
+
+/// A switch the daemon answered whose new feed has not started yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Switch {
+    /// The full frame numbered `frame`, at `sequence`, comes next.
+    ToFrames { sequence: u64, frame: u64 },
+    /// The checkpoint at `sequence` comes next.
+    ToStream,
+}
 
 /// Bounds on recovering by resnapshot (no endless loops).
 #[derive(Debug, Clone, Copy)]
@@ -70,6 +106,8 @@ pub struct Step {
     pub records: usize,
     /// A checkpoint was restored (the whole view changed).
     pub restored: bool,
+    /// Screen frames applied.
+    pub frames: usize,
     /// Bells rung by live output during this step (never from replay,
     /// restore, or reconnect).
     pub bells: u32,
@@ -111,6 +149,18 @@ pub struct Follower {
     /// Effects of the current step, collected by `handle`.
     bells: u32,
     meta_changed: bool,
+    frames_applied: usize,
+    /// Whether frames may be asked for, and the screen while on them.
+    frames: Frames,
+    screen: Option<ScreenView>,
+    switch: Option<Switch>,
+    /// A frame did not apply: subscriptions stay on records until the
+    /// next reconnect.
+    frames_failed: bool,
+    /// The current subscription, for a switch back to records.
+    started: Option<api::Subscription>,
+    /// Pushed data read while a switch waited for its reply.
+    backlog: VecDeque<Option<Pushed>>,
 }
 
 impl Follower {
@@ -141,6 +191,19 @@ impl Follower {
         policy: RetryPolicy,
         client: Option<u64>,
     ) -> Result<Follower, FollowError> {
+        Follower::start_frames(socket, via, pane, policy, client, Frames::Off).await
+    }
+
+    /// Like [`Follower::start_via`], allowing screen frames as `frames`
+    /// says.
+    pub async fn start_frames(
+        socket: PathBuf,
+        via: crate::Via,
+        pane: u32,
+        policy: RetryPolicy,
+        client: Option<u64>,
+        frames: Frames,
+    ) -> Result<Follower, FollowError> {
         let mut f = Follower {
             client_id: client,
             clipboard: None,
@@ -158,6 +221,13 @@ impl Follower {
             meta: PaneMeta::default(),
             bells: 0,
             meta_changed: false,
+            frames_applied: 0,
+            frames,
+            screen: None,
+            switch: None,
+            frames_failed: false,
+            started: None,
+            backlog: VecDeque::new(),
         };
         f.reconnect().await?;
         Ok(f)
@@ -172,16 +242,52 @@ impl Follower {
         self.client = None;
         self.pushed = None;
         self.subscription = None;
+        self.switch = None;
+        self.backlog.clear();
         self.state = FollowState::Disconnected;
     }
 
     /// Connect again and continue from where the replica is: a replay when
-    /// the daemon still holds the records, a new checkpoint otherwise.
+    /// the daemon still holds the records, a new checkpoint otherwise. On
+    /// frames, a full frame.
     pub async fn reconnect(&mut self) -> Result<(), FollowError> {
-        let mut client = Client::connect(&self.socket, "replica").await?;
+        let features: &[&str] = match self.frames {
+            Frames::Off => &[],
+            Frames::On | Frames::Always => &[wire::feature::TERMINAL_FRAMES],
+        };
+        let mut client = Client::connect_features(&self.socket, "replica", 1024, features).await?;
         self.pushed = client.pushed();
         self.client = Some(client);
+        self.switch = None;
+        self.backlog.clear();
+        self.frames_failed = false;
         self.subscribe(true).await
+    }
+
+    /// The connection may carry screen frames.
+    pub fn frames_offered(&self) -> bool {
+        self.client
+            .as_ref()
+            .is_some_and(|c| c.has_feature(wire::feature::TERMINAL_FRAMES))
+    }
+
+    /// The view shows screen frames (no engine behind it).
+    pub fn on_frames(&self) -> bool {
+        self.screen.is_some()
+    }
+
+    /// The screen kept from frames, while on them.
+    pub fn screen(&self) -> Option<&ScreenView> {
+        self.screen.as_ref()
+    }
+
+    /// The pane process generation the view shows, once it shows one.
+    pub fn generation(&self) -> Option<u64> {
+        match &self.screen {
+            Some(s) if s.number > 0 => self.started.as_ref().map(|s| s.generation),
+            Some(_) => None,
+            None => self.replica.position().map(|p| p.1),
+        }
     }
 
     async fn subscribe(&mut self, resume: bool) -> Result<(), FollowError> {
@@ -198,15 +304,24 @@ impl Follower {
         } else {
             None
         };
+        let frames = self.frames == Frames::Always
+            && !self.frames_failed
+            && client.has_feature(wire::feature::TERMINAL_FRAMES);
         let req = api::TerminalSubscribe {
             pane: self.replica.pane,
             resume_epoch: pos.map(|p| p.0),
             resume_generation: pos.map(|p| p.1),
             resume_sequence: pos.map(|p| p.2),
             client: self.client_id,
+            feed: if frames {
+                api::TerminalFeed::Frames as i32
+            } else {
+                api::TerminalFeed::Stream as i32
+            },
             ..api::TerminalSubscribe::default()
         };
         let s = self.via.subscribe(client, req).await?;
+        self.switch = None;
         self.last_mode = api::SubscribeMode::try_from(s.mode).ok();
         self.subscription = Some(s.id);
         // Labels are state: the subscription carries their current values,
@@ -220,7 +335,80 @@ impl Follower {
             self.meta_changed = true;
         }
         self.state = FollowState::Following;
+        self.started = Some(s.clone());
+        if s.mode == api::SubscribeMode::Frames as i32 {
+            // The view shown so far stays until the full frame arrives.
+            self.screen.get_or_insert_with(ScreenView::new);
+            self.switch = Some(Switch::ToFrames {
+                sequence: s.sequence,
+                frame: s.frame,
+            });
+            return Ok(());
+        }
         self.replica.begin(&s).map_err(FollowError::Replica)
+    }
+
+    /// Move the subscription to screen frames, or back to records, by the
+    /// daemon's sequence rules (see the module notes). Returns once the
+    /// daemon answered; the new feed follows through [`Self::step`].
+    pub async fn set_feed(&mut self, frames: bool) -> Result<(), FollowError> {
+        let (Some(client), Some(sub), Some(pushed)) = (
+            self.client.as_ref(),
+            self.subscription,
+            self.pushed.as_mut(),
+        ) else {
+            return Err(FollowError::Disconnected);
+        };
+        let feed = if frames {
+            api::TerminalFeed::Frames
+        } else {
+            api::TerminalFeed::Stream
+        };
+        let call = self.via.call(
+            client,
+            Request::TerminalSetFeed(api::SetFeed {
+                subscription: sub,
+                feed: feed as i32,
+            }),
+        );
+        tokio::pin!(call);
+        // Pushed data keeps being read meanwhile, so a full queue never
+        // holds the reply back; it is handled after the reply, in order.
+        let reply = loop {
+            tokio::select! {
+                r = &mut call => break r,
+                p = pushed.recv() => {
+                    let closed = p.is_none();
+                    self.backlog.push_back(p);
+                    if closed {
+                        break (&mut call).await;
+                    }
+                }
+            }
+        };
+        let api::Response::TerminalSetFeed(sw) = reply? else {
+            return Err(FollowError::Client(ClientError::Wire(
+                wire::WireError::Unexpected("a reply to another method"),
+            )));
+        };
+        if sw.mode == api::SubscribeMode::Frames as i32 {
+            self.screen.get_or_insert_with(ScreenView::new);
+            self.switch = Some(Switch::ToFrames {
+                sequence: sw.sequence,
+                frame: sw.frame,
+            });
+            return Ok(());
+        }
+        let started = self.started.clone().ok_or(FollowError::Disconnected)?;
+        self.replica
+            .begin(&api::Subscription {
+                mode: api::SubscribeMode::Checkpoint as i32,
+                sequence: sw.sequence,
+                ..started
+            })
+            .map_err(FollowError::Replica)?;
+        self.switch = Some(Switch::ToStream);
+        Ok(())
     }
 
     /// Give up the current stream and start from a fresh checkpoint, with
@@ -272,6 +460,9 @@ impl Follower {
     /// Wait for the next pushed item without applying it. Cancel-safe:
     /// dropping the future loses nothing, so it can race other work.
     pub async fn recv(&mut self) -> Result<Option<Pushed>, FollowError> {
+        if let Some(p) = self.backlog.pop_front() {
+            return Ok(p);
+        }
         match self.pushed.as_mut() {
             Some(p) => Ok(p.recv().await),
             None => Err(FollowError::Disconnected),
@@ -282,10 +473,15 @@ impl Follower {
     pub async fn apply(&mut self, first: Option<Pushed>) -> Result<Step, FollowError> {
         let checkpoints = self.checkpoints;
         self.bells = 0;
+        self.frames_applied = 0;
         let mut records = self.handle(first).await?;
         loop {
             if !matches!(self.state, FollowState::Following) {
                 break;
+            }
+            if let Some(next) = self.backlog.pop_front() {
+                records += self.handle(next).await?;
+                continue;
             }
             let Some(p) = self.pushed.as_mut() else { break };
             match p.try_recv() {
@@ -295,6 +491,7 @@ impl Follower {
         }
         Ok(Step {
             records,
+            frames: std::mem::take(&mut self.frames_applied),
             restored: self.checkpoints != checkpoints,
             bells: std::mem::take(&mut self.bells),
             meta_changed: std::mem::take(&mut self.meta_changed),
@@ -316,11 +513,63 @@ impl Follower {
         self.replica.scroll(to)
     }
 
-    /// The replica's current frame, when it holds an engine.
+    /// The view's current frame: the screen's while on frames, else the
+    /// replica's when it holds an engine.
     pub fn frame(
         &mut self,
     ) -> Option<Result<std::sync::Arc<terminal_ghostty::core::FrameSnapshot>, String>> {
-        self.replica.frame()
+        match self.screen.as_mut() {
+            // Until its first frame, the replica's view stays.
+            Some(s) if s.number > 0 => s.frame().map(Ok),
+            _ => self.replica.frame(),
+        }
+    }
+
+    /// Apply a screen frame; on frames that cannot go on, back to records
+    /// from a checkpoint.
+    async fn screen_frame(&mut self, data: &[u8]) -> Result<(), FollowError> {
+        let f = match api::ScreenFrame::decode(data) {
+            Ok(f) if Some(f.subscription) == self.subscription => f,
+            Ok(_) => return Ok(()),
+            Err(_) => return self.frames_failed("undecodable frame".into()).await,
+        };
+        let Some(screen) = self.screen.as_mut() else {
+            return self
+                .frames_failed("a frame with no switch to frames".into())
+                .await;
+        };
+        if let Some(Switch::ToFrames { sequence, frame }) = self.switch
+            && (!f.full || (f.number, f.sequence) != (frame, sequence))
+        {
+            let why = format!(
+                "frame {} at {} arrived for the switch to frame {frame} at {sequence}",
+                f.number, f.sequence
+            );
+            return self.frames_failed(why).await;
+        }
+        if let Err(e) = screen.apply(&f) {
+            return self.frames_failed(e.to_string()).await;
+        }
+        if matches!(self.switch, Some(Switch::ToFrames { .. })) {
+            // The screen took over: the engine and its records are done.
+            self.switch = None;
+            self.replica = Replica::new(self.replica.pane);
+        }
+        if f.title.is_some() && f.title != self.meta.title {
+            self.meta.title.clone_from(&f.title);
+            self.meta_changed = true;
+        }
+        self.frames_applied += 1;
+        self.resnapshots = 0;
+        Ok(())
+    }
+
+    /// Frames cannot go on: subscribe again on records, from a checkpoint.
+    async fn frames_failed(&mut self, why: String) -> Result<(), FollowError> {
+        self.frames_failed = true;
+        self.switch = None;
+        self.replica = Replica::new(self.replica.pane);
+        self.resnapshot(why).await
     }
 
     async fn handle(&mut self, next: Option<Pushed>) -> Result<usize, FollowError> {
@@ -334,6 +583,13 @@ impl Follower {
                 self.state = FollowState::Disconnected;
                 return Err(FollowError::Disconnected);
             }
+            Some(Pushed::Bulk {
+                stream,
+                topic,
+                data,
+            }) if Some(stream) == sub && topic == api::topic::TERMINAL_FRAME => {
+                self.screen_frame(&data).await?;
+            }
             Some(Pushed::Bulk { stream, data, .. }) if Some(stream) == sub => {
                 let Ok(d) = api::CheckpointData::decode(data.as_slice()) else {
                     self.resnapshot("undecodable checkpoint".into()).await?;
@@ -344,6 +600,13 @@ impl Follower {
                         applied += n;
                         self.checkpoints += 1;
                         self.resnapshots = 0;
+                        // Back on records: the screen gives way. Not to
+                        // the stream's last checkpoint before a switch to
+                        // frames, which is still waiting for its frame.
+                        if !matches!(self.switch, Some(Switch::ToFrames { .. })) {
+                            self.screen = None;
+                            self.switch = None;
+                        }
                     }
                     Ok(_) => {}
                     Err(e) => self.resnapshot(e.to_string()).await?,

@@ -3,6 +3,7 @@
 //! the daemon's Unix socket; [`Client::over`] runs it over any byte stream,
 //! such as an SSH child's pipes to a remote `dream bridge --stdio`.
 
+pub mod frames;
 pub mod ssh;
 
 use std::collections::HashMap;

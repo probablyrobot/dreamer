@@ -1693,6 +1693,35 @@ fn base64(data: &[u8]) -> String {
 }
 
 fn load_frame(bytes: &[u8]) -> Result<Arc<FrameSnapshot>, String> {
+    load_engine(bytes)?.frame().map_err(|e| e.to_string())
+}
+
+/// A fixture's frame as the renderer gets it: the engine's own, or with
+/// frames forced (`render.frames: always`), the frame a frame-backed view
+/// draws from one full frame of that engine, encoded as the daemon
+/// encodes it.
+fn fixture_frame(bytes: &[u8], frames: replica::Frames) -> Result<Arc<FrameSnapshot>, String> {
+    let mut engine = load_engine(bytes)?;
+    let frame = engine.frame().map_err(|e| e.to_string())?;
+    if frames != replica::Frames::Always {
+        return Ok(frame);
+    }
+    let modes = engine.input_modes().map_err(|e| e.to_string())?;
+    let full = terminal_ghostty::core::ScreenFrame::full(&frame, modes, None, 1, 0);
+    let head = client::frames::Head {
+        subscription: 0,
+        pane: 0,
+        epoch: 0,
+        generation: 0,
+    };
+    let mut view = replica::screen::ScreenView::new();
+    view.apply(&client::frames::encode(&full, head))
+        .map_err(|e| e.to_string())?;
+    view.frame()
+        .ok_or_else(|| "the frame-backed view has no frame".into())
+}
+
+fn load_engine(bytes: &[u8]) -> Result<Engine, String> {
     let mut config = EngineConfig::new(GRID);
     config.capture_replies = false;
     let mut engine = Engine::new(config).map_err(|e| e.to_string())?;
@@ -1702,7 +1731,7 @@ fn load_frame(bytes: &[u8]) -> Result<Arc<FrameSnapshot>, String> {
         .resize(GRID, terminal_ghostty::core::family::CANONICAL_CELL_PX)
         .map_err(|e| e.to_string())?;
     engine.feed(bytes).map_err(|e| e.to_string())?;
-    engine.frame().map_err(|e| e.to_string())
+    Ok(engine)
 }
 
 #[derive(Debug, Default)]
@@ -1855,14 +1884,22 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let settings = match workspace_config::load_settings() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("dreamer: {e}; using default settings");
+            workspace_config::Settings::default()
+        }
+    };
+    let frames = live::frames_from(settings.render.frames);
     let frame = match &args.fixture {
         Some(path) => std::fs::read(path)
             .map_err(|e| format!("{path}: {e}"))
-            .and_then(|b| load_frame(&b)),
+            .and_then(|b| fixture_frame(&b, frames)),
         None if args.attach.is_some() || !args.smoke => {
             load_frame(b"\x1b[2mconnecting to dreamerd...\x1b[0m")
         }
-        None => load_frame(&[DEMO, &demo_image()].concat()),
+        None => fixture_frame(&[DEMO, &demo_image()].concat(), frames),
     };
     let frame = match frame {
         Ok(f) => f,
@@ -1878,6 +1915,9 @@ fn main() -> ExitCode {
         // Nor saves its windows anywhere but a private directory.
         workspace::SMOKE_RUN.store(true, std::sync::atomic::Ordering::Relaxed);
         println!("smoke: backend {backend}");
+        if frames != replica::Frames::Off {
+            println!("smoke: render frames {frames:?}");
+        }
         if backend == "headless" {
             // A headless platform would "present" frames without drawing.
             eprintln!("smoke: no display server in the environment; nothing would be drawn");
@@ -1903,7 +1943,13 @@ fn main() -> ExitCode {
     let feed = match follow {
         Some(pane) => {
             let launch = client::Launch::new(args.daemon.clone());
-            match Feed::start(launch.socket.clone(), pane, Some(launch)) {
+            match Feed::start_frames(
+                launch.socket.clone(),
+                replica::Via::Local,
+                pane,
+                Some(launch),
+                frames,
+            ) {
                 Ok(f) => Some(Arc::new(f)),
                 Err(e) => {
                     eprintln!("error: cannot start the pane feed: {e}");
@@ -1924,14 +1970,6 @@ fn main() -> ExitCode {
             *early = Some(Arc::new(t));
         }
     }
-
-    let settings = match workspace_config::load_settings() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("dreamer: {e}; using default settings");
-            workspace_config::Settings::default()
-        }
-    };
 
     fonts::prefetch(&settings.font.family);
     let app = gpui_platform::application();
@@ -2723,5 +2761,29 @@ mod tests {
         assert_eq!(a.attach, Some(3));
         assert_eq!(a.daemon, ["--tmux-socket", "x"]);
         assert!(parse(&["--attach".into(), "nope".into()]).is_err());
+    }
+
+    /// With frames forced, every renderer fixture (and the demo) reaches
+    /// the renderer from a frame-backed view, drawn exactly as from the
+    /// engine.
+    #[test]
+    fn fixtures_on_frames_are_the_engine_s_frames() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../terminal-render/fixtures");
+        let mut inputs = vec![[super::DEMO, &super::demo_image()].concat()];
+        for e in std::fs::read_dir(dir).expect("fixtures") {
+            let path = e.expect("entry").path();
+            if path.extension().is_some_and(|x| x == "vt") {
+                inputs.push(std::fs::read(path).expect("fixture"));
+            }
+        }
+        assert!(inputs.len() > 12);
+        for bytes in &inputs {
+            let engine = super::fixture_frame(bytes, replica::Frames::Off).expect("engine");
+            let frames = super::fixture_frame(bytes, replica::Frames::Always).expect("frames");
+            assert!(!std::sync::Arc::ptr_eq(&engine, &frames));
+            let diff = replica::screen::differences(&engine, &frames);
+            assert!(diff.is_empty(), "{diff:#?}");
+        }
     }
 }

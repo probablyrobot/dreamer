@@ -33,7 +33,7 @@ use terminal_ghostty::core::GridSize;
 use terminal_ghostty::core::family::{CANONICAL_CELL_PX, CONTINUATION_MAX_BYTES};
 use terminal_ghostty::{Engine, EngineConfig};
 
-pub use follow::{FollowError, FollowState, Follower, PaneMeta, RetryPolicy, Step};
+pub use follow::{FollowError, FollowState, Follower, Frames, PaneMeta, RetryPolicy, Step};
 pub use via::Via;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -10,9 +10,8 @@ use std::time::Instant;
 
 use domain::{ConnectionEpoch, PaneGeneration, PaneKey, TmuxPaneId};
 use terminal_ghostty::Engine;
-use terminal_ghostty::core::{
-    Colors, Cursor, GridSize, ImagePixels, ImagePlacement, InputModes, Row, ViewState,
-};
+pub use terminal_ghostty::core::ScreenFrame;
+use terminal_ghostty::core::{Colors, GridSize, ImagePlacement, Row};
 use terminal_ghostty::input::{MouseAction, MouseButton};
 use tmux_backend::bootstrap::{Captures, PaneState, restore_engine};
 use tokio::sync::{mpsc, oneshot};
@@ -141,32 +140,6 @@ pub struct Sink {
 #[derive(Debug, Default)]
 pub struct FrameLink {
     pub changed: tokio::sync::Notify,
-}
-
-/// The visible screen of a mirror at `sequence`, as one subscription on
-/// frames needs it: the rows that differ from the previous frame it was
-/// sent, or everything when `full`.
-#[derive(Debug, Clone)]
-pub struct ScreenFrame {
-    /// Counts the subscription's frames from 1.
-    pub number: u64,
-    pub full: bool,
-    pub sequence: u64,
-    pub size: GridSize,
-    /// Where the screen is in the pane's history: `view.offset` numbers
-    /// row 0 the way decorations number lines.
-    pub view: ViewState,
-    /// Changed rows by screen row.
-    pub rows: Vec<(u16, Arc<Row>)>,
-    pub cursor: Cursor,
-    pub modes: InputModes,
-    /// When full, or when it changed.
-    pub title: Option<String>,
-    pub colors: Option<Arc<Colors>>,
-    pub images: Option<Arc<[ImagePlacement]>>,
-    /// Pixels of placed images the subscription has not been sent yet.
-    pub pixels: Vec<Arc<ImagePixels>>,
-    pub render_hold: bool,
 }
 
 /// Where a subscription is after a switch of feed.

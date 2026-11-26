@@ -212,6 +212,11 @@ Scrolling is local view state on the window's replica. It is never sent to
 the daemon and never changes the terminal. Each frame
 carries the viewport position, whether the application tracks the mouse,
 and whether the alternate screen is active, so the window decides locally.
+A pane shown from screen frames
+([desktop-internals.md](desktop-internals.md#screen-frames)) takes these
+from the modes the daemon's frame carries; it has no local history, so
+the wheel there scrolls nothing unless the program tracks the mouse or the
+alternate screen is active.
 
 | Input | Application tracks the mouse | Alternate screen, no tracking | Otherwise |
 | --- | --- | --- | --- |

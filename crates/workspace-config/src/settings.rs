@@ -31,6 +31,47 @@ pub struct Settings {
     pub memory: MemorySettings,
     pub window: WindowSettings,
     pub web: WebSettings,
+    pub render: RenderSettings,
+}
+
+/// How the desktop draws terminal panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RenderSettings {
+    pub frames: RenderFrames,
+}
+
+/// Whether a desktop window may show a pane from the daemon's screen
+/// frames instead of following every byte with its own engine
+/// (`docs/desktop-internals.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RenderFrames {
+    /// Never: every pane follows the byte stream.
+    #[default]
+    Off,
+    /// The window accepts frames for a pane the daemon switches to them.
+    On,
+    /// Every pane the window shows is followed on frames (for checks).
+    Always,
+}
+
+impl RenderFrames {
+    pub fn name(self) -> &'static str {
+        match self {
+            RenderFrames::Off => "off",
+            RenderFrames::On => "on",
+            RenderFrames::Always => "always",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<RenderFrames> {
+        match name {
+            "off" => Some(RenderFrames::Off),
+            "on" => Some(RenderFrames::On),
+            "always" => Some(RenderFrames::Always),
+            _ => None,
+        }
+    }
 }
 
 /// Dreamer Web, the Chromium component web panes need (`docs/desktop.md`).
@@ -532,6 +573,7 @@ impl Default for Settings {
             memory: MemorySettings::default(),
             window: WindowSettings::default(),
             web: WebSettings::default(),
+            render: RenderSettings::default(),
         }
     }
 }
@@ -563,6 +605,14 @@ struct File {
     window: WindowFile,
     #[serde(default)]
     web: WebFile,
+    #[serde(default)]
+    render: RenderFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenderFile {
+    frames: Option<RenderFrames>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1402,6 +1452,9 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(c) = file.web.color {
         s.web.color = c;
     }
+    if let Some(f) = file.render.frames {
+        s.render.frames = f;
+    }
     if let Some(u) = file.web.url {
         let u = u.trim();
         if !["https://", "http://", "file://"]
@@ -1921,6 +1974,19 @@ mod tests {
         let e = parse_settings("window:\n  decorations: minimal\n", None).expect_err("bad");
         assert_eq!(e.line, Some(2), "{e}");
         assert!(e.message.contains("full"), "{e}");
+    }
+
+    #[test]
+    fn panes_follow_the_byte_stream_unless_frames_are_turned_on() {
+        assert_eq!(Settings::default().render.frames, RenderFrames::Off);
+        for want in [RenderFrames::Off, RenderFrames::On, RenderFrames::Always] {
+            let text = format!("render:\n  frames: {}\n", want.name());
+            let s = parse_settings(&text, None).expect("frames");
+            assert_eq!(s.render.frames, want);
+            assert_eq!(RenderFrames::from_name(want.name()), Some(want));
+        }
+        let e = parse_settings("render:\n  frames: sometimes\n", None).expect_err("bad");
+        assert!(e.to_string().contains("sometimes"), "{e}");
     }
 
     #[test]

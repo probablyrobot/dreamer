@@ -26,6 +26,52 @@ itself. To use the app, see [the desktop app](desktop.md).
   resumes, or resnapshots, as the replica rules decide. A closed pane, or
   one that cannot catch up, is reported, not retried forever.
 
+## Screen frames
+
+A pane's view can be fed the daemon's screen frames instead of the byte
+stream ([mirrors.md](mirrors.md#screen-frames)). The window and the
+renderer cannot tell the difference: the owner thread publishes the same
+frames either way.
+
+- **The view.** On frames, the owner keeps no engine. It applies each
+  frame to a frame-backed view (`replica::screen::ScreenView`), which
+  holds the last frame's rows, cursor, modes, title, colors, image
+  placements, and synchronized-output hold. It builds the renderer's
+  frame from them: unchanged rows are shared with the previous frame, and
+  only the rows a frame changed are marked damaged.
+- **Off the window's thread.** Frames are decoded and applied on the
+  pane's owner thread, as records are, and paced the same way. Nothing
+  above (pacing, coalescing, the hold limit) changes.
+- **Input.** The window decides where a click or a wheel step goes from
+  the frame it shows: whether the program tracks the mouse, and whether
+  the alternate screen is active. On frames these come from the modes the
+  frame carries. The daemon encodes every key, mouse event, and paste
+  against the pane's own state, as it does for any view
+  ([input.md](input.md)).
+- **Decorations.** A frame numbers its rows the way decorations do (its
+  first row is the viewport's offset), so filter marks land on the same
+  lines.
+- **Switching.** The view moves between records and frames by the
+  daemon's sequence rules. To frames: the replica goes on with the records
+  up to the switch, and the screen takes over at the full frame taken at
+  that sequence. To records: the screen stays until the checkpoint at the
+  switch's sequence restores, and the records after it apply on top.
+  Nothing is applied on top of a hole. A frame that does not apply (out of
+  order, or one that does not decode) ends frames for that connection:
+  the view subscribes again on records, from a checkpoint.
+- **Not on frames.** With no engine there is no local scrollback,
+  selection, link hit-testing, or search: scrolling and selecting do
+  nothing, and search says the pane is on frames. Bells and clipboard
+  writes from the program ride on records, so a pane on frames does not
+  ring or copy.
+
+Whether a window asks for frames is the `render.frames` setting
+([settings.md](settings.md#screen-frames)), off by default. Only with it on
+does the window list the `terminal.frames` feature when it connects. With
+`on`, panes start on records. With `always`, every pane a window starts
+following is subscribed on frames. `DREAMER_RENDER_FRAMES=off|on|always`
+overrides the setting for one run.
+
 ## Renderer
 
 Each row's text is shaped once and reused for as long as the row is shared
@@ -51,13 +97,19 @@ The macOS gate runs these after building the app:
 
 | Step | Checks | Needs |
 | --- | --- | --- |
-| `matrix` | Every fixture in `crates/terminal-render/fixtures` paints the statistics listed in its `expected.txt`. These are derived from the fixture content: ASCII, combining marks, CJK, emoji, fallback glyphs, box drawing, five underline styles, strikethrough, inverse, dim, and the block, bar, underline, and hidden cursor | A GUI session |
+| `matrix` | Every fixture in `crates/terminal-render/fixtures` paints the statistics listed in its `expected.txt`. These are derived from the fixture content: ASCII, combining marks, CJK, emoji, fallback glyphs, box drawing, five underline styles, strikethrough, inverse, dim, and the block, bar, underline, and hidden cursor. Each fixture runs twice: drawn from the engine, and with `DREAMER_RENDER_FRAMES=always` from a frame-backed view fed a full frame of that engine | A GUI session |
 | `cache` | `dreamer --smoke-repaint`: painting the same frame again reshapes nothing | A display that keeps refreshing |
-| `live` | The live pane check below | A display that keeps refreshing |
+| `live` | The live pane check below, then again with the pane on frames (`DREAMER_RENDER_FRAMES=always`), which must paint the same statistics | A display that keeps refreshing |
 | `clipboard` | The [clipboard check](#clipboard-check) | A window that is being drawn |
 | `screens` | [Pixel evidence](#pixel-evidence) | A display that keeps refreshing, and Screen Recording permission |
 | `preview` | The [preview check](#preview-check) | A display that keeps refreshing, and Screen Recording permission |
 | `web` | The [web pane check](#web-pane-check) | `cargo xtask deps web`, and a display that keeps refreshing |
+
+Any other desktop check runs on frames with `DREAMER_RENDER_FRAMES=always`
+in its environment: `dreamer --smoke --fixture FILE`, the `screens` scenes,
+and on Linux `cargo xtask gate linux-desktop`, which passes its
+environment to every run. The `input` and `clipboard` checks scroll and
+select locally, which a pane on frames does not do.
 
 A locked screen still paints a window's first frame, but macOS then stops
 refreshing it. `cache` and `live` are recorded as not run while the screen
