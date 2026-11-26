@@ -39,8 +39,11 @@ when every five-symbol window of the run (its start and end count as
 symbols) has been seen shaped as exactly those glyphs before, so text the
 font joins or changes, such as ligatures and contextual alternates, is
 always shaped. Characters from a fallback font and decorated runs are
-always shaped. `DREAMER_RENDER_ASCII=off` shapes every run; `all` places
-every run of the font's own glyphs, for comparing the two paths.
+always shaped. This fast path is off by default: on Linux (Wayland, 16
+panes with 15 busy) placing glyphs one by one made paint p95 about 7 times
+slower than shaping. `DREAMER_RENDER_ASCII=learned` turns it on as
+described; `all` places every run of the font's own glyphs, for comparing
+the two paths.
 
 ## Checks
 

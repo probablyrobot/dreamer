@@ -493,10 +493,12 @@ struct PlacedGlyphs {
     glyphs: Vec<(Pixels, gpui::GlyphId)>,
 }
 
-/// `DREAMER_RENDER_ASCII`: `off` shapes every run (a way out should a
-/// font draw differently placed glyph by glyph); `all` places every run of
-/// the font's own glyphs, to compare the two paths pixel for pixel.
-/// Otherwise what may skip shaping is learned ([`AsciiFont`]).
+/// `DREAMER_RENDER_ASCII`: unset or `off` shapes every run; `learned`
+/// lets runs skip shaping where that was learned to be exact
+/// ([`AsciiFont`]); `all` places every run of the font's own glyphs, to
+/// compare the two paths pixel for pixel. Off by default: on Linux
+/// (Wayland, 16 panes with 15 busy) placing glyphs made paint p95 about
+/// 7 times slower than shaping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AsciiMode {
     Learned,
@@ -507,9 +509,9 @@ enum AsciiMode {
 fn ascii_mode() -> AsciiMode {
     static MODE: std::sync::OnceLock<AsciiMode> = std::sync::OnceLock::new();
     *MODE.get_or_init(|| match std::env::var("DREAMER_RENDER_ASCII").as_deref() {
-        Ok("off") => AsciiMode::Off,
+        Ok("learned") => AsciiMode::Learned,
         Ok("all") => AsciiMode::All,
-        _ => AsciiMode::Learned,
+        _ => AsciiMode::Off,
     })
 }
 
@@ -544,8 +546,8 @@ const WINDOWS_MAX: usize = 1 << 18;
 /// Code), so a window is five symbols. Windows of five found no case
 /// drawn differently in the shipped ligature fonts (JetBrains Mono, Fira
 /// Code, Cascadia Code), where windows of four did. A font whose rules
-/// reach further could still be drawn differently here, and
-/// `DREAMER_RENDER_ASCII=off` is the way out.
+/// reach further could still be drawn differently here; the fast path is
+/// off unless `DREAMER_RENDER_ASCII` asks for it.
 struct AsciiFont {
     font_id: gpui::FontId,
     ascent: Pixels,
@@ -888,7 +890,8 @@ fn shape_row(
                 let decorated = run.underline.is_some() || run.strikethrough.is_some();
                 let key = (run.font.clone(), el.font_size, m.width);
                 let font = run.font.clone();
-                if !decorated
+                let fast = !decorated && ascii_mode() != AsciiMode::Off;
+                if fast
                     && let Some(placed) = ASCII.with(|a| {
                         let mut a = a.borrow_mut();
                         let entry = a.entry(key.clone()).or_insert_with(|| {
@@ -920,7 +923,7 @@ fn shape_row(
                     &[run],
                     Some(m.width),
                 );
-                if !decorated && text.is_ascii() {
+                if fast && text.is_ascii() {
                     ASCII.with(|a| {
                         if let Some(Some(f)) = a.borrow_mut().get_mut(&key) {
                             f.observe(&text, &line);
