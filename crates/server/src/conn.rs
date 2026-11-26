@@ -46,6 +46,8 @@ pub const TOPIC_RECORDS: &str = api::topic::TERMINAL_RECORDS;
 pub const TOPIC_END: &str = api::topic::TERMINAL_END;
 pub const TOPIC_CHECKPOINT: &str = api::topic::TERMINAL_CHECKPOINT;
 pub const TOPIC_FRAME: &str = api::topic::TERMINAL_FRAME;
+pub const TOPIC_FEED: &str = api::topic::TERMINAL_FEED;
+pub const TOPIC_EFFECTS: &str = api::topic::TERMINAL_EFFECTS;
 pub const TOPIC_TOPOLOGY: &str = api::topic::TMUX_TOPOLOGY;
 pub const TOPIC_EVENTS: &str = api::topic::EVENTS_BATCH;
 pub const TOPIC_MESSAGES: &str = api::topic::MESSAGES_DELIVER;
@@ -67,11 +69,14 @@ enum Out {
 /// until it is written.
 type Pending = Option<tokio::sync::oneshot::Receiver<()>>;
 
-/// `terminal.set_feed` for a subscription, answered by its own task so the
-/// reply falls exactly between the two feeds.
-struct FeedCtl {
-    request: u64,
-    frames: bool,
+/// What a client asks of a subscription's feed, handled by the
+/// subscription's own task.
+enum FeedCtl {
+    /// `terminal.set_feed`, answered by the task so the reply falls
+    /// exactly between the two feeds.
+    Switch { request: u64, frames: bool },
+    /// `terminal.hold_feed`: hold on the stream, or release.
+    Hold(bool),
 }
 
 #[derive(Clone)]
@@ -388,6 +393,14 @@ pub async fn connection_as(
                                 .send(Out::Frame(Kind::Response, r.encode_to_vec()))
                                 .await;
                         }
+                        return;
+                    }
+                    if req.method == api::method::TERMINAL_HOLD_FEED {
+                        let r = hold_feed(&conn, &req).await;
+                        let _ = conn
+                            .out
+                            .send(Out::Frame(Kind::Response, r.encode_to_vec()))
+                            .await;
                         return;
                     }
                     if req.method == api::method::HOSTS_SUBSCRIBE {
@@ -938,6 +951,7 @@ fn bridged(method: &str) -> bool {
         m::TERMINAL_SUBSCRIBE,
         m::TERMINAL_UNSUBSCRIBE,
         m::TERMINAL_SET_FEED,
+        m::TERMINAL_HOLD_FEED,
         m::EVENTS_SUBSCRIBE,
         m::EVENTS_UNSUBSCRIBE,
         m::TAPS_SUBSCRIBE,
@@ -1447,7 +1461,13 @@ async fn host_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
             let item = tokio::select! {
                 biased;
                 Some(f) = ctl.recv() => {
-                    if relay.switch.send((f.request, f.frames)).await.is_err() {
+                    let to = match f {
+                        FeedCtl::Switch { request, frames } => {
+                            crate::hosts::RelayCtl::Switch { request, frames }
+                        }
+                        FeedCtl::Hold(hold) => crate::hosts::RelayCtl::Hold(hold),
+                    };
+                    if relay.switch.send(to).await.is_err() {
                         return;
                     }
                     continue;
@@ -1490,17 +1510,31 @@ async fn host_subscribe(state: &Arc<State>, conn: &Conn, req: wire::Request) {
                     if let Some(p) = pending.take() {
                         let _ = p.await;
                     }
-                    let r = match result {
-                        Ok(mut s) => {
-                            s.subscription = local;
-                            ok(request, s.encode_to_vec())
+                    match (request, result) {
+                        (Some(request), result) => {
+                            let r = match result {
+                                Ok(mut s) => {
+                                    s.subscription = local;
+                                    ok(request, s.encode_to_vec())
+                                }
+                                Err(e) => failure(request, e),
+                            };
+                            c.out
+                                .send(Out::Frame(Kind::Response, r.encode_to_vec()))
+                                .await
+                                .is_ok()
                         }
-                        Err(e) => failure(request, e),
-                    };
-                    c.out
-                        .send(Out::Frame(Kind::Response, r.encode_to_vec()))
-                        .await
-                        .is_ok()
+                        // The host switched on its own: a notice.
+                        (None, Ok(mut s)) => {
+                            s.subscription = local;
+                            c.event(TOPIC_FEED, s.encode_to_vec()).await
+                        }
+                        (None, Err(_)) => true,
+                    }
+                }
+                crate::hosts::RelayItem::Effects(mut b) => {
+                    b.subscription = local;
+                    c.event(TOPIC_EFFECTS, b.encode_to_vec()).await
                 }
                 crate::hosts::RelayItem::End(mut e) => {
                     e.subscription = local;
@@ -1987,6 +2021,16 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
     // starting data, never precede them.
     let (go, wait) = tokio::sync::oneshot::channel::<Pending>();
     let (ctl_tx, ctl) = mpsc::channel(4);
+    let automatic = p.automatic && conn.frames;
+    let view = crate::feeds::register(crate::feeds::View {
+        connection: conn.id,
+        subscription: sub,
+        pane: p.pane,
+        ..Default::default()
+    });
+    view.frames.store(frames, Ordering::Relaxed);
+    view.automatic.store(automatic, Ordering::Relaxed);
+    let now = tokio::time::Instant::now();
     let task = tokio::spawn(stream(
         conn.clone(),
         wait,
@@ -1996,7 +2040,21 @@ async fn subscribe(service: &DaemonService, conn: &Conn, req: wire::Request) {
         host,
         head,
         started.generation,
-        Feed { link, ctl, frames },
+        Feed {
+            link,
+            ctl,
+            frames,
+            automatic,
+            asked: frames,
+            held: false,
+            released: None,
+            since: now,
+            rate: crate::feeds::Rate::default(),
+            policy: service.0.frames.clone(),
+            view,
+            tick: automatic.then(|| now + crate::feeds::current(&service.0.frames).tick()),
+            ingested: 0,
+        },
     ));
     conn.feeds.lock().await.insert(sub, ctl_tx);
     conn.subs.lock().await.insert(sub, task);
@@ -2115,7 +2173,7 @@ async fn set_feed(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
     let ctl = conn.feeds.lock().await.get(&p.subscription).cloned();
     let sent = match ctl {
         Some(ctl) => ctl
-            .send(FeedCtl {
+            .send(FeedCtl::Switch {
                 request: req.id,
                 frames,
             })
@@ -2134,12 +2192,116 @@ async fn set_feed(conn: &Conn, req: &wire::Request) -> Option<wire::Response> {
     })
 }
 
+/// `terminal.hold_feed`: hand the hold to the subscription's task.
+async fn hold_feed(conn: &Conn, req: &wire::Request) -> wire::Response {
+    let p = match api::HoldFeed::decode(req.payload.as_slice()) {
+        Ok(p) => p,
+        Err(e) => return failure(req.id, RpcError::new(code::INVALID_PARAMS, e.to_string())),
+    };
+    let ctl = conn.feeds.lock().await.get(&p.subscription).cloned();
+    match ctl {
+        Some(ctl) if ctl.send(FeedCtl::Hold(p.hold)).await.is_ok() => {
+            ok(req.id, api::Empty {}.encode_to_vec())
+        }
+        _ => failure(
+            req.id,
+            RpcError::new(
+                code::NOT_FOUND,
+                format!("no terminal subscription {}", p.subscription),
+            ),
+        ),
+    }
+}
+
 /// A view subscription's feed: how the owner reaches it for frames, the
-/// switch requests, and which feed it is on.
+/// client's requests, which feed it is on, and what decides when it
+/// switches on its own (`crate::feeds`).
 struct Feed {
     link: Arc<mirror::FrameLink>,
     ctl: mpsc::Receiver<FeedCtl>,
     frames: bool,
+    /// The daemon switches it by the pane's output rate.
+    automatic: bool,
+    /// Not automatic: the feed the client asked for.
+    asked: bool,
+    /// Held on the stream by the client, and when it let go.
+    held: bool,
+    released: Option<tokio::time::Instant>,
+    /// When it came to the feed it is on.
+    since: tokio::time::Instant,
+    rate: crate::feeds::Rate,
+    policy: crate::feeds::Shared,
+    view: Arc<crate::feeds::View>,
+    /// When to look at the rate and the hold next, if there is a reason to.
+    tick: Option<tokio::time::Instant>,
+    /// The pane's output count at the last look.
+    ingested: u64,
+}
+
+impl Feed {
+    /// Held, or within the policy's hold of the release.
+    fn holding(&mut self, p: &crate::feeds::Policy, now: tokio::time::Instant) -> bool {
+        if let Some(r) = self.released
+            && now >= r + p.hold
+        {
+            self.released = None;
+        }
+        self.held || self.released.is_some()
+    }
+
+    /// Where the subscription should be now: `Some(true)` frames,
+    /// `Some(false)` the stream. Re-arms the next look.
+    fn look(&mut self, now: tokio::time::Instant) -> Option<bool> {
+        let p = crate::feeds::current(&self.policy);
+        let held = self.holding(&p, now);
+        let total = self.link.ingested.load(Ordering::Relaxed);
+        let active = total != self.ingested;
+        self.ingested = total;
+        let mut rate = None;
+        if self.automatic {
+            self.rate.sample(now, total, p.dwell);
+            rate = self.rate.over(p.dwell);
+            self.view.rate.store(rate.unwrap_or(0), Ordering::Relaxed);
+        }
+        self.view.held.store(held, Ordering::Relaxed);
+        let to = crate::feeds::decide(
+            &p,
+            crate::feeds::Where {
+                on_frames: self.frames,
+                since: self.since,
+                held,
+                automatic: self.automatic,
+                asked: self.asked,
+            },
+            now,
+            rate,
+        );
+        // Looked at again while output comes, while on frames (to see it
+        // calm), and until a release's hold is over. A quiet pane on the
+        // stream costs no wakeups: its next output arms this again.
+        let again = (self.automatic && (self.frames || active || to.is_some()))
+            || self.released.is_some()
+            || (!self.automatic && !held && self.asked != self.frames);
+        self.tick = again.then(|| now + p.tick());
+        to
+    }
+}
+
+/// Send the effects a subscription on frames has waiting: before the frame
+/// that shows their records, or a switch away from frames.
+async fn send_effects(conn: &Conn, head: crate::screen::Head, link: &mirror::FrameLink) -> bool {
+    let effects = link.take_effects();
+    if effects.is_empty() {
+        return true;
+    }
+    let b = api::EffectBatch {
+        subscription: head.subscription,
+        pane: head.pane,
+        epoch: head.epoch,
+        generation: head.generation,
+        effects: effects.into_iter().map(|(s, e)| effect(s, e)).collect(),
+    };
+    conn.event(TOPIC_EFFECTS, b.encode_to_vec()).await
 }
 
 fn effect(seq: u64, e: mirror::Effect) -> api::TerminalEffect {
@@ -2156,7 +2318,7 @@ fn effect(seq: u64, e: mirror::Effect) -> api::TerminalEffect {
 /// Command steps (shell integration) are for collectors; an effect with
 /// nothing else is not sent to views.
 fn shown(e: &mirror::Effect) -> bool {
-    e.bells > 0 || e.title.is_some() || e.cwd.is_some() || e.clipboard.is_some()
+    e.shown()
 }
 
 /// Send one batch: `first` and whatever else is queued, within the batch
@@ -2213,13 +2375,23 @@ async fn written(pending: &mut Pending) {
     }
 }
 
+/// Wait until `at`; forever when there is no time set.
+async fn until(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(t) => tokio::time::sleep_until(t).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Forward a subscriber's records as batches, or on frames its screen
 /// frames, until its stream ends, then say why. A client that does not
 /// read makes this task wait, the subscriber queue fill, and the owner end
 /// the subscription as lagged. On frames, the next frame is built only
 /// once the previous one has been written, from the screen as it is then,
 /// and at most one per [`FRAME_INTERVAL`]: screen states in between are
-/// never sent.
+/// never sent. Effects are never skipped: they go out before the frame
+/// that shows their records. The task also switches the feed when the
+/// client asks, or on its own when the policy says (`crate::feeds`).
 #[allow(clippy::too_many_arguments)]
 async fn stream(
     conn: Conn,
@@ -2240,20 +2412,62 @@ async fn stream(
         tokio::select! {
             biased;
             Some(c) = feed.ctl.recv() => {
-                if !switch(&conn, &host, head, &stamp, &mut rx, &mut feed, &mut pending, c).await {
+                let now = tokio::time::Instant::now();
+                let (request, frames) = match c {
+                    FeedCtl::Switch { request, frames } => {
+                        // Asked for: the daemon no longer switches it.
+                        feed.automatic = false;
+                        feed.asked = frames;
+                        feed.view.automatic.store(false, Ordering::Relaxed);
+                        feed.view.rate.store(0, Ordering::Relaxed);
+                        (Some(request), frames)
+                    }
+                    FeedCtl::Hold(true) => {
+                        feed.held = true;
+                        feed.released = None;
+                        feed.view.held.store(true, Ordering::Relaxed);
+                        if !feed.frames {
+                            continue;
+                        }
+                        (None, false)
+                    }
+                    FeedCtl::Hold(false) => {
+                        if feed.held {
+                            feed.held = false;
+                            feed.released = Some(now);
+                            feed.tick = Some(now + crate::feeds::current(&feed.policy).tick());
+                        }
+                        continue;
+                    }
+                };
+                if !switch(&conn, &host, head, &stamp, &mut rx, &mut feed, &mut pending, request, frames).await {
                     return;
                 }
                 last_frame = tokio::time::Instant::now();
             }
             () = written(&mut pending), if pending.is_some() => pending = None,
+            () = until(feed.tick), if feed.tick.is_some() && pending.is_none() => {
+                if let Some(frames) = feed.look(tokio::time::Instant::now()) {
+                    if !switch(&conn, &host, head, &stamp, &mut rx, &mut feed, &mut pending, None, frames).await {
+                        return;
+                    }
+                    last_frame = tokio::time::Instant::now();
+                }
+            }
             () = link.changed.notified(), if feed.frames && pending.is_none() => {
                 tokio::time::sleep_until(last_frame + FRAME_INTERVAL).await;
                 match host.frame(pane, link.clone()).await {
-                    Ok(Some(f)) => {
-                        pending = Some(send_frame(&conn, head, &f).await);
-                        last_frame = tokio::time::Instant::now();
+                    Ok(f) => {
+                        // Every effect of the records in the frame was kept
+                        // before it was built.
+                        if !send_effects(&conn, head, &link).await {
+                            return;
+                        }
+                        if let Some(f) = f {
+                            pending = Some(send_frame(&conn, head, &f).await);
+                            last_frame = tokio::time::Instant::now();
+                        }
                     }
-                    Ok(None) => {}
                     Err(e) => log::warn(format!("pane %{}: no screen frame: {e}", head.pane)),
                 }
             }
@@ -2262,11 +2476,17 @@ async fn stream(
                     if !forward_batch(&conn, head, &stamp, &mut rx, first).await {
                         return;
                     }
+                    if feed.automatic && feed.tick.is_none() {
+                        let p = crate::feeds::current(&feed.policy);
+                        feed.tick = Some(tokio::time::Instant::now() + p.tick());
+                    }
                 }
                 None => break,
             },
         }
     }
+    // What effects are left still belong to the client.
+    send_effects(&conn, head, &link).await;
     let reason = match ended.load(Ordering::SeqCst) {
         mirror::end::LAGGED => api::EndReason::Lagged,
         mirror::end::CONNECTION_LOST => api::EndReason::ConnectionLost,
@@ -2295,9 +2515,11 @@ async fn stream(
     conn.subs.lock().await.remove(&head.subscription);
 }
 
-/// Switch feeds between two records and answer the request. Nothing of
-/// the previous feed follows the reply: its last bulk message is written
-/// first, and records the owner sent before the switch go before it.
+/// Switch feeds between two records and answer the request, or, with no
+/// request, tell the client in a `terminal.feed` notice at the same place
+/// a reply would be. Nothing of the previous feed follows the answer: its
+/// last bulk message is written first, the effects of records on frames go
+/// before it, and records the owner sent before the switch go before it.
 #[allow(clippy::too_many_arguments)]
 async fn switch(
     conn: &Conn,
@@ -2307,58 +2529,87 @@ async fn switch(
     rx: &mut mpsc::Receiver<mirror::Live>,
     feed: &mut Feed,
     pending: &mut Pending,
-    c: FeedCtl,
+    request: Option<u64>,
+    frames: bool,
 ) -> bool {
     if let Some(p) = pending.take() {
         let _ = p.await;
     }
     let pane = domain::TmuxPaneId(head.pane);
-    let switched = host.set_feed(pane, feed.link.clone(), c.frames).await;
-    if let Ok(mirror::Switched::Frames(_)) = &switched {
-        // Every record still queued is at or before the frame.
-        while let Ok(first) = rx.try_recv() {
-            if !forward_batch(conn, head, stamp, rx, first).await {
+    let switched = host.set_feed(pane, feed.link.clone(), frames).await;
+    match &switched {
+        Ok(mirror::Switched::Frames(_)) => {
+            // Every record still queued is at or before the frame.
+            while let Ok(first) = rx.try_recv() {
+                if !forward_batch(conn, head, stamp, rx, first).await {
+                    return false;
+                }
+            }
+        }
+        Ok(mirror::Switched::Stream { .. }) => {
+            // The effects of every record up to the checkpoint.
+            if !send_effects(conn, head, &feed.link).await {
                 return false;
             }
         }
+        Err(_) => {}
     }
-    let respond = |r: wire::Response| conn.out.send(Out::Frame(Kind::Response, r.encode_to_vec()));
-    let answer = |mode: api::SubscribeMode, sequence: u64, frame: u64| {
-        ok(
-            c.request,
-            api::FeedSwitch {
-                subscription: head.subscription,
-                mode: mode as i32,
-                sequence,
-                frame,
-            }
-            .encode_to_vec(),
-        )
+    let answer = |mode: api::SubscribeMode, sequence: u64, frame: u64| api::FeedSwitch {
+        subscription: head.subscription,
+        mode: mode as i32,
+        sequence,
+        frame,
+        automatic: request.is_none(),
     };
-    match switched {
-        Err(e) => respond(failure(c.request, RpcError::new(code::UNAVAILABLE, e)))
-            .await
-            .is_ok(),
-        Ok(mirror::Switched::Frames(f)) => {
-            if respond(answer(api::SubscribeMode::Frames, f.sequence, f.number))
+    let respond = |s: api::FeedSwitch| async move {
+        match request {
+            Some(id) => conn
+                .out
+                .send(Out::Frame(
+                    Kind::Response,
+                    ok(id, s.encode_to_vec()).encode_to_vec(),
+                ))
                 .await
-                .is_err()
-            {
+                .is_ok(),
+            None => conn.event(TOPIC_FEED, s.encode_to_vec()).await,
+        }
+    };
+    let now = tokio::time::Instant::now();
+    match switched {
+        Err(e) => match request {
+            Some(id) => conn
+                .out
+                .send(Out::Frame(
+                    Kind::Response,
+                    failure(id, RpcError::new(code::UNAVAILABLE, e)).encode_to_vec(),
+                ))
+                .await
+                .is_ok(),
+            None => {
+                log::warn(format!("pane %{}: feed not switched: {e}", head.pane));
+                // Not again at once.
+                feed.since = now;
+                true
+            }
+        },
+        Ok(mirror::Switched::Frames(f)) => {
+            if !respond(answer(api::SubscribeMode::Frames, f.sequence, f.number)).await {
                 return false;
             }
             *pending = Some(send_frame(conn, head, &f).await);
             feed.frames = true;
+            feed.since = now;
+            feed.view.switched(true);
             true
         }
         Ok(mirror::Switched::Stream { sequence, snapshot }) => {
-            if respond(answer(api::SubscribeMode::Checkpoint, sequence, 0))
-                .await
-                .is_err()
-            {
+            if !respond(answer(api::SubscribeMode::Checkpoint, sequence, 0)).await {
                 return false;
             }
             *pending = Some(send_checkpoint(conn, head, sequence, snapshot).await);
             feed.frames = false;
+            feed.since = now;
+            feed.view.switched(false);
             true
         }
     }

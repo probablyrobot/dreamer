@@ -34,10 +34,45 @@ pub struct Settings {
     pub render: RenderSettings,
 }
 
-/// How the desktop draws terminal panes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// How the desktop draws terminal panes, and when the daemon switches a
+/// pane a window allowed frames for between the byte stream and frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderSettings {
     pub frames: RenderFrames,
+    /// The daemon switches a pane to frames once it writes more than this
+    /// many bytes a second over `frames_dwell`.
+    pub frames_above: u64,
+    /// ... and back to the stream once it writes less than this.
+    pub frames_below: u64,
+    /// The least time a pane stays on either feed before the daemon
+    /// switches it, and the window its rate is measured over.
+    pub frames_dwell: std::time::Duration,
+    /// How long a pane stays on the stream after the user stops working
+    /// with its history (selecting, scrolling back, searching).
+    pub frames_hold: std::time::Duration,
+}
+
+/// The defaults come from measured output rates on an M3 Max (tmux 3.8,
+/// rates of `%output` over 1 s windows): typing at a prompt, `ping`, a
+/// build log, and `top` stay under 5 KiB/s, a full-screen program
+/// redrawing 30 times a second about 115 KiB/s, while `cat` of a large
+/// file or `seq` write 8 to 14 MiB/s. A listing of a large directory
+/// tree comes in bursts of up to about 1.4 MiB/s for a second or less.
+pub const DEFAULT_FRAMES_ABOVE: u64 = 1 << 20;
+pub const DEFAULT_FRAMES_BELOW: u64 = 256 << 10;
+pub const DEFAULT_FRAMES_DWELL: std::time::Duration = std::time::Duration::from_secs(1);
+pub const DEFAULT_FRAMES_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl Default for RenderSettings {
+    fn default() -> Self {
+        RenderSettings {
+            frames: RenderFrames::Off,
+            frames_above: DEFAULT_FRAMES_ABOVE,
+            frames_below: DEFAULT_FRAMES_BELOW,
+            frames_dwell: DEFAULT_FRAMES_DWELL,
+            frames_hold: DEFAULT_FRAMES_HOLD,
+        }
+    }
 }
 
 /// Whether a desktop window may show a pane from the daemon's screen
@@ -613,6 +648,12 @@ struct File {
 #[serde(deny_unknown_fields)]
 struct RenderFile {
     frames: Option<RenderFrames>,
+    /// `1MiB`, `256KiB`: bytes a second.
+    frames_above: Option<serde_norway::Value>,
+    frames_below: Option<serde_norway::Value>,
+    /// `1s`, `500ms`.
+    frames_dwell: Option<serde_norway::Value>,
+    frames_hold: Option<serde_norway::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1057,6 +1098,31 @@ fn parse_size(v: &serde_norway::Value) -> Result<Option<u64>, String> {
     }
 }
 
+/// `500ms`, `1s`, `2m`: a short time, more than zero.
+fn parse_short_wait(v: &serde_norway::Value) -> Result<std::time::Duration, String> {
+    let text = match v {
+        serde_norway::Value::String(t) => t.trim().to_owned(),
+        serde_norway::Value::Number(n) => format!("{n}"),
+        _ => String::new(),
+    };
+    let (n, unit) = text.split_at(
+        text.find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len()),
+    );
+    let ms = match unit {
+        "ms" => 1,
+        "s" => 1000,
+        "m" => 60_000,
+        _ => 0,
+    };
+    match n.parse::<u64>() {
+        Ok(n) if ms > 0 && n > 0 => Ok(std::time::Duration::from_millis(n * ms)),
+        _ => Err(format!(
+            "{text:?} is not a time: write a number with ms, s, or m (`500ms`, `2s`)"
+        )),
+    }
+}
+
 /// `90s`, `30m`, `2h`; `never` is `None`.
 fn parse_wait(v: &serde_norway::Value) -> Result<Option<std::time::Duration>, String> {
     let text = match v {
@@ -1454,6 +1520,50 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     }
     if let Some(f) = file.render.frames {
         s.render.frames = f;
+    }
+    for (key, value, to) in [
+        (
+            "render.frames_above",
+            &file.render.frames_above,
+            &mut s.render.frames_above,
+        ),
+        (
+            "render.frames_below",
+            &file.render.frames_below,
+            &mut s.render.frames_below,
+        ),
+    ] {
+        if let Some(v) = value {
+            *to = parse_size(v)
+                .map_err(|e| error(origin, key, e))?
+                .ok_or_else(|| error(origin, key, "must be a rate, not `none`".into()))?;
+        }
+    }
+    for (key, value, to) in [
+        (
+            "render.frames_dwell",
+            &file.render.frames_dwell,
+            &mut s.render.frames_dwell,
+        ),
+        (
+            "render.frames_hold",
+            &file.render.frames_hold,
+            &mut s.render.frames_hold,
+        ),
+    ] {
+        if let Some(v) = value {
+            *to = parse_short_wait(v).map_err(|e| error(origin, key, e))?;
+        }
+    }
+    if s.render.frames_below >= s.render.frames_above {
+        return Err(error(
+            origin,
+            "render.frames_below",
+            format!(
+                "must be less than render.frames_above ({} bytes a second), or a pane at the threshold flips between the feeds",
+                s.render.frames_above
+            ),
+        ));
     }
     if let Some(u) = file.web.url {
         let u = u.trim();
@@ -1974,6 +2084,46 @@ mod tests {
         let e = parse_settings("window:\n  decorations: minimal\n", None).expect_err("bad");
         assert_eq!(e.line, Some(2), "{e}");
         assert!(e.message.contains("full"), "{e}");
+    }
+
+    #[test]
+    fn the_switch_to_frames_has_a_gap_between_its_thresholds() {
+        let d = Settings::default().render;
+        assert_eq!(
+            (d.frames_above, d.frames_below),
+            (DEFAULT_FRAMES_ABOVE, DEFAULT_FRAMES_BELOW)
+        );
+        let s = parse_settings(
+            "render:\n  frames_above: 4MiB\n  frames_below: 1MiB\n  frames_dwell: 500ms\n  frames_hold: 3s\n",
+            None,
+        )
+        .expect("frames policy");
+        assert_eq!(
+            (
+                s.render.frames_above,
+                s.render.frames_below,
+                s.render.frames_dwell,
+                s.render.frames_hold
+            ),
+            (
+                4 << 20,
+                1 << 20,
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_secs(3)
+            )
+        );
+        // A pane at the threshold must not flip: below stays under above.
+        for bad in [
+            "frames_below: 1MiB",
+            "frames_below: 2MiB",
+            "frames_above: none",
+            "frames_dwell: 0s",
+            "frames_dwell: 1",
+            "frames_hold: soon",
+        ] {
+            let e = parse_settings(&format!("render:\n  {bad}\n"), None).expect_err(bad);
+            assert!(e.at.starts_with("render.frames_"), "{bad}: {e:?}");
+        }
     }
 
     #[test]

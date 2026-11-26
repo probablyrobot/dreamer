@@ -1826,6 +1826,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "views": {
+            "description": "View subscriptions now (local panes; a relayed pane's is in its host's diagnostics), each with its feed and its switches.",
+            "items": {
+              "$ref": "#/components/schemas/ViewFeed"
+            },
+            "type": "array"
+          },
           "worker_queue_capacity": {
             "minimum": 0,
             "type": "integer"
@@ -1945,6 +1952,34 @@
           "new"
         ],
         "type": "string"
+      },
+      "EffectBatch": {
+        "description": "Live effects of the records a subscription on `frames` was not sent, in order. Each arrives before the first frame whose sequence is at or after its own; they are never coalesced or dropped.",
+        "properties": {
+          "effects": {
+            "items": {
+              "$ref": "#/components/schemas/TerminalEffect"
+            },
+            "type": "array"
+          },
+          "epoch": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subscription": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
       },
       "Empty": {
         "description": "No parameters or no result.",
@@ -2191,6 +2226,10 @@
       },
       "FeedSwitch": {
         "properties": {
+          "automatic": {
+            "description": "The daemon switched on its own (a `terminal.feed` notice), not on request.",
+            "type": "boolean"
+          },
           "frame": {
             "description": "Frames mode: the number of the full frame that follows.",
             "minimum": 0,
@@ -2458,6 +2497,20 @@
               "type": "integer"
             },
             "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "HoldFeed": {
+        "description": "Keep a terminal subscription on `stream` while the user works with its history (selects, scrolls back, searches): a subscription on `frames` switches back at once (a `terminal.feed` notice), and none is switched to `frames` while held and for `render.frames_hold` after the release.",
+        "properties": {
+          "hold": {
+            "description": "True to hold, false to release.",
+            "type": "boolean"
+          },
+          "subscription": {
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "type": "object"
@@ -5677,6 +5730,10 @@
       },
       "TerminalSubscribe": {
         "properties": {
+          "automatic": {
+            "description": "On a connection with `terminal.frames`: the daemon switches the subscription between `stream` and `frames` on its own, by the pane's output rate (the `render.frames_*` settings), and tells it with `terminal.feed` notices. It starts on `feed`. A `terminal.set_feed` turns it off for the subscription.",
+            "type": "boolean"
+          },
           "client": {
             "description": "An id the client picks once per window; it names the client in TerminalInput too, so the daemon can address effects such as clipboard writes to exactly one.",
             "minimum": 0,
@@ -6021,6 +6078,52 @@
             "type": "integer"
           },
           "protocol_minor": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "ViewFeed": {
+        "description": "One view subscription (`terminal.subscribe`) and its feed.",
+        "properties": {
+          "automatic": {
+            "description": "The daemon switches it by the pane's output rate.",
+            "type": "boolean"
+          },
+          "connection": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feed": {
+            "$ref": "#/components/schemas/TerminalFeed",
+            "description": "The feed it is on now."
+          },
+          "held": {
+            "description": "Held on `stream` by its client (terminal.hold_feed), or still within `render.frames_hold` of the release.",
+            "type": "boolean"
+          },
+          "pane": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rate": {
+            "description": "The pane's output, bytes per second, over the last `render.frames_dwell`; 0 when not measured (not automatic, or quiet).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subscription": {
+            "description": "The subscription's id on its connection.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "switches": {
+            "description": "Switches of feed since it started, either way, requested or automatic.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "to_frames": {
+            "description": "Of those, the switches to `frames`.",
             "minimum": 0,
             "type": "integer"
           }
@@ -6386,7 +6489,7 @@
   "info": {
     "description": "Generated by tools/api-gen from crates/api/schema/api.yaml. Do not edit. Package dreamer.v1. Errors are JSON-RPC 2.0 error objects (RpcError).",
     "title": "Dreamer API",
-    "version": "1.65"
+    "version": "1.66"
   },
   "methods": [
     {
@@ -6970,6 +7073,13 @@
           "schema": {
             "$ref": "#/components/schemas/TerminalFeed"
           }
+        },
+        {
+          "description": "On a connection with `terminal.frames`: the daemon switches the subscription between `stream` and `frames` on its own, by the pane's output rate (the `render.frames_*` settings), and tells it with `terminal.feed` notices. It starts on `feed`. A `terminal.set_feed` turns it off for the subscription.",
+          "name": "automatic",
+          "schema": {
+            "type": "boolean"
+          }
         }
       ],
       "result": {
@@ -7026,6 +7136,34 @@
         }
       },
       "summary": "Switch a subscription of this connection between the stream and screen frames.",
+      "x-mutation": false
+    },
+    {
+      "name": "terminal.hold_feed",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "subscription",
+          "schema": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "description": "True to hold, false to release.",
+          "name": "hold",
+          "schema": {
+            "type": "boolean"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/Empty"
+        }
+      },
+      "summary": "Hold a subscription of this connection on the stream while its history is in use, or release it.",
       "x-mutation": false
     },
     {
@@ -10632,6 +10770,20 @@
         "$ref": "#/components/schemas/ScreenFrame"
       },
       "summary": "A screen frame of a subscription on the frames feed (a bulk record on the native wire)."
+    },
+    {
+      "name": "terminal.feed",
+      "params": {
+        "$ref": "#/components/schemas/FeedSwitch"
+      },
+      "summary": "The daemon switched a subscription's feed on its own; ordered as a reply to terminal.set_feed would be."
+    },
+    {
+      "name": "terminal.effects",
+      "params": {
+        "$ref": "#/components/schemas/EffectBatch"
+      },
+      "summary": "Effects (bells, title, directory, clipboard) of a subscription on the frames feed, before the frame that shows their records."
     },
     {
       "name": "tmux.topology",

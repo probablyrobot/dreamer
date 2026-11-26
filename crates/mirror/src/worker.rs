@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use domain::{ConnectionEpoch, PaneGeneration, PaneKey, TmuxPaneId};
@@ -114,6 +114,14 @@ pub struct Effect {
     pub commands: Vec<terminal_ghostty::core::CommandMark>,
 }
 
+impl Effect {
+    /// Whether a view shows it: a bell, a title, a directory, or a
+    /// clipboard write. Command steps alone are for collectors.
+    pub fn shown(&self) -> bool {
+        self.bells > 0 || self.title.is_some() || self.cwd.is_some() || self.clipboard.is_some()
+    }
+}
+
 /// A record on its way to a subscriber, with the live effects it produced
 /// (empty for replayed records).
 pub type Live = (u64, Record, Option<Effect>);
@@ -140,6 +148,26 @@ pub struct Sink {
 #[derive(Debug, Default)]
 pub struct FrameLink {
     pub changed: tokio::sync::Notify,
+    /// Output bytes the pane's mirror applied since the subscription
+    /// started, on either feed: what a switching policy measures.
+    pub ingested: AtomicU64,
+    /// Effects of the records applied while on frames, in order, until the
+    /// subscription's task sends them. Bounded by [`FRAME_EFFECTS`]: a
+    /// subscription that lets more pile up is ended as lagged.
+    pub effects: std::sync::Mutex<Vec<(u64, Effect)>>,
+}
+
+/// The most effects a subscription on frames may leave unsent.
+pub const FRAME_EFFECTS: usize = 4096;
+
+impl FrameLink {
+    /// The effects waiting to be sent, oldest first.
+    pub fn take_effects(&self) -> Vec<(u64, Effect)> {
+        self.effects
+            .lock()
+            .map(|mut e| std::mem::take(&mut *e))
+            .unwrap_or_default()
+    }
 }
 
 /// Where a subscription is after a switch of feed.
@@ -670,15 +698,11 @@ impl Mirror {
     /// fallen behind: it is ended as lagged, never skipped silently.
     fn publish(&mut self, seq: u64, record: &Record, effect: Option<Effect>) {
         let focused = self.focused;
+        let bytes = match record {
+            Record::Bytes(b) => b.len() as u64,
+            Record::Resize { .. } => 0,
+        };
         self.subscribers.retain(|s| {
-            // A subscriber on frames gets no records; it is told the screen
-            // changed and asks for a frame when it is ready for one.
-            if s.screen.is_some() {
-                if let Some(link) = &s.sink.frames {
-                    link.changed.notify_one();
-                }
-                return !s.records.is_closed();
-            }
             // A clipboard write goes to exactly one client: the focused one.
             let effect = effect.clone().map(|mut e| {
                 if focused.is_none() || s.client != focused {
@@ -686,6 +710,31 @@ impl Mirror {
                 }
                 e
             });
+            if let Some(link) = &s.sink.frames {
+                link.ingested.fetch_add(bytes, Ordering::Relaxed);
+            }
+            // A subscriber on frames gets no records; it is told the screen
+            // changed and asks for a frame when it is ready for one. The
+            // effects are kept for it, in order: they are not screen
+            // states, so they are never skipped.
+            if s.screen.is_some() {
+                let Some(link) = &s.sink.frames else {
+                    return !s.records.is_closed();
+                };
+                if let Some(e) = effect.filter(Effect::shown) {
+                    let Ok(mut q) = link.effects.lock() else {
+                        return false;
+                    };
+                    if q.len() >= FRAME_EFFECTS {
+                        perf::count(perf::Counter::Lagged, 1);
+                        s.ended.store(end::LAGGED, Ordering::SeqCst);
+                        return false;
+                    }
+                    q.push((seq, e));
+                }
+                link.changed.notify_one();
+                return !s.records.is_closed();
+            }
             // Mark before sending: the receiving task runs elsewhere and
             // may take the mark as soon as the record arrives. A mark made
             // after the send could come too late and wait for a record that

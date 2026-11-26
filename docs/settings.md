@@ -76,6 +76,10 @@ window:
   decorations: full                      # full (default) or none
 render:
   frames: off                            # off (default), on, or always
+  frames_above: 1MiB                     # to frames above this a second
+  frames_below: 256KiB                   # back to the stream below this
+  frames_dwell: 1s                       # least time on a feed
+  frames_hold: 2s                        # on the stream after selecting
 web:
   component: ask                         # ask (default), auto, or never
   url: https://example.com/dreamer-web/  # optional; default: the release
@@ -341,17 +345,39 @@ with a terminal engine of its own
 ([desktop-internals.md](desktop-internals.md#screen-frames)):
 - `off` (the default): every pane follows the byte stream.
 - `on`: the window tells the daemon it accepts frames. Panes start on the
-  byte stream; the daemon does not yet move a pane to frames on its own.
+  byte stream, and the daemon moves a pane to frames while it writes fast,
+  and back when it calms.
 - `always`: every pane the window starts following is followed on frames.
-  This is for checks: such a pane has no local scrollback, selection, or
-  search, and its bells and clipboard writes do not reach the window.
+  This is for checks.
+
+On frames, selecting, scrolling back, searching, and copy mode bring the
+pane back to the byte stream first, and keep it there while you use them.
 
 It applies to panes a window starts following after the change.
 `DREAMER_RENDER_FRAMES=off|on|always`, when set, comes first.
 
+The daemon's side applies live, to every pane:
+- `frames_above` (default `1MiB`): a pane goes to frames once it writes
+  more than this a second, measured over `frames_dwell`.
+- `frames_below` (default `256KiB`): it comes back to the byte stream once
+  it writes less than this. It must be less than `frames_above`, so a pane
+  that writes at about one rate does not flip between the two.
+- `frames_dwell` (default `1s`): the least time on either feed before the
+  daemon switches a pane, and the window its rate is measured over.
+- `frames_hold` (default `2s`): how long a pane stays on the byte stream
+  after you stop selecting, scrolling back, or searching in it.
+
+Rates are a size a second (`KiB`, `MiB`, `GiB`); times are `ms`, `s`, or
+`m`. The defaults come from output rates measured on an M3 Max: typing at
+a prompt, `ping`, a build log, and `top` write under 5 KiB/s, a
+full-screen program redrawing 30 times a second about 115 KiB/s, and `cat`
+of a large file or `seq` 8 to 14 MiB/s. Listing a large directory tree
+comes in bursts of up to about 1.4 MiB/s that last a second or less.
+
 ```yaml
 render:
   frames: on
+  frames_above: 4MiB
 ```
 
 ## Dreamer Web

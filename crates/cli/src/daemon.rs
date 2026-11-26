@@ -262,6 +262,37 @@ fn print_diagnostics(d: &api::Diagnostics) {
         d.subscriber_queue_max,
         d.subscriber_queue_capacity
     );
+    if !d.views.is_empty() {
+        println!(
+            "  views             {:<6} {:<8} {:<8} {:<10} {:>8} {:>10}",
+            "pane", "feed", "switches", "by", "to frames", "output/s"
+        );
+    }
+    for v in &d.views {
+        let feed = if v.feed == api::TerminalFeed::Frames as i32 {
+            "frames"
+        } else {
+            "stream"
+        };
+        let how = match (v.automatic, v.held) {
+            (_, true) => "held",
+            (true, false) => "automatic",
+            (false, false) => "fixed",
+        };
+        println!(
+            "                    %{:<5} {:<8} {:<8} {:<10} {:>8} {:>10}",
+            v.pane,
+            feed,
+            v.switches,
+            how,
+            v.to_frames,
+            if v.automatic {
+                format!("{:.0} KiB", v.rate as f64 / 1024.0)
+            } else {
+                "-".into()
+            }
+        );
+    }
 }
 
 pub fn ensure(d: &DaemonArgs) -> Result<(), String> {

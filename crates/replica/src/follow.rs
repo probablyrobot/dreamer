@@ -11,6 +11,13 @@
 //!   sequence restores, and the records after it apply on top;
 //! - a frame that does not apply (out of order, undecodable) ends the
 //!   frames: the follower subscribes again on records, from a checkpoint.
+//!
+//! With [`Frames::On`] the daemon switches on its own, by the pane's output
+//! rate, and says so with a `terminal.feed` notice placed where a reply
+//! would be; the follower takes it exactly as a reply. [`Follower::hold`]
+//! keeps the pane on records while its history is in use. On frames,
+//! effects (bells, title, directory, clipboard) arrive as their own
+//! batches, before the frame that shows their records.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -31,7 +38,7 @@ pub enum Frames {
     #[default]
     Off,
     /// The connection offers `terminal.frames`; a subscription starts on
-    /// records and follows a switch.
+    /// records, and the daemon switches it by the pane's output rate.
     On,
     /// Every subscription asks for frames.
     Always,
@@ -161,6 +168,11 @@ pub struct Follower {
     started: Option<api::Subscription>,
     /// Pushed data read while a switch waited for its reply.
     backlog: VecDeque<Option<Pushed>>,
+    /// Held on records (see [`Follower::hold`]); said again to every new
+    /// subscription.
+    held: bool,
+    /// Switches of feed seen through, either way.
+    pub switches: u64,
 }
 
 impl Follower {
@@ -228,6 +240,8 @@ impl Follower {
             frames_failed: false,
             started: None,
             backlog: VecDeque::new(),
+            held: false,
+            switches: 0,
         };
         f.reconnect().await?;
         Ok(f)
@@ -276,6 +290,11 @@ impl Follower {
         self.screen.is_some()
     }
 
+    /// The view shows a screen frame (not the replica) now.
+    pub fn shows_frames(&self) -> bool {
+        self.screen.as_ref().is_some_and(|s| s.number > 0)
+    }
+
     /// The screen kept from frames, while on them.
     pub fn screen(&self) -> Option<&ScreenView> {
         self.screen.as_ref()
@@ -304,9 +323,8 @@ impl Follower {
         } else {
             None
         };
-        let frames = self.frames == Frames::Always
-            && !self.frames_failed
-            && client.has_feature(wire::feature::TERMINAL_FRAMES);
+        let offered = !self.frames_failed && client.has_feature(wire::feature::TERMINAL_FRAMES);
+        let frames = self.frames == Frames::Always && offered;
         let req = api::TerminalSubscribe {
             pane: self.replica.pane,
             resume_epoch: pos.map(|p| p.0),
@@ -318,9 +336,20 @@ impl Follower {
             } else {
                 api::TerminalFeed::Stream as i32
             },
+            automatic: self.frames == Frames::On && offered,
             ..api::TerminalSubscribe::default()
         };
         let s = self.via.subscribe(client, req).await?;
+        if self.held && offered {
+            // The new subscription is held as the last one was. Its id is
+            // this connection's, also for a host's pane.
+            let _ = client
+                .call(Request::TerminalHoldFeed(api::HoldFeed {
+                    subscription: s.id,
+                    hold: true,
+                }))
+                .await;
+        }
         self.switch = None;
         self.last_mode = api::SubscribeMode::try_from(s.mode).ok();
         self.subscription = Some(s.id);
@@ -350,13 +379,10 @@ impl Follower {
 
     /// Move the subscription to screen frames, or back to records, by the
     /// daemon's sequence rules (see the module notes). Returns once the
-    /// daemon answered; the new feed follows through [`Self::step`].
+    /// daemon answered; the new feed follows through [`Self::step`]. The
+    /// daemon stops switching this subscription on its own.
     pub async fn set_feed(&mut self, frames: bool) -> Result<(), FollowError> {
-        let (Some(client), Some(sub), Some(pushed)) = (
-            self.client.as_ref(),
-            self.subscription,
-            self.pushed.as_mut(),
-        ) else {
+        let Some(sub) = self.subscription else {
             return Err(FollowError::Disconnected);
         };
         let feed = if frames {
@@ -364,16 +390,61 @@ impl Follower {
         } else {
             api::TerminalFeed::Stream
         };
-        let call = self.via.call(
-            client,
-            Request::TerminalSetFeed(api::SetFeed {
+        let reply = self
+            .call_reading(Request::TerminalSetFeed(api::SetFeed {
                 subscription: sub,
                 feed: feed as i32,
-            }),
-        );
+            }))
+            .await;
+        let api::Response::TerminalSetFeed(sw) = reply? else {
+            return Err(FollowError::Client(ClientError::Wire(
+                wire::WireError::Unexpected("a reply to another method"),
+            )));
+        };
+        self.switched(&sw)
+    }
+
+    /// Hold the subscription on records while the view works with the
+    /// pane's history (a selection, a scrolled view, a search), or let it
+    /// go. A pane on frames comes back to records from a checkpoint (a
+    /// `terminal.feed` notice, then the checkpoint, through
+    /// [`Self::step`]); none goes to frames while held, nor for a short
+    /// time after (`render.frames_hold`). Nothing to do when frames are
+    /// not offered.
+    pub async fn hold(&mut self, hold: bool) -> Result<(), FollowError> {
+        if self.held == hold {
+            return Ok(());
+        }
+        self.held = hold;
+        if !self.frames_offered() || self.frames_failed {
+            return Ok(());
+        }
+        let Some(sub) = self.subscription else {
+            return Ok(());
+        };
+        self.call_reading(Request::TerminalHoldFeed(api::HoldFeed {
+            subscription: sub,
+            hold,
+        }))
+        .await?;
+        Ok(())
+    }
+
+    /// Whether the view holds the subscription on records.
+    pub fn held(&self) -> bool {
+        self.held
+    }
+
+    /// A call on the follower's connection. Subscriptions are this
+    /// connection's own, also for a host's pane, so it is never forwarded.
+    /// Pushed data keeps being read meanwhile, so a full queue never holds
+    /// the reply back; it is handled after the reply, in order.
+    async fn call_reading(&mut self, request: Request) -> Result<api::Response, FollowError> {
+        let (Some(client), Some(pushed)) = (self.client.as_ref(), self.pushed.as_mut()) else {
+            return Err(FollowError::Disconnected);
+        };
+        let call = client.call(request);
         tokio::pin!(call);
-        // Pushed data keeps being read meanwhile, so a full queue never
-        // holds the reply back; it is handled after the reply, in order.
         let reply = loop {
             tokio::select! {
                 r = &mut call => break r,
@@ -386,11 +457,13 @@ impl Follower {
                 }
             }
         };
-        let api::Response::TerminalSetFeed(sw) = reply? else {
-            return Err(FollowError::Client(ClientError::Wire(
-                wire::WireError::Unexpected("a reply to another method"),
-            )));
-        };
+        Ok(reply?)
+    }
+
+    /// A switch the daemon answered or made: the new feed starts with the
+    /// next pushed data.
+    fn switched(&mut self, sw: &api::FeedSwitch) -> Result<(), FollowError> {
+        self.switches += 1;
         if sw.mode == api::SubscribeMode::Frames as i32 {
             self.screen.get_or_insert_with(ScreenView::new);
             self.switch = Some(Switch::ToFrames {
@@ -572,6 +645,24 @@ impl Follower {
         self.resnapshot(why).await
     }
 
+    /// Take live effects: bells rung, labels changed, a clipboard write.
+    fn effects(&mut self, effects: &[api::TerminalEffect]) {
+        for e in effects {
+            self.bells = self.bells.saturating_add(e.bells);
+            if e.title.is_some() && e.title != self.meta.title {
+                self.meta.title.clone_from(&e.title);
+                self.meta_changed = true;
+            }
+            if e.clipboard.is_some() {
+                self.clipboard.clone_from(&e.clipboard);
+            }
+            if e.cwd.is_some() && e.cwd != self.meta.cwd {
+                self.meta.cwd.clone_from(&e.cwd);
+                self.meta_changed = true;
+            }
+        }
+    }
+
     async fn handle(&mut self, next: Option<Pushed>) -> Result<usize, FollowError> {
         let mut applied = 0;
         let sub = self.subscription;
@@ -622,23 +713,30 @@ impl Follower {
                         applied += n;
                         // Effects ride only with live records the replica
                         // applied, so a duplicate batch rings nothing.
-                        for e in &b.effects {
-                            self.bells = self.bells.saturating_add(e.bells);
-                            if e.title.is_some() && e.title != self.meta.title {
-                                self.meta.title.clone_from(&e.title);
-                                self.meta_changed = true;
-                            }
-                            if e.clipboard.is_some() {
-                                self.clipboard.clone_from(&e.clipboard);
-                            }
-                            if e.cwd.is_some() && e.cwd != self.meta.cwd {
-                                self.meta.cwd.clone_from(&e.cwd);
-                                self.meta_changed = true;
-                            }
-                        }
+                        self.effects(&b.effects);
                     }
                     Ok(_) => {}
                     Err(e) => self.resnapshot(e.to_string()).await?,
+                }
+            }
+            Some(Pushed::Event { topic, payload, .. }) if topic == api::topic::TERMINAL_FEED => {
+                // The daemon switched on its own, here in the order.
+                let Ok(sw) = api::FeedSwitch::decode(payload.as_slice()) else {
+                    self.resnapshot("undecodable feed notice".into()).await?;
+                    return Ok(0);
+                };
+                if Some(sw.subscription) == sub
+                    && let Err(e) = self.switched(&sw)
+                {
+                    self.resnapshot(e.to_string()).await?;
+                }
+            }
+            Some(Pushed::Event { topic, payload, .. }) if topic == api::topic::TERMINAL_EFFECTS => {
+                // Effects of records shown by frames: each comes once.
+                if let Ok(b) = api::EffectBatch::decode(payload.as_slice())
+                    && Some(b.subscription) == sub
+                {
+                    self.effects(&b.effects);
                 }
             }
             Some(Pushed::Event { topic, payload, .. }) if topic == "terminal.end" => {

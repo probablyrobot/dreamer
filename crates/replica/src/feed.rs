@@ -21,9 +21,14 @@
 //!   to the replica, scrolls while a drag is held past an edge, and hands
 //!   back the selected text on request.
 //! - On screen frames ([`Frames`]) the owner applies the daemon's frames
-//!   instead of records, paced the same way. There is no engine then: no
-//!   local history, selection, links, or search, until the view is back
-//!   on records.
+//!   instead of records, paced the same way. There is no engine then.
+//!   Selecting, scrolling back, searching, or reading the text (copy mode)
+//!   holds the pane on records: the owner asks the daemon, keeps the
+//!   gesture, and applies it once the checkpoint restored the replica, so
+//!   it acts on the engine exactly as with frames off. The view keeps
+//!   showing the last frame meanwhile. The hold ends once there is no
+//!   selection, the view is back at the bottom, and the view no longer
+//!   engages the pane ([`ViewCommand::Engage`]).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -82,7 +87,42 @@ pub enum ViewCommand {
     /// The text of history and screen, one row per line (copy mode works
     /// on it).
     Text(tokio::sync::oneshot::Sender<Option<String>>),
+    /// The view works with the pane's history for a while (an open find
+    /// bar, copy mode): keep it on records until `Engage(false)`.
+    Engage(bool),
 }
+
+impl ViewCommand {
+    /// Whether the command works with the pane's history, so the pane
+    /// must be on records for it.
+    fn needs_history(&self) -> bool {
+        match self {
+            ViewCommand::Scroll(Scroll::Top) => true,
+            ViewCommand::Scroll(Scroll::Delta(d)) => *d < 0,
+            ViewCommand::Select(_)
+            | ViewCommand::Search { .. }
+            | ViewCommand::Text(_)
+            | ViewCommand::Reveal(_)
+            | ViewCommand::Top(_)
+            | ViewCommand::Engage(true) => true,
+            _ => false,
+        }
+    }
+
+    /// Answer a command that cannot be applied, saying why.
+    fn refuse(self, why: &str) {
+        match self {
+            ViewCommand::Copy(reply) | ViewCommand::Text(reply) => drop(reply.send(None)),
+            ViewCommand::Link { reply, .. } => drop(reply.send(None)),
+            ViewCommand::Search { reply, .. } => drop(reply.send(Err(why.into()))),
+            _ => {}
+        }
+    }
+}
+
+/// The longest a gesture waits for the pane to come back to records
+/// before it is answered as on frames.
+pub const RESTORE_LIMIT: Duration = Duration::from_secs(5);
 
 /// A search's outcome: the matches, `None` when a newer search replaced
 /// it, or why the pattern was refused.
@@ -111,6 +151,14 @@ pub struct FeedStats {
     pub holds_expired: AtomicU64,
     /// Screen frames applied from the daemon (on the `frames` feed).
     pub screen_frames: AtomicU64,
+    /// The view shows screen frames now.
+    pub on_frames: std::sync::atomic::AtomicBool,
+    /// The view holds the pane on records.
+    pub held: std::sync::atomic::AtomicBool,
+    /// Switches of feed seen through, either way.
+    pub feed_switches: AtomicU64,
+    /// Gestures kept until the pane was back on records.
+    pub deferred: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -461,6 +509,17 @@ struct Owner {
     typed: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// What the view does with the pane's history, for holding it on records.
+#[derive(Debug, Default)]
+struct Interact {
+    /// The view engaged the pane ([`ViewCommand::Engage`]).
+    engaged: bool,
+    /// Gestures waiting for the replica to be restored, in order, and
+    /// since when.
+    deferred: std::collections::VecDeque<ViewCommand>,
+    since: Option<tokio::time::Instant>,
+}
+
 /// When the owner builds its next frame (see the module notes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Next {
@@ -637,37 +696,103 @@ impl Owner {
             .ok_or_else(|| "tmux reports no active pane".into())
     }
 
-    /// Apply a local view change; publish only if the frame changed.
-    /// `autoscroll` is where a drag held past an edge continues from.
-    fn view(&self, f: &mut Follower, command: ViewCommand, autoscroll: &mut Option<CellPos>) {
+    /// Apply a local view change; publish only if the frame changed. On
+    /// frames, a command that needs the pane's history holds the pane on
+    /// records and waits in `deferred` until the replica is back.
+    async fn view(
+        &self,
+        f: &mut Follower,
+        command: ViewCommand,
+        autoscroll: &mut Option<CellPos>,
+        interact: &mut Interact,
+    ) {
+        if let ViewCommand::Engage(on) = command {
+            interact.engaged = on;
+        }
+        if self.frames != Frames::Off && command.needs_history() && !f.held() {
+            let _ = f.hold(true).await;
+            self.stats.held.store(true, Ordering::Relaxed);
+        }
+        let blocked = f.on_frames() && f.replica().engine().is_none();
+        if blocked || !interact.deferred.is_empty() {
+            if command.needs_history() || !interact.deferred.is_empty() {
+                // Kept in order until the checkpoint restores the replica.
+                if interact.deferred.is_empty() {
+                    interact.since = Some(tokio::time::Instant::now());
+                }
+                self.stats.deferred.fetch_add(1, Ordering::Relaxed);
+                interact.deferred.push_back(command);
+                *autoscroll = None;
+                return;
+            }
+            // Nothing to do on frames: no history, selection, or links.
+            command.refuse("the pane is on screen frames");
+            *autoscroll = None;
+            return;
+        }
+        self.apply_view(f, command, autoscroll);
+        self.release(f, interact).await;
+    }
+
+    /// Let the pane go back to frames once nothing in the view needs its
+    /// history: no selection, the view at the bottom, nothing engaged.
+    async fn release(&self, f: &mut Follower, interact: &Interact) {
+        if !f.held() || interact.engaged || !interact.deferred.is_empty() {
+            return;
+        }
+        let Some(engine) = f.replica().engine() else {
+            return;
+        };
+        let back = engine.view_state().is_ok_and(|v| v.rows_back() > 0);
+        let selected = engine.selection_text().ok().flatten().is_some();
+        if !back && !selected {
+            let _ = f.hold(false).await;
+            self.stats.held.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// Apply the gestures kept while the pane came back to records, once
+    /// it is (or, past [`RESTORE_LIMIT`], answer them as on frames).
+    async fn catch_up(
+        &self,
+        f: &mut Follower,
+        autoscroll: &mut Option<CellPos>,
+        interact: &mut Interact,
+    ) {
+        if interact.deferred.is_empty() {
+            return;
+        }
+        let ready = f.replica().engine().is_some();
+        if !ready {
+            if interact.since.is_some_and(|t| t.elapsed() >= RESTORE_LIMIT) {
+                for c in interact.deferred.drain(..) {
+                    c.refuse("the pane did not come back from screen frames");
+                }
+            }
+            return;
+        }
+        let kept: Vec<ViewCommand> = interact.deferred.drain(..).collect();
+        for c in kept {
+            self.apply_view(f, c, autoscroll);
+        }
+        self.release(f, interact).await;
+    }
+
+    /// Apply a local view change to the replica's engine.
+    fn apply_view(&self, f: &mut Follower, command: ViewCommand, autoscroll: &mut Option<CellPos>) {
         use terminal_ghostty::selection::Autoscroll;
         let Some(Ok(before)) = f.frame() else {
-            match command {
-                ViewCommand::Copy(reply) | ViewCommand::Text(reply) => drop(reply.send(None)),
-                ViewCommand::Link { reply, .. } => drop(reply.send(None)),
-                ViewCommand::Search { reply, .. } => {
-                    drop(reply.send(Err("the pane is not shown yet".into())));
-                }
-                _ => {}
-            }
+            command.refuse("the pane is not shown yet");
             return;
         };
         let Some(engine) = f.replica_mut().engine_mut() else {
-            // On screen frames: no engine, so no local history, selection,
-            // links, text, or search.
-            match command {
-                ViewCommand::Copy(reply) | ViewCommand::Text(reply) => drop(reply.send(None)),
-                ViewCommand::Link { reply, .. } => drop(reply.send(None)),
-                ViewCommand::Search { reply, .. } => {
-                    drop(reply.send(Err("the pane is on screen frames".into())));
-                }
-                _ => {}
-            }
+            command.refuse("the pane is on screen frames");
             *autoscroll = None;
             return;
         };
         let command_top = matches!(command, ViewCommand::Top(_));
         let applied = match command {
+            ViewCommand::Engage(_) => false,
             ViewCommand::Scroll(to) => engine.scroll_viewport(to).is_ok(),
             ViewCommand::Follow if before.view.rows_back() > 0 => {
                 engine.scroll_viewport(Scroll::Bottom).is_ok()
@@ -779,6 +904,7 @@ impl Owner {
         self.target.pane.store(u64::from(pane), Ordering::Release);
         let mut held_since: Option<tokio::time::Instant> = None;
         let mut autoscroll: Option<CellPos> = None;
+        let mut interact = Interact::default();
         let mut pacer = Pacer::default();
         enum Wake {
             Pushed(Result<Option<client::Pushed>, FollowError>),
@@ -786,6 +912,7 @@ impl Owner {
             HoldExpired,
             Autoscroll(CellPos),
             Pace,
+            RestoreLimit,
         }
         loop {
             // The view dropped its feed (a pane no longer shown): stop, and
@@ -825,6 +952,12 @@ impl Owner {
                         Next::Idle | Next::Now => std::future::pending().await,
                     }
                 };
+                let restore = async {
+                    match interact.since.filter(|_| !interact.deferred.is_empty()) {
+                        Some(t) => tokio::time::sleep_until(t + RESTORE_LIMIT).await,
+                        None => std::future::pending().await,
+                    }
+                };
                 // `recv` is cancel-safe: losing the race drops nothing.
                 let wake = tokio::select! {
                     r = f.recv() => Wake::Pushed(r),
@@ -836,17 +969,19 @@ impl Owner {
                     () = hold => Wake::HoldExpired,
                     at = tick => Wake::Autoscroll(at),
                     () = pace => Wake::Pace,
+                    () = restore => Wake::RestoreLimit,
                 };
                 match wake {
                     Wake::Pushed(Ok(first)) => f.apply(first).await,
                     Wake::Pushed(Err(e)) => Err(e),
                     Wake::View(c) => {
-                        self.view(&mut f, c, &mut autoscroll);
+                        self.view(&mut f, c, &mut autoscroll, &mut interact).await;
                         continue;
                     }
                     Wake::Autoscroll(at) => {
                         let tick = ViewCommand::Select(SelectEvent::AutoscrollTick { at });
-                        self.view(&mut f, tick, &mut autoscroll);
+                        self.view(&mut f, tick, &mut autoscroll, &mut interact)
+                            .await;
                         continue;
                     }
                     Wake::HoldExpired => {
@@ -861,6 +996,10 @@ impl Owner {
                     }
                     // Time for the next frame, or the view took the last.
                     Wake::Pace => continue,
+                    Wake::RestoreLimit => {
+                        self.catch_up(&mut f, &mut autoscroll, &mut interact).await;
+                        continue;
+                    }
                 }
             } else {
                 f.step().await
@@ -904,6 +1043,17 @@ impl Owner {
                 self.stats
                     .screen_frames
                     .fetch_add(s.frames as u64, Ordering::Relaxed);
+            }
+            self.stats
+                .on_frames
+                .store(f.shows_frames(), Ordering::Relaxed);
+            self.stats
+                .feed_switches
+                .store(f.switches, Ordering::Relaxed);
+            // Gestures kept while the pane came back from frames apply on
+            // the restored replica, before the frame that shows them.
+            if step.is_ok() {
+                self.catch_up(&mut f, &mut autoscroll, &mut interact).await;
             }
             if let Ok(s) = &step
                 && (s.records > 0 || s.restored || s.frames > 0)
