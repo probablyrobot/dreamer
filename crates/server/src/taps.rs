@@ -10,7 +10,9 @@
 //!   ("committed"), escapes removed, and changed rows of an alternate
 //!   screen.
 //!
-//! Nothing here can delay a pane: taps only read, at their own pace.
+//! Nothing here can delay a pane: taps only read, at their own pace. A pane
+//! with any tap counts as followed and stays out of the Cold tier: `raw`
+//! as a subscriber, `text` and `meta` through a [`mirror::Watch`].
 
 use mirror::TailResult;
 
@@ -175,8 +177,9 @@ fn data(tap: u64, pane: u32, generation: u64) -> api::TapData {
 pub enum Begun {
     /// Subscribed to the mirror's records (`None`: the subscription failed).
     Raw(Option<RawStart>),
-    /// The first look at the mirror (`None`: not readable yet).
-    Look(Option<TailResult>),
+    /// The first look at the mirror (`None`: not readable yet), and the
+    /// watch that keeps the pane out of the Cold tier while the tap looks.
+    Look(Option<TailResult>, mirror::Watch),
 }
 
 pub struct RawStart {
@@ -190,10 +193,16 @@ pub async fn begin(host: &mirror::MirrorHost, pane: u32, level: api::TapLevel) -
     let id = domain::TmuxPaneId(pane);
     match level {
         api::TapLevel::Raw => Begun::Raw(raw_subscribe(host, id, None).await),
-        _ => Begun::Look(match host.tail(id, history_for(level), None).await {
-            Some(Ok(Some(t))) => Some(t),
-            _ => None,
-        }),
+        _ => {
+            // Taken before the first look, so the pane cannot go Cold
+            // between looks once the tap has started.
+            let watch = host.watch(id);
+            let first = match host.tail(id, history_for(level), None).await {
+                Some(Ok(Some(t))) => Some(t),
+                _ => None,
+            };
+            Begun::Look(first, watch)
+        }
     }
 }
 
@@ -218,7 +227,7 @@ pub async fn follow<D: Deliver>(
 ) {
     match begun {
         Begun::Raw(first) => raw(first, host, out, tap, pane).await,
-        Begun::Look(first) => look(first, host, out, tap, pane, level, interval).await,
+        Begun::Look(first, _watch) => look(first, host, out, tap, pane, level, interval).await,
     }
 }
 

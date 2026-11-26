@@ -547,3 +547,117 @@ async fn colors_a_program_set_while_cold_survive_the_attach() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// What a text or a meta tap delivered: the `line-N` lines, or the
+/// `step-N` titles, in the order they arrived.
+fn steps(level: api::TapLevel, d: &api::TapData, seen: &mut Vec<String>) {
+    let new: Vec<String> = if level == api::TapLevel::Text {
+        d.lines
+            .iter()
+            .filter(|l| l.starts_with("line-"))
+            .cloned()
+            .collect()
+    } else {
+        d.meta
+            .as_ref()
+            .and_then(|m| m.title.clone())
+            .filter(|t| t.starts_with("step-"))
+            .into_iter()
+            .collect()
+    };
+    for s in new {
+        if seen.last() != Some(&s) {
+            seen.push(s);
+        }
+    }
+}
+
+/// A pane watched only by a text or a meta tap is followed: these taps
+/// look at the mirror on a timer instead of subscribing to it, and the
+/// pane still never goes Cold, on its own or when asked. Its output comes
+/// with pauses longer than `tiers.cold_after`, and the tap gets every step
+/// in order with no gap.
+async fn a_looking_tap_keeps_its_pane_warm(level: api::TapLevel) {
+    use prost::Message;
+    let s = Setup::with("tiers:\n  cold_after: 1s\n  warm_limit: none\n  warm_memory: none\n");
+    let mut c = s.client().await;
+    let mut rx = c.pushed().expect("pushed");
+    let Ok(Response::TmuxTopology(t)) = c
+        .call(Request::TmuxTopology(api::TopologyParams::default()))
+        .await
+    else {
+        panic!("topology")
+    };
+    let pane = t.panes[0].id;
+    until_state(&c, pane, api::MirrorState::Live, "the pane's mirror").await;
+    // Looking once a second: a pane put to sleep between looks stays Cold
+    // long enough to be seen.
+    let Ok(Response::TapsSubscribe(sub)) = c
+        .call(Request::TapsSubscribe(api::TapSubscribe {
+            level: level as i32,
+            panes: vec![pane],
+            interval_ms: Some(1000),
+            ..api::TapSubscribe::default()
+        }))
+        .await
+    else {
+        panic!("tap")
+    };
+    s.tmux
+        .run_checked(&[
+            "send-keys",
+            "-t",
+            &format!("%{pane}"),
+            "for i in 1 2 3 4 5 6; do printf '\\033]2;step-%s\\007line-%s\\n' $i $i; sleep 1.5; done",
+            "Enter",
+        ])
+        .expect("type");
+
+    let want: Vec<String> = (1..=6)
+        .map(|i| {
+            if level == api::TapLevel::Text {
+                format!("line-{i}")
+            } else {
+                format!("step-{i}")
+            }
+        })
+        .collect();
+    let mut seen = Vec::new();
+    let mut cold = 0;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while seen.len() < want.len() {
+        assert!(Instant::now() < deadline, "the tap stopped at {seen:?}");
+        if let Ok(Some(client::Pushed::Event { topic, payload, .. })) =
+            tokio::time::timeout(Duration::from_millis(50), rx.recv()).await
+            && topic == "taps.data"
+        {
+            let d = api::TapData::decode(payload.as_slice()).expect("tap data");
+            if d.tap == sub.id {
+                assert_eq!(d.gap, None, "a gap after {seen:?}");
+                assert!(!d.ended, "the tap ended after {seen:?}");
+                steps(level, &d, &mut seen);
+            }
+        }
+        if mirror(&c, pane).await.map(|m| m.state) == Some(api::MirrorState::Cold as i32) {
+            cold += 1;
+        }
+    }
+    assert_eq!(seen, want, "every step, in order");
+    assert_eq!(cold, 0, "the tapped pane was seen Cold {cold} times");
+
+    let e = c
+        .call(tier(pane, api::Tier::Cold))
+        .await
+        .expect_err("a tapped pane stays warm when asked to go Cold");
+    assert!(e.to_string().contains("subscriber"), "{e}");
+}
+
+#[tokio::test]
+async fn a_text_tap_keeps_its_pane_out_of_the_cold_tier() {
+    a_looking_tap_keeps_its_pane_warm(api::TapLevel::Text).await;
+}
+
+#[tokio::test]
+async fn a_meta_tap_keeps_its_pane_out_of_the_cold_tier() {
+    a_looking_tap_keeps_its_pane_warm(api::TapLevel::Meta).await;
+}
