@@ -7,8 +7,13 @@
 //! cargo xtask bench headless|busy|extensions|memory|streams|tiers [OPTIONS] [--debug] [--linux]
 //! cargo xtask bench remote [OPTIONS] [--container [--netem SPEC]] [--debug]
 //! cargo xtask bench gui [--panes N] [--visible N] [--load text|escape|image] [--backend wayland|x11]
+//! cargo xtask bench compare [--terminal NAME]... [--frames off|on|always] [--seconds S]
 //! cargo xtask bench report FILE...
 //! ```
+//!
+//! `compare` draws one isolated tmux session with Dreamer and with each
+//! installed reference terminal, on this machine's desktop (Linux only for
+//! now; see `tools/bench/src/compare.rs`).
 //!
 //! `remote --container` reaches a host daemon in that ARM64 Linux
 //! container through real OpenSSH (see `bench/remote.rs`).
@@ -34,12 +39,14 @@ const USAGE: &str =
     "usage: cargo xtask bench headless|busy|extensions|memory|streams|tiers [OPTIONS] [--debug] [--linux]
        cargo xtask bench remote [OPTIONS] [--container [--netem SPEC]] [--debug]
        cargo xtask bench gui [--panes N] [--visible N] [--load text|escape|image] [--backend wayland|x11]
+       cargo xtask bench compare [--terminal NAME]... [--frames off|on|always] [--seconds S]
        cargo xtask bench report FILE...";
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let root = crate::util::repo_root();
     let (workload, rest) = match args {
         [w, rest @ ..] if w == "gui" => return gui(&root, rest),
+        [w, rest @ ..] if w == "compare" => return compare(&root, rest),
         [w, rest @ ..] if w == "report" => return report(rest),
         [w, rest @ ..] if w == "remote" && rest.iter().any(|a| a == "--container") => {
             return remote::container(&root, rest);
@@ -225,6 +232,54 @@ fn revision(root: &Path, profile: &str) -> Value {
     v
 }
 
+/// `cargo xtask bench compare`: Dreamer (desktop and daemon, release)
+/// and each installed reference terminal drawing the same isolated tmux
+/// session, measured by `dreamer-bench compare`. Linux only for now.
+fn compare(root: &Path, rest: &[String]) -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Err("bench compare is Linux-only for now".into());
+    }
+    let built = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args([
+            "build",
+            "--locked",
+            "--release",
+            "-p",
+            "dreamer-app",
+            "-p",
+            "dreamer-server",
+            "-p",
+            "bench",
+        ])
+        .current_dir(root)
+        .status()
+        .map_err(|e| format!("cargo build: {e}"))?;
+    if !built.success() {
+        return Err("building dreamer, dreamerd, and dreamer-bench failed".into());
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let out = root.join(format!("target/bench/compare-{stamp}.json"));
+    let bin = crate::util::cargo_target(root).join("release");
+    let status = Command::new(bin.join("dreamer-bench"))
+        .arg("compare")
+        .args(rest)
+        .arg("--json")
+        .arg(&out)
+        .env(
+            "DREAMER_BENCH_REVISION",
+            revision(root, "release").to_string(),
+        )
+        .status()
+        .map_err(|e| format!("dreamer-bench: {e}"))?;
+    if !status.success() {
+        return Err("the comparison failed".into());
+    }
+    println!("results: {}", out.display());
+    Ok(())
+}
+
 /// `cargo xtask bench report FILE...`: the files' machine and revision,
 /// then one table with a column per file and a row per measure, a p50 and
 /// its p95 sharing a row.
@@ -283,6 +338,12 @@ fn label(name: &str, v: &Value) -> String {
             Some(0) => format!(", {s} flat out"),
             Some(r) => format!(", {s} at {} KiB/s a pane", group(&r.to_string())),
             None => format!(", {s}"),
+        };
+    }
+    if v["workload"] == "compare" {
+        l = match v["frames"].as_str() {
+            Some(f) => format!("compare, frames {f}"),
+            None => "compare".into(),
         };
     }
     if v["workload"] == "gui" {
@@ -896,6 +957,8 @@ mod tests {
         let v = json!({ "workload": "gui", "panes": 16, "visible": 16,
                         "load": { "name": "lines" }, "backend": "macOS (Metal)" });
         assert_eq!(label("x", &v), "gui, 16 panes, 16 visible");
+        let v = json!({ "workload": "compare", "frames": "on" });
+        assert_eq!(label("x", &v), "compare, frames on");
     }
 
     #[test]

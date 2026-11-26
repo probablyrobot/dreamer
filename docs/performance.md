@@ -371,6 +371,7 @@ cargo xtask bench memory [--scenario NAME]... [--seconds S] [--warm-memory M]  #
 cargo xtask bench extensions [--panes N] [--without PART]  # typing next to slow and stalled extensions
 cargo xtask bench remote [--samples N]                   # key to echo through a host (stand-in, no SSH)
 cargo xtask bench remote --container [--netem SPEC]      # through OpenSSH to the ARM64 Linux container
+cargo xtask bench compare [--terminal NAME]... [--frames off|on|always] [--seconds S]  # next to other terminals, Linux
 cargo xtask bench report target/bench/headless-*.json     # result files as Markdown for this page
 ```
 
@@ -396,6 +397,35 @@ request's CI job runs `cargo xtask bench headless --panes 4 --debug`,
 `cargo xtask bench remote --samples 20 --debug`, and `bench report` on
 their results, on a shared x86-64 runner, and discards them. A broken
 harness fails the job.
+
+**Comparing terminals** (`bench compare`, Linux only for now). It builds
+`dreamer`, `dreamerd`, and `dreamer-bench` in release mode and opens
+windows on the machine's desktop: Dreamer, then each of Ghostty,
+Alacritty, kitty, and foot that is installed (one that is not is listed as
+skipped). Each draws the same isolated tmux session, on a tmux server of
+its own with no tmux configuration. The other terminals run with their
+built-in defaults and no user configuration; Dreamer runs with its
+default settings and private daemon directories. Three phases, each on a
+new tmux server:
+
+- **Idle:** one pane at a shell prompt; memory after 6 s.
+- **Cat:** the wall time of `cat` of a 64 MiB text file in one pane, as
+  the shell times it, and memory after it.
+- **Busy:** 16 tiled panes, 15 of them printing the file in a loop; the
+  terminal's CPU (percent of one core) and peak memory over `--seconds`
+  (20 by default), and the tmux server's CPU, reported on its own.
+
+Memory is PSS, summed over the terminal's own processes. Dreamer's
+numbers are split into the desktop (`dreamer`) and the daemon
+(`dreamerd`). `--terminal` picks terminals (all by default). `--frames`
+runs Dreamer with `DREAMER_RENDER_FRAMES` set to `off`, `on`, or `always`
+(see `render.frames`), and the results record it, so the same command
+measures frames off and on. On Hyprland, each window opens on an empty
+workspace and the results record whether it had focus in the idle and
+busy phases; elsewhere focus is recorded as unknown. Over SSH, it draws
+on the logged-in desktop session, found through `XDG_RUNTIME_DIR`,
+`WAYLAND_DISPLAY`, and `HYPRLAND_INSTANCE_SIGNATURE`. It prints a table
+and writes `target/bench/compare-<time>.json`, which `bench report` reads.
 
 **What the headless workload does, in order:**
 
