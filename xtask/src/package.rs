@@ -1251,12 +1251,45 @@ pub fn notarize(path: &Path, out: &Path, profile: &str) -> Result<(), String> {
 }
 
 /// Attach the notarization ticket to `app`, so it opens offline.
+///
+/// macOS can refuse writes inside a signed bundle in the work tree
+/// ("Operation not permitted", stapler error 73) while a copy in the
+/// temporary directory takes the ticket; then the stapled copy replaces
+/// `app`.
 fn staple(app: &Path) -> Result<(), String> {
-    run_checked(
+    let Err(why) = run_checked(
         Command::new("xcrun").args(["stapler", "staple"]).arg(app),
         "xcrun stapler staple",
-    )
-    .map(drop)
+    ) else {
+        return Ok(());
+    };
+    println!(
+        "package: stapling {} in place failed; stapling a copy",
+        app.display()
+    );
+    let name = app.file_name().ok_or("staple: the app has no name")?;
+    let dir = std::env::temp_dir().join(format!("dreamer-staple-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let copy = dir.join(name);
+    let result = (|| {
+        run_checked(Command::new("ditto").arg(app).arg(&copy), "ditto")?;
+        run_checked(
+            Command::new("xcrun").args(["stapler", "staple"]).arg(&copy),
+            "xcrun stapler staple",
+        )?;
+        std::fs::remove_dir_all(app).map_err(|e| format!("{}: {e}", app.display()))?;
+        run_checked(Command::new("ditto").arg(&copy).arg(app), "ditto")?;
+        run_checked(
+            Command::new("xcrun")
+                .args(["stapler", "validate", "-q"])
+                .arg(app),
+            "xcrun stapler validate",
+        )
+        .map(drop)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.map_err(|e| format!("{why}\nand through a copy: {e}"))
 }
 
 /// Gatekeeper accepts `app` as a notarized Developer ID app.
