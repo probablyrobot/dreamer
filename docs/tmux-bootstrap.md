@@ -71,7 +71,10 @@ refresh-client -A '%N:continue'
   `CaptureFailed`.
 
 Each command in a `;` line gets its own `%begin`/`%end`. Pane targets must be
-quoted (`'%N:pause'`).
+quoted (`'%N:pause'`). A block whose guard flags lack 1 answers no command the
+client sent: it is the output of a hook the server runs on the client's
+behalf (for example `after-refresh-client`), and bootstrap does not count it
+as a reply.
 
 **Restore.** A fresh engine of the pane's size, scrollback set to
 `history-limit` lines, and reply capture off. It is fed synthesized VT bytes,
@@ -163,12 +166,31 @@ tests plus unit tests), all passing:
 Linux x86-64 results come from CI, which builds the pinned tmux 3.8 with
 `cargo xtask deps tmux`.
 
+Changes between the pause and the capture are injected with a one-shot
+`after-refresh-client` hook, which tmux runs right after the pause. These
+cases ran on Linux x86-64 with tmux 3.8:
+
+| Case | What was checked | Result |
+| --- | --- | --- |
+| Pane respawned with another program between pause and capture | The new program's output followed to its end marker; full history | Exact |
+| Window split between pause and capture | The capture has the pane's new width; full history after following | Exact |
+| Pane killed between pause and capture | Fails within 2 s as `CaptureFailed`; the window's other pane then bootstraps exactly on the same client | Pass |
+
 Not yet tested:
 
 - Resize *during* bootstrap.
 - Panes in copy mode or with a tmux-generated mode active.
-- Capture hooks or other yielding commands configured on the server.
-- Pane respawn during bootstrap.
+
+## Known limitation: hooks that wait inside the capture line
+
+Phase 2 relies on tmux running the whole line without reading pane output.
+A hook the user configured on one of its commands breaks that if the hook
+waits: for example `set-hook -g after-capture-pane 'run-shell "sleep 0.3"'`
+(`run-shell` without `-b` waits for its job). While it waits, tmux reads the
+pane's output into its grid, so lines that scroll from the screen into
+history between the history capture and the screen capture are in neither.
+With a pane printing a line every 2 ms, a 0.3 s wait lost 114 lines of
+history (Linux x86-64, tmux 3.8). Bootstrap does not detect this.
 
 ## Quiescence, retries, and failure
 

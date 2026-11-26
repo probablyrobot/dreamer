@@ -221,7 +221,12 @@ impl Connection {
         let (requests_tx, requests_rx) = mpsc::channel::<Request>(config.queue_capacity);
         let (state_tx, state_rx) = watch::channel(LinkState::Ready);
 
-        tokio::spawn(reader(stdout, responses_tx, events_tx.clone()));
+        tokio::spawn(reader(
+            stdout,
+            responses_tx,
+            events_tx.clone(),
+            state_tx.clone(),
+        ));
         let (ready_tx, ready_rx) = oneshot::channel();
         tokio::spawn(scheduler(
             child,
@@ -297,6 +302,7 @@ async fn reader(
     mut stdout: tokio::process::ChildStdout,
     responses: mpsc::Sender<Response>,
     events: mpsc::Sender<ConnEvent>,
+    state: watch::Sender<LinkState>,
 ) {
     let mut parser = Parser::default();
     let mut buf = vec![0u8; 64 * 1024];
@@ -343,6 +349,10 @@ async fn reader(
             break Some(e.to_string());
         }
     };
+    // The control client ended (its tmux server exited, for example). Say
+    // so at once, before anyone sends a command: whatever tmux starts next
+    // on the socket is another server, whose ids mean other objects.
+    let _ = state.send(LinkState::Failed);
     let _ = events.send(ConnEvent::Closed { error }).await;
 }
 
@@ -373,6 +383,9 @@ async fn scheduler(
         let mut line = req.line.into_bytes();
         line.push(b'\n');
         if stdin.write_all(&line).await.is_err() || stdin.flush().await.is_err() {
+            // The control client is gone (its tmux server exited, for
+            // example): the link is unusable, so a caller reconnects.
+            let _ = state.send(LinkState::Failed);
             let _ = req.reply.send(Err(CommandError::Closed));
             break;
         }

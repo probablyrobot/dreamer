@@ -330,6 +330,12 @@ impl Router {
                 reason: "the tmux control connection ended".into(),
             };
         }
+        // End every subscription now. A tmux server started again on the
+        // same socket numbers its panes from zero, so nothing may stay
+        // attached to this connection's mirrors under those ids.
+        for w in &self.workers {
+            let _ = w.urgent(WorkerMsg::Lost);
+        }
         self.changed();
     }
 

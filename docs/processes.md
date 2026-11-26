@@ -20,7 +20,10 @@ compare both before treating two records as the same process.
 | `ancestry` | The process descends from the pane's program |
 | `terminal` | It only shares the pane's terminal (for example, it was reparented) |
 
-A process with neither has no `pane`.
+A process with neither has no `pane`. A program detached the way daemons
+do it (a fork, a new session, and a second fork) has lost both its
+ancestry and its terminal, so it is in no pane, even when it was started
+from one.
 
 ## Runs
 
@@ -36,7 +39,9 @@ A run outside any pane is at most `medium`. Only the topmost process of a
 run counts as the run. Processes it started (tools, shells, MCP servers)
 are reported with `helper_of` set to the run's pid and are never runs
 themselves. A run's `cwd` is reported when the system gives it (`/proc`
-on Linux, `lsof` on macOS).
+on Linux, `lsof` on macOS). When it cannot be read, for example because
+the process made itself not dumpable, `cwd` is absent and the run is
+still listed with the rest of its evidence.
 
 Pane titles, CPU use, and terminal output are not evidence of what a run
 is doing: the registry does not say whether a run is thinking, waiting,

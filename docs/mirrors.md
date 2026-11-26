@@ -126,7 +126,7 @@ with a `terminal.end` event that names the reason:
 | `lagged` | The subscriber's queue (4096 records) filled: it is not keeping up. Resubscribe, resuming if the records are still retained |
 | `pane_closed` | The pane is gone |
 | `respawned` | The pane runs a new process; subscribe to the new generation |
-| `connection_lost` | The daemon lost tmux; a new epoch follows |
+| `connection_lost` | The daemon lost tmux, for example because the tmux server exited; a new epoch follows. A tmux server started again on the same socket numbers its sessions, windows, and panes from zero, and its panes get new mirrors |
 | `unsubscribed` | `terminal.unsubscribe` |
 | `reattached` | The pane's output outran its mirror, which was rebuilt from a fresh capture (see [daemon.md](daemon.md#under-pressure)). Subscribe again; a checkpoint follows |
 

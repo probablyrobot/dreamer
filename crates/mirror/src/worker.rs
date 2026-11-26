@@ -290,6 +290,11 @@ pub enum WorkerMsg {
     },
     /// Nothing to do; makes a waiting worker look at its urgent lane.
     Wake,
+    /// The tmux control connection ended: stop, ending every subscription
+    /// as connection lost. Views, taps, and filters still hold the host,
+    /// so the worker would otherwise outlive its connection and keep them
+    /// on a mirror nothing feeds.
+    Lost,
     Drop {
         pane: TmuxPaneId,
     },
@@ -708,6 +713,7 @@ pub fn spawn(
                 };
                 match msg {
                     WorkerMsg::Wake => {}
+                    WorkerMsg::Lost => break,
                     WorkerMsg::Init {
                         pane,
                         epoch,
@@ -966,7 +972,7 @@ pub fn spawn(
                     }
                 }
             }
-            // The router and host are gone with their connection.
+            // The connection is gone (`Lost`), or the router and host are.
             for m in mirrors.values() {
                 for sub in &m.subscribers {
                     sub.ended.store(end::CONNECTION_LOST, Ordering::SeqCst);

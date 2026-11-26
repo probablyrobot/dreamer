@@ -249,6 +249,7 @@ pub fn bootstrap_pane(
     // next command, even when the pane turns out not to exist.
     while answered < 2 || !(paused || missing) {
         match client.recv(left())? {
+            Event::Response(r) if !from_this_client(&r) => passthrough.push(Event::Response(r)),
             Event::Response(r) if r.ok => {
                 answered += 1;
                 // tmux prints an empty line, not an error, for an unknown
@@ -288,6 +289,7 @@ pub fn bootstrap_pane(
     let mut failure: Option<Response> = None;
     while failure.is_none() && !(responses.len() == EXPECTED && continued) {
         match client.recv(left())? {
+            Event::Response(r) if !from_this_client(&r) => passthrough.push(Event::Response(r)),
             Event::Response(r) if r.ok => responses.push(r),
             Event::Response(r) => failure = Some(r),
             Event::Notification(Notification::Output { pane: p, data }) if p == pane => {
@@ -324,6 +326,15 @@ pub fn bootstrap_pane(
         continuation: continuation.len(),
         passthrough,
     })
+}
+
+/// Whether a response block answers a command this client sent. tmux marks
+/// those with guard flag 1; a block without it is the output of a command
+/// run on the client's behalf, such as a hook the user configured (for
+/// example `after-refresh-client`), and answers nothing bootstrap asked.
+/// The async connection drops such blocks the same way.
+fn from_this_client(r: &Response) -> bool {
+    r.guard.flags & 1 != 0
 }
 
 /// Phase 1 as typed commands, for an async connection: validate the pane,

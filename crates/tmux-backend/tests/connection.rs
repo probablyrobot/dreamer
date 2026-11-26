@@ -243,3 +243,23 @@ async fn notifications_arrive_in_order() {
     }
     assert!(saw_add.expect("window-add") < saw_rename.expect("rename"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_whose_server_exits_is_failed_before_any_command() {
+    let server = TmuxServer::start(80, 24, "sleep 60").expect("tmux");
+    let (conn, mut events) = Connection::spawn(config(&server)).await.expect("connect");
+    assert_eq!(conn.state(), LinkState::Ready);
+    server.run_checked(&["kill-server"]).expect("kill");
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("an event")
+            .expect("open");
+        if matches!(event, ConnEvent::Closed { .. }) {
+            break;
+        }
+    }
+    // A new server on the same socket would reuse the old ids: the owner
+    // must see the link failed and reconnect, not send on it.
+    assert_eq!(conn.state(), LinkState::Failed);
+}
