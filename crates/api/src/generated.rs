@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 65;
+pub const PROTOCOL_MINOR: u32 = 66;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1718,6 +1718,9 @@ pub struct Diagnostics {
     pub subscriber_queue_max: u32,
     #[prost(uint32, tag = "25")]
     pub subscriber_queue_capacity: u32,
+    /// View subscriptions now (local panes; a relayed pane's is in its host's diagnostics), each with its feed and its switches.
+    #[prost(message, repeated, tag = "26")]
+    pub views: Vec<ViewFeed>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -2354,6 +2357,9 @@ pub struct TerminalSubscribe {
     #[prost(enumeration = "TerminalFeed", tag = "7")]
     #[serde(with = "terminal_feed_json")]
     pub feed: i32,
+    /// On a connection with `terminal.frames`: the daemon switches the subscription between `stream` and `frames` on its own, by the pane's output rate (the `render.frames_*` settings), and tells it with `terminal.feed` notices. It starts on `feed`. A `terminal.set_feed` turns it off for the subscription.
+    #[prost(bool, tag = "8")]
+    pub automatic: bool,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
@@ -2520,6 +2526,68 @@ pub struct FeedSwitch {
     /// Frames mode: the number of the full frame that follows.
     #[prost(uint64, tag = "4")]
     pub frame: u64,
+    /// The daemon switched on its own (a `terminal.feed` notice), not on request.
+    #[prost(bool, tag = "5")]
+    pub automatic: bool,
+}
+
+/// Keep a terminal subscription on `stream` while the user works with its history (selects, scrolls back, searches): a subscription on `frames` switches back at once (a `terminal.feed` notice), and none is switched to `frames` while held and for `render.frames_hold` after the release.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HoldFeed {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    /// True to hold, false to release.
+    #[prost(bool, tag = "2")]
+    pub hold: bool,
+}
+
+/// Live effects of the records a subscription on `frames` was not sent, in order. Each arrives before the first frame whose sequence is at or after its own; they are never coalesced or dropped.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EffectBatch {
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    #[prost(uint32, tag = "2")]
+    pub pane: u32,
+    #[prost(uint64, tag = "3")]
+    pub epoch: u64,
+    #[prost(uint64, tag = "4")]
+    pub generation: u64,
+    #[prost(message, repeated, tag = "5")]
+    pub effects: Vec<TerminalEffect>,
+}
+
+/// One view subscription (`terminal.subscribe`) and its feed.
+#[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ViewFeed {
+    /// The subscription's id on its connection.
+    #[prost(uint64, tag = "1")]
+    pub subscription: u64,
+    #[prost(uint64, tag = "2")]
+    pub connection: u64,
+    #[prost(uint32, tag = "3")]
+    pub pane: u32,
+    /// The feed it is on now.
+    #[prost(enumeration = "TerminalFeed", tag = "4")]
+    #[serde(with = "terminal_feed_json")]
+    pub feed: i32,
+    /// The daemon switches it by the pane's output rate.
+    #[prost(bool, tag = "5")]
+    pub automatic: bool,
+    /// Held on `stream` by its client (terminal.hold_feed), or still within `render.frames_hold` of the release.
+    #[prost(bool, tag = "6")]
+    pub held: bool,
+    /// Switches of feed since it started, either way, requested or automatic.
+    #[prost(uint64, tag = "7")]
+    pub switches: u64,
+    /// Of those, the switches to `frames`.
+    #[prost(uint64, tag = "8")]
+    pub to_frames: u64,
+    /// The pane's output, bytes per second, over the last `render.frames_dwell`; 0 when not measured (not automatic, or quiet).
+    #[prost(uint64, tag = "9")]
+    pub rate: u64,
 }
 
 /// The visible screen of a pane on the `frames` feed, read from the daemon's mirror at `sequence`. A full frame carries every row and every optional part; any other carries only what changed since the previous frame of the subscription, whose number is one less.
@@ -6109,6 +6177,7 @@ pub mod method {
     pub const TERMINAL_SUBSCRIBE: &str = "terminal.subscribe";
     pub const TERMINAL_UNSUBSCRIBE: &str = "terminal.unsubscribe";
     pub const TERMINAL_SET_FEED: &str = "terminal.set_feed";
+    pub const TERMINAL_HOLD_FEED: &str = "terminal.hold_feed";
     pub const TERMINAL_INPUT: &str = "terminal.input";
     pub const HOSTS_CONNECT: &str = "hosts.connect";
     pub const HOSTS_LIST: &str = "hosts.list";
@@ -6385,6 +6454,13 @@ pub const METHODS: &[MethodInfo] = &[
         result: "FeedSwitch",
         mutation: false,
         doc: "Switch a subscription of this connection between the stream and screen frames.",
+    },
+    MethodInfo {
+        name: "terminal.hold_feed",
+        params: "HoldFeed",
+        result: "Empty",
+        mutation: false,
+        doc: "Hold a subscription of this connection on the stream while its history is in use, or release it.",
     },
     MethodInfo {
         name: "terminal.input",
@@ -7094,6 +7170,7 @@ pub enum Request {
     TerminalSubscribe(TerminalSubscribe),
     TerminalUnsubscribe(Unsubscribe),
     TerminalSetFeed(SetFeed),
+    TerminalHoldFeed(HoldFeed),
     TerminalInput(TerminalInput),
     HostsConnect(HostConnect),
     HostsList(Empty),
@@ -7220,6 +7297,7 @@ impl Request {
             Self::TerminalSubscribe(_) => "terminal.subscribe",
             Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
             Self::TerminalSetFeed(_) => "terminal.set_feed",
+            Self::TerminalHoldFeed(_) => "terminal.hold_feed",
             Self::TerminalInput(_) => "terminal.input",
             Self::HostsConnect(_) => "hosts.connect",
             Self::HostsList(_) => "hosts.list",
@@ -7347,6 +7425,7 @@ impl Request {
             Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalSetFeed(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalHoldFeed(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalInput(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsConnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
@@ -7483,6 +7562,7 @@ impl Request {
                 Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
             }
             "terminal.set_feed" => Ok(Self::TerminalSetFeed(::prost::Message::decode(bytes)?)),
+            "terminal.hold_feed" => Ok(Self::TerminalHoldFeed(::prost::Message::decode(bytes)?)),
             "terminal.input" => Ok(Self::TerminalInput(::prost::Message::decode(bytes)?)),
             "hosts.connect" => Ok(Self::HostsConnect(::prost::Message::decode(bytes)?)),
             "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
@@ -7624,6 +7704,7 @@ impl Request {
             Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalSetFeed(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalHoldFeed(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalInput(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsConnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -7758,6 +7839,7 @@ impl Request {
             "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
             "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
             "terminal.set_feed" => Ok(Self::TerminalSetFeed(serde_json::from_value(value)?)),
+            "terminal.hold_feed" => Ok(Self::TerminalHoldFeed(serde_json::from_value(value)?)),
             "terminal.input" => Ok(Self::TerminalInput(serde_json::from_value(value)?)),
             "hosts.connect" => Ok(Self::HostsConnect(serde_json::from_value(value)?)),
             "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
@@ -7897,6 +7979,7 @@ pub enum Response {
     TerminalSubscribe(Subscription),
     TerminalUnsubscribe(Empty),
     TerminalSetFeed(FeedSwitch),
+    TerminalHoldFeed(Empty),
     TerminalInput(InputResult),
     HostsConnect(HostStatus),
     HostsList(HostList),
@@ -8023,6 +8106,7 @@ impl Response {
             Self::TerminalSubscribe(_) => "terminal.subscribe",
             Self::TerminalUnsubscribe(_) => "terminal.unsubscribe",
             Self::TerminalSetFeed(_) => "terminal.set_feed",
+            Self::TerminalHoldFeed(_) => "terminal.hold_feed",
             Self::TerminalInput(_) => "terminal.input",
             Self::HostsConnect(_) => "hosts.connect",
             Self::HostsList(_) => "hosts.list",
@@ -8150,6 +8234,7 @@ impl Response {
             Self::TerminalSubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalUnsubscribe(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalSetFeed(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalHoldFeed(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalInput(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsConnect(v) => ::prost::Message::encode_to_vec(v),
             Self::HostsList(v) => ::prost::Message::encode_to_vec(v),
@@ -8286,6 +8371,7 @@ impl Response {
                 Ok(Self::TerminalUnsubscribe(::prost::Message::decode(bytes)?))
             }
             "terminal.set_feed" => Ok(Self::TerminalSetFeed(::prost::Message::decode(bytes)?)),
+            "terminal.hold_feed" => Ok(Self::TerminalHoldFeed(::prost::Message::decode(bytes)?)),
             "terminal.input" => Ok(Self::TerminalInput(::prost::Message::decode(bytes)?)),
             "hosts.connect" => Ok(Self::HostsConnect(::prost::Message::decode(bytes)?)),
             "hosts.list" => Ok(Self::HostsList(::prost::Message::decode(bytes)?)),
@@ -8427,6 +8513,7 @@ impl Response {
             Self::TerminalSubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalUnsubscribe(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalSetFeed(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalHoldFeed(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalInput(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsConnect(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::HostsList(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -8561,6 +8648,7 @@ impl Response {
             "terminal.subscribe" => Ok(Self::TerminalSubscribe(serde_json::from_value(value)?)),
             "terminal.unsubscribe" => Ok(Self::TerminalUnsubscribe(serde_json::from_value(value)?)),
             "terminal.set_feed" => Ok(Self::TerminalSetFeed(serde_json::from_value(value)?)),
+            "terminal.hold_feed" => Ok(Self::TerminalHoldFeed(serde_json::from_value(value)?)),
             "terminal.input" => Ok(Self::TerminalInput(serde_json::from_value(value)?)),
             "hosts.connect" => Ok(Self::HostsConnect(serde_json::from_value(value)?)),
             "hosts.list" => Ok(Self::HostsList(serde_json::from_value(value)?)),
@@ -8792,6 +8880,11 @@ pub trait Service: Sync {
         &self,
         params: SetFeed,
     ) -> impl ::core::future::Future<Output = Result<FeedSwitch, RpcError>> + Send;
+    /// Hold a subscription of this connection on the stream while its history is in use, or release it.
+    fn terminal_hold_feed(
+        &self,
+        params: HoldFeed,
+    ) -> impl ::core::future::Future<Output = Result<Empty, RpcError>> + Send;
     /// Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state.
     fn terminal_input(
         &self,
@@ -9338,6 +9431,10 @@ pub async fn dispatch<S: Service>(service: &S, request: Request) -> Result<Respo
             .terminal_set_feed(p)
             .await
             .map(Response::TerminalSetFeed),
+        Request::TerminalHoldFeed(p) => service
+            .terminal_hold_feed(p)
+            .await
+            .map(Response::TerminalHoldFeed),
         Request::TerminalInput(p) => service.terminal_input(p).await.map(Response::TerminalInput),
         Request::HostsConnect(p) => service.hosts_connect(p).await.map(Response::HostsConnect),
         Request::HostsList(p) => service.hosts_list(p).await.map(Response::HostsList),
@@ -9541,6 +9638,10 @@ pub mod topic {
     pub const TERMINAL_END: &str = "terminal.end";
     /// A screen frame of a subscription on the frames feed (a bulk record on the native wire).
     pub const TERMINAL_FRAME: &str = "terminal.frame";
+    /// The daemon switched a subscription's feed on its own; ordered as a reply to terminal.set_feed would be.
+    pub const TERMINAL_FEED: &str = "terminal.feed";
+    /// Effects (bells, title, directory, clipboard) of a subscription on the frames feed, before the frame that shows their records.
+    pub const TERMINAL_EFFECTS: &str = "terminal.effects";
     /// The watched topology changed.
     pub const TMUX_TOPOLOGY: &str = "tmux.topology";
     /// Events of an events.subscribe subscription, after its gap if any.
@@ -9564,6 +9665,8 @@ pub enum Notification {
     TerminalCheckpoint(CheckpointData),
     TerminalEnd(SubscriptionEnd),
     TerminalFrame(ScreenFrame),
+    TerminalFeed(FeedSwitch),
+    TerminalEffects(EffectBatch),
     TmuxTopology(TopologyUpdate),
     EventsBatch(EventBatch),
     MessagesDeliver(MessageDelivery),
@@ -9580,6 +9683,8 @@ impl Notification {
             Self::TerminalCheckpoint(_) => "terminal.checkpoint",
             Self::TerminalEnd(_) => "terminal.end",
             Self::TerminalFrame(_) => "terminal.frame",
+            Self::TerminalFeed(_) => "terminal.feed",
+            Self::TerminalEffects(_) => "terminal.effects",
             Self::TmuxTopology(_) => "tmux.topology",
             Self::EventsBatch(_) => "events.batch",
             Self::MessagesDeliver(_) => "messages.deliver",
@@ -9596,6 +9701,8 @@ impl Notification {
             Self::TerminalCheckpoint(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalEnd(v) => ::prost::Message::encode_to_vec(v),
             Self::TerminalFrame(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalFeed(v) => ::prost::Message::encode_to_vec(v),
+            Self::TerminalEffects(v) => ::prost::Message::encode_to_vec(v),
             Self::TmuxTopology(v) => ::prost::Message::encode_to_vec(v),
             Self::EventsBatch(v) => ::prost::Message::encode_to_vec(v),
             Self::MessagesDeliver(v) => ::prost::Message::encode_to_vec(v),
@@ -9612,6 +9719,8 @@ impl Notification {
             "terminal.checkpoint" => Ok(Self::TerminalCheckpoint(::prost::Message::decode(bytes)?)),
             "terminal.end" => Ok(Self::TerminalEnd(::prost::Message::decode(bytes)?)),
             "terminal.frame" => Ok(Self::TerminalFrame(::prost::Message::decode(bytes)?)),
+            "terminal.feed" => Ok(Self::TerminalFeed(::prost::Message::decode(bytes)?)),
+            "terminal.effects" => Ok(Self::TerminalEffects(::prost::Message::decode(bytes)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(::prost::Message::decode(bytes)?)),
             "events.batch" => Ok(Self::EventsBatch(::prost::Message::decode(bytes)?)),
             "messages.deliver" => Ok(Self::MessagesDeliver(::prost::Message::decode(bytes)?)),
@@ -9631,6 +9740,8 @@ impl Notification {
             Self::TerminalCheckpoint(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalEnd(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TerminalFrame(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalFeed(v) => serde_json::to_value(v).unwrap_or_default(),
+            Self::TerminalEffects(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::TmuxTopology(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::EventsBatch(v) => serde_json::to_value(v).unwrap_or_default(),
             Self::MessagesDeliver(v) => serde_json::to_value(v).unwrap_or_default(),
@@ -9647,6 +9758,8 @@ impl Notification {
             "terminal.checkpoint" => Ok(Self::TerminalCheckpoint(serde_json::from_value(value)?)),
             "terminal.end" => Ok(Self::TerminalEnd(serde_json::from_value(value)?)),
             "terminal.frame" => Ok(Self::TerminalFrame(serde_json::from_value(value)?)),
+            "terminal.feed" => Ok(Self::TerminalFeed(serde_json::from_value(value)?)),
+            "terminal.effects" => Ok(Self::TerminalEffects(serde_json::from_value(value)?)),
             "tmux.topology" => Ok(Self::TmuxTopology(serde_json::from_value(value)?)),
             "events.batch" => Ok(Self::EventsBatch(serde_json::from_value(value)?)),
             "messages.deliver" => Ok(Self::MessagesDeliver(serde_json::from_value(value)?)),

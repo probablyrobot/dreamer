@@ -317,6 +317,11 @@ daemon is not asked, and nothing is sent from another machine.
   re-checkpointed, the search runs again. The current match is kept if it
   still exists, without jumping.
 - **Escape** closes the bar and clears the highlights.
+- **Busy panes:** with `render.frames: on`, a pane that writes fast may
+  be drawn from the daemon's screen frames. Opening the bar, selecting, or
+  scrolling back brings it back to its own mirror first, so the search
+  and the selection are the same as on any other pane
+  ([settings.md](settings.md#screen-frames)).
 
 **Bounds**
 - The newest 100,000 rows and 16 MiB of text are searched, and at most

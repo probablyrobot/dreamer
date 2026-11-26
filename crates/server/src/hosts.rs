@@ -45,7 +45,11 @@ const BACKOFF_CAP: u64 = 60;
 fn forwardable(method: &str) -> bool {
     !matches!(
         method,
-        "terminal.subscribe" | "terminal.unsubscribe" | "terminal.set_feed" | "tmux.watch"
+        "terminal.subscribe"
+            | "terminal.unsubscribe"
+            | "terminal.set_feed"
+            | "terminal.hold_feed"
+            | "tmux.watch"
     ) && !method.starts_with("hosts.")
         && !method.starts_with("forward.")
 }
@@ -190,11 +194,21 @@ pub enum RelayItem {
     Frame(api::ScreenFrame),
     /// The answer to a switch of feed, in order with the items: everything
     /// before it is of the previous feed, everything after of the new one.
+    /// With no request, the host switched on its own (a notice).
     Switched {
-        request: u64,
+        request: Option<u64>,
         result: Result<api::FeedSwitch, RpcError>,
     },
+    /// Effects of records on frames.
+    Effects(api::EffectBatch),
     End(api::SubscriptionEnd),
+}
+
+/// What the client asks of a relayed subscription's feed.
+#[derive(Debug, Clone, Copy)]
+pub enum RelayCtl {
+    Switch { request: u64, frames: bool },
+    Hold(bool),
 }
 
 /// Pushed data still waiting per remote subscription before its relay
@@ -1053,6 +1067,20 @@ fn dispatch(host: &Host, link: u64, p: Pushed) {
                 Ok(e) => (e.subscription, RelayItem::End(e)),
                 Err(_) => return,
             },
+            "terminal.feed" => match api::FeedSwitch::decode(payload.as_slice()) {
+                Ok(s) => (
+                    s.subscription,
+                    RelayItem::Switched {
+                        request: None,
+                        result: Ok(s),
+                    },
+                ),
+                Err(_) => return,
+            },
+            "terminal.effects" => match api::EffectBatch::decode(payload.as_slice()) {
+                Ok(b) => (b.subscription, RelayItem::Effects(b)),
+                Err(_) => return,
+            },
             "tmux.topology" => {
                 if let Ok(u) = api::TopologyUpdate::decode(payload.as_slice()) {
                     host.publish_topology(link, u);
@@ -1117,9 +1145,9 @@ type Current = Arc<Mutex<Option<(Arc<Client>, u64)>>>;
 pub struct Relay {
     pub subscription: api::Subscription,
     pub items: tokio::sync::mpsc::Receiver<RelayItem>,
-    /// Switches of feed: (request id, to frames). The answer comes back
-    /// in `items` as [`RelayItem::Switched`].
-    pub switch: tokio::sync::mpsc::Sender<(u64, bool)>,
+    /// Switches of feed and holds. A switch's answer comes back in
+    /// `items` as [`RelayItem::Switched`].
+    pub switch: tokio::sync::mpsc::Sender<RelayCtl>,
     task: tokio::task::JoinHandle<()>,
     current: Current,
 }
@@ -1215,6 +1243,18 @@ impl Feed {
         }
     }
 
+    /// The feed a switch the host answered (or made) starts.
+    fn to(s: &api::FeedSwitch) -> Feed {
+        if s.mode == api::SubscribeMode::Frames as i32 {
+            Feed::Frames { from: s.frame }
+        } else {
+            Feed::Stream {
+                after: s.sequence,
+                checkpoint: true,
+            }
+        }
+    }
+
     /// Ask the host to switch: its answer, and the feed it starts.
     async fn switch(current: &Current, frames: bool) -> Result<(api::FeedSwitch, Feed), RpcError> {
         let Some((client, remote)) = lock(current).clone() else {
@@ -1240,14 +1280,7 @@ impl Feed {
             Err(ClientError::Rpc(e)) => return Err(e),
             Err(e) => return Err(RpcError::new(code::UNAVAILABLE, e.to_string())),
         };
-        let to = if s.mode == api::SubscribeMode::Frames as i32 {
-            Feed::Frames { from: s.frame }
-        } else {
-            Feed::Stream {
-                after: s.sequence,
-                checkpoint: true,
-            }
-        };
+        let to = Feed::to(&s);
         Ok((s, to))
     }
 }
@@ -1314,8 +1347,22 @@ async fn relay(
     mut instance: Option<String>,
     out: tokio::sync::mpsc::Sender<RelayItem>,
     current: Current,
-    mut switches: tokio::sync::mpsc::Receiver<(u64, bool)>,
+    mut switches: tokio::sync::mpsc::Receiver<RelayCtl>,
 ) {
+    // Held by the client: said again to the host after a lost link.
+    let mut held = false;
+    let hold = |hold: bool| {
+        if let Some((client, remote)) = lock(&current).clone() {
+            tokio::spawn(async move {
+                let _ = client
+                    .call(api::Request::TerminalHoldFeed(api::HoldFeed {
+                        subscription: remote,
+                        hold,
+                    }))
+                    .await;
+            });
+        }
+    };
     let mut last = sub.sequence;
     let mut feed = Feed::of(&sub);
     // Frames are numbered here, so numbers keep counting without a gap
@@ -1328,7 +1375,15 @@ async fn relay(
     loop {
         let next = tokio::select! {
             biased;
-            Some((request, frames)) = switches.recv(), if switching.is_none() => {
+            Some(ctl) = switches.recv(), if switching.is_none() => {
+                let (request, frames) = match ctl {
+                    RelayCtl::Hold(h) => {
+                        held = h;
+                        hold(h);
+                        continue;
+                    }
+                    RelayCtl::Switch { request, frames } => (request, frames),
+                };
                 match Feed::switch(&current, frames).await {
                     Ok((s, to)) => {
                         params.feed = if frames {
@@ -1339,7 +1394,7 @@ async fn relay(
                         switching = Some((request, s, to));
                     }
                     Err(e) => {
-                        let item = RelayItem::Switched { request, result: Err(e) };
+                        let item = RelayItem::Switched { request: Some(request), result: Err(e) };
                         if out.send(item).await.is_err() {
                             return;
                         }
@@ -1360,7 +1415,7 @@ async fn relay(
             feed = to;
             if out
                 .send(RelayItem::Switched {
-                    request,
+                    request: Some(request),
                     result: Ok(s),
                 })
                 .await
@@ -1395,7 +1450,28 @@ async fn relay(
                 f.number = number;
                 RelayItem::Frame(f)
             }
+            // The host switched on its own. Unlike a reply, the notice
+            // comes in order with the data: the new feed starts here.
+            Some(RelayItem::Switched {
+                request: None,
+                result: Ok(mut s),
+            }) => {
+                feed = Feed::to(&s);
+                params.feed = if matches!(feed, Feed::Frames { .. }) {
+                    api::TerminalFeed::Frames
+                } else {
+                    api::TerminalFeed::Stream
+                } as i32;
+                if matches!(feed, Feed::Frames { .. }) {
+                    s.frame = number + 1;
+                }
+                RelayItem::Switched {
+                    request: None,
+                    result: Ok(s),
+                }
+            }
             Some(RelayItem::Switched { .. }) => continue,
+            Some(e @ RelayItem::Effects(_)) => e,
             Some(e @ RelayItem::End(_)) => {
                 lock(&current).take();
                 let _ = out.send(e).await;
@@ -1446,6 +1522,9 @@ async fn relay(
                         feed = Feed::of(&s);
                         (sub, rx, lagged, generation) = (s, r, l, g);
                         instance = now;
+                        if held {
+                            hold(true);
+                        }
                         continue;
                     }
                     Ok((s, r, l)) if s.mode == api::SubscribeMode::Replay as i32 => {
@@ -1456,6 +1535,9 @@ async fn relay(
                         *lock(&current) = Some((client, s.id));
                         (sub, rx, lagged, generation) = (s, r, l, g);
                         instance = now;
+                        if held {
+                            hold(true);
+                        }
                         continue;
                     }
                     Ok((s, _, _)) => {
@@ -1583,6 +1665,7 @@ mod tests {
             "terminal.subscribe",
             "terminal.unsubscribe",
             "terminal.set_feed",
+            "terminal.hold_feed",
             "tmux.watch",
             "hosts.call",
             "hosts.connect",

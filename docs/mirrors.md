@@ -162,6 +162,28 @@ already holds.
   subscription is already on starts it over the same way; from `stream` to
   `stream`, records up to N may still follow the reply, and are in the
   checkpoint.
+- **Switching on its own.** A subscription made with `automatic: true` on
+  a connection with the feature is switched by the daemon, by the pane's
+  output rate. It starts on the feed it asked for. It goes to `frames` once
+  the pane wrote more than `render.frames_above` a second (1 MiB by
+  default) over the last `render.frames_dwell` (1 s), and back to `stream`
+  once it wrote less than `render.frames_below` (256 KiB). It stays at
+  least `render.frames_dwell` on a feed before either switch. The gap
+  between the two rates and that least time keep a pane that writes about
+  as fast as a threshold from flipping
+  ([settings.md](settings.md#screen-frames)). The client learns of a switch
+  from a `terminal.feed` event (`FeedSwitch`, `automatic: true`), placed
+  exactly where a reply to `terminal.set_feed` would be, and the same rules
+  follow it. A `terminal.set_feed` ends the automatic switching for that
+  subscription.
+- **Holding.** `terminal.hold_feed` with `hold: true` keeps a subscription
+  on `stream` while the client works with the pane's history (a
+  selection, a view scrolled back, a search, copy mode). A subscription on
+  `frames` switches to `stream` at once, as above, with a `terminal.feed`
+  event. None is switched to `frames` while held, nor for
+  `render.frames_hold` (2 s) after `hold: false`. Then an automatic
+  subscription follows the rate again, and any other one goes back to the
+  feed it asked for.
 - **What a frame holds.** The mirror sequence it was taken at (every record
   up to it is in the frame); its number, counting the subscription's frames
   from 1 without a gap across switches; the grid size; the rows that differ
@@ -186,11 +208,28 @@ already holds.
   socket, from the screen as it is then: screen states that changed in
   between are never sent, and a slow client gets fewer frames instead of a
   queue. Only the screen states nobody saw are skipped; no record is.
-- **Remote hosts.** Frames and switches pass through `hosts.subscribe`. The
-  coordinator numbers frames itself, so a relay that comes back after a
-  lost link continues on frames with a full frame numbered after the last.
-  A relay that loses its link after a switch to `stream` but before that
-  switch's checkpoint arrived ends as `lagged`.
+- **Effects.** Bells, title and directory changes, and clipboard writes
+  (to the pane's focused client only) are not screen states, so they are
+  never skipped. On `frames` they arrive as `terminal.effects` events
+  (`EffectBatch`), in order, each before the first frame taken at or after
+  its record, and before the reply or event that switches the
+  subscription back to `stream`. Each arrives once: the effects of a
+  record go with the records on `stream` and in these batches on
+  `frames`, never both. A client that lets 4,096 of them pile up is ended
+  as `lagged`, as a full record queue is.
+- **Remote hosts.** Frames, switches, holds, effects, and the host's own
+  switches pass through `hosts.subscribe`; the host's daemon applies its
+  settings to the subscription. The coordinator numbers frames itself, so a
+  relay that comes back after a lost link continues on frames with a full
+  frame numbered after the last, and holds the new subscription if the
+  client held the old one. A relay that loses its link after a switch to
+  `stream` but before that switch's checkpoint arrived ends as `lagged`.
+- **Diagnostics.** `daemon.diagnostics` lists every view subscription of
+  the daemon's own panes (`views`): its pane, the feed it is on, whether
+  the daemon switches it or a client holds it, how many times it switched
+  (and how many of those were to `frames`), and the pane's output rate as
+  the daemon measured it. `dream status --perf` and `dream diagnostics`
+  print them. A relayed pane's subscription is in its host's diagnostics.
 
 The daemon encodes frames with `client::frames::encode`. The `replica`
 crate's `screen::ScreenView` keeps a screen from frames by these rules,

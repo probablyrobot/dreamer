@@ -1216,4 +1216,33 @@ async fn screen_frames_pass_through_the_coordinator_across_switches_and_a_cut_li
         check.push(p);
     }
     assert!(check.full_frames > full, "{check:?}");
+
+    // A hold through the coordinator: the host switches back to the
+    // stream, and to frames again after the release, each time with a
+    // notice in order with the data.
+    let hold = |hold: bool| {
+        c.call(Request::TerminalHoldFeed(api::HoldFeed {
+            subscription: sub.id,
+            hold,
+        }))
+    };
+    hold(true).await.expect("hold");
+    while !(check.notices == 1 && check.settled()) {
+        let p = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("no switch to the stream for the hold")
+            .expect("open");
+        check.push(p);
+    }
+    assert!(!check.on_frames(), "{check:?}");
+    hold(false).await.expect("release");
+    two.type_far("printf '\\007'; seq 1 20000; printf '\\007'; echo FX''-FAR");
+    while !(check.notices == 2 && check.bells == 2 && shows(&check, "FX-FAR")) {
+        let p = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("not back on frames after the release, or no bells")
+            .expect("open");
+        check.push(p);
+    }
+    assert!(check.on_frames(), "{check:?}");
 }

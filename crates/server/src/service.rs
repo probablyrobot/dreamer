@@ -107,6 +107,9 @@ pub struct State {
     /// When panes nothing follows go Cold (`tiers:` in the settings),
     /// changed live by the configuration.
     pub tiers: Mutex<mirror::TierPolicy>,
+    /// When view subscriptions switch between the stream and screen
+    /// frames (`render.frames_*`), changed live by the configuration.
+    pub frames: crate::feeds::Shared,
     /// Connection epochs: each new control connection gets the next one.
     pub epochs: std::sync::atomic::AtomicU64,
     /// Outbound connections to other hosts' daemons (the coordinator role).
@@ -1020,6 +1023,13 @@ impl api::Service for DaemonService {
         Err(RpcError::new(
             code::INVALID_REQUEST,
             "terminal.set_feed needs a streaming connection to the daemon",
+        ))
+    }
+
+    async fn terminal_hold_feed(&self, _: api::HoldFeed) -> Result<api::Empty, RpcError> {
+        Err(RpcError::new(
+            code::INVALID_REQUEST,
+            "terminal.hold_feed needs a streaming connection to the daemon",
         ))
     }
 
@@ -2073,6 +2083,7 @@ impl DaemonService {
             d.subscriber_queue_max = n(q.subscriber_max);
             d.subscriber_queue_capacity = n(q.subscriber_capacity);
         }
+        d.views = crate::feeds::views();
         d
     }
 

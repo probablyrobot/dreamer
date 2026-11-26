@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 65 }
+version: { major: 1, minor: 66 }
 package: dreamer.v1
 
 types:
@@ -113,6 +113,7 @@ types:
       - { n: 23, name: subscribers, type: u32, doc: "Subscriptions following mirrors now." }
       - { n: 24, name: subscriber_queue_max, type: u32, doc: "Records waiting in the fullest subscriber queue." }
       - { n: 25, name: subscriber_queue_capacity, type: u32 }
+      - { n: 26, name: views, type: ViewFeed, repeated: true, doc: "View subscriptions now (local panes; a relayed pane's is in its host's diagnostics), each with its feed and its switches." }
 
   - message: ShutdownResult
     fields:
@@ -456,6 +457,12 @@ types:
   # In the `frames` feed (only on a connection with the `terminal.frames`
   # wire feature) there are no checkpoint and no records; instead:
   #   bulk  topic `terminal.frame`       ScreenFrame (stream = subscription)
+  #   event topic `terminal.effects`     EffectBatch (effects of the records
+  #                                      in the frames, before the frame
+  #                                      that shows them)
+  # A subscription the daemon switches on its own (`automatic`, or a held
+  # one) gets the switch as an event where a reply would fall:
+  #   event topic `terminal.feed`        FeedSwitch (automatic = true)
 
   - message: TerminalSubscribe
     fields:
@@ -466,6 +473,7 @@ types:
       - { n: 5, name: resume_sequence, type: u64, optional: true }
       - { n: 6, name: client, type: u64, optional: true, doc: "An id the client picks once per window; it names the client in TerminalInput too, so the daemon can address effects such as clipboard writes to exactly one." }
       - { n: 7, name: feed, type: TerminalFeed, doc: "How to follow the pane; `frames` needs the connection's `terminal.frames` feature. Resuming applies to `stream` only." }
+      - { n: 8, name: automatic, type: bool, doc: "On a connection with `terminal.frames`: the daemon switches the subscription between `stream` and `frames` on its own, by the pane's output rate (the `render.frames_*` settings), and tells it with `terminal.feed` notices. It starts on `feed`. A `terminal.set_feed` turns it off for the subscription." }
 
   - enum: TerminalFeed
     values:
@@ -570,6 +578,43 @@ types:
       - { n: 2, name: mode, type: SubscribeMode, doc: "checkpoint (to stream: a checkpoint at `sequence` follows, then records from sequence + 1) or frames (a full frame at `sequence` follows, and no more records)." }
       - { n: 3, name: sequence, type: u64 }
       - { n: 4, name: frame, type: u64, doc: "Frames mode: the number of the full frame that follows." }
+      - { n: 5, name: automatic, type: bool, doc: "The daemon switched on its own (a `terminal.feed` notice), not on request." }
+
+  - message: HoldFeed
+    doc: >-
+      Keep a terminal subscription on `stream` while the user works with
+      its history (selects, scrolls back, searches): a subscription on
+      `frames` switches back at once (a `terminal.feed` notice), and none
+      is switched to `frames` while held and for `render.frames_hold` after
+      the release.
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: hold, type: bool, doc: "True to hold, false to release." }
+
+  - message: EffectBatch
+    doc: >-
+      Live effects of the records a subscription on `frames` was not sent,
+      in order. Each arrives before the first frame whose sequence is at
+      or after its own; they are never coalesced or dropped.
+    fields:
+      - { n: 1, name: subscription, type: u64 }
+      - { n: 2, name: pane, type: u32 }
+      - { n: 3, name: epoch, type: u64 }
+      - { n: 4, name: generation, type: u64 }
+      - { n: 5, name: effects, type: TerminalEffect, repeated: true }
+
+  - message: ViewFeed
+    doc: "One view subscription (`terminal.subscribe`) and its feed."
+    fields:
+      - { n: 1, name: subscription, type: u64, doc: "The subscription's id on its connection." }
+      - { n: 2, name: connection, type: u64 }
+      - { n: 3, name: pane, type: u32 }
+      - { n: 4, name: feed, type: TerminalFeed, doc: "The feed it is on now." }
+      - { n: 5, name: automatic, type: bool, doc: "The daemon switches it by the pane's output rate." }
+      - { n: 6, name: held, type: bool, doc: "Held on `stream` by its client (terminal.hold_feed), or still within `render.frames_hold` of the release." }
+      - { n: 7, name: switches, type: u64, doc: "Switches of feed since it started, either way, requested or automatic." }
+      - { n: 8, name: to_frames, type: u64, doc: "Of those, the switches to `frames`." }
+      - { n: 9, name: rate, type: u64, doc: "The pane's output, bytes per second, over the last `render.frames_dwell`; 0 when not measured (not automatic, or quiet)." }
 
   - message: ScreenFrame
     doc: >-
@@ -2424,6 +2469,7 @@ methods:
   - { method: terminal.subscribe, params: TerminalSubscribe, result: Subscription, doc: "Follow a pane's canonical mirror: checkpoint or replay, then ordered records." }
   - { method: terminal.unsubscribe, params: Unsubscribe, result: Empty }
   - { method: terminal.set_feed, params: SetFeed, result: FeedSwitch, doc: "Switch a subscription of this connection between the stream and screen frames." }
+  - { method: terminal.hold_feed, params: HoldFeed, result: Empty, doc: "Hold a subscription of this connection on the stream while its history is in use, or release it." }
   - { method: terminal.input, params: TerminalInput, result: InputResult, mutation: true, doc: "Keys, text, paste, focus, or mouse for a pane, encoded against its canonical state." }
   - { method: hosts.connect, params: HostConnect, result: HostStatus, mutation: true, doc: "Connect to another host's daemon over ssh; the connection belongs to this daemon, not the caller. With no destination, `name` is a profile from hosts.yaml." }
   - { method: hosts.list, params: Empty, result: HostList, doc: "Every remote host this daemon knows and its state." }
@@ -2530,6 +2576,8 @@ notifications:
   - { topic: terminal.checkpoint, payload: CheckpointData, doc: "A subscription's starting snapshot (a bulk stream on the native wire)." }
   - { topic: terminal.end, payload: SubscriptionEnd, doc: "A subscription ended; nothing more follows for it." }
   - { topic: terminal.frame, payload: ScreenFrame, doc: "A screen frame of a subscription on the frames feed (a bulk record on the native wire)." }
+  - { topic: terminal.feed, payload: FeedSwitch, doc: "The daemon switched a subscription's feed on its own; ordered as a reply to terminal.set_feed would be." }
+  - { topic: terminal.effects, payload: EffectBatch, doc: "Effects (bells, title, directory, clipboard) of a subscription on the frames feed, before the frame that shows their records." }
   - { topic: tmux.topology, payload: TopologyUpdate, doc: "The watched topology changed." }
   - { topic: events.batch, payload: EventBatch, doc: "Events of an events.subscribe subscription, after its gap if any." }
   - { topic: messages.deliver, payload: MessageDelivery, doc: "A message for a messages.subscribe subscription." }

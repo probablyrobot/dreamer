@@ -1731,6 +1731,10 @@
           "repeated": false,
           "type": "u64"
         },
+        "views": {
+          "repeated": true,
+          "type": "ViewFeed"
+        },
         "worker_queue_capacity": {
           "repeated": false,
           "type": "u32"
@@ -1822,6 +1826,30 @@
         "zoomed": {
           "repeated": false,
           "type": "bool"
+        }
+      }
+    },
+    "EffectBatch": {
+      "fields": {
+        "effects": {
+          "repeated": true,
+          "type": "TerminalEffect"
+        },
+        "epoch": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "generation": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
         }
       }
     },
@@ -2014,6 +2042,10 @@
     },
     "FeedSwitch": {
       "fields": {
+        "automatic": {
+          "repeated": false,
+          "type": "bool"
+        },
         "frame": {
           "repeated": false,
           "type": "u64"
@@ -2245,6 +2277,18 @@
         "panes": {
           "repeated": true,
           "type": "u32"
+        }
+      }
+    },
+    "HoldFeed": {
+      "fields": {
+        "hold": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
         }
       }
     },
@@ -5056,6 +5100,10 @@
     },
     "TerminalSubscribe": {
       "fields": {
+        "automatic": {
+          "repeated": false,
+          "type": "bool"
+        },
         "client": {
           "repeated": false,
           "type": "u64"
@@ -5363,6 +5411,46 @@
         "protocol_minor": {
           "repeated": false,
           "type": "u32"
+        }
+      }
+    },
+    "ViewFeed": {
+      "fields": {
+        "automatic": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "connection": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "feed": {
+          "repeated": false,
+          "type": "TerminalFeed"
+        },
+        "held": {
+          "repeated": false,
+          "type": "bool"
+        },
+        "pane": {
+          "repeated": false,
+          "type": "u32"
+        },
+        "rate": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "subscription": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "switches": {
+          "repeated": false,
+          "type": "u64"
+        },
+        "to_frames": {
+          "repeated": false,
+          "type": "u64"
         }
       }
     },
@@ -5765,6 +5853,7 @@
     "scripts.validate": "ScriptSource",
     "taps.subscribe": "TapSubscribe",
     "taps.unsubscribe": "Unsubscribe",
+    "terminal.hold_feed": "HoldFeed",
     "terminal.input": "TerminalInput",
     "terminal.list": "TopologyParams",
     "terminal.mirrors": "TopologyParams",
@@ -6047,5 +6136,5 @@
       }
     }
   },
-  "version": "1.65"
+  "version": "1.66"
 }

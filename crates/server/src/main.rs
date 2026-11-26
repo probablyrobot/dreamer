@@ -23,6 +23,7 @@ mod decorations;
 mod drawer;
 mod events;
 mod extensions;
+mod feeds;
 mod filters;
 mod forward;
 mod grants;
@@ -330,6 +331,9 @@ fn run(args: Args) -> Result<ExitCode, String> {
             tiers: tokio::sync::Mutex::new(config_watch::tiers(
                 &settings.as_ref().map(|s| s.tiers).unwrap_or_default(),
             )),
+            frames: Arc::new(std::sync::RwLock::new(feeds::Policy::of(
+                &settings.as_ref().map(|s| s.render).unwrap_or_default(),
+            ))),
             hosts: hosts::Hosts::new(events.clone()),
             events,
             broker: Arc::default(),

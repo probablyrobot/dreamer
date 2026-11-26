@@ -274,6 +274,19 @@ async fn a_view_switches_between_records_and_frames_under_heavy_output() {
     };
     step_until(&mut f, "the end of the output", done).await;
     step_until(&mut plain, "the end of the output", done).await;
+    // The prompt after the marker may reach one before the other.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (a, b) = (
+            f.frame().expect("frame").expect("frame"),
+            plain.frame().expect("frame").expect("frame"),
+        );
+        if differences(&a, &b).is_empty() || Instant::now() > deadline {
+            break;
+        }
+        f.pump(Duration::from_millis(100)).await.expect("pump");
+        plain.pump(Duration::from_millis(100)).await.expect("pump");
+    }
     let (a, b) = (
         f.frame().expect("frame").expect("frame"),
         plain.frame().expect("frame").expect("frame"),

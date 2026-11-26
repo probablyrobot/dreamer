@@ -214,9 +214,10 @@ carries the viewport position, whether the application tracks the mouse,
 and whether the alternate screen is active, so the window decides locally.
 A pane shown from screen frames
 ([desktop-internals.md](desktop-internals.md#screen-frames)) takes these
-from the modes the daemon's frame carries; it has no local history, so
-the wheel there scrolls nothing unless the program tracks the mouse or the
-alternate screen is active.
+from the modes the daemon's frame carries. It has no local history: a
+wheel step that scrolls back, like a selection, first brings the pane
+back to records from a checkpoint, and then scrolls the restored view by
+the same amount. The frame stays on screen until then.
 
 | Input | Application tracks the mouse | Alternate screen, no tracking | Otherwise |
 | --- | --- | --- | --- |

@@ -742,3 +742,8 @@ from histogram buckets and are within 6 %.
 **Queue depths** are read when asked, on or off: tmux events waiting for
 the router, output held for a full owner queue, attaches running and
 waiting, each VT owner's queue, and the fullest subscriber queue.
+
+**Views** are listed when asked, on or off: each view subscription, the
+feed it is on (`stream` or `frames`), whether the daemon switches it by
+rate or a client holds it, its switches, and its pane's output rate
+([mirrors.md](mirrors.md#screen-frames)).

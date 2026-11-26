@@ -78,6 +78,16 @@ async fn apply(state: &State) {
             ));
         }
     }
+    let frames = crate::feeds::Policy::of(&settings.render);
+    if let Ok(mut current) = state.frames.write()
+        && *current != frames
+    {
+        *current = frames;
+        log::info(format!(
+            "configuration applied: frames above {} B/s, below {} B/s, dwell {:?}, hold {:?}",
+            frames.above, frames.below, frames.dwell, frames.hold
+        ));
+    }
     let new = defaults(&settings);
     let changed = {
         let mut current = state.terminal.lock().await;

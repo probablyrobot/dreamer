@@ -59,18 +59,48 @@ frames either way.
   Nothing is applied on top of a hole. A frame that does not apply (out of
   order, or one that does not decode) ends frames for that connection:
   the view subscribes again on records, from a checkpoint.
-- **Not on frames.** With no engine there is no local scrollback,
-  selection, link hit-testing, or search: scrolling and selecting do
-  nothing, and search says the pane is on frames. Bells and clipboard
-  writes from the program ride on records, so a pane on frames does not
-  ring or copy.
+- **Who switches.** With `render.frames: on` the daemon switches the pane
+  by its output rate and says so in a `terminal.feed` event; the owner
+  takes it as it takes the reply to a switch it asked for.
+- **Back to records for the history.** Selecting, scrolling into
+  history, searching, and reading the history's text (copy mode) need the
+  engine. On frames, the first such command makes the owner hold the pane
+  on records (`terminal.hold_feed`) and keep the command, and every one
+  after it, in order. The window keeps showing the last frame. Once the
+  checkpoint restored the replica, the owner applies the kept commands to
+  it: a selection starts where the button went down, a scroll moves the
+  restored viewport, a search searches the restored history. Selection,
+  copy, and search are therefore Ghostty's own, on the same engine as with
+  frames off. A command still waiting after 5 s is answered as on frames
+  (nothing selected, no text). The owner holds the pane while any of
+  these commands runs, while there is a selection, while the view is
+  scrolled back, and while the window engages the pane (an open find bar,
+  copy mode: `ViewCommand::Engage`). It lets go when none is left; the
+  daemon waits `render.frames_hold` before it may switch the pane to
+  frames again. A gesture that starts in the instant the daemon switches
+  the pane to frames can lose its selection to the switch; the hold then
+  brings the pane back.
+- **Effects.** Bells, title and directory changes, and clipboard writes
+  reach a view on frames as their own batches, before the frame that
+  shows their output, and are taken exactly as on records.
+- **Not on frames.** Link hit-testing needs the engine and finds no link
+  on frames. Hovering does not bring a pane back to records.
+- **Lifecycle.** A pane that leaves the visible tab drops its view, and
+  with it the subscription, on either feed. A respawned pane, a rebuilt
+  mirror, a lagged subscription, and a reconnect subscribe again as on
+  records: on `stream` and switched by the daemon with `on`, on frames
+  with `always`, and held again if the view held the pane.
 
 Whether a window asks for frames is the `render.frames` setting
 ([settings.md](settings.md#screen-frames)), off by default. Only with it on
 does the window list the `terminal.frames` feature when it connects. With
-`on`, panes start on records. With `always`, every pane a window starts
-following is subscribed on frames. `DREAMER_RENDER_FRAMES=off|on|always`
-overrides the setting for one run.
+`on`, panes start on records and the daemon moves each to frames and back
+by its output rate. With `always`, every pane a window starts following is
+subscribed on frames, and comes back to records only while held.
+`DREAMER_RENDER_FRAMES=off|on|always` overrides the setting for one run.
+`FeedStats` counts, per view, the frames applied, the switches seen, the
+commands kept for a restore, and whether the view is on frames or holds
+the pane.
 
 ## Renderer
 

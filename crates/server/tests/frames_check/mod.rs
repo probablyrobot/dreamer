@@ -2,7 +2,10 @@
 //! the stream and screen frames: every record exactly once and in order
 //! while on the stream, records up to exactly the sequence a switch to
 //! frames names and none after it, frames numbered without a gap, and a
-//! checkpoint at exactly the sequence a switch back names.
+//! checkpoint at exactly the sequence a switch back names. A switch the
+//! daemon makes on its own arrives as a `terminal.feed` notice in order
+//! with the data. Effects arrive once each, in order, and on frames before
+//! the frame that shows their record.
 
 #![allow(dead_code)]
 
@@ -35,6 +38,13 @@ pub struct Checker {
     pub frames: usize,
     pub full_frames: usize,
     pub checkpoints: usize,
+    /// Switches the daemon made on its own.
+    pub notices: usize,
+    /// Effects seen, and how many of them came on frames.
+    pub effects: usize,
+    pub frame_effects: usize,
+    pub bells: u32,
+    last_effect: u64,
     /// The screen as the frames built it.
     pub view: replica::screen::ScreenView,
 }
@@ -53,6 +63,11 @@ impl Checker {
             frames: 0,
             full_frames: 0,
             checkpoints: 0,
+            notices: 0,
+            effects: 0,
+            frame_effects: 0,
+            bells: 0,
+            last_effect: 0,
             view: replica::screen::ScreenView::new(),
         };
         if s.mode == api::SubscribeMode::Frames as i32 {
@@ -67,6 +82,7 @@ impl Checker {
                 mode: s.mode,
                 sequence: s.sequence,
                 frame: s.frame,
+                ..Default::default()
             });
         } else {
             assert_eq!(s.mode, api::SubscribeMode::Checkpoint as i32, "{s:?}");
@@ -113,6 +129,32 @@ impl Checker {
                 for r in b.records {
                     self.record(r.sequence);
                 }
+                for e in &b.effects {
+                    self.effect(e);
+                }
+            }
+            Pushed::Event { topic, payload, .. } if topic == "terminal.effects" => {
+                let b = api::EffectBatch::decode(payload.as_slice()).expect("effects");
+                assert_eq!(b.subscription, self.sub);
+                let shown = match &self.state {
+                    State::Frames { sequence, .. } => *sequence,
+                    other => panic!("effects of frames while on {other:?}"),
+                };
+                for e in &b.effects {
+                    assert!(
+                        e.sequence > shown,
+                        "the effect of record {} came after the frame at {shown}",
+                        e.sequence
+                    );
+                    self.frame_effects += 1;
+                    self.effect(e);
+                }
+            }
+            Pushed::Event { topic, payload, .. } if topic == "terminal.feed" => {
+                let s = api::FeedSwitch::decode(payload.as_slice()).expect("notice");
+                assert!(s.automatic, "{s:?}");
+                self.notices += 1;
+                self.switched(s);
             }
             Pushed::Bulk { topic, data, .. } if topic == "terminal.checkpoint" => {
                 let d = api::CheckpointData::decode(data.as_slice()).expect("checkpoint");
@@ -132,6 +174,18 @@ impl Checker {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    fn effect(&mut self, e: &api::TerminalEffect) {
+        assert!(
+            e.sequence > self.last_effect,
+            "effect of record {} after one of {}: repeated or out of order",
+            e.sequence,
+            self.last_effect
+        );
+        self.last_effect = e.sequence;
+        self.effects += 1;
+        self.bells += e.bells;
     }
 
     fn record(&mut self, seq: u64) {

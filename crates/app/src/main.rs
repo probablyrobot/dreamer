@@ -243,6 +243,10 @@ impl Shell {
     pub(crate) fn open_find(&mut self, cx: &mut Context<Self>) {
         if self.find.is_none() {
             self.find = Some(find::Find::default());
+            // Searching works on the pane's history: on records.
+            if let Some(feed) = &self.feed {
+                feed.view(replica::feed::ViewCommand::Engage(true));
+            }
         }
         cx.notify();
     }
@@ -254,6 +258,9 @@ impl Shell {
         self.find_busy = false;
         if let Some(feed) = &self.feed {
             feed.cancel_search();
+            if self.copy.is_none() {
+                feed.view(replica::feed::ViewCommand::Engage(false));
+            }
         }
         cx.notify();
     }
@@ -727,8 +734,16 @@ impl Shell {
         let Some(feed) = self.feed.clone() else {
             return;
         };
+        // Copy mode works on the pane's history: on records.
+        feed.view(replica::feed::ViewCommand::Engage(true));
         cx.spawn(async move |this, cx| {
             let Some(text) = feed.text().await else {
+                // No copy mode after all: the pane need not stay held.
+                let _ = this.update(cx, |s, _| {
+                    if s.copy.is_none() && s.find.is_none() {
+                        feed.view(replica::feed::ViewCommand::Engage(false));
+                    }
+                });
                 return;
             };
             let _ = this.update(cx, |s, cx| {
@@ -798,6 +813,9 @@ impl Shell {
             feed.view(replica::feed::ViewCommand::Scroll(
                 replica::feed::Scroll::Bottom,
             ));
+            if self.find.is_none() {
+                feed.view(replica::feed::ViewCommand::Engage(false));
+            }
         }
     }
 
