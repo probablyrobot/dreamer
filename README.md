@@ -36,9 +36,10 @@ uninstall.
   real tmux objects, drawn on the GPU with one theme across the terminals
   and the window. Close the window and nothing stops.
   [The desktop app](docs/desktop.md)
-- **Agents in panes.** Run pi, Claude Code, Codex, or any ACP agent beside
-  your shells. Each uses its own login. What an agent may read or touch is
-  a grant you choose, and anything beyond it asks you first.
+- **Agents in panes.** Run pi, Claude Code, Codex, opencode, or any ACP
+  agent beside your shells. Each uses its own login. What an agent may
+  read or touch is a grant you choose, and anything beyond it asks you
+  first.
   [Agents](docs/agents.md), [grants](docs/grants.md)
 - **Your panes as tools.** An MCP server lets the agent you already use
   read panes, run commands, watch for output, and arrange the layout.
@@ -67,7 +68,7 @@ terminal pane (right).
 open -a Dreamer            # macOS; on Linux run `dreamer`
 dream ls                   # sessions, windows, and panes
 dream themes               # color schemes; set one in dreamer.yaml
-dream skills install       # teach Claude Code and Codex to configure Dreamer
+dream skills install       # teach Claude Code, Codex, and opencode to configure Dreamer
 ```
 
 Settings live in `~/.config/dreamer/dreamer.yaml` and apply as you save.

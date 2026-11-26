@@ -193,8 +193,8 @@ panes; Linux on ARM64 has none yet. See [Dreamer Web](desktop.md#dreamer-web).
 
 ## Set up your agents
 
-Dreamer ships skills that teach Claude Code and Codex how to configure
-Dreamer and build pane apps for you:
+Dreamer ships skills that teach Claude Code, Codex, and opencode how to
+configure Dreamer and build pane apps for you:
 
 ```sh
 dream skills install
@@ -208,8 +208,8 @@ claude plugin marketplace add probablyrobot/dreamer
 claude plugin install dreamer@dreamer
 ```
 
-[MCP](mcp.md#connect-claude-code-or-codex) covers Codex, other clients,
-and how much the agent may do.
+[MCP](mcp.md#connect-claude-code-codex-or-opencode) covers Codex,
+opencode, other clients, and how much the agent may do.
 
 ## Build from source
 
