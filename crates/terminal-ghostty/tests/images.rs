@@ -140,6 +140,75 @@ fn crop_z_order_delete_and_replace() {
     assert!(placements(&mut e).is_empty());
 }
 
+/// Unicode placeholder cells for a virtual placement: U+10EEEE with
+/// diacritics for the image row and column, the image id in the
+/// foreground color. A cell without diacritics continues its left
+/// neighbour's row at the next column.
+fn placeholder_row(image: u8, row_diacritic: char, cells: usize) -> Vec<u8> {
+    let mut s = format!("\x1b[38;5;{image}m\u{10EEEE}{row_diacritic}\u{0305}");
+    for _ in 1..cells {
+        s.push('\u{10EEEE}');
+    }
+    s.push_str("\x1b[39m");
+    s.into_bytes()
+}
+
+#[test]
+fn a_virtual_placement_is_drawn_where_its_placeholder_cells_are() {
+    // Unicode placeholder diacritics for rows 0 and 1.
+    const ROW0: char = '\u{0305}';
+    const ROW1: char = '\u{030D}';
+    let mut e = engine();
+    // Image 7, 20x40 pixels: two by two canonical cells.
+    e.feed(&kitty(
+        "a=t,f=32,s=20,v=40,i=7,q=2",
+        &solid(20, 40, [9, 8, 7, 255]),
+    ))
+    .expect("transmit");
+    e.feed(b"\x1b_Ga=p,U=1,i=7,c=2,r=2,q=2\x1b\\")
+        .expect("virtual placement");
+    assert!(
+        placements(&mut e).is_empty(),
+        "a virtual placement shows nothing until its placeholders are written"
+    );
+
+    // The placeholders at row 1, column 3: each row of cells shows its
+    // row of the image.
+    e.feed(b"\x1b[2;4H").expect("move");
+    e.feed(&placeholder_row(7, ROW0, 2)).expect("row 0");
+    e.feed(b"\x1b[3;4H").expect("move");
+    e.feed(&placeholder_row(7, ROW1, 2)).expect("row 1");
+    let p = placements(&mut e);
+    let shown = |p: &[ImagePlacement]| {
+        p.iter()
+            .map(|x| {
+                assert_eq!((x.image.id, x.image.width, x.image.height), (7, 20, 40));
+                (x.col, x.row, x.width, x.height, x.source_y, x.source_height)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        shown(&p),
+        [(3, 1, 20, 20, 0, 20), (3, 2, 20, 20, 20, 20)],
+        "{p:?}"
+    );
+    assert!(p.iter().all(|x| (x.source_x, x.source_width) == (0, 20)));
+    assert!(p.iter().all(|x| x.layer == ImageLayer::BelowText), "{p:?}");
+
+    // The placeholders are text: the image scrolls with them. Two lines
+    // up, the top row of cells is in history and the bottom row is first.
+    e.feed(b"\x1b[6;1H\n\n").expect("scroll two lines");
+    assert_eq!(shown(&placements(&mut e)), [(3, 0, 20, 20, 20, 20)]);
+
+    // Erasing the placeholder text removes the image from the screen;
+    // the placement itself stays for new placeholders.
+    e.feed(b"\x1b[H\x1b[2J").expect("erase");
+    assert!(placements(&mut e).is_empty());
+    e.feed(&placeholder_row(7, ROW1, 2))
+        .expect("bottom row only");
+    assert_eq!(shown(&placements(&mut e)), [(0, 0, 20, 20, 20, 20)]);
+}
+
 #[test]
 fn file_and_shared_memory_transmissions_are_refused() {
     let mut e = engine();

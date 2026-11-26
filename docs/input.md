@@ -11,6 +11,13 @@ includes the cursor-key and keypad modes, the Kitty keyboard flags,
 modifyOtherKeys, focus reporting, mouse tracking, and bracketed paste, so the bytes match
 what the application asked for at that moment.
 
+Kitty keyboard flags count only when the program pushed them while the
+pane's mirror was live: tmux 3.8 does not keep them, so a mirror attached
+later starts without them. Nothing answers the flags query (`CSI ? u`), so
+a program that asks before enabling the protocol keeps the legacy
+encoding. See
+[terminal-compatibility.md](terminal-compatibility.md#input-what-the-program-receives).
+
 | Event | Fields | Encoded as |
 | --- | --- | --- |
 | `key` | `key` (W3C `KeyboardEvent.code`: `KeyA`, `Digit1`, `ArrowUp`, `Enter`, `F5`, …), `text`, `mods` (1 shift, 2 ctrl, 4 alt, 8 super), `held` | Ghostty's key encoder with the terminal's modes. For example `ArrowUp` is `ESC [ A`, or `ESC O A` in application cursor mode |

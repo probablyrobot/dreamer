@@ -114,27 +114,31 @@ impl Setup {
     }
 
     async fn mirror(&self) -> (Vec<String>, api::MirrorStatus) {
+        self.try_mirror().await.expect("pane 0's mirror")
+    }
+
+    /// Pane 0's mirror text and status, or `None` while the daemon has no
+    /// mirror of it (for example while tmux is away).
+    async fn try_mirror(&self) -> Option<(Vec<String>, api::MirrorStatus)> {
         let c = self.client().await;
-        let Response::TerminalRead(t) = c
+        let Ok(Response::TerminalRead(t)) = c
             .call(Request::TerminalRead(api::ReadParams {
                 pane: 0,
                 history: Some(10_000),
                 endpoint: None,
             }))
             .await
-            .expect("read")
         else {
-            panic!("read");
+            return None;
         };
-        let Response::TerminalMirrors(m) = c
+        let Ok(Response::TerminalMirrors(m)) = c
             .call(Request::TerminalMirrors(api::TopologyParams::default()))
             .await
-            .expect("mirrors")
         else {
-            panic!("mirrors");
+            return None;
         };
-        let status = m.mirrors.into_iter().find(|s| s.pane == 0).expect("pane 0");
-        (normalize(t.lines), status)
+        let status = m.mirrors.into_iter().find(|s| s.pane == 0)?;
+        Some((normalize(t.lines), status))
     }
 
     async fn shutdown(&mut self) {
@@ -348,6 +352,96 @@ async fn a_respawned_pane_is_followed_into_its_new_generation() {
         f.checkpoints, 2,
         "the new generation started from its own checkpoint"
     );
+}
+
+#[tokio::test]
+async fn a_restarted_tmux_server_reusing_ids_gets_new_mirrors() {
+    let s = Setup::new(&[]);
+    let mut f = s.follower().await;
+    s.type_line("echo OLD''-SERVER");
+    s.wait_tmux("OLD-SERVER");
+    converge(&s, &mut f).await;
+    let (_, before) = s.mirror().await;
+    let ids = || {
+        s.tmux
+            .format("main", "#{session_id} #{window_id} #{pane_id}")
+            .expect("ids")
+    };
+    let old_ids = ids();
+
+    // The tmux server goes away and a new one starts on the same socket.
+    // It numbers its session, window, and pane from zero again.
+    s.tmux.run_checked(&["kill-server"]).expect("kill");
+    // `kill-server` returns before the old server has gone; a client that
+    // reaches it meanwhile is told it exited. Try again until one starts.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while let Err(e) = s.tmux.run_checked(&[
+        "new-session",
+        "-d",
+        "-s",
+        "main",
+        "-x",
+        "100",
+        "-y",
+        "30",
+        "/bin/sh",
+    ]) {
+        assert!(Instant::now() < deadline, "no new tmux server: {e}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for (option, value) in [("window-size", "manual"), ("default-shell", "/bin/sh")] {
+        s.tmux
+            .run_checked(&["set-option", "-g", option, value])
+            .expect("option");
+    }
+    assert_eq!(ids(), old_ids, "the new server reused the ids");
+    s.type_line("echo NEW''-SERVER");
+    s.wait_tmux("NEW-SERVER");
+
+    // The daemon's pane 0 is the new pane: a new mirror, with nothing of
+    // the old pane's text.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let after = loop {
+        let (lines, status) = s.try_mirror().await.unwrap_or_default();
+        assert!(
+            !lines.iter().any(|l| l == "OLD-SERVER"),
+            "pane 0 still reads as the old server's pane: {lines:?}"
+        );
+        if lines.iter().any(|l| l == "NEW-SERVER") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the mirror never showed the new pane"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        after.epoch > before.epoch,
+        "a new tmux server is a new epoch ({} then {})",
+        before.epoch,
+        after.epoch
+    );
+
+    // The follower's subscription ended when tmux went away (connection
+    // lost); it is not carried over to the new pane, and the replica
+    // starts again from a checkpoint of the new one.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        f.pump(Duration::from_millis(100)).await.expect("pump");
+        let (mirror, _) = s.try_mirror().await.unwrap_or_default();
+        if replica_lines(&f) == mirror {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the replica never matched the new pane ({:?}): {:?}",
+            f.state,
+            replica_lines(&f)
+        );
+    }
+    assert!(f.checkpoints >= 2, "{} checkpoints", f.checkpoints);
+    assert!(!replica_lines(&f).iter().any(|l| l == "OLD-SERVER"));
 }
 
 /// Wait for the feed to publish a frame whose text satisfies `want`.

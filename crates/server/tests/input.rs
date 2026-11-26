@@ -190,6 +190,45 @@ async fn keys_are_encoded_against_the_pane_s_current_modes() {
 }
 
 #[tokio::test]
+async fn kitty_keyboard_flags_a_program_sets_shape_its_keys_but_its_query_gets_no_answer() {
+    let s = Setup::new();
+    let c = s.client().await;
+    // The mirror is live first. tmux keeps no Kitty keyboard flags, so a
+    // mirror attached later cannot learn flags pushed before it
+    // (docs/tmux-bootstrap.md).
+    s.type_line("echo L''IVE");
+    s.wait_mirror(&c, "LIVE").await;
+    // A program asks for the Kitty keyboard flags, then for DA1, the way
+    // programs probe for the protocol. Only tmux's DA1 answer comes back:
+    // tmux 3.8 does not answer the flags query, and mirrors never reply.
+    s.type_line(
+        "stty raw -echo min 64 time 10; printf '\\033[?u\\033[c'; dd bs=64 count=1 2>/dev/null | od -An -tx1; stty sane; echo D''ONE1",
+    );
+    let screen = s.wait_line("DONE1");
+    // The first bytes back are tmux's DA1 answer (its attributes differ
+    // between tmux builds): no flags reply (`CSI ? flags u`) came first.
+    let reply = screen
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .find(|w| w.first() == Some(&"1b"))
+        .unwrap_or_else(|| panic!("no reply bytes:\n{screen}"));
+    assert!(
+        reply.starts_with(&["1b", "5b", "3f"])
+            && reply.last() == Some(&"63")
+            && !reply.contains(&"75"),
+        "the reply was not DA1 alone: {reply:?}\n{screen}"
+    );
+    // A program that pushes the flags anyway (1: disambiguate) gets keys
+    // encoded with them: the mirror sees the push in the pane's output.
+    s.type_line(
+        "printf '\\033[>1u'; stty raw -echo; printf 'K''3\\r\\n'; od -An -tx1 -N5; printf '\\033[<u'; stty sane",
+    );
+    s.wait_mirror(&c, "K3").await;
+    input(&c, key("Escape"), None).await.expect("key");
+    s.wait_line("1b 5b 32 37 75");
+}
+
+#[tokio::test]
 async fn a_one_mib_paste_arrives_byte_for_byte() {
     let s = Setup::new();
     let c = s.client().await;

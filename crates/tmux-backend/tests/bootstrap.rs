@@ -418,3 +418,106 @@ fn a_program_s_own_default_colors_are_restored() {
     let bg = b.engine.frame().expect("frame").colors.background;
     assert_eq!((bg.r, bg.g, bg.b), (0x40, 0x20, 0x20));
 }
+
+/// Run `commands` once, from a tmux hook, right after the next `command`
+/// the server executes; the hook removes itself first. Bootstrap's pause is
+/// the next `refresh-client`, so `once_after(.., "refresh-client", ..)`
+/// lands between the pause and the capture, and `capture-pane` lands
+/// inside the capture line.
+fn once_after(server: &TmuxServer, command: &str, commands: &str) {
+    let hook = format!("after-{command}");
+    server
+        .run_checked(&[
+            "set-hook",
+            "-g",
+            &hook,
+            &format!("set-hook -gu {hook} ; {commands}"),
+        ])
+        .expect("hook");
+}
+
+#[test]
+fn a_pane_respawned_between_pause_and_capture_continues_as_the_new_process() {
+    const NEW_DONE: &str = "RESPAWNED-4c1e";
+    let (server, mut client, pane) = start(40, 10, &busy_script(15000));
+    std::thread::sleep(Duration::from_millis(50));
+    let before = server.format("main", "#{pane_pid}").expect("pid");
+    let new = format!(
+        "sh -c {}",
+        sh_quote(&format!(
+            "i=0; while [ $i -lt 5000 ]; do i=$((i+1)); echo \"new $i\"; done; echo {NEW_DONE}; sleep 60"
+        ))
+    );
+    once_after(
+        &server,
+        "refresh-client",
+        &format!("respawn-pane -k -t {pane} {}", tmux_backend::quote(&new)),
+    );
+    let mut b = bootstrap(&mut client, pane);
+    report("respawn", &b);
+    follow_until(&mut client, &mut b.engine, pane, NEW_DONE);
+    assert_ne!(
+        server.format("main", "#{pane_pid}").expect("pid"),
+        before,
+        "the pane was not respawned"
+    );
+    assert_matches_tmux(&server, "main", &mut b.engine);
+}
+
+#[test]
+fn a_split_between_pause_and_capture_is_captured_at_the_new_size() {
+    let (server, mut client, pane) = start(60, 12, &busy_script(15000));
+    std::thread::sleep(Duration::from_millis(50));
+    once_after(
+        &server,
+        "refresh-client",
+        &format!("split-window -h -t {pane} 'sleep 60'"),
+    );
+    let mut b = bootstrap(&mut client, pane);
+    report("split", &b);
+    let width: u16 = server
+        .format(&pane.to_string(), "#{pane_width}")
+        .expect("width")
+        .parse()
+        .expect("number");
+    assert!(width < 60, "the split did not happen");
+    assert_eq!(b.state.width, width, "captured before the split");
+    follow_until(&mut client, &mut b.engine, pane, DONE);
+    assert_matches_tmux(&server, &pane.to_string(), &mut b.engine);
+}
+
+#[test]
+fn a_pane_killed_between_pause_and_capture_fails_cleanly() {
+    let (server, mut client, pane) = start(60, 12, &busy_script(15000));
+    let other = server
+        .run_checked(&[
+            "split-window",
+            "-h",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
+            "main",
+            &format!("sh -c {}", sh_quote("echo other pane; sleep 60")),
+        ])
+        .expect("split");
+    let other = PaneId::parse(other.trim().as_bytes()).expect("pane id");
+    std::thread::sleep(Duration::from_millis(50));
+    once_after(&server, "refresh-client", &format!("kill-pane -t {pane}"));
+    let started = Instant::now();
+    let err = bootstrap_pane(&mut client, pane, TIMEOUT).expect_err("killed pane");
+    eprintln!("[killed] {err}");
+    assert!(
+        matches!(err, tmux_backend::BootstrapError::CaptureFailed(_)),
+        "{err}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+    // The client stays usable: the surviving pane bootstraps exactly.
+    wait_for("the other pane's output", || {
+        server
+            .run_checked(&["capture-pane", "-p", "-t", &other.to_string()])
+            .is_ok_and(|s| s.contains("other pane"))
+    });
+    let mut b = bootstrap(&mut client, other);
+    assert_matches_tmux(&server, &other.to_string(), &mut b.engine);
+}

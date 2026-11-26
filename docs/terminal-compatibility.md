@@ -47,8 +47,12 @@ by the `matrix` gate stage's fixtures (`crates/terminal-render/fixtures`).
   refused (`crates/terminal-ghostty/tests/images.rs`, the `image-*.vt`
   fixtures). They are not claimed through tmux, which needs
   `allow-passthrough` and has no test here.
-- **Sixel graphics, the kitty keyboard protocol, and OSC 4 palette
-  queries** have no tested path through tmux 3.8.
+- **The Kitty keyboard protocol** is only partly there. Keys are encoded
+  with the flags a program pushes, but nothing answers the flags query, so
+  a program that asks before enabling the protocol (many do) keeps the
+  legacy encoding. See the input table below.
+- **Sixel graphics and OSC 4 palette queries** have no tested path through
+  tmux 3.8.
 
 ## Input: what the program receives
 
@@ -61,6 +65,7 @@ delivers it (`crates/server/tests/input.rs`).
 | Bracketed paste | Markers exactly once, only when the program enabled them | `bracketed_paste_markers_appear_exactly_once` |
 | Large pastes | 1 MiB arrives byte for byte | `a_one_mib_paste_arrives_byte_for_byte` |
 | Mouse | SGR-encoded, and only to programs that track the mouse | `mouse_reaches_only_programs_that_track_it` |
+| Kitty keyboard flags | Keys are encoded with the flags the program pushed (`CSI > flags u`) while the pane's mirror was live: with flag 1, Escape is `CSI 27 u`. tmux 3.8 keeps no Kitty flags, so a mirror attached later starts without them. The flags query (`CSI ? u`) gets no answer | `kitty_keyboard_flags_a_program_sets_shape_its_keys_but_its_query_gets_no_answer` |
 | Input for a replaced process | Refused, never typed into the new process | `input_for_a_replaced_process_is_refused` |
 | Automation and a person typing | A person typing takes over from leased automation | `a_person_typing_takes_over_from_leased_automation` |
 
@@ -77,7 +82,8 @@ engines never write to a pane.
 | DSR 5 (status), DSR 6 (cursor position) | tmux | Mirror reply suppressed | Same test: exactly one reply (`0n`, `1;6R`) |
 | OSC 10 / OSC 11 (foreground / background color) | tmux, using colors the GUI reports | GUI sends `refresh-client -r '%N:<OSC reply>'` with its theme colors; mirror reply suppressed | Same test: without a report tmux answers `rgb:0000/0000/0000`; after a report it answers once with the reported colors |
 | OSC 4 palette queries | Not delegated | No report path in tmux 3.8 (`refresh-client -r` accepts only OSC 10/11) | Not tested |
-| Kitty keyboard, Kitty graphics, clipboard replies | Not delegated | Unsupported until a tested single-responder path exists | Not tested |
+| Kitty keyboard flags query (`CSI ? u`) | Nobody | tmux 3.8 does not answer it and mirrors never reply, so the program sees no support; only tmux's answer to a DA1 sent with it comes back | `input.rs`: `kitty_keyboard_flags_a_program_sets_shape_its_keys_but_its_query_gets_no_answer` |
+| Kitty graphics, clipboard replies | Not delegated | Unsupported until a tested single-responder path exists | Not tested |
 | Replies during bootstrap or snapshot restore | Nobody | Always suppressed | `bootstrap.rs` restores with capture off |
 | Bell, title, cwd | Daemon state and live effects | Title and cwd are state in `terminal.mirrors` and every subscription start; a bell is a live effect to subscribers present at the time, never replayed | `replicas.rs`: `a_bell_reaches_each_live_subscriber_once_and_is_never_replayed` |
 | Clipboard write (OSC 52) | Daemon, addressed to one client | tmux 3.8 passes the sequence to control mode. The daemon's mirror captures it (capture on only after bootstrap) and sends it only to the pane's focused client; the window applies it under `clipboard.write`. Never replayed. Writes over 1 MiB are refused | `replicas.rs`: `a_clipboard_write_reaches_only_the_focused_client_once`; input smoke |
