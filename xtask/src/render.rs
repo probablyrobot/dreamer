@@ -61,10 +61,21 @@ fn field(stats: &str, name: &str) -> Option<usize> {
 
 /// Compare a `smoke: painted PaintStats { … }` line with the expectation.
 pub fn check(stdout: &str, e: &Expected) -> Result<(), String> {
+    let got = painted(stdout, &e.name)?;
+    if &got == e {
+        Ok(())
+    } else {
+        Err(format!("{}: expected {e:?}, painted {got:?}", e.name))
+    }
+}
+
+/// What a `smoke: painted PaintStats { … }` line says was drawn: the
+/// statistics that follow from the frame's content, not from caches.
+pub fn painted(stdout: &str, name: &str) -> Result<Expected, String> {
     let stats = stdout
         .lines()
         .find_map(|l| l.strip_prefix("smoke: painted "))
-        .ok_or(format!("{}: no paint statistics in the output", e.name))?;
+        .ok_or(format!("{name}: no paint statistics in the output"))?;
     let cursor = match stats.find("cursor: Some(\"") {
         Some(at) => stats[at + 14..]
             .split('"')
@@ -73,8 +84,8 @@ pub fn check(stdout: &str, e: &Expected) -> Result<(), String> {
             .to_owned(),
         None => "none".to_owned(),
     };
-    let got = Expected {
-        name: e.name.clone(),
+    Ok(Expected {
+        name: name.to_owned(),
         text_runs: field(stats, "text_runs").unwrap_or(usize::MAX),
         wide_cells: field(stats, "wide_cells").unwrap_or(usize::MAX),
         decorated_runs: field(stats, "decorated_runs").unwrap_or(usize::MAX),
@@ -82,12 +93,7 @@ pub fn check(stdout: &str, e: &Expected) -> Result<(), String> {
         cursor,
         images: field(stats, "images").unwrap_or(usize::MAX),
         images_clipped: field(stats, "images_clipped").unwrap_or(usize::MAX),
-    };
-    if &got == e {
-        Ok(())
-    } else {
-        Err(format!("{}: expected {e:?}, painted {got:?}", e.name))
-    }
+    })
 }
 
 #[cfg(test)]

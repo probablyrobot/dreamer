@@ -1810,9 +1810,15 @@ impl Workspace {
                 cx.new(|cx| crate::panel::AppPanel::follow(pane, instance.clone(), socket, ws, cx));
             return Some(PaneView::App { view, instance });
         }
-        let feed = Feed::start_via(self.socket.clone(), self.via.clone(), Some(pane), None)
-            .ok()
-            .map(Arc::new);
+        let feed = Feed::start_frames(
+            self.socket.clone(),
+            self.via.clone(),
+            Some(pane),
+            None,
+            crate::live::frames(),
+        )
+        .ok()
+        .map(Arc::new);
         let frame = load_frame(b"").ok()?;
         let shell = cx.new(|cx| Shell::new(cx, Smoke::Off, frame, feed.clone(), true));
         if let Some(feed) = feed {

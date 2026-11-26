@@ -454,7 +454,13 @@ impl AppPanel {
             if self.embedded.contains_key(&pane) {
                 continue;
             }
-            let Ok(feed) = Feed::start(self.socket.clone(), Some(pane), None) else {
+            let Ok(feed) = Feed::start_frames(
+                self.socket.clone(),
+                replica::Via::Local,
+                Some(pane),
+                None,
+                crate::live::frames(),
+            ) else {
                 continue;
             };
             let wake = feed.wake.clone();

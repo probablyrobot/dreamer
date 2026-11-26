@@ -20,6 +20,10 @@
 //! - Selection is local too: gestures go to the owner, which applies them
 //!   to the replica, scrolls while a drag is held past an edge, and hands
 //!   back the selected text on request.
+//! - On screen frames ([`Frames`]) the owner applies the daemon's frames
+//!   instead of records, paced the same way. There is no engine then: no
+//!   local history, selection, links, or search, until the view is back
+//!   on records.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +32,7 @@ use std::time::Duration;
 
 use terminal_ghostty::core::FrameSnapshot;
 
+pub use crate::Frames;
 use crate::{FollowError, FollowState, Follower, RetryPolicy};
 
 pub const HOLD_LIMIT: Duration = Duration::from_secs(1);
@@ -104,6 +109,8 @@ pub struct FeedStats {
     pub view_wakeups: AtomicU64,
     /// Holds that hit the limit and were shown anyway.
     pub holds_expired: AtomicU64,
+    /// Screen frames applied from the daemon (on the `frames` feed).
+    pub screen_frames: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -154,6 +161,17 @@ impl Feed {
         pane: Option<u32>,
         launch: Option<client::Launch>,
     ) -> std::io::Result<Feed> {
+        Feed::start_frames(socket, via, pane, launch, Frames::Off)
+    }
+
+    /// Like [`Feed::start_via`], allowing screen frames as `frames` says.
+    pub fn start_frames(
+        socket: PathBuf,
+        via: crate::Via,
+        pane: Option<u32>,
+        launch: Option<client::Launch>,
+        frames: Frames,
+    ) -> std::io::Result<Feed> {
         let local = via == crate::Via::Local;
         let latest = Arc::new(Mutex::new(None));
         let meta = Arc::new(Mutex::new(crate::PaneMeta::default()));
@@ -181,6 +199,7 @@ impl Feed {
         };
         let owner = Owner {
             input: input.clone(),
+            frames,
             via,
             target: target.clone(),
             meta: meta.clone(),
@@ -427,6 +446,7 @@ impl InputSender {
 
 struct Owner {
     via: crate::Via,
+    frames: Frames,
     /// The input sender's queue: to report focus again (see [`Target`]).
     input: tokio::sync::mpsc::UnboundedSender<api::terminal_input::Event>,
     target: Arc<Target>,
@@ -554,12 +574,13 @@ impl Owner {
     async fn connect(&self, socket: &std::path::Path, pane: u32) -> Follower {
         let mut backoff = Duration::from_millis(100);
         loop {
-            match Follower::start_via(
+            match Follower::start_frames(
                 socket.to_path_buf(),
                 self.via.clone(),
                 pane,
                 RetryPolicy::default(),
                 Some(self.target.client),
+                self.frames,
             )
             .await
             {
@@ -632,6 +653,17 @@ impl Owner {
             return;
         };
         let Some(engine) = f.replica_mut().engine_mut() else {
+            // On screen frames: no engine, so no local history, selection,
+            // links, text, or search.
+            match command {
+                ViewCommand::Copy(reply) | ViewCommand::Text(reply) => drop(reply.send(None)),
+                ViewCommand::Link { reply, .. } => drop(reply.send(None)),
+                ViewCommand::Search { reply, .. } => {
+                    drop(reply.send(Err("the pane is on screen frames".into())));
+                }
+                _ => {}
+            }
+            *autoscroll = None;
             return;
         };
         let command_top = matches!(command, ViewCommand::Top(_));
@@ -860,15 +892,23 @@ impl Owner {
                 && !pacer.dirty
                 && let Ok(s) = &step
                 && s.records == 0
+                && s.frames == 0
                 && !s.restored
                 && let Some(Ok(frame)) = f.frame()
             {
                 self.publish(frame);
             }
             if let Ok(s) = &step
-                && (s.records > 0 || s.restored)
+                && s.frames > 0
             {
-                if let Some((_, generation, _)) = f.replica().position() {
+                self.stats
+                    .screen_frames
+                    .fetch_add(s.frames as u64, Ordering::Relaxed);
+            }
+            if let Ok(s) = &step
+                && (s.records > 0 || s.restored || s.frames > 0)
+            {
+                if let Some(generation) = f.generation() {
                     self.target.generation.store(generation, Ordering::Release);
                     if !self.target.known.swap(true, Ordering::AcqRel) {
                         self.report_focus();

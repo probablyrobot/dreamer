@@ -328,10 +328,14 @@ fn require_refreshing_display() -> Result<bool, String> {
     }
 }
 
+/// Forces every pane a desktop run shows onto screen frames.
+const FRAMES_ENV: &str = "DREAMER_RENDER_FRAMES";
+
 /// Debug bundle, ad hoc signed and verified, launched to a presented frame.
 /// Every renderer fixture paints with the statistics derived from its
-/// content (text matrix). First paints happen even on a locked
-/// screen, so this runs whenever a GUI session exists.
+/// content (text matrix), drawn from the engine and again from a
+/// frame-backed view (`DREAMER_RENDER_FRAMES=always`). First paints happen
+/// even on a locked screen, so this runs whenever a GUI session exists.
 fn render_matrix(dir: &Path) -> Result<Done, String> {
     if !require_gui()? {
         return Ok(Done::NotRun);
@@ -339,16 +343,27 @@ fn render_matrix(dir: &Path) -> Result<Done, String> {
     let app = dir.join("target/debug/dreamer");
     let mut failures = Vec::new();
     for (path, expected) in crate::render::expectations(dir)? {
-        let out = Command::new(&app)
-            .args(["--smoke", "--fixture"])
-            .arg(&path)
-            .output()
-            .map_err(|e| format!("dreamer: {e}"))?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        match crate::render::check(&stdout, &expected) {
-            Ok(()) if out.status.success() => println!("gate:   {:<22} as expected", expected.name),
-            Ok(()) => failures.push(format!("{}: exit {}", expected.name, out.status)),
-            Err(e) => failures.push(e),
+        for frames in [false, true] {
+            let out = Command::new(&app)
+                .env(FRAMES_ENV, if frames { "always" } else { "off" })
+                .args(["--smoke", "--fixture"])
+                .arg(&path)
+                .output()
+                .map_err(|e| format!("dreamer: {e}"))?;
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let how = if frames { "frames" } else { "engine" };
+            let on_frames = stdout.contains("smoke: render frames Always");
+            match crate::render::check(&stdout, &expected) {
+                Ok(()) if frames != on_frames => failures.push(format!(
+                    "{} ({how}): the run did not say it drew from frames",
+                    expected.name
+                )),
+                Ok(()) if out.status.success() => {
+                    println!("gate:   {:<22} as expected ({how})", expected.name)
+                }
+                Ok(()) => failures.push(format!("{} ({how}): exit {}", expected.name, out.status)),
+                Err(e) => failures.push(format!("{e} ({how})")),
+            }
         }
     }
     if failures.is_empty() {
@@ -385,18 +400,52 @@ fn shaping_cache(dir: &Path) -> Result<Done, String> {
 /// tmux server and private daemon directories; the pane's text must be
 /// drawn and an idle pane must cause no view wakeups and at most one stray
 /// paint (see `idle_check` in the app).
+///
+/// The same check runs again with the pane on screen frames
+/// (`DREAMER_RENDER_FRAMES=always`), which must paint what the replica
+/// painted.
 fn live_smoke(dir: &Path) -> Result<Done, String> {
     if !require_refreshing_display()? {
         return Ok(Done::NotRun);
     }
     let marker = "dreamer-live-ok";
-    isolated_app_run(
-        dir,
-        "live",
-        &format!("sh -c 'printf \"{marker}\\n\"; exec sleep 600'"),
-        None,
-        &["--smoke", "--expect", marker],
-    )
+    let command = format!("sh -c 'printf \"{marker}\\n\"; exec sleep 600'");
+    let args = ["--smoke", "--expect", marker];
+    let mut painted = Vec::new();
+    for (name, frames) in [("live", "off"), ("live-frames", "always")] {
+        let env = [(FRAMES_ENV, frames)];
+        let out = isolated_app_output(dir, name, &command, None, &[], &args, &[], &env)?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            println!("gate:   {line}");
+        }
+        if out.status.code() == Some(5) {
+            println!("gate: the display did not refresh; {name} paint checks recorded as not run");
+            return Ok(Done::NotRun);
+        }
+        if !out.status.success() {
+            return Err(format!(
+                "{name} smoke failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        if (frames == "always") != stdout.contains("smoke: render frames Always") {
+            return Err(format!("{name}: the run did not follow the pane as asked"));
+        }
+        painted.push(crate::render::painted(&stdout, name)?);
+    }
+    let (records, frames) = (&painted[0], &painted[1]);
+    let same = crate::render::Expected {
+        name: records.name.clone(),
+        ..frames.clone()
+    };
+    if same != *records {
+        return Err(format!(
+            "the pane on frames painted {frames:?}, its replica {records:?}"
+        ));
+    }
+    Ok(Done::Passed)
 }
 
 /// Typing and IME composition through the window reach the pane (only
@@ -423,35 +472,6 @@ fn input_smoke(dir: &Path) -> Result<Done, String> {
     } else {
         Err(format!(
             "input smoke failed ({}): {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
-    }
-}
-
-/// Run `dreamer --attach 0 <args>` against an isolated tmux server whose
-/// pane runs `command` (optionally after typing `type_first` into it),
-/// with private daemon directories and the default-tmux guard.
-fn isolated_app_run(
-    dir: &Path,
-    name: &str,
-    command: &str,
-    type_first: Option<&str>,
-    args: &[&str],
-) -> Result<Done, String> {
-    let out = isolated_app_output(dir, name, command, type_first, &[], args, &[], &[])?;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        println!("gate:   {line}");
-    }
-    if out.status.code() == Some(5) {
-        println!("gate: the display did not refresh; {name} paint checks recorded as not run");
-        return Ok(Done::NotRun);
-    }
-    if out.status.success() {
-        Ok(Done::Passed)
-    } else {
-        Err(format!(
-            "{name} smoke failed ({}): {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         ))
@@ -1010,8 +1030,11 @@ fn workspace_smoke(dir: &Path) -> Result<Done, String> {
     }
 }
 
-/// Like [`isolated_app_run`], returning the app's output; `env_remove`
-/// names variables the app must not see (to pick a display backend).
+/// Run `dreamer --attach 0 <args>` against an isolated tmux server whose
+/// pane runs `command` (optionally after typing `type_first` into it),
+/// with private daemon directories and the default-tmux guard, returning
+/// the app's output. `env_remove` names variables the app must not see,
+/// and `env` sets others.
 #[allow(clippy::too_many_arguments)]
 fn isolated_app_output(
     dir: &Path,

@@ -103,7 +103,7 @@ the order in which Dreamer writes.
 
 | Feature | What it allows |
 | --- | --- |
-| `terminal.frames` | Terminal subscriptions on the `frames` feed: the daemon sends screen frames (bulk, topic `terminal.frame`) instead of records. A client that does not list it is refused the `frames` feed and never receives a frame. See [mirrors.md](mirrors.md#screen-frames) |
+| `terminal.frames` | Terminal subscriptions on the `frames` feed: the daemon sends screen frames (bulk, topic `terminal.frame`) instead of records. A client that does not list it is refused the `frames` feed and never receives a frame. The desktop lists it only when `render.frames` is not `off` ([settings.md](settings.md#screen-frames)). See [mirrors.md](mirrors.md#screen-frames) |
 
 A coordinator lists `terminal.frames` when it connects to a host, so
 frames for a relayed pane pass through it.

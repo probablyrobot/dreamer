@@ -2,7 +2,8 @@
 //! configuration changes (`dreamer.yaml`, or a theme file beside it): the
 //! terminal font, the chrome's theme, which links open, clipboard writes,
 //! the fallback terminal, the windows' decorations, how Dreamer Web is
-//! offered, and where web panes save downloads. Every window
+//! offered, where web panes save downloads, and whether panes may be
+//! shown from screen frames. Every window
 //! repaints with the new ones. A file that does not read changes nothing;
 //! its error is kept here for the tab strip to show until a valid file
 //! replaces it.
@@ -49,6 +50,8 @@ pub(crate) struct Live {
     pub preview: Option<Theme>,
     /// Why the last change to the configuration was not applied.
     pub refused: Option<String>,
+    /// `render.frames`: for panes followed from now on.
+    pub frames: workspace_config::RenderFrames,
 }
 
 static LIVE: RwLock<Option<Live>> = RwLock::new(None);
@@ -122,6 +125,7 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
         themes,
         preview: None,
         refused: None,
+        frames: settings.render.frames,
     };
     if let Ok(mut l) = LIVE.write() {
         *l = Some(live);
@@ -138,6 +142,27 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
         }
     }
     cx.refresh_windows();
+}
+
+/// How a pane a window starts following now is fed (see
+/// [`frames_from`]).
+pub(crate) fn frames() -> replica::Frames {
+    frames_from(with(|l| l.frames).unwrap_or_default())
+}
+
+/// `DREAMER_RENDER_FRAMES` when it names a value (checks force frames
+/// with it), else the `render.frames` setting.
+pub(crate) fn frames_from(setting: workspace_config::RenderFrames) -> replica::Frames {
+    use workspace_config::RenderFrames;
+    let chosen = std::env::var("DREAMER_RENDER_FRAMES")
+        .ok()
+        .and_then(|v| RenderFrames::from_name(v.trim()))
+        .unwrap_or(setting);
+    match chosen {
+        RenderFrames::Off => replica::Frames::Off,
+        RenderFrames::On => replica::Frames::On,
+        RenderFrames::Always => replica::Frames::Always,
+    }
 }
 
 /// The sizes the settings allow.

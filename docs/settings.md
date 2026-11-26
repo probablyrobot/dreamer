@@ -25,7 +25,8 @@ The file is the one place to configure Dreamer, and changes apply live.
   again. The daemon logs it and publishes a `config.changed` event with
   state `refused`.
 - **Not live.** Provider settings apply to the next agent run, agent
-  harness settings to the next session, and `web.color` once Dreamer
+  harness settings to the next session, `render.frames` to the panes a
+  window starts following after the change, and `web.color` once Dreamer
   restarts.
 
 Two commands help with edits:
@@ -73,6 +74,8 @@ memory:
   provider: sqlite                       # default; or files, or kosmonaut
 window:
   decorations: full                      # full (default) or none
+render:
+  frames: off                            # off (default), on, or always
 web:
   component: ask                         # ask (default), auto, or never
   url: https://example.com/dreamer-web/  # optional; default: the release
@@ -328,6 +331,27 @@ title bar and its close, zoom, and minimize buttons:
 ```yaml
 window:
   decorations: none
+```
+
+## Screen frames
+
+`render.frames` says whether a desktop window may show a pane from the
+daemon's screen frames instead of following every byte the pane writes
+with a terminal engine of its own
+([desktop-internals.md](desktop-internals.md#screen-frames)):
+- `off` (the default): every pane follows the byte stream.
+- `on`: the window tells the daemon it accepts frames. Panes start on the
+  byte stream; the daemon does not yet move a pane to frames on its own.
+- `always`: every pane the window starts following is followed on frames.
+  This is for checks: such a pane has no local scrollback, selection, or
+  search, and its bells and clipboard writes do not reach the window.
+
+It applies to panes a window starts following after the change.
+`DREAMER_RENDER_FRAMES=off|on|always`, when set, comes first.
+
+```yaml
+render:
+  frames: on
 ```
 
 ## Dreamer Web

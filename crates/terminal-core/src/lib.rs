@@ -312,6 +312,72 @@ pub struct InputModes {
     pub kitty_keyboard: u8,
 }
 
+/// The visible screen at a mirror's `sequence`, as one view on screen
+/// frames needs it: the rows that differ from the previous frame it was
+/// sent, or everything when `full`.
+#[derive(Debug, Clone)]
+pub struct ScreenFrame {
+    /// Counts the subscription's frames from 1.
+    pub number: u64,
+    pub full: bool,
+    pub sequence: u64,
+    pub size: GridSize,
+    /// Where the screen is in the pane's history: `view.offset` numbers
+    /// row 0 the way decorations number lines.
+    pub view: ViewState,
+    /// Changed rows by screen row.
+    pub rows: Vec<(u16, Arc<Row>)>,
+    pub cursor: Cursor,
+    pub modes: InputModes,
+    /// When full, or when it changed.
+    pub title: Option<String>,
+    pub colors: Option<Arc<Colors>>,
+    pub images: Option<Arc<[ImagePlacement]>>,
+    /// Pixels of placed images the view has not been sent yet.
+    pub pixels: Vec<Arc<ImagePixels>>,
+    pub render_hold: bool,
+}
+
+impl ScreenFrame {
+    /// A full frame of `frame`: every row and every part.
+    pub fn full(
+        frame: &FrameSnapshot,
+        modes: InputModes,
+        title: Option<String>,
+        number: u64,
+        sequence: u64,
+    ) -> ScreenFrame {
+        let mut pixels: Vec<Arc<ImagePixels>> = Vec::new();
+        for p in frame.images.iter() {
+            if !pixels.iter().any(|q| Arc::ptr_eq(q, &p.image)) {
+                pixels.push(Arc::clone(&p.image));
+            }
+        }
+        ScreenFrame {
+            number,
+            full: true,
+            sequence,
+            size: frame.size,
+            view: frame.view,
+            rows: (0u16..).zip(frame.rows.iter().map(Arc::clone)).collect(),
+            cursor: frame.cursor,
+            modes,
+            title,
+            colors: Some(Arc::clone(&frame.colors)),
+            images: Some(Arc::clone(&frame.images)),
+            pixels,
+            render_hold: frame.render_hold,
+        }
+    }
+}
+
+impl InputModes {
+    /// The application asked for mouse reports, in any tracking mode.
+    pub fn mouse_tracking(&self) -> bool {
+        self.mouse_x10 || self.mouse_normal || self.mouse_button || self.mouse_any
+    }
+}
+
 impl ViewState {
     /// Rows between the viewport's bottom and the active area's bottom;
     /// zero when following new output.
