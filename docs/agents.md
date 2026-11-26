@@ -1,7 +1,8 @@
 # Agent harnesses
 
 An agent harness is the program an agent session runs: pi, Claude Code,
-Codex, or another agent that speaks the Agent Client Protocol (ACP).
+Codex, opencode, or another agent that speaks the Agent Client Protocol
+(ACP).
 Which one a new session uses is configuration (`agents:` in
 `dreamer.yaml`). A session that is already running keeps the harness it
 started with.
@@ -11,6 +12,7 @@ started with.
 | `pi` (default) | pi | Dreamer, under its data directory, when you run `dream agents update` |
 | `claude` | Claude Code (`claude`) | You; found on `PATH` |
 | `codex` | Codex (`codex`) | You; found on `PATH` |
+| `opencode` | opencode (`opencode`) | You; found on `PATH` |
 | any other name | the `command` you give, with its `protocol` | You |
 
 Every harness uses its own login. Dreamer never reads a harness's
@@ -44,19 +46,21 @@ dream agents pi
 
 `dream agents status` shows the installed release and the login state.
 
-## Use Claude Code or Codex
+## Use Claude Code, Codex, or opencode
 
 Install the CLI yourself, log in with it (`claude` or `codex` in a
-shell), and name it as the default in `dreamer.yaml`:
+shell, `opencode auth login` for opencode), and name it as the default
+in `dreamer.yaml`:
 
 ```yaml
 agents:
-  default: claude      # or codex
+  default: claude      # or codex, or opencode
 ```
 
 `dream config check` reports whether Dreamer finds the program and
-whether it is logged in. The drawer then runs `claude` (or `codex`) from
-the daemon's `PATH`, as you would run it in a shell. A drawer that is
+whether it is logged in (opencode reports its login only when a session
+starts). The drawer then runs `claude`, `codex`, or `opencode` from the
+daemon's `PATH`, as you would run it in a shell. A drawer that is
 already running keeps its harness: press Cmd-Shift-J (Ctrl-Alt-Shift-J
 on Linux) or run `dream drawer new --yes` to start a fresh one.
 
@@ -64,31 +68,35 @@ Two more steps give that CLI Dreamer's tools and instructions:
 
 ```sh
 claude mcp add dreamer -- dream mcp --level elsewhere   # or: codex mcp add dreamer -- ...
-dream skills install                                    # Dreamer's skills, for both CLIs
+opencode mcp add --global dreamer -- dream mcp --level elsewhere   # for opencode
+dream skills install                                    # Dreamer's skills, for all three CLIs
 ```
 
-[mcp.md](mcp.md#connect-claude-code-or-codex) explains the first.
-Without it, a Claude Code or Codex in the drawer works as it does in any
-terminal and cannot see your other panes. An
+[mcp.md](mcp.md#connect-claude-code-codex-or-opencode) explains the
+first. Without it, a Claude Code, Codex, or opencode in the drawer works
+as it does in any terminal and cannot see your other panes. An
 [agent session](#sessions) that the daemon runs gets the tools without
 this step.
 
 ## Logins
 
-- Each harness uses its own login: pi's `/login`, Claude Code's, Codex's.
-  You log in with the harness, never with Dreamer.
+- Each harness uses its own login: pi's `/login`, Claude Code's, Codex's,
+  opencode's (`opencode auth login`). You log in with the harness, never
+  with Dreamer.
 - Dreamer never reads a harness's credential store. It asks the harness
   whether it is logged in (`pi auth check`, `claude auth status`, `codex
-  login status`).
+  login status`). opencode has no such question that does not list its
+  stored credentials, so its login is reported when a session starts.
 - Dreamer never falls back to a metered API key. It removes
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, and
   `CODEX_API_KEY` from the environment of pi (`dream agents pi`), of
-  Claude Code or Codex in the drawer, of every agent session's harness,
-  and of delegated and `dream agents ask` runs.
+  Claude Code, Codex, or opencode in the drawer, of every agent
+  session's harness, and of delegated and `dream agents ask` runs.
 - Except in the drawer, no model turn starts without a login. You get
   the reason and the command that logs in
   ([No model turn without a login](#no-model-turn-without-a-login)).
-  Claude Code and Codex in the drawer show their own login screen.
+  Claude Code, Codex, and opencode in the drawer show their own login
+  screen.
 - A harness with your own `command` runs exactly as you wrote it, with
   the pane's environment. If you want it to use an API key, that is
   where to say so.
@@ -107,8 +115,8 @@ An agent reaches Dreamer through a [grant](grants.md) with an act level
 - **pi** started by `dream agents pi` (and so the drawer) runs at
   `elsewhere`. Set `DREAMER_AGENT_LEVEL` to `observe` or `own` in its
   environment for less (`DREAMER_AGENT_LEVEL=observe dream agents pi`).
-- **Claude Code and Codex** hold what the `dream mcp` you registered was
-  given (`--level`).
+- **Claude Code, Codex, and opencode** hold what the `dream mcp` you
+  registered was given (`--level`).
 - **An agent session** holds the grant it was created with, at most its
   creator's. Created without one, it holds `observe`
   ([Grants](#grants)).
@@ -127,7 +135,7 @@ runs with your privileges, like any program you start.
 
 ```yaml
 agents:
-  default: pi                 # pi (default), claude, codex, or a name below
+  default: pi                 # pi (default), claude, codex, opencode, or a name below
   pi:
     version: latest           # latest (default), or a release such as 1.5.2
     model: openai-codex/gpt-5.5  # optional; else the profile's provider and its default model
@@ -138,8 +146,11 @@ agents:
     command: [claude]         # default
     model: opus               # optional
   codex: {}
+  opencode:
+    command: [opencode]       # default; sessions add `acp`
+    mode: plan                # optional: the session mode, opencode's primary agent
   gemini:                     # any name: letters, digits, - and _
-    protocol: acp             # required for a custom harness: pi, claude, codex, or acp
+    protocol: acp             # required for a custom harness: pi, claude, codex, opencode, or acp
     command: [gemini, --experimental-acp]
     mode: default             # optional, ACP only: the session mode to set
   claude-opus:                # a second configuration of a built-in harness
@@ -147,26 +158,31 @@ agents:
     model: opus
 ```
 
-- `default` must name `pi`, `claude`, `codex`, or a block under `agents`.
+- `default` must name `pi`, `claude`, `codex`, `opencode`, or a block
+  under `agents`.
 - `version`, `agent_dir`, and `delegates` apply to pi only. `delegates`
   lists `claude`, `codex`, both, or neither (`[]`); see
   [Delegation](#delegation-to-claude-code-and-codex).
 - `protocol` says how Dreamer talks to the harness: `pi`, `claude`,
-  `codex`, or `acp`. A built-in harness speaks its own (giving it is
-  allowed but changes nothing; another value is refused). A custom harness
-  must give one. With `acp` it also needs a `command`; with `pi`,
-  `claude`, or `codex` and no `command`, it runs that program from `PATH`
-  (pi: Dreamer's install).
-- `mode` (ACP agents only) is a session mode the agent offers, set with
-  `session/set_mode` when a session starts or resumes. Mode names are the
-  agent's own. Some agents start in a mode that decides permissions
+  `codex`, `opencode`, or `acp`. A built-in harness speaks its own (giving
+  it is allowed but changes nothing; another value is refused). A custom
+  harness must give one. With `acp` it also needs a `command`; with `pi`,
+  `claude`, `codex`, or `opencode` and no `command`, it runs that program
+  from `PATH` (pi: Dreamer's install). `opencode` is ACP with opencode's
+  own start: its `command` is the opencode program, and sessions add
+  `acp` to it.
+- `mode` (ACP agents and opencode only) is a session mode the agent
+  offers, set with `session/set_mode` when a session starts or resumes.
+  Mode names are the agent's own. Some agents start in a mode that decides permissions
   themselves, so no approval ever reaches Dreamer; pick the mode that asks
-  (for Claude Code's ACP adapter, `default`). A mode the agent does not
-  offer stops the session from starting, with the modes it does offer.
+  (for Claude Code's ACP adapter, `default`). For opencode, the mode is
+  also its primary agent. A mode the agent does not offer stops the
+  session from starting, with the modes it does offer.
 - `command` is a program and its arguments. A bare program name is looked
   up on `PATH`.
 - `model` is the model to ask for, as the harness names it. Without it
-  the harness uses its own default.
+  the harness uses its own default. opencode takes no `model`: its model
+  comes from its own configuration and the mode you pick.
 - An unknown key, or a key that does not apply to that harness, is
   refused with its key path (for example `agents.pi.modle`), and the
   settings in force stay.
@@ -175,8 +191,10 @@ agents:
 each harness: whether its program is there, and its login state by the
 harness's own status command (`pi auth check`, `claude auth status`,
 `codex login status`), and, for a custom harness, the protocol it speaks.
-An ACP agent reports its login when a session starts. These lines are
-information; they do not change the exit status.
+An ACP agent, opencode included, reports its login when a session
+starts; for opencode the line says to log in with `opencode auth login`,
+and no opencode command is run. These lines are information; they do not
+change the exit status.
 
 ## pi, installed by Dreamer
 
@@ -315,7 +333,7 @@ extension with `--extension` and leaves the directory alone).
 | Path | What it is |
 | --- | --- |
 | `extensions/dreamer/` | Dreamer's extension: the terminal tools as native pi tools (below) |
-| `skills/dreamer-config/`, `skills/dreamer-manage/`, `skills/dreamer-apps/` | The skills `dream skills` also installs for Claude Code and Codex |
+| `skills/dreamer-config/`, `skills/dreamer-manage/`, `skills/dreamer-apps/` | The skills `dream skills` also installs for Claude Code, Codex, and opencode |
 | `skills/dreamer-pi-profile/` | How the agent changes its own profile |
 | `prompts/panes.md`, `prompts/collect.md`, `prompts/apps.md` | `/panes` (what is running), `/collect` (gather output over time), `/apps` (build a pane app) |
 | `APPEND_SYSTEM.md` | Added to pi's system prompt: the terminals, the approval rules, conciseness |
@@ -636,8 +654,9 @@ for.
   and passes `agents.pi.model`; it uses the managed install
   (`agents/pi/current/pi`), else `pi` on the daemon's `PATH`. When `dream`
   is not found beside `dreamerd` (or in `DREAMER_DREAM`), the pane says so
-  instead of starting pi. `claude`
-  and `codex` are looked up on the daemon's `PATH`. A custom ACP agent
+  instead of starting pi. `claude`,
+  `codex`, and `opencode` (its terminal interface) are looked up on the
+  daemon's `PATH`, and run without API-key variables. A custom ACP agent
   runs its `command`.
 - **When it is missing,** the pane says so (for pi: run `dream agents
   update`) and closes on Enter. The next use starts the harness again.
@@ -677,8 +696,8 @@ sessions` does the same from a shell ([cli.md](cli.md#agent-runs)).
 | `agent.sessions.resume` | Start a detached (or closed) session's harness again |
 | `agent.sessions.close` | End the harness process; the transcript stays |
 
-Sessions run on every protocol: pi, Claude Code, Codex, and ACP agents
-(see [The harness process](#the-harness-process)). A prompt sent while a
+Sessions run on every protocol: pi, Claude Code, Codex, opencode, and
+ACP agents (see [The harness process](#the-harness-process)). A prompt sent while a
 turn runs waits for that turn to end.
 
 **No model turn without the harness's own login.** Before a prompt is
@@ -690,7 +709,9 @@ reason. Codex is also asked (`account/read`) when the session starts, and
 runs only on a ChatGPT login. Claude Code reports where its key comes
 from at the start of each turn; if that is an API key, the session's
 harness is stopped at once. An ACP agent that needs a login says so when
-the session starts; Dreamer never authenticates for it.
+the session starts, or when a prompt needs one; Dreamer never
+authenticates for it. For opencode, the reason names `opencode auth
+login`.
 
 An app shows a session with a `transcript` and writes to it with a
 `composer` ([termapp.md](termapp.md#agent-sessions-transcript-and-composer)):
@@ -787,8 +808,8 @@ pi's `confirm` and `select` dialogs become approval requests. Its `input`
 and `editor` dialogs, which a session has no place for, are dismissed.
 pi has no plan of its own, so pi sessions have no `plan` events.
 
-**Dreamer's tools for Claude Code, Codex, and ACP agents** are one MCP
-server, `dream mcp`, found beside `dreamerd` (or at `DREAMER_DREAM`). It
+**Dreamer's tools for Claude Code, Codex, opencode, and ACP agents** are
+one MCP server, `dream mcp`, found beside `dreamerd` (or at `DREAMER_DREAM`). It
 gets the session's environment, so it takes the session's grant. Without
 `dream` the harness runs with no Dreamer tools, and the daemon log says
 so.
@@ -845,6 +866,10 @@ Dreamer is the client:
 | From the agent | `session/update` | `agent_message_chunk` and `agent_thought_chunk` as text and thinking, `tool_call` and `tool_call_update` as tool calls, `plan`, and the cost in `usage_update` |
 | From the agent | `session/request_permission` | An approval request whose options are the agent's |
 
+**opencode** runs as `opencode acp` (the `command`, then `acp`): an ACP
+agent as above. `mode` selects its primary agent; the mode ids are
+opencode's own. Its permission requests offer once, always, and reject.
+
 Approving picks the option you name if it allows, else the agent's
 `allow_once`, else its first allowing option; denying picks a rejecting
 one the same way, or answers `cancelled` when it offers none. Dreamer
@@ -894,8 +919,9 @@ no prompt, so it calls no model.
 `crates/server/tests/harness_sessions.rs` runs the same conversation
 through the daemon on scripted stand-ins for Claude Code, Codex, and an
 ACP agent (`fake-claude`, `fake-codex`, `fake-acp` in
-`crates/providers/testdata`): turns, a tool call approved and one denied,
-a cancel, and resuming after a restart. The stand-ins follow the
+`crates/providers/testdata`; opencode runs the ACP stand-in through its
+own `command`, which shows it is started with `acp`): turns, a tool call
+approved and one denied, a cancel, and resuming after a restart. The stand-ins follow the
 published shapes; they are not the real programs.
 
 ## Not yet
@@ -904,5 +930,5 @@ published shapes; they are not the real programs.
   installs the newest release when you run it.
 - `/selection` in pi: attaching the desktop's current selection. (An
   app's `composer` attaches it, as tmux's newest buffer.)
-- The scripted stand-ins above are the only test of the Claude Code and
-  Codex adapters; no test runs against the real programs.
+- The scripted stand-ins above are the only test of the Claude Code,
+  Codex, and opencode adapters; no test runs against the real programs.

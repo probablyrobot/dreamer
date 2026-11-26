@@ -52,9 +52,11 @@ fn offered_modes(result: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub async fn start(spec: &Spec) -> Result<Harness, String> {
+/// `extra` follows the program's arguments (`acp` for opencode).
+pub async fn start(spec: &Spec, extra: &[&str]) -> Result<Harness, String> {
     let version = crate::stdio::version(spec).await;
-    let mut proc = Proc::spawn("the ACP agent", crate::stdio::command(spec, &[]))?;
+    let extra: Vec<String> = extra.iter().map(|a| (*a).to_owned()).collect();
+    let mut proc = Proc::spawn("the ACP agent", crate::stdio::command(spec, &extra))?;
     let tx = proc.sender();
     let mut rpc = Rpc::new(true);
     let mut early = Vec::new();
@@ -93,10 +95,7 @@ pub async fn start(spec: &Spec) -> Result<Harness, String> {
             .await?;
         if let Some(e) = r.get("error") {
             if e["code"].as_i64() == Some(AUTH_REQUIRED) {
-                return Err(
-                    "it needs a login; log it in with its own login command (Dreamer never authenticates for it)"
-                        .to_owned(),
-                );
+                return Err(needs_login(spec.login.as_deref()));
             }
             return Err(format!(
                 "`{method}` failed: {}",
@@ -152,6 +151,7 @@ pub async fn start(spec: &Spec) -> Result<Harness, String> {
     });
     let pid = proc.pid;
     let mut state = Acp::new(sid.clone(), rpc);
+    state.login = spec.login.clone();
     let control = proc.run(updates_tx, move |mut out, mut inputs, updates| async move {
         let apply = |o: Out| {
             for w in o.writes {
@@ -185,6 +185,18 @@ pub async fn start(spec: &Spec) -> Result<Harness, String> {
         control,
         updates,
     })
+}
+
+/// Why a turn cannot run when the agent answers `auth_required`. Dreamer
+/// never calls `authenticate`: the agent's own login does it.
+fn needs_login(login: Option<&str>) -> String {
+    match login {
+        Some(cmd) => format!(
+            "it needs a login; log it in with `{cmd}` (Dreamer never authenticates for it)"
+        ),
+        None => "it needs a login; log it in with its own login command (Dreamer never authenticates for it)"
+            .to_owned(),
+    }
 }
 
 /// What the agent said it can do.
@@ -264,6 +276,8 @@ pub struct Acp {
     /// Tool names by call id.
     tools: HashMap<String, String>,
     cancelled: bool,
+    /// The command that logs the agent in, for its `auth_required`.
+    login: Option<String>,
 }
 
 /// The text of content blocks (or one block).
@@ -312,6 +326,7 @@ impl Acp {
             asks: HashMap::new(),
             tools: HashMap::new(),
             cancelled: false,
+            login: None,
         }
     }
 
@@ -403,7 +418,11 @@ impl Acp {
             // A response: the running turn's prompt is the one that matters.
             (None, Some(id)) => {
                 if id.as_u64().is_some() && id.as_u64() == self.turn {
-                    if let Some(e) = error_text(v) {
+                    if v["error"]["code"].as_i64() == Some(AUTH_REQUIRED) {
+                        out.updates
+                            .push(Update::Error(needs_login(self.login.as_deref())));
+                        self.ended(StopReason::Error, &mut out);
+                    } else if let Some(e) = error_text(v) {
                         out.updates.push(Update::Error(format!("the agent: {e}")));
                         self.ended(StopReason::Error, &mut out);
                     } else {
@@ -661,5 +680,29 @@ mod tests {
         let o =
             a.message(&json!({"jsonrpc":"2.0","id":9,"method":"fs/read_text_file","params":{}}));
         assert_eq!(o.writes[0]["error"]["code"], NOT_FOUND);
+    }
+
+    #[test]
+    fn a_prompt_that_needs_a_login_names_the_agents_own_login() {
+        let mut a = acp();
+        a.login = Some("opencode auth login".into());
+        let o = a.input(Input::Prompt("go".into()));
+        let id = o.writes[0]["id"].clone();
+        let o = a.message(&json!({"jsonrpc":"2.0","id":id,
+            "error":{"code":AUTH_REQUIRED,"message":"Authentication required"}}));
+        assert_eq!(
+            o.updates,
+            vec![
+                Update::Error(
+                    "it needs a login; log it in with `opencode auth login` (Dreamer never authenticates for it)"
+                        .into()
+                ),
+                Update::TurnEnd(StopReason::Error),
+            ]
+        );
+        assert!(
+            o.writes.iter().all(|w| w["method"] != "authenticate"),
+            "{o:?}"
+        );
     }
 }

@@ -29,10 +29,10 @@ fn harness_arg(args: &[String]) -> Result<Vec<String>, String> {
         if a == "--harness" {
             match it.next().map(String::as_str) {
                 Some("pi") => {}
-                Some("claude" | "codex") => {
+                Some("claude" | "codex" | "opencode") => {
                     return Err(
-                        "Dreamer installs only pi; claude and codex are the CLIs you installed \
-                         (see `dream agents providers`)"
+                        "Dreamer installs only pi; claude, codex, and opencode are the CLIs you \
+                         installed (see `dream config check`)"
                             .into(),
                     );
                 }
@@ -258,7 +258,7 @@ pub fn rollback(args: &[String]) -> Result<(), String> {
 #[derive(Debug)]
 pub struct HarnessCheck {
     pub name: String,
-    /// How Dreamer talks to it: pi, claude, codex, or acp.
+    /// How Dreamer talks to it: pi, claude, codex, opencode, or acp.
     pub protocol: &'static str,
     pub default: bool,
     /// The program sessions would run, when found.
@@ -326,6 +326,23 @@ pub fn check(settings: &AgentSettings) -> Vec<HarnessCheck> {
                         None => "-".into(),
                     };
                     (program, looked, login)
+                }
+                // opencode's login is only known to it: `opencode auth list`
+                // would read its credential store, so nothing is run.
+                "opencode" => {
+                    let (program, looked) = match &h.command {
+                        Some(argv) => (
+                            resolve(&argv[0]),
+                            format!("agents.{name}.command {argv:?}"),
+                        ),
+                        None => (resolve("opencode"), "`opencode` on PATH".to_owned()),
+                    };
+                    (
+                        program,
+                        looked,
+                        "reported by opencode when a session starts; log in with `opencode auth login`"
+                            .into(),
+                    )
                 }
                 _ => {
                     let argv = h.command.clone().unwrap_or_default();

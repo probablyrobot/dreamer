@@ -726,4 +726,23 @@ mod tests {
         assert!(env("DREAMER_RUNTIME_DIR").is_some());
         assert!(env("PI_CODING_AGENT_DIR").is_none());
     }
+
+    #[test]
+    fn opencode_in_the_drawer_is_its_own_interface_from_path() {
+        let s = workspace_config::settings::parse_settings("agents:\n  default: opencode\n", None)
+            .expect("settings");
+        let l = harness_launch(&s, TmuxSessionId(4));
+        assert_eq!(l.harness, "opencode");
+        match which("opencode") {
+            // The TUI, not its ACP server, without API keys.
+            Some(p) => {
+                assert_eq!(l.argv, without_api_keys(p));
+                assert!(l.problem.is_none());
+            }
+            None => {
+                let why = l.problem.expect("a reason");
+                assert!(why.contains("`opencode` is not on PATH"), "{why}");
+            }
+        }
+    }
 }

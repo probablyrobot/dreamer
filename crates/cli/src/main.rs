@@ -77,7 +77,7 @@ const USAGE: &str = "usage:
   dream config-dir
   dream themes
   dream config check | dream config schema [--json]
-  dream skills [list | show NAME | install [--claude] [--codex]]   (agent skills for configuring Dreamer and building apps)
+  dream skills [list | show NAME | install [--claude] [--codex] [--opencode]]   (agent skills for configuring Dreamer and building apps)
   dream workspace list
   dream workspace check <name|path>
   dream workspace up <name|path> [-L socket] [--tmux PATH]
@@ -311,8 +311,8 @@ fn main() -> ExitCode {
 /// Every built-in color scheme with a swatch of its colors, the configured
 /// one marked. Swatches use 24-bit color only on a terminal.
 /// Agent skills that ship with Dreamer: instructions an agent (Claude
-/// Code, Codex) reads to help with Dreamer, so people need not edit its
-/// files by hand. The same files are part of Dreamer's pi profile.
+/// Code, Codex, opencode) reads to help with Dreamer, so people need not
+/// edit its files by hand. The same files are part of Dreamer's pi profile.
 fn skills() -> Vec<(&'static str, &'static str)> {
     providers::pi_profile::shared_skills()
 }
@@ -328,7 +328,9 @@ fn skills_list() -> Result<(), String> {
     for (name, text) in skills() {
         println!("{name}\n    {}", skill_description(text));
     }
-    println!("\nInstall for your agents with `dream skills install` (Claude Code and Codex).");
+    println!(
+        "\nInstall for your agents with `dream skills install` (Claude Code, Codex, and opencode)."
+    );
     Ok(())
 }
 
@@ -341,28 +343,41 @@ fn skills_show(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `dream skills install [--claude] [--codex]`: write the skills where the
-/// agents look for them (`~/.claude/skills/NAME/SKILL.md`,
-/// `~/.codex/skills/NAME/SKILL.md`). Both by default. Only what Dreamer
-/// ships is written, each skill in its own directory.
+/// `dream skills install [--claude] [--codex] [--opencode]`: write the
+/// skills where the agents look for them (`~/.claude/skills/NAME/SKILL.md`,
+/// `~/.codex/skills/NAME/SKILL.md`, and opencode's
+/// `$XDG_CONFIG_HOME/opencode/skills/NAME/SKILL.md`, by default under
+/// `~/.config`). All three by default. Only what Dreamer ships is written,
+/// each skill in its own directory.
 fn skills_install(args: &[&str]) -> Result<(), String> {
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .ok_or("HOME is not set")?;
+    // XDG requires an absolute path; a relative one is ignored.
+    let opencode = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".config"))
+        .join("opencode/skills");
     let mut targets = Vec::new();
     for a in args {
         match *a {
             "--claude" => targets.push(home.join(".claude/skills")),
             "--codex" => targets.push(home.join(".codex/skills")),
+            "--opencode" => targets.push(opencode.clone()),
             other => {
                 return Err(format!(
-                    "unknown option `{other}`; use --claude, --codex, or neither for both"
+                    "unknown option `{other}`; use --claude, --codex, --opencode, or none for all three"
                 ));
             }
         }
     }
     if targets.is_empty() {
-        targets = vec![home.join(".claude/skills"), home.join(".codex/skills")];
+        targets = vec![
+            home.join(".claude/skills"),
+            home.join(".codex/skills"),
+            opencode,
+        ];
     }
     for dir in targets {
         for (name, text) in skills() {

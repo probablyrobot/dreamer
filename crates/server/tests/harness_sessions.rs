@@ -1,4 +1,4 @@
-//! Agent sessions over Claude Code, Codex, and an ACP agent, through a real
+//! Agent sessions over Claude Code, Codex, opencode, and an ACP agent, through a real
 //! daemon, with scripted stand-ins for each harness
 //! (`crates/providers/testdata/fake-claude`, `fake-codex`, `fake-acp`) so no
 //! model or login is needed. For each: a multi-turn conversation, a tool
@@ -274,6 +274,12 @@ async fn converse(harness: &str, fake_name: &str, resumed_marker: &str) {
             "agents:\n  default: helper\n  helper:\n    protocol: acp\n    mode: default\n    command: [/bin/sh, {}]\n",
             fake(fake_name).display()
         ),
+        // opencode is built in: its `command` is the opencode program, and
+        // sessions add `acp`.
+        "opencode" => format!(
+            "agents:\n  default: opencode\n  opencode:\n    mode: default\n    command: [/bin/sh, {}]\n",
+            fake(fake_name).display()
+        ),
         other => format!(
             "agents:\n  default: {other}\n  {other}:\n    command: [/bin/sh, {}]\n",
             fake(fake_name).display()
@@ -290,11 +296,18 @@ async fn converse(harness: &str, fake_name: &str, resumed_marker: &str) {
         .expect("create"),
     );
     assert_eq!(s.state, api::AgentSessionState::Idle as i32, "{s:?}");
-    if harness == "acp" {
+    if harness == "acp" || harness == "opencode" {
         // The mode in the settings is set before any prompt.
         assert!(
             setup.log(fake_name).contains("set_mode:default"),
             "{}",
+            setup.log(fake_name)
+        );
+    }
+    if harness == "opencode" {
+        assert!(
+            setup.log(fake_name).contains("args:acp\n"),
+            "opencode runs its ACP server:\n{}",
             setup.log(fake_name)
         );
     }
@@ -434,6 +447,11 @@ async fn converse(harness: &str, fake_name: &str, resumed_marker: &str) {
 #[tokio::test]
 async fn an_acp_agent_configured_only_in_settings_holds_a_conversation() {
     converse("acp", "fake-acp", "load:").await;
+}
+
+#[tokio::test]
+async fn opencode_sessions_run_over_its_acp_server() {
+    converse("opencode", "fake-acp", "load:").await;
 }
 
 #[tokio::test]

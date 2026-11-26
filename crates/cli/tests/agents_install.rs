@@ -247,6 +247,24 @@ fn config_check_reports_each_harness_and_refuses_a_bad_block() {
         out.contains("dream agents update"),
         "pi is not installed: {out}"
     );
+    // opencode's login is reported by opencode itself; nothing is run.
+    assert!(
+        out.contains("· opencode: not found (`opencode` on PATH)"),
+        "{out}"
+    );
+
+    e.settings("agents:\n  default: opencode\n  opencode:\n    command: [/bin/sh]\n  review:\n    protocol: opencode\n    mode: plan\n");
+    let out = e.ok(&["config", "check"]);
+    assert!(
+        out.contains(
+            "✓ opencode (default): /bin/sh\n  login: reported by opencode when a session starts; log in with `opencode auth login`"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("· review: not found (`opencode` on PATH) (speaks opencode)"),
+        "{out}"
+    );
 
     e.settings("agents:\n  pi:\n    modle: x\n");
     let out = e.run(&["config", "check"]);

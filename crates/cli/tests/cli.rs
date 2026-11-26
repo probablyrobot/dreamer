@@ -3489,3 +3489,65 @@ fn a_preview_pane_follows_saves_and_an_image_needs_a_desktop() {
     );
     assert!(!png.exists());
 }
+
+#[test]
+fn skills_install_writes_where_each_agent_looks_opencode_under_its_config_dir() {
+    let root = PathBuf::from(format!("/tmp/drm-skills-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    let xdg = root.join("xdg");
+    std::fs::create_dir_all(&home).expect("home");
+    let dream = |args: &[&str], xdg: Option<&PathBuf>| {
+        let mut c = Command::new(DREAM);
+        c.args(args)
+            .env("HOME", &home)
+            .env_remove("XDG_CONFIG_HOME");
+        if let Some(x) = xdg {
+            c.env("XDG_CONFIG_HOME", x);
+        }
+        let out = c.output().expect("dream");
+        assert!(
+            out.status.success(),
+            "dream {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let names = |dir: &PathBuf| -> Vec<String> {
+        let mut n: Vec<String> = std::fs::read_dir(dir)
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.path().join("SKILL.md").is_file())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        n.sort();
+        n
+    };
+
+    // opencode alone, under $XDG_CONFIG_HOME: nothing else is written.
+    dream(&["skills", "install", "--opencode"], Some(&xdg));
+    let opencode = names(&xdg.join("opencode/skills"));
+    assert!(
+        opencode.contains(&"dreamer-config".to_owned()),
+        "{opencode:?}"
+    );
+    // opencode loads a skill only when its name is lowercase words
+    // joined by single hyphens.
+    for n in &opencode {
+        assert!(
+            n.split('-').all(|w| !w.is_empty()
+                && w.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())),
+            "{n}"
+        );
+    }
+    assert!(std::fs::read_dir(&home).expect("home").next().is_none());
+
+    // Without an option, all three agents; opencode's under ~/.config.
+    dream(&["skills", "install"], None);
+    for dir in [".claude/skills", ".codex/skills", ".config/opencode/skills"] {
+        assert_eq!(names(&home.join(dir)), opencode, "{dir}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

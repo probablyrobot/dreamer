@@ -38,7 +38,7 @@ Two commands help with edits:
   problem, naming the file, the key or line, and what is wrong.
 
 Agents can make these changes for you. `dream skills install` gives Claude
-Code and Codex the `dreamer-config` skill. It describes this loop (look
+Code, Codex, and opencode the `dreamer-config` skill. It describes this loop (look
 up, edit, check, and it applies) and what is safe to change.
 
 ```yaml
@@ -287,12 +287,12 @@ tiers:
 ## Agent harnesses
 
 `agents:` chooses the harness a new agent session runs (pi, Claude Code,
-Codex, or an ACP agent) and how each is started, and pins the pi release
+Codex, opencode, or an ACP agent) and how each is started, and pins the pi release
 Dreamer installs. See [agents.md](agents.md#settings).
 
 ```yaml
 agents:
-  default: pi                  # pi (default), claude, codex, or a name below
+  default: pi                  # pi (default), claude, codex, opencode, or a name below
   pi:
     version: latest            # latest (default) or a release such as 1.5.2
     model: openai-codex/gpt-5.5  # optional; default: the profile's provider and its default model

@@ -30,7 +30,7 @@ New here? Read [Installing Dreamer](install.md), then
 
 | Page | What it covers |
 | --- | --- |
-| [Agents](agents.md) | Run pi, Claude Code, Codex, or an ACP agent in a pane |
+| [Agents](agents.md) | Run pi, Claude Code, Codex, opencode, or an ACP agent in a pane |
 | [MCP](mcp.md) | Let an agent read and drive your panes through `dream mcp` |
 | [Grants](grants.md) | What a connection may do, and how approvals work |
 | [Memory](memory.md) | Facts kept across agent sessions |

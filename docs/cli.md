@@ -390,7 +390,7 @@ These work on workspace files and tmux directly, without the daemon. See
 | `dream themes` | Every theme, built in and yours, with a swatch and the one in force |
 | `dream skills` (or `dream skills list`) | The agent skills that ship with Dreamer |
 | `dream skills show NAME` | Print a skill |
-| `dream skills install [--claude] [--codex]` | Write the skills to `~/.claude/skills/` and `~/.codex/skills/` (both by default): `dreamer-config` (configuring Dreamer), `dreamer-manage` (installing, updating, and operating it), and `dreamer-apps` (building pane apps). Dreamer's pi profile has them already |
+| `dream skills install [--claude] [--codex] [--opencode]` | Write the skills to `~/.claude/skills/`, `~/.codex/skills/`, and opencode's `$XDG_CONFIG_HOME/opencode/skills/` (`~/.config/opencode/skills/` without it); all three by default: `dreamer-config` (configuring Dreamer), `dreamer-manage` (installing, updating, and operating it), and `dreamer-apps` (building pane apps). Dreamer's pi profile has them already |
 
 See [settings.md](settings.md#live-and-checked). The same skills, with
 the MCP server, come as a plugin for Claude Code and Codex: see

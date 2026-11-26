@@ -1,15 +1,16 @@
 # MCP
 
 `dream mcp` is an MCP server on standard input and output. It gives an
-agent with an MCP client, such as Claude Code or Codex, Dreamer's tools:
+agent with an MCP client, such as Claude Code, Codex, or opencode,
+Dreamer's tools:
 reading and searching panes, running commands, changing the layout,
 collectors, memory, apps, and the browser.
 
 An [agent session](agents.md#sessions) that Dreamer starts gets this
-server by itself. Register it yourself for a Claude Code or Codex that
-you start, in a pane or in the [harness drawer](agents.md#the-harness-drawer).
+server by itself. Register it yourself for a Claude Code, Codex, or
+opencode that you start, in a pane or in the [harness drawer](agents.md#the-harness-drawer).
 
-## Connect Claude Code or Codex
+## Connect Claude Code, Codex, or opencode
 
 Claude Code:
 
@@ -23,7 +24,14 @@ Codex:
 codex mcp add dreamer -- dream mcp --level elsewhere
 ```
 
-Both commands store a stdio server named `dreamer` whose command is
+opencode (`--global` writes it to opencode's own configuration, for every
+project):
+
+```sh
+opencode mcp add --global dreamer -- dream mcp --level elsewhere
+```
+
+Each command stores a stdio server named `dreamer` whose command is
 `dream` with the arguments `mcp --level elsewhere`. For another MCP
 client, or to write the entry by hand, the JSON form is:
 

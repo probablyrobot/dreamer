@@ -3,7 +3,7 @@
 //!
 //! ```yaml
 //! agents:
-//!   default: pi                 # pi | claude | codex | a name below
+//!   default: pi                 # pi | claude | codex | opencode | a name below
 //!   pi:
 //!     version: latest           # or 1.5.2
 //!     model: openai/gpt-5.5
@@ -26,7 +26,7 @@ use serde::Deserialize;
 use serde_norway::Value;
 
 /// The harnesses Dreamer knows without configuration.
-pub const BUILT_IN: [&str; 3] = ["pi", "claude", "codex"];
+pub const BUILT_IN: [&str; 4] = ["pi", "claude", "codex", "opencode"];
 
 /// The CLIs pi's Dreamer extension can hand tasks to.
 pub const DELEGATES: [&str; 2] = ["claude", "codex"];
@@ -80,6 +80,7 @@ impl AgentSettings {
             "pi" => Some(Protocol::Pi),
             "claude" => Some(Protocol::Claude),
             "codex" => Some(Protocol::Codex),
+            "opencode" => Some(Protocol::Opencode),
             _ => self.harnesses.get(name).and_then(|h| h.protocol),
         }
     }
@@ -106,11 +107,11 @@ impl AgentSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Harness {
     /// The program and its arguments. For pi, without one, Dreamer's
-    /// managed install; for claude and codex, the CLI on `PATH`.
+    /// managed install; for claude, codex, and opencode, the CLI on `PATH`.
     pub command: Option<Vec<String>>,
     /// The model to ask for; without one, the harness's own default.
     pub model: Option<String>,
-    /// ACP agents only: the session mode Dreamer sets when a session
+    /// ACP agents (opencode included) only: the session mode Dreamer sets when a session
     /// starts (`session/set_mode`), such as one that asks before acting.
     pub mode: Option<String>,
     /// pi only: the release to keep installed.
@@ -143,6 +144,8 @@ pub enum Protocol {
     Claude,
     /// Codex's app server (`codex app-server`).
     Codex,
+    /// opencode's ACP server (`opencode acp`).
+    Opencode,
     /// The Agent Client Protocol on the program's standard streams.
     Acp,
 }
@@ -153,8 +156,14 @@ impl Protocol {
             Protocol::Pi => "pi",
             Protocol::Claude => "claude",
             Protocol::Codex => "codex",
+            Protocol::Opencode => "opencode",
             Protocol::Acp => "acp",
         }
+    }
+
+    /// Whether Dreamer talks to it over the Agent Client Protocol.
+    pub fn is_acp(self) -> bool {
+        matches!(self, Protocol::Acp | Protocol::Opencode)
     }
 }
 
@@ -323,7 +332,7 @@ pub fn parse(value: &Value) -> Result<AgentSettings, Problem> {
                     return Err(p(
                         &format!(".{name}"),
                         format!(
-                            "`{name}` is not pi, claude, or codex; a custom harness needs a `protocol` (pi, claude, codex, or acp)"
+                            "`{name}` is not pi, claude, codex, or opencode; a custom harness needs a `protocol` (pi, claude, codex, opencode, or acp)"
                         ),
                     ));
                 }
@@ -336,8 +345,20 @@ pub fn parse(value: &Value) -> Result<AgentSettings, Problem> {
                 _ => {}
             }
         }
-        if h.mode.is_some() && h.protocol != Some(Protocol::Acp) {
+        let protocol = if built_in {
+            AgentSettings::default().protocol(name)
+        } else {
+            h.protocol
+        };
+        if h.mode.is_some() && !protocol.is_some_and(Protocol::is_acp) {
             return Err(p(&at("mode"), "applies to ACP agents only".into()));
+        }
+        if h.model.is_some() && protocol == Some(Protocol::Opencode) {
+            return Err(p(
+                &at("model"),
+                "opencode picks its model from its own configuration; Dreamer cannot ask for one over ACP"
+                    .into(),
+            ));
         }
         out.harnesses.insert(name.to_owned(), h);
     }
@@ -345,7 +366,9 @@ pub fn parse(value: &Value) -> Result<AgentSettings, Problem> {
         if !BUILT_IN.contains(&d.as_str()) && !out.harnesses.contains_key(&d) {
             return Err(p(
                 ".default",
-                format!("`{d}` is not pi, claude, codex, or a harness configured under agents"),
+                format!(
+                    "`{d}` is not pi, claude, codex, opencode, or a harness configured under agents"
+                ),
             ));
         }
         out.default = Some(d);
@@ -377,7 +400,7 @@ mod tests {
         assert_eq!(a.default_harness(), "pi");
         assert_eq!(a.pi_version(), PiVersion::Latest);
         let names: Vec<String> = a.all().into_iter().map(|(n, _)| n).collect();
-        assert_eq!(names, ["pi", "claude", "codex"]);
+        assert_eq!(names, ["pi", "claude", "codex", "opencode"]);
         assert!(a.harness("gemini").is_none());
         assert_eq!(a.pi_delegates(), ["claude", "codex"]);
     }
@@ -426,7 +449,7 @@ mod tests {
             g.command.as_deref(),
             Some(&["gemini".to_owned(), "--experimental-acp".to_owned()][..])
         );
-        assert_eq!(a.all().len(), 4);
+        assert_eq!(a.all().len(), 5);
         assert_eq!(a.protocol("gemini"), Some(Protocol::Acp));
         let m = agents("gemini:\n  protocol: acp\n  command: [gemini]\n  mode: default\n")
             .expect("mode");
@@ -451,6 +474,44 @@ mod tests {
                 .pi_version(),
             PiVersion::Latest
         );
+    }
+
+    #[test]
+    fn opencode_is_built_in_and_speaks_acp_with_a_mode_but_no_model() {
+        let a = agents("default: opencode\n").expect("built in");
+        assert_eq!(a.default_harness(), "opencode");
+        assert_eq!(a.protocol("opencode"), Some(Protocol::Opencode));
+        assert!(a.harness("opencode").expect("opencode").command.is_none());
+        let b = agents(
+            "opencode: {protocol: opencode, mode: plan, command: [/opt/opencode]}\nreview: {protocol: opencode, mode: review}\n",
+        )
+        .expect("configured");
+        let o = b.harness("opencode").expect("opencode");
+        assert_eq!(o.mode.as_deref(), Some("plan"));
+        assert_eq!(
+            o.command.as_deref(),
+            Some(&["/opt/opencode".to_owned()][..])
+        );
+        // A second configuration needs no command: it runs `opencode`.
+        assert_eq!(b.protocol("review"), Some(Protocol::Opencode));
+        assert!(b.harness("review").expect("review").command.is_none());
+        for (yaml, at) in [
+            ("opencode: {model: x}", "agents.opencode.model"),
+            (
+                "other: {protocol: opencode, model: x}",
+                "agents.other.model",
+            ),
+            ("opencode: {protocol: acp}", "agents.opencode.protocol"),
+            ("opencode: {version: 1.0.0}", "agents.opencode.version"),
+            (
+                "opencode: {delegates: [claude]}",
+                "agents.opencode.delegates",
+            ),
+            ("pi: {delegates: [opencode]}", "agents.pi.delegates"),
+        ] {
+            let (path, why) = agents(yaml).expect_err(yaml);
+            assert_eq!(path, at, "{yaml}: {why}");
+        }
     }
 
     #[test]

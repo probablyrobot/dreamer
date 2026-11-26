@@ -126,6 +126,9 @@ pub struct Spec {
     pub tools: Option<crate::Tools>,
     /// ACP agents: the session mode to set when the session starts.
     pub mode: Option<String>,
+    /// ACP agents: the command that logs the agent in, named when it says
+    /// it needs a login.
+    pub login: Option<String>,
 }
 
 /// How Dreamer talks to a harness.
@@ -137,6 +140,8 @@ pub enum Protocol {
     Claude,
     /// `codex app-server`.
     Codex,
+    /// `opencode acp`: the Agent Client Protocol.
+    Opencode,
     /// The Agent Client Protocol on standard streams.
     Acp,
 }
@@ -147,6 +152,7 @@ impl Protocol {
             "pi" => Protocol::Pi,
             "claude" => Protocol::Claude,
             "codex" => Protocol::Codex,
+            "opencode" => Protocol::Opencode,
             "acp" => Protocol::Acp,
             _ => return None,
         })
@@ -157,6 +163,7 @@ impl Protocol {
             Protocol::Pi => "pi",
             Protocol::Claude => "claude",
             Protocol::Codex => "codex",
+            Protocol::Opencode => "opencode",
             Protocol::Acp => "acp",
         }
     }
@@ -168,7 +175,8 @@ pub async fn start(protocol: Protocol, spec: &Spec) -> Result<Harness, String> {
         Protocol::Pi => crate::pi_rpc::start(spec).await,
         Protocol::Claude => crate::claude_session::start(spec).await,
         Protocol::Codex => crate::codex_session::start(spec).await,
-        Protocol::Acp => crate::acp::start(spec).await,
+        Protocol::Opencode => crate::acp::start(spec, &["acp"]).await,
+        Protocol::Acp => crate::acp::start(spec, &[]).await,
     }
 }
 

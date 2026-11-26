@@ -378,7 +378,7 @@ async fn pi_login_gate(spec: &providers::session::Spec) -> Result<(), String> {
 async fn login_gate(protocol: Protocol, spec: &providers::session::Spec) -> Result<(), String> {
     let kind = match protocol {
         Protocol::Pi => return pi_login_gate(spec).await,
-        Protocol::Acp => return Ok(()),
+        Protocol::Acp | Protocol::Opencode => return Ok(()),
         Protocol::Claude => providers::Kind::ClaudeCli,
         Protocol::Codex => providers::Kind::CodexCli,
     };
@@ -471,6 +471,7 @@ fn spec(
                 resume: info.s.harness_session.clone(),
                 tools,
                 mode: h.mode.clone(),
+                login: (protocol == Protocol::Opencode).then(|| "opencode auth login".to_owned()),
                 ..providers::session::Spec::default()
             },
         ));
