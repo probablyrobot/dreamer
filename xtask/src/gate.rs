@@ -852,7 +852,7 @@ fn screens(dir: &Path) -> Result<Done, String> {
     // The marker is printed after the switch. Without it the window
     // stopped repainting between the captures (#370): not run, never a
     // pass, and not a failure of the switch.
-    if crate::scenes::share_of(&after, crate::scenes::SWITCH_MARKER)? < 0.000_2 {
+    if !crate::scenes::switch_marked(&after)? {
         println!(
             "gate: the window stopped repainting after the theme switch (screen locked, or not in front); the theme switch is recorded as not run"
         );
