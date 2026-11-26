@@ -721,7 +721,7 @@ pub fn capture_switch(root: &Path, theme: &str, before: &Path, after: &Path) -> 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
         loop {
             capture_window(running.app.id(), after, 1.0)?;
-            let marked = share_of(after, SWITCH_MARKER)? >= 0.000_2;
+            let marked = switch_marked(after)?;
             let switched = share_of(after, 0x14_16_1a)? <= 0.005;
             if (marked && switched) || std::time::Instant::now() > deadline {
                 return Ok(());
@@ -735,6 +735,15 @@ pub fn capture_switch(root: &Path, theme: &str, before: &Path, after: &Path) -> 
 /// The block `capture_switch` prints after the theme switch: a blue no
 /// scheme in the check uses.
 pub const SWITCH_MARKER: u32 = 0x20_60_a0;
+
+/// Whether a capture shows the switch marker. A saturated blue moves far
+/// when the capture is in the display's color space (sRGB `#2060a0` is
+/// captured as about `#375e9c` on a Display P3 screen), so it is matched
+/// within 32 steps per channel; no color of the switched-to scheme is that
+/// close.
+pub fn switch_marked(path: &Path) -> Result<bool, String> {
+    Ok(share_near(path, SWITCH_MARKER, 32)? >= 0.000_2)
+}
 
 /// The share of a capture's pixels within a few steps of `color` (12 per
 /// channel: the display profile moves saturated colors more than grays).
