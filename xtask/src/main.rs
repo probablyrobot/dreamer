@@ -39,6 +39,8 @@ commands:
                                key to echo through a connected host, split into link and host
   bench gui [OPTIONS]          the desktop measuring itself (needs an awake, unlocked display;
                                exits 5, not run, without one)
+  bench compare [OPTIONS]      Dreamer next to other installed terminals on one tmux session
+                               (Linux desktop only for now)
   bench report FILE...         result files as the Markdown docs/performance.md records
   build-report [--ci-run ID]   the release build report from target/package, the gate, and CI
   release vX.Y.Z [--sign ID] [--notarize PROFILE] [--resume]

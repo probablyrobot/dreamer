@@ -12,6 +12,7 @@
 //! dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]
 //! dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH]
 //!                      [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]
+//! dreamer-bench compare [--terminal NAME]... [--frames off|on|always] [--seconds S] [--json FILE]
 //! dreamer-bench machine
 //! dreamer-bench corpus NAME FILE
 //! ```
@@ -36,6 +37,10 @@
 //! desktop's path to a remote pane) and splits key to echo into the link,
 //! the host's processing, and the rest; see `remote.rs`.
 //!
+//! `compare` draws one tmux session with Dreamer and with each installed
+//! reference terminal and measures memory, CPU, and `cat` time (Linux
+//! only); see `compare.rs`.
+//!
 //! Each measure says what it timed. Results are printed as a table and,
 //! with `--json`, written for the record together with the machine they
 //! ran on and the revision they were built from. `cargo xtask bench`
@@ -54,6 +59,7 @@ use serde_json::{Value, json};
 use tmux_backend::TmuxServer;
 use tmux_backend::server::tmux_program;
 
+mod compare;
 mod corpus;
 mod extensions;
 mod memory;
@@ -71,13 +77,14 @@ fn main() {
         Some("tiers") => tiers::run(&args[1..]),
         Some("extensions") => extensions::run(&args[1..]),
         Some("remote") => remote::remote(&args[1..]),
+        Some("compare") => compare::run(&args[1..]),
         Some("machine") if args.len() == 1 => {
             println!("{}", hardware());
             Ok(())
         }
         Some("corpus") if args.len() == 3 => write_corpus(&args[1], Path::new(&args[2])),
         _ => Err(
-            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M [--sessions S]] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]\n       dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH] [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]\n       dreamer-bench machine\n       dreamer-bench corpus NAME FILE"
+            "usage: dreamer-bench headless [--panes N] [--history LINES] [--json FILE]\n       dreamer-bench busy [--panes N] [--idle M [--sessions S]] [--set OPTION VALUE]... [--json FILE]\n       dreamer-bench streams [--panes N] [--corpus NAME]... [--seconds S] [--json FILE]\n       dreamer-bench tiers [--panes N] [--stream text|escape] [--rate KIB] [--seconds S] [--json FILE]\n       dreamer-bench memory [--scenario NAME]... [--seconds S] [--panes N] [--paste-mib M] [--backoff-ms B] [--json FILE]\n       dreamer-bench extensions [--panes N] [--seconds S] [--samples K] [--without PART]... [--json FILE]\n       dreamer-bench remote [--samples N] [--ssh PROGRAM --destination DEST [--dream PATH] [--host-tmux PATH] [--host-tmux-socket NAME]] [--link TEXT] [--json FILE]\n       dreamer-bench compare [--terminal NAME]... [--frames off|on|always] [--seconds S] [--json FILE]\n       dreamer-bench machine\n       dreamer-bench corpus NAME FILE"
                 .into(),
         ),
     };
