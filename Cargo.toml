@@ -4,7 +4,7 @@ members = ["crates/*", "tools/*", "xtask"]
 default-members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.12.1"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
@@ -15,28 +15,28 @@ repository = "https://github.com/probablyrobot/dreamer"
 [workspace.dependencies]
 # Published to crates.io under these names; the short keys keep `use` lines.
 # The pins move with the workspace version.
-api = { package = "dreamer-api", path = "crates/api", version = "=0.12.0" }
-app-protocol = { package = "dreamer-app-protocol", path = "crates/app-protocol", version = "=0.12.0" }
-view-tree = { package = "dreamer-view-tree", path = "crates/view-tree", version = "=0.12.0" }
-client = { package = "dreamer-client", path = "crates/client", version = "=0.12.0" }
-domain = { package = "dreamer-domain", path = "crates/domain", version = "=0.12.0" }
-ghostty-sys = { package = "dreamer-ghostty-sys", path = "crates/ghostty-sys", version = "=0.12.0" }
-perf = { package = "dreamer-perf", path = "crates/perf", version = "=0.12.0" }
-platform = { package = "dreamer-platform", path = "crates/platform", version = "=0.12.0" }
-providers = { package = "dreamer-providers", path = "crates/providers", version = "=0.12.0" }
-terminal-core = { package = "dreamer-terminal-core", path = "crates/terminal-core", version = "=0.12.0" }
-terminal-ghostty = { package = "dreamer-terminal-ghostty", path = "crates/terminal-ghostty", version = "=0.12.0" }
-tmux-backend = { package = "dreamer-tmux-backend", path = "crates/tmux-backend", version = "=0.12.0" }
-tmux-protocol = { package = "dreamer-tmux-protocol", path = "crates/tmux-protocol", version = "=0.12.0" }
-web-component = { package = "dreamer-web-component", path = "crates/web-component", version = "=0.12.0" }
-wire = { package = "dreamer-wire", path = "crates/wire", version = "=0.12.0" }
-workspace-config = { package = "dreamer-workspace-config", path = "crates/workspace-config", version = "=0.12.0" }
-workspace-host = { package = "dreamer-workspace-host", path = "crates/workspace-host", version = "=0.12.0" }
-matcher = { package = "dreamer-matcher", path = "crates/matcher", version = "=0.12.0" }
-memory = { package = "dreamer-memory", path = "crates/memory", version = "=0.12.0" }
-mirror = { package = "dreamer-mirror", path = "crates/mirror", version = "=0.12.0" }
-procreg = { package = "dreamer-procreg", path = "crates/procreg", version = "=0.12.0" }
-script-runtime = { package = "dreamer-script-runtime", path = "crates/script-runtime", version = "=0.12.0" }
+api = { package = "dreamer-api", path = "crates/api", version = "=0.12.1" }
+app-protocol = { package = "dreamer-app-protocol", path = "crates/app-protocol", version = "=0.12.1" }
+view-tree = { package = "dreamer-view-tree", path = "crates/view-tree", version = "=0.12.1" }
+client = { package = "dreamer-client", path = "crates/client", version = "=0.12.1" }
+domain = { package = "dreamer-domain", path = "crates/domain", version = "=0.12.1" }
+ghostty-sys = { package = "dreamer-ghostty-sys", path = "crates/ghostty-sys", version = "=0.12.1" }
+perf = { package = "dreamer-perf", path = "crates/perf", version = "=0.12.1" }
+platform = { package = "dreamer-platform", path = "crates/platform", version = "=0.12.1" }
+providers = { package = "dreamer-providers", path = "crates/providers", version = "=0.12.1" }
+terminal-core = { package = "dreamer-terminal-core", path = "crates/terminal-core", version = "=0.12.1" }
+terminal-ghostty = { package = "dreamer-terminal-ghostty", path = "crates/terminal-ghostty", version = "=0.12.1" }
+tmux-backend = { package = "dreamer-tmux-backend", path = "crates/tmux-backend", version = "=0.12.1" }
+tmux-protocol = { package = "dreamer-tmux-protocol", path = "crates/tmux-protocol", version = "=0.12.1" }
+web-component = { package = "dreamer-web-component", path = "crates/web-component", version = "=0.12.1" }
+wire = { package = "dreamer-wire", path = "crates/wire", version = "=0.12.1" }
+workspace-config = { package = "dreamer-workspace-config", path = "crates/workspace-config", version = "=0.12.1" }
+workspace-host = { package = "dreamer-workspace-host", path = "crates/workspace-host", version = "=0.12.1" }
+matcher = { package = "dreamer-matcher", path = "crates/matcher", version = "=0.12.1" }
+memory = { package = "dreamer-memory", path = "crates/memory", version = "=0.12.1" }
+mirror = { package = "dreamer-mirror", path = "crates/mirror", version = "=0.12.1" }
+procreg = { package = "dreamer-procreg", path = "crates/procreg", version = "=0.12.1" }
+script-runtime = { package = "dreamer-script-runtime", path = "crates/script-runtime", version = "=0.12.1" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "6ceb6fee8738274589b59139df27efc191ec2231", default-features = false }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "6ceb6fee8738274589b59139df27efc191ec2231", default-features = false }
 gpui_wgpu = { git = "https://github.com/zed-industries/zed", rev = "6ceb6fee8738274589b59139df27efc191ec2231", default-features = false }
