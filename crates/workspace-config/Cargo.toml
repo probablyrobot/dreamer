@@ -15,7 +15,9 @@ name = "workspace_config"
 [dependencies]
 terminal-core.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
+semver = "1.0.28"
 serde_norway = "0.9.42"
+toml = "0.8.23"
 
 [lints]
 workspace = true

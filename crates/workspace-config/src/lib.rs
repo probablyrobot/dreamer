@@ -16,6 +16,7 @@ pub mod desktop_state;
 mod dirs;
 pub mod downloads;
 pub mod edit;
+pub mod env;
 pub mod extensions;
 pub mod hosts;
 mod plan;
