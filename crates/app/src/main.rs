@@ -28,6 +28,8 @@ mod input;
 mod inspect;
 mod keymap;
 mod live;
+#[cfg(target_os = "macos")]
+mod macos_input;
 mod palette;
 mod panel;
 mod prefix;
@@ -1894,6 +1896,9 @@ pub(crate) static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::
 
 fn main() -> ExitCode {
     STARTED.get_or_init(std::time::Instant::now);
+    // Before any window takes key input.
+    #[cfg(target_os = "macos")]
+    macos_input::repeat_held_keys();
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let args = match parse(&raw) {
         Ok(a) => a,

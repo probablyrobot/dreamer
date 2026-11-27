@@ -39,6 +39,8 @@ web-engine = { path = "../web-engine" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, features = ["font-kit"] }
+objc2 = "0.6.5"
+objc2-foundation = { version = "0.3.2", features = ["NSDictionary", "NSString", "NSUserDefaults", "NSValue"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { workspace = true, features = ["wayland", "x11"] }
