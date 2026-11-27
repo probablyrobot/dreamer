@@ -165,9 +165,9 @@ already holds.
 - **Switching on its own.** A subscription made with `automatic: true` on
   a connection with the feature is switched by the daemon, by the pane's
   output rate. It starts on the feed it asked for. It goes to `frames` once
-  the pane wrote more than `render.frames_above` a second (1 MiB by
+  the pane wrote more than `render.frames_above` a second (512 KiB by
   default) over the last `render.frames_dwell` (1 s), and back to `stream`
-  once it wrote less than `render.frames_below` (256 KiB). It stays at
+  once it wrote less than `render.frames_below` (128 KiB). It stays at
   least `render.frames_dwell` on a feed before either switch. The gap
   between the two rates and that least time keep a pane that writes about
   as fast as a threshold from flipping

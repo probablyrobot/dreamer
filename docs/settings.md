@@ -75,9 +75,9 @@ memory:
 window:
   decorations: full                      # full (default) or none
 render:
-  frames: off                            # off (default), on, or always
-  frames_above: 1MiB                     # to frames above this a second
-  frames_below: 256KiB                   # back to the stream below this
+  frames: on                             # off, on (default), or always
+  frames_above: 512KiB                   # to frames above this a second
+  frames_below: 128KiB                   # back to the stream below this
   frames_dwell: 1s                       # least time on a feed
   frames_hold: 2s                        # on the stream after selecting
 web:
@@ -343,10 +343,10 @@ window:
 daemon's screen frames instead of following every byte the pane writes
 with a terminal engine of its own
 ([desktop-internals.md](desktop-internals.md#screen-frames)):
-- `off` (the default): every pane follows the byte stream.
-- `on`: the window tells the daemon it accepts frames. Panes start on the
-  byte stream, and the daemon moves a pane to frames while it writes fast,
-  and back when it calms.
+- `off`: every pane follows the byte stream.
+- `on` (the default): the window tells the daemon it accepts frames.
+  Panes start on the byte stream, and the daemon moves a pane to frames
+  while it writes fast, and back when it calms.
 - `always`: every pane the window starts following is followed on frames.
   This is for checks.
 
@@ -357,9 +357,9 @@ It applies to panes a window starts following after the change.
 `DREAMER_RENDER_FRAMES=off|on|always`, when set, comes first.
 
 The daemon's side applies live, to every pane:
-- `frames_above` (default `1MiB`): a pane goes to frames once it writes
+- `frames_above` (default `512KiB`): a pane goes to frames once it writes
   more than this a second, measured over `frames_dwell`.
-- `frames_below` (default `256KiB`): it comes back to the byte stream once
+- `frames_below` (default `128KiB`): it comes back to the byte stream once
   it writes less than this. It must be less than `frames_above`, so a pane
   that writes at about one rate does not flip between the two.
 - `frames_dwell` (default `1s`): the least time on either feed before the
@@ -372,11 +372,12 @@ Rates are a size a second (`KiB`, `MiB`, `GiB`); times are `ms`, `s`, or
 a prompt, `ping`, a build log, and `top` write under 5 KiB/s, a
 full-screen program redrawing 30 times a second about 115 KiB/s, and `cat`
 of a large file or `seq` 8 to 14 MiB/s. Listing a large directory tree
-comes in bursts of up to about 1.4 MiB/s that last a second or less.
+comes in bursts of up to about 1.4 MiB/s that last a second or less. A
+busy full-screen program that redraws in colour without pause (the
+benchmark's escape load) writes about 768 KiB/s.
 
 ```yaml
 render:
-  frames: on
   frames_above: 4MiB
 ```
 

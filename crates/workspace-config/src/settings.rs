@@ -58,15 +58,15 @@ pub struct RenderSettings {
 /// redrawing 30 times a second about 115 KiB/s, while `cat` of a large
 /// file or `seq` write 8 to 14 MiB/s. A listing of a large directory
 /// tree comes in bursts of up to about 1.4 MiB/s for a second or less.
-pub const DEFAULT_FRAMES_ABOVE: u64 = 1 << 20;
-pub const DEFAULT_FRAMES_BELOW: u64 = 256 << 10;
+pub const DEFAULT_FRAMES_ABOVE: u64 = 512 << 10;
+pub const DEFAULT_FRAMES_BELOW: u64 = 128 << 10;
 pub const DEFAULT_FRAMES_DWELL: std::time::Duration = std::time::Duration::from_secs(1);
 pub const DEFAULT_FRAMES_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Default for RenderSettings {
     fn default() -> Self {
         RenderSettings {
-            frames: RenderFrames::Off,
+            frames: RenderFrames::On,
             frames_above: DEFAULT_FRAMES_ABOVE,
             frames_below: DEFAULT_FRAMES_BELOW,
             frames_dwell: DEFAULT_FRAMES_DWELL,
@@ -2127,8 +2127,8 @@ mod tests {
     }
 
     #[test]
-    fn panes_follow_the_byte_stream_unless_frames_are_turned_on() {
-        assert_eq!(Settings::default().render.frames, RenderFrames::Off);
+    fn busy_panes_may_go_to_frames_unless_turned_off() {
+        assert_eq!(Settings::default().render.frames, RenderFrames::On);
         for want in [RenderFrames::Off, RenderFrames::On, RenderFrames::Always] {
             let text = format!("render:\n  frames: {}\n", want.name());
             let s = parse_settings(&text, None).expect("frames");

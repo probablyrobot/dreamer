@@ -27,10 +27,11 @@ Two machines have results:
 
 No measurement yet:
 
-- **x86-64 Linux,** any workload. CI runs the harness there only as a
-  debug-build check and discards the numbers.
+- **x86-64 Linux,** apart from the screen frames runs under
+  [Screen frames for busy panes](#screen-frames-for-busy-panes). CI runs
+  the harness there only as a debug-build check and discards the numbers.
 - **The desktop on Linux** (Wayland and X11): launch, paint, and key to
-  echo including paint.
+  echo including paint on an unshared GPU.
 - More under [Not measured yet](#not-measured-yet).
 
 The runs behind each number are under [Results](#results), and what they
@@ -278,7 +279,90 @@ as long, the container being idle between keystrokes. Even so, the link
 is nearly all of the end-to-end time. netem's jitter reorders packets, so
 TCP adds to the 20 ms it puts on each round trip.
 
+### Screen frames for busy panes
+
+With `render.frames: on`, the daemon sends a desktop window the screen of
+a pane that writes fast instead of every byte, and the window keeps no
+terminal engine of its own for it
+([settings.md](settings.md#screen-frames)). These runs compare frames off
+and on.
+
+Revision: f3b738e, with the frame thresholds of this release (512 KiB/s
+to frames, 128 KiB/s back). Workload: `cargo xtask bench gui --load L`,
+16 panes, 15 of them busy. CPU is the busiest 5 s of the run, as a share
+of one core, sampled from the processes; memory is the peak (RSS on
+macOS, PSS on Linux). One run each unless noted.
+
+**macOS** (M3 Max, as above):
+
+| Load | Frames | Desktop CPU | Daemon CPU | Desktop memory | Daemon memory | Key to echo, p50 / p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| text | off | 272 % | 131 % | 184 MiB | 191 MiB | 16.1 / 21.0 ms |
+| text | on | 141 % | 99 % | 180 MiB | 194 MiB | 9.7 / 17.2 ms |
+| escape | off | 215 % | 75 % | 281 MiB | 201 MiB | 45.2 / 53.5 ms |
+| escape | on | 138 % | 58 % | 278 MiB | 205 MiB | 47.2 / 53.2 ms |
+| image | off | 302 % | 159 % | 346 MiB | 254 MiB | 8.4 / 25.1 ms |
+| image | on | 134 % | 116 % | 283 MiB | 365 MiB | 3.6 / 23.1 ms |
+
+The macOS text and image runs used the earlier thresholds (1 MiB/s and
+256 KiB/s); both loads are far above either.
+
+**Linux** (grumpy: Intel i9-12900K, 24 threads, 128 GiB, Arch Linux
+7.2.15, Hyprland 0.56.2). A training job shared the GPU during these runs
+(0 to 99 % busy, 52 % on average), so frame counts, paint times, and key
+to echo from this machine are not reported. CPU did not move with it: the
+three Wayland runs of each text and image case were within 3 points of
+each other.
+
+| Load | Frames | Wayland desktop / daemon CPU | X11 desktop / daemon CPU | Daemon memory (Wayland) |
+| --- | --- | --- | --- | --- |
+| text | off | 171 to 173 % / 132 % (3 runs) | 146 % / 111 % | 173 MiB |
+| text | on | 96 to 98 % / 120 to 125 % (3 runs) | 94 % / 113 % | 179 to 184 MiB |
+| escape | off | 119 % / 41 % | 119 % / 48 % | 169 MiB |
+| escape | on | 84 % / 52 % | 83 % / 55 % | 173 MiB |
+| image | off | 170 to 172 % / 173 % (3 runs) | 166 % / 141 % | 264 to 271 MiB |
+| image | on | 86 to 87 % / 131 to 133 % (3 runs) | 98 % / 116 % | 332 to 336 MiB |
+
+**Against other terminals** (`cargo xtask bench compare`, grumpy, Wayland,
+same GPU sharing). Every terminal draws the same isolated tmux session
+with its default settings; the busy phase is 16 panes, 15 of them looping
+`cat` of a 64 MiB text file, for 20 s. Memory is PSS. No window had
+keyboard focus: on Hyprland over SSH the new window opens on its own
+workspace but focus stays on the previous window. Dreamer limits an
+unfocused window to 30 frames a second; the others' limits were not
+checked.
+
+| Terminal | Idle memory | `cat` 64 MiB | Busy CPU | Busy memory | tmux CPU |
+| --- | --- | --- | --- | --- | --- |
+| Dreamer, frames off | 206 MiB | 1.14 s | 299 % (desktop 163 %, daemon 136 %) | 540 MiB | 93 % |
+| Dreamer, frames on | 205 MiB | 1.10 s | 179 % (desktop 37 %, daemon 142 %) | 511 MiB | 98 % |
+| Ghostty 1.4.0 | 161 MiB | 0.99 to 1.29 s | 62 to 73 % | 172 MiB | 96 to 99 % |
+| Alacritty 0.17.0 | 106 MiB | 1.02 to 1.08 s | 33 to 36 % | 120 MiB | 99 % |
+| kitty 0.49.2 | 140 to 142 MiB | 0.94 to 0.99 s | 47 to 51 % | 141 MiB | 97 to 99 % |
+| foot 1.28.0 | 39 MiB | 1.29 to 1.32 s | 341 to 506 % | 40 MiB | 97 to 98 % |
+
+The other terminals' ranges are from the two runs (one with Dreamer's
+frames off, one on). A second pair of Dreamer runs gave 306 % and 178 %.
+
 ## Findings
+
+- **Screen frames halve the desktop's cost on busy panes, and the
+  daemon does not pay it back.** With 15 busy panes the desktop's CPU fell
+  by 35 to 80 % on both machines and every load. The daemon's moved far
+  less: down by up to 43 points (images on macOS), up by at most 11
+  (the escape load on Linux), as it builds a screen at most once per frame
+  but no longer sends every byte. That is why `render.frames` is `on` by default. Two costs
+  remain:
+  - Under a constant stream of images the daemon holds 60 to 110 MiB more
+    at its peak, from the pixels it sends with frames; it levels off.
+  - Key to echo under the escape load stays about 47 ms on macOS: drawing
+    colour-heavy cells takes about 22 ms a frame, which frames do not
+    change.
+- **Against other terminals, the daemon is now most of the gap.** With
+  frames on, Dreamer's desktop used 37 % of a core in the comparison
+  above, close to Ghostty, Alacritty, and kitty (33 to 73 %), but the
+  daemon still parses every byte (about 140 %). That parse keeps every
+  pane's history, search, and journal for agents and filters, so it stays.
 
 - **Typing under load is bounded by tmux, not the daemon.**
   - At every size, the time for a key to reach a Dreamer client matches
@@ -349,15 +433,16 @@ TCP adds to the 20 ms it puts on each round trip.
 
 ## Not measured yet
 
-- **Any workload on x86-64 Linux.** The Linux results are from an ARM64
-  container in a VM.
+- **Headless workloads on x86-64 Linux.** Those Linux results are from an
+  ARM64 container in a VM.
 - **Stage timings on named hardware.** `bench headless` prints them; no
   run is recorded here yet.
-- **Desktop workloads on Linux** (Wayland and X11), and on macOS with more
-  than 16 visible panes, with corpus loads, or with the frame split.
+- **Desktop paint and latency on Linux** (Wayland and X11) on an unshared
+  GPU, and desktop workloads on macOS with more than 16 visible panes.
 - **Image-heavy and escape-heavy streams:** the `streams` workload
   exists, but no results are recorded here yet.
-- **The same workloads in reference terminals.**
+- **Reference terminals on macOS,** and with keyboard focus on Linux.
+- **Bytes sent to a remote client under load,** frames off and on.
 
 ## Running the harness
 
