@@ -311,8 +311,7 @@ pub struct LiveStats {
 }
 
 /// A mirror line's estimated cost: 8 bytes a cell and 64 a line, which is
-/// the measured 1 KiB per 120-column line of history
-/// (`docs/performance.md`). Ghostty keeps its pages outside the allocator,
+/// the measured 1 KiB per 120-column line of history. Ghostty keeps its pages outside the allocator,
 /// so this is an estimate, not a reading.
 pub fn line_bytes(cols: u16) -> usize {
     usize::from(cols) * 8 + 64

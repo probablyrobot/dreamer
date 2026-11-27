@@ -388,7 +388,7 @@ message DiagnosticsSettings {
 
 // How long one stage of the terminal path took, over every sample since diagnostics were turned on or reset. Percentiles come from histogram buckets and are within 6 %.
 message StageTiming {
-  // input, tmux, decode, route, parse, publish, or transfer; see docs/performance.md.
+  // input, tmux, decode, route, parse, publish, or transfer; see docs/daemon.md#diagnostics.
   string stage = 1;
   uint64 count = 2;
   uint64 total_ns = 3;

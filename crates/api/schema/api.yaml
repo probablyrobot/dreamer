@@ -77,7 +77,7 @@ types:
   - message: StageTiming
     doc: "How long one stage of the terminal path took, over every sample since diagnostics were turned on or reset. Percentiles come from histogram buckets and are within 6 %."
     fields:
-      - { n: 1, name: stage, type: string, doc: "input, tmux, decode, route, parse, publish, or transfer; see docs/performance.md." }
+      - { n: 1, name: stage, type: string, doc: "input, tmux, decode, route, parse, publish, or transfer; see docs/daemon.md#diagnostics." }
       - { n: 2, name: count, type: u64 }
       - { n: 3, name: total_ns, type: u64 }
       - { n: 4, name: p50_ns, type: u64 }

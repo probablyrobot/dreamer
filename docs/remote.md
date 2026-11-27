@@ -286,8 +286,7 @@ ends the subscription with `host_restarted`. A second test keeps a host's
 topology updating across a cut.
 
 `cargo xtask bench remote` times key to echo in a host's pane through
-this path, split into the link, the host's processing, and the rest
-([performance.md](performance.md)).
+this path, split into the link, the host's processing, and the rest.
 
 ## Forwards
 

@@ -286,11 +286,10 @@ in tmux's own grid.
   daemon as the only client, a program writing to a Cold pane would stall.
   So a busy Cold pane still costs the daemon the reading and decoding of
   its output. `cargo xtask bench tiers` measures that against a Warm and
-  a Hot pane (see [performance.md](performance.md)).
+  a Hot pane.
 - **Memory:** shortly after panes go Cold, the daemon hands the freed
   memory back to the system. A Cold pane then holds about 3 KiB, while a
-  Warm pane holds about 1 KiB for each line of history it keeps (see
-  [performance.md](performance.md)).
+  Warm pane holds about 1 KiB for each line of history it keeps.
 
 `dream mirrors` shows a Cold pane with state `cold` and tier `cold`, and
 no sequence or journal.

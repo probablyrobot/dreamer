@@ -1628,7 +1628,7 @@ pub struct DiagnosticsSettings {
 #[derive(Clone, PartialEq, ::prost::Message, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StageTiming {
-    /// input, tmux, decode, route, parse, publish, or transfer; see docs/performance.md.
+    /// input, tmux, decode, route, parse, publish, or transfer; see docs/daemon.md#diagnostics.
     #[prost(string, tag = "1")]
     pub stage: String,
     #[prost(uint64, tag = "2")]

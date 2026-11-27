@@ -74,7 +74,5 @@ For people writing a client, an extension, or Dreamer itself.
 | [Building Dreamer](building.md) | Prerequisites, build, tests, the repository layout |
 | [Packaging](packaging.md) | Building packages, signing, and making a release |
 | [Dependency baseline](dependency-baseline.md) | Every pinned toolchain and native dependency |
-| [Design](design.md) | The look: colors, type, spacing, reference scenes |
 | [Desktop internals](desktop-internals.md) | Frame scheduling, the renderer, and window checks |
 | [Linux desktop gate](linux-desktop-gate.md) | Evidence that windows render on a real Linux display |
-| [Performance](performance.md) | Measured results from the benchmark harness |

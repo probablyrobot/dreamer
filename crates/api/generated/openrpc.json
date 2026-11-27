@@ -5145,7 +5145,7 @@
             "type": "integer"
           },
           "stage": {
-            "description": "input, tmux, decode, route, parse, publish, or transfer; see docs/performance.md.",
+            "description": "input, tmux, decode, route, parse, publish, or transfer; see docs/daemon.md#diagnostics.",
             "type": "string"
           },
           "total_ns": {

@@ -318,8 +318,7 @@ impl Default for DrawerSettings {
 }
 
 /// When panes that nothing follows (no view, tap, or filter) go Cold on
-/// their own. The defaults come from the M7 measurements in
-/// `docs/performance.md`: a Warm pane holds about 1 KiB per line of
+/// their own. The defaults come from measurements: a Warm pane holds about 1 KiB per line of
 /// history (about 2 MiB at tmux's default 2,000 lines), a Cold one about
 /// 3 KiB, and opening a Cold pane again takes tens of milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
