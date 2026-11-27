@@ -128,7 +128,7 @@ declare namespace Dreamer {
 
   /** How long one stage of the terminal path took, over every sample since diagnostics were turned on or reset. Percentiles come from histogram buckets and are within 6 %. */
   interface StageTiming {
-    /** input, tmux, decode, route, parse, publish, or transfer; see docs/performance.md. */
+    /** input, tmux, decode, route, parse, publish, or transfer; see docs/daemon.md#diagnostics. */
     stage: string;
     count: number;
     total_ns: number;

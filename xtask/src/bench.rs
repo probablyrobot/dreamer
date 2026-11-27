@@ -25,8 +25,8 @@
 //! `--debug` builds and runs the debug binaries instead: a check that the
 //! harness works (CI runs it), never a measurement. Its results say so.
 //!
-//! `report` prints result files as the Markdown that `docs/performance.md`
-//! records, so numbers are copied, not retyped.
+//! `report` prints result files as Markdown tables, so numbers are copied,
+//! not retyped.
 
 use std::path::Path;
 use std::process::Command;

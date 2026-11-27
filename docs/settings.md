@@ -189,7 +189,7 @@ chrome alike:
 
 Without a `terminal.theme`, it picks `dreamer-dark` or `dreamer-light`.
 The chrome is always drawn from the terminals' scheme, so the window is
-one theme ([design.md](design.md)).
+one theme.
 
 ## Terminal
 
@@ -225,8 +225,7 @@ cursor a program gets until it sets its own (and after it resets it with
     foreground, the 16 ANSI colors, and optionally the cursor and
     selection colors. Everything else in a file is ignored.
   - **Chrome colors.** A theme file may also style the window around the
-    terminals. Anything it does not set is derived from its colors
-    ([design.md](design.md)). The tokens are `background`, `surface`,
+    terminals. Anything it does not set is derived from its colors. The tokens are `background`, `surface`,
     `raised`, `divider`, `selected`, `text`, `muted`, `faint`, `accent`,
     `focus`, `danger`, `danger_surface`, `danger_text`, `warning`,
     `warning_surface`, and `warning_text`. An unknown token is an error.
@@ -268,8 +267,7 @@ tap, or filter can follow it at once. A Warm pane holds about 1 KiB for
 each line of history it keeps: about 2 MiB at tmux's default 2,000 lines.
 A pane that nothing follows can go Cold instead. A Cold pane holds no
 mirror, keeps running in tmux, and is attached again in tens of
-milliseconds when something asks for it ([mirrors.md](mirrors.md#tiers),
-[performance.md](performance.md)).
+milliseconds when something asks for it ([mirrors.md](mirrors.md#tiers)).
 
 ```yaml
 tiers:

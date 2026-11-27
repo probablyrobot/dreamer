@@ -41,7 +41,7 @@ commands:
                                exits 5, not run, without one)
   bench compare [OPTIONS]      Dreamer next to other installed terminals on one tmux session
                                (Linux desktop only for now)
-  bench report FILE...         result files as the Markdown docs/performance.md records
+  bench report FILE...         result files as Markdown tables
   build-report [--ci-run ID]   the release build report from target/package, the gate, and CI
   release vX.Y.Z [--sign ID] [--notarize PROFILE] [--resume]
                                build both lanes' artifacts, tag, and fill a draft GitHub release with the report

@@ -47,7 +47,7 @@ const MIB: f64 = 1024.0 * 1024.0;
 /// the mirror is rebuilt (docs/daemon.md, "Under pressure").
 const HELD_PER_PANE: f64 = 8.0 * MIB;
 /// A Warm mirror's screen and history: about 1 KiB for each line kept
-/// (docs/performance.md), with the 2,000-line history the rig sets.
+/// as measured, with the 2,000-line history the rig sets.
 const MIRROR_PER_PANE: f64 = 2000.0 * 1024.0;
 /// A stalled connection holds up to this many encoded messages of up to
 /// one record batch each (`CONNECTION_QUEUE`, `BATCH_BYTES` in

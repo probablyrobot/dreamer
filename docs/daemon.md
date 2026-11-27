@@ -21,7 +21,7 @@ dream shutdown   # stop it; tmux keeps running
 | --- | --- |
 | `dream ensure-running [-L name \| --tmux-socket-path path] [--tmux PATH]` | Connect to the running daemon, or start one in the background with these tmux options (`--tmux-socket name` is the same as `-L name`). Concurrent calls start exactly one daemon |
 | `dream status [--json]` | Process, uptime, socket, log, connected clients, heap in use, version, and the tmux endpoint's state. Does not start a daemon |
-| `dream status --perf [--json]` | The same, then performance diagnostics: stage timings, traffic counters, and queue depths (see [performance.md](performance.md#path-timings-and-diagnostics)) |
+| `dream status --perf [--json]` | The same, then performance diagnostics: stage timings, traffic counters, and queue depths (see [Diagnostics](#diagnostics)) |
 | `dream diagnostics on\|off\|reset [--json]` | Turn performance diagnostics on or off, or zero them. They are off by default |
 | `dream version` | Client version and build family, plus the daemon's version if one is running |
 | `dream shutdown` | Stop the daemon and report what keeps running. A daemon from another build refuses this client's protocol, so `dream shutdown` sends that daemon SIGTERM instead, using the pid recorded in its startup lock |
@@ -68,12 +68,9 @@ daemon's clients), so `destroy-unattached` never fires and hooks on
 `client-attached` run for them. `tmux list-clients` shows one
 `control-mode` client per session.
 
-What the extra clients cost, from `cargo xtask bench busy --sessions S`
-([performance.md](performance.md#one-control-client-per-session)): with up
-to 10 sessions, nothing measurable; with 50, key to echo grows by about
-1 ms; with 200, tmux uses about 8 % of a core while idle, and key to echo
-takes 6 to 9 ms. tmux does some work for every client on each pane's
-output, so the cost grows with the number of sessions.
+The extra clients cost little with a few sessions. tmux does some work
+for every client on each pane's output, so the cost grows with the number
+of sessions; `cargo xtask bench busy --sessions S` measures it.
 
 ### PATH
 
@@ -297,3 +294,62 @@ quiet p95, whichever is larger. These numbers come from a debug-build
 test, not the benchmark harness. They show the property, not
 performance. Delivering a paste costs about 0.4 MiB/s through tmux's
 literal-byte path (`send-keys -H`); that is the next thing to measure.
+
+## Diagnostics
+
+The daemon and the replica can time each stage of the terminal path and
+count the traffic through it. This is off by default and costs nothing
+then: each hook reads one flag and takes no clock reading. While on, a
+stage costs two clock readings and a few atomic adds into a fixed
+histogram, with no lock, no allocation, and nothing per byte. Only
+durations and sizes are kept, never terminal content.
+
+```sh
+dream diagnostics on          # or start dreamerd with DREAMER_DIAGNOSTICS=1
+dream status --perf [--json]  # timings, counters, and queue depths
+dream diagnostics reset       # zero them; on or off stays as it was
+dream diagnostics off
+```
+
+The API is `daemon.diagnostics` and `daemon.set_diagnostics`.
+
+**Stages,** each timed per output chunk (or per input request) in path
+order:
+
+| Stage | Where | From | To |
+| --- | --- | --- | --- |
+| `input` | daemon | an input request arrives | its bytes are sent to tmux: the pane's input lane and the encoding against the canonical engine |
+| `tmux` | daemon | input sent to a pane | the next read of that pane's output. tmux, the pty, and the program are all in it |
+| `decode` | daemon | one read of tmux's control output returns | it is decoded into notifications |
+| `route` | daemon | output decoded | the pane's VT owner starts on it: the router, any held backlog, and the owner's queue |
+| `parse` | daemon | the canonical VT parse of one chunk starts | it ends |
+| `publish` | daemon | a parsed record is handed to subscribers | it is in the journal |
+| `transfer` | daemon | a record is handed to a subscriber | its batch reaches the client connection's writer |
+| `replica_parse` | client | a received batch is applied to the replica | it is applied |
+| `frame` | client | a frame is extracted from the replica | it is extracted |
+
+Between `transfer` and `replica_parse`, the socket write, the kernel, and
+the client's decoding are not timed. Glyph shaping, GPU submission, and
+presentation are the desktop's and are not timed here. Percentiles come
+from histogram buckets and are within 6 %.
+
+**Counters** cover the time since diagnostics were turned on or reset:
+- bytes read from tmux;
+- bytes parsed, the records applied, and the parser's throughput while it
+  works;
+- bytes and batches sent to clients;
+- subscriptions started from a checkpoint (and the checkpoints' bytes) or
+  by replay;
+- subscriptions ended as lagged: dropped subscriber events, each reported
+  to its subscriber;
+- mirrors rebuilt because a pane's output outran them;
+- bytes of Cold panes' output dropped.
+
+**Queue depths** are read when asked, on or off: tmux events waiting for
+the router, output held for a full owner queue, attaches running and
+waiting, each VT owner's queue, and the fullest subscriber queue.
+
+**Views** are listed when asked, on or off: each view subscription, the
+feed it is on (`stream` or `frames`), whether the daemon switches it by
+rate or a client holds it, its switches, and its pane's output rate
+([mirrors.md](mirrors.md#screen-frames)).

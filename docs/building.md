@@ -97,6 +97,36 @@ Pull requests run formatting, lints, the build, and the tests on x86-64
 Linux in GitHub Actions. The slower Linux checks run weekly, on version
 tags, and on demand.
 
+## Benchmarks
+
+```sh
+cargo xtask bench headless [--panes N] [--history LINES]  # daemon: memory, key to echo, tiers, typing under load
+cargo xtask bench headless --panes 1000 --linux           # the same in the gate's ARM64 Linux container
+cargo xtask bench busy [--panes N] [--idle M [--sessions S]]  # typing under load, split between tmux and the daemon
+cargo xtask bench streams [--panes N] [--corpus NAME]... [--seconds S]  # cost of replayed byte corpora
+cargo xtask bench tiers [--panes N] [--stream text|escape] [--rate KIB]  # a pane's cost in each tier
+cargo xtask bench memory [--scenario NAME]... [--seconds S] [--warm-memory M]  # memory under pressure
+cargo xtask bench extensions [--panes N] [--without PART]  # typing next to slow and stalled extensions
+cargo xtask bench remote [--samples N] [--container [--netem SPEC]]  # key to echo through a host
+cargo xtask bench gui [--panes N] [--visible N] [--load text|escape|image] [--backend wayland|x11]  # the desktop: launch, paint, key to echo
+cargo xtask bench compare [--terminal NAME]... [--frames off|on|always] [--seconds S]  # next to other terminals (Linux)
+cargo xtask bench report target/bench/<workload>-*.json   # result files as Markdown tables
+```
+
+Each workload builds release binaries and runs them against a private
+tmux server and private daemon directories, never yours. It prints a
+table and writes `target/bench/<workload>-<time>.json`, which records the
+machine (model, CPU, cores, memory, system) and the revision (commit,
+uncommitted changes, build profile, toolchain, tmux, and the pinned
+libghostty-vt). Quote numbers with that machine and revision.
+
+`--debug` runs the debug binaries instead: a check that the harness works,
+never a measurement, and its results say so. CI runs it on every pull
+request and discards the numbers.
+
+To see where time goes in a running daemon, turn on its
+[diagnostics](daemon.md#diagnostics).
+
 ## Packages and releases
 
 [Packaging](packaging.md) covers building the macOS app, the Linux
