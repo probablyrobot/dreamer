@@ -329,6 +329,8 @@ pub enum WorkerMsg {
         continuation: Vec<Record>,
         attach: u32,
     },
+    /// A pane's output, in order: every record the router decoded for it
+    /// in one turn, so the worker wakes once per batch.
     Apply {
         pane: TmuxPaneId,
         generation: PaneGeneration,
@@ -336,9 +338,9 @@ pub enum WorkerMsg {
         /// earlier attach (left queued when the pane was re-attached) is
         /// already part of the newer capture and is dropped.
         attach: u32,
-        record: Record,
-        /// Diagnostics only: when the record was decoded from tmux's output.
-        at: Option<Instant>,
+        /// Each record, and (diagnostics only) when it was decoded from
+        /// tmux's output.
+        records: Vec<(Record, Option<Instant>)>,
     },
     /// Nothing to do; makes a waiting worker look at its urgent lane.
     Wake,
@@ -803,7 +805,8 @@ impl Mirror {
     }
 
     /// Apply one record to the engine and, once it is committed, journal it.
-    fn apply(&mut self, record: Record) {
+    /// `now` is when its batch reached the worker.
+    fn apply(&mut self, record: Record, now: Instant) {
         if self.error.is_some() {
             return;
         }
@@ -811,7 +814,7 @@ impl Mirror {
         let r = match &record {
             Record::Bytes(b) => {
                 self.ingested += b.len() as u64;
-                self.last_output = Instant::now();
+                self.last_output = now;
                 let parse = perf::start();
                 let fed = self.engine.feed(b);
                 if parse.is_some() {
@@ -862,7 +865,7 @@ impl Mirror {
                 if !self.subscribers.is_empty() {
                     self.publish(self.journal.next_sequence(), &record, effect);
                 }
-                self.sequence = self.journal.push(record, Instant::now());
+                self.sequence = self.journal.push(record, now);
                 if publish.is_some() {
                     perf::finish(perf::Stage::Publish, publish);
                     perf::count(perf::Counter::Records, 1);
@@ -1094,8 +1097,9 @@ pub fn spawn(
                         if let Err(e) = m.engine.set_capture_clipboard(true) {
                             m.error = Some(format!("clipboard capture: {e}"));
                         }
+                        let now = Instant::now();
                         for r in continuation {
-                            m.apply(r);
+                            m.apply(r, now);
                         }
                         mirrors.insert(id, m);
                     }
@@ -1103,24 +1107,28 @@ pub fn spawn(
                         pane,
                         generation,
                         attach,
-                        record,
-                        at,
+                        records,
                     } => {
-                        if let Some(at) = at {
-                            perf::record(perf::Stage::Route, at.elapsed());
-                        }
-                        // A record for an older execution of the pane, or
+                        // One clock reading for the batch: its records
+                        // arrived together.
+                        let now = Instant::now();
+                        // Output for an older execution of the pane, or
                         // from before its latest attach, is stale.
-                        if let Some(m) = mirrors
+                        let mut m = mirrors
                             .get_mut(&pane)
-                            .filter(|m| m.generation == generation && m.attach == attach)
-                        {
-                            if let Some((p, delay)) = slow
-                                && p == pane.0
-                            {
-                                std::thread::sleep(delay);
+                            .filter(|m| m.generation == generation && m.attach == attach);
+                        for (record, at) in records {
+                            if let Some(at) = at {
+                                perf::record(perf::Stage::Route, now.duration_since(at));
                             }
-                            m.apply(record);
+                            if let Some(m) = m.as_deref_mut() {
+                                if let Some((p, delay)) = slow
+                                    && p == pane.0
+                                {
+                                    std::thread::sleep(delay);
+                                }
+                                m.apply(record, now);
+                            }
                         }
                     }
                     WorkerMsg::Drop { pane } => {

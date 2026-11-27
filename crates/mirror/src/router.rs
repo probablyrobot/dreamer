@@ -30,6 +30,18 @@ const MAX_ATTACHES: usize = 16;
 /// that pane's output arrives (which offers it at once).
 const BACKLOG_TICK: std::time::Duration = std::time::Duration::from_millis(5);
 
+/// Connection events handled in one turn of the router before the output
+/// they carried goes to the workers. Records are handed over in batches so
+/// a worker wakes once per batch, not once per record.
+const EVENT_BATCH: usize = 256;
+
+/// The most records, and about the most bytes, one batch holds. A worker
+/// applies a batch before it looks at its urgent lane again, so a batch is
+/// kept small enough not to delay an attach or a read on another pane; 32
+/// records per wake still removes nearly all of the per-record handoff.
+const BATCH_RECORDS: usize = 32;
+const BATCH_BYTES: usize = 64 << 10;
+
 /// Subscription that reports pane process changes (respawns) as
 /// `%subscription-changed`; tmux checks it about once a second.
 const PID_SUBSCRIPTION: &str = "dreamer-pid";
@@ -122,6 +134,14 @@ impl Flow {
 /// while diagnostics are on.
 type Held = std::collections::VecDeque<(Record, Option<std::time::Instant>)>;
 
+/// One pane's output from the current turn, not yet handed to its worker.
+struct Staged {
+    generation: PaneGeneration,
+    attach: u32,
+    records: Vec<(Record, Option<std::time::Instant>)>,
+    bytes: usize,
+}
+
 pub(crate) struct Router {
     conn: Connection,
     events: mpsc::Receiver<ConnEvent>,
@@ -135,6 +155,10 @@ pub(crate) struct Router {
     /// Output waiting for room in a full worker lane, in order, with the
     /// memory it holds: the router itself never waits on one pane.
     backlog: HashMap<TmuxPaneId, (Held, usize)>,
+    /// Output decoded in this turn, per pane, with the generation and
+    /// attach it follows and the memory it holds; handed to the workers as
+    /// one batch per pane at the end of the turn.
+    staged: HashMap<TmuxPaneId, Staged>,
     epoch: ConnectionEpoch,
     changes: watch::Sender<u64>,
     flows: HashMap<TmuxPaneId, Flow>,
@@ -217,6 +241,7 @@ impl Router {
             tmux: None,
             attaches: HashMap::new(),
             backlog: HashMap::new(),
+            staged: HashMap::new(),
             epoch,
             changes,
             flows: HashMap::new(),
@@ -308,18 +333,95 @@ impl Router {
                 Some((session, serial, e)) = self.streams.recv() => {
                     self.on_stream(session, serial, e).await
                 }
-                e = self.events.recv() => match e {
-                    Some(ConnEvent::Notification(n)) => self.on_notification(self.primary, n).await,
-                    Some(ConnEvent::LateOutcome { .. }) => {}
-                    Some(ConnEvent::Read { read, decoded }) => self.read_at = Some((read, decoded)),
-                    // The connection is gone: stop, which stops the workers
-                    // and ends every subscription as connection lost.
-                    Some(ConnEvent::Closed { .. }) | None => {
-                        self.closed();
-                        break;
+                e = self.events.recv() => {
+                    // Every event already waiting is handled in this turn,
+                    // up to EVENT_BATCH, so the output they carry reaches
+                    // each worker as one batch.
+                    let mut next = e;
+                    let mut handled = 0;
+                    loop {
+                        match next {
+                            Some(ConnEvent::Notification(n)) => {
+                                self.on_notification(self.primary, n).await;
+                            }
+                            Some(ConnEvent::LateOutcome { .. }) => {}
+                            Some(ConnEvent::Read { read, decoded }) => {
+                                self.read_at = Some((read, decoded));
+                            }
+                            // The connection is gone: stop, which stops the
+                            // workers and ends every subscription as
+                            // connection lost.
+                            Some(ConnEvent::Closed { .. }) | None => {
+                                self.staged.clear();
+                                self.closed();
+                                return;
+                            }
+                        }
+                        handled += 1;
+                        if handled == EVENT_BATCH {
+                            break;
+                        }
+                        match self.events.try_recv() {
+                            Ok(e) => next = Some(e),
+                            Err(_) => break,
+                        }
                     }
-                },
+                }
             }
+            self.flush_staged();
+        }
+    }
+
+    /// Hand this turn's staged output to the workers: one batch per pane.
+    /// Output staged before the pane was re-attached or restarted is
+    /// already part of the newer capture, and is dropped here as the
+    /// backlog is dropped.
+    fn flush_staged(&mut self) {
+        if self.staged.is_empty() {
+            return;
+        }
+        let panes: Vec<TmuxPaneId> = self.staged.keys().copied().collect();
+        for pane in panes {
+            self.flush_pane(pane);
+        }
+    }
+
+    fn flush_pane(&mut self, pane: TmuxPaneId) {
+        let Some(s) = self.staged.remove(&pane) else {
+            return;
+        };
+        let current = matches!(self.flows.get(&pane), Some(Flow::Live { generation }) if *generation == s.generation)
+            && self.attaches.get(&pane).copied().unwrap_or_default() == s.attach;
+        if !current || s.records.is_empty() {
+            return;
+        }
+        if !self.backlog.contains_key(&pane) {
+            match self.worker(pane).try_reserve() {
+                Ok(slot) => {
+                    slot.send(WorkerMsg::Apply {
+                        pane,
+                        generation: s.generation,
+                        attach: s.attach,
+                        records: s.records,
+                    });
+                    return;
+                }
+                Err(crate::worker::LaneError::Gone) => return,
+                Err(crate::worker::LaneError::Full) => {}
+            }
+        }
+        // No room: held, in order, behind anything already held (output is
+        // staged only while nothing is held, so nothing held is newer).
+        let (queue, bytes) = self.backlog.entry(pane).or_default();
+        for (record, at) in s.records {
+            *bytes += held_cost(&record);
+            queue.push_back((record, at));
+        }
+        let held = *bytes;
+        if held > BACKLOG_BYTES {
+            perf::count(perf::Counter::Reattaches, 1);
+            self.start(pane, s.generation);
+            self.changed();
         }
     }
 
@@ -885,18 +987,25 @@ impl Router {
             return;
         };
         while !queue.is_empty() {
+            // Oldest first, in batches, while the lane has room.
             match worker.try_reserve() {
                 Ok(slot) => {
-                    let Some((record, at)) = queue.pop_front() else {
-                        break;
-                    };
-                    *bytes -= held_cost(&record);
+                    let mut records = Vec::with_capacity(BATCH_RECORDS.min(queue.len()));
+                    let mut size = 0;
+                    while records.len() < BATCH_RECORDS && size < BATCH_BYTES {
+                        let Some((record, at)) = queue.pop_front() else {
+                            break;
+                        };
+                        let cost = held_cost(&record);
+                        *bytes -= cost;
+                        size += cost;
+                        records.push((record, at));
+                    }
                     slot.send(WorkerMsg::Apply {
                         pane,
                         generation,
                         attach,
-                        record,
-                        at,
+                        records,
                     });
                 }
                 Err(crate::worker::LaneError::Full) => break,
@@ -979,16 +1088,28 @@ impl Router {
                 // order; held output beyond BACKLOG_BYTES means the pane
                 // outran its mirror, so it is rebuilt from a fresh capture
                 // (output from here to its %pause is part of that capture).
-                if !self.backlog.contains_key(&pane)
-                    && let Ok(slot) = self.worker(pane).try_reserve()
-                {
-                    slot.send(WorkerMsg::Apply {
-                        pane,
+                if !self.backlog.contains_key(&pane) {
+                    let cost = held_cost(&record);
+                    let s = self.staged.entry(pane).or_insert_with(|| Staged {
                         generation,
                         attach,
-                        record,
-                        at,
+                        records: Vec::new(),
+                        bytes: 0,
                     });
+                    if s.generation != generation || s.attach != attach {
+                        // Staged before a re-attach: part of the capture.
+                        *s = Staged {
+                            generation,
+                            attach,
+                            records: Vec::new(),
+                            bytes: 0,
+                        };
+                    }
+                    s.records.push((record, at));
+                    s.bytes += cost;
+                    if s.records.len() >= BATCH_RECORDS || s.bytes >= BATCH_BYTES {
+                        self.flush_pane(pane);
+                    }
                     return;
                 }
                 let (queue, bytes) = self.backlog.entry(pane).or_default();
