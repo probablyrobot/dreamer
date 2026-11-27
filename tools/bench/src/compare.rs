@@ -36,6 +36,7 @@
 //! `HYPRLAND_INSTANCE_SIGNATURE`.
 
 use std::collections::HashMap;
+use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -352,8 +353,13 @@ impl Compare {
         }
         // Private directories: never the user's daemon or settings.
         let d = self.dir.join(format!("dreamer-{socket}"));
+        // Owner-only, as the daemon requires of its runtime directory.
         for s in ["rt", "st", "desktop", "config"] {
-            std::fs::create_dir_all(d.join(s)).map_err(|e| e.to_string())?;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(d.join(s))
+                .map_err(|e| e.to_string())?;
         }
         let dreamer_env = |c: &mut Command| {
             c.envs(self.env.iter().map(|(k, v)| (k, v)))
@@ -370,9 +376,36 @@ impl Compare {
         let mut c = Command::new(self.bin.join("dreamerd"));
         c.args(["--background", "--tmux-socket", socket, "--tmux", &tmux]);
         dreamer_env(&mut c);
-        quiet(&mut c);
-        let daemon = c.spawn().map_err(|e| format!("dreamerd: {e}"))?;
-        std::thread::sleep(Duration::from_secs(3));
+        // A Dreamer row without a daemon measures nothing, so wait until it
+        // runs, and stop with what it wrote if it exits instead.
+        let err = d.join("dreamerd.err");
+        let file = std::fs::File::create(&err).map_err(|e| e.to_string())?;
+        let mut daemon = c
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(file)
+            .spawn()
+            .map_err(|e| format!("dreamerd: {e}"))?;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let lock = std::fs::read_to_string(d.join("rt/dreamerd.lock")).unwrap_or_default();
+            let live = lock
+                .split_whitespace()
+                .next()
+                .and_then(|p| p.parse::<u32>().ok())
+                .is_some_and(platform::process_alive);
+            if live && d.join("rt/dreamerd.sock").exists() {
+                break;
+            }
+            let exited = daemon.try_wait().ok().flatten().is_some();
+            if exited && !live || Instant::now() > deadline {
+                let _ = daemon.kill();
+                let _ = daemon.wait();
+                let why = std::fs::read_to_string(&err).unwrap_or_default();
+                return Err(format!("dreamerd did not start: {}", why.trim()));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
         let mut c = Command::new(self.bin.join("dreamer"));
         c.args(["--workspace", "-L", socket, "--tmux", &tmux])
             .process_group(0);
