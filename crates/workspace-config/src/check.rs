@@ -471,7 +471,7 @@ pub struct Checked {
 
 /// Check every file Dreamer reads from configuration directory `dir`:
 /// `dreamer.yaml` (including the theme it names), every theme file in
-/// `themes/`, and `hosts.yaml`. Each is checked with the same parser the
+/// `themes/`, `env.toml`, and `hosts.yaml`. Each is checked with the same parser the
 /// programs use.
 pub fn check(dir: &Path) -> Vec<Checked> {
     let mut out = Vec::new();
@@ -518,6 +518,15 @@ pub fn check(dir: &Path) -> Vec<Checked> {
         out.push(Checked {
             file: PathBuf::from(file),
             problem: Some(why.to_owned()),
+            exists: true,
+            notes: Vec::new(),
+        });
+    }
+    let env = crate::env::env_path(dir);
+    if env.exists() {
+        out.push(Checked {
+            problem: crate::env::check(dir, env!("CARGO_PKG_VERSION")).err(),
+            file: env,
             exists: true,
             notes: Vec::new(),
         });
@@ -574,6 +583,33 @@ mod tests {
                 .iter()
                 .all(|k| !k.doc.is_empty() && !k.kind.is_empty())
         );
+    }
+
+    #[test]
+    fn env_toml_is_checked_when_present_and_a_newer_requirement_is_a_problem() {
+        let d = std::env::temp_dir().join(format!("drm-check-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("dir");
+        let env_of = |r: &[Checked]| {
+            r.iter()
+                .find(|c| c.file.ends_with("env.toml"))
+                .map(|c| c.problem.clone())
+        };
+        assert_eq!(env_of(&check(&d)), None, "absent: not an environment");
+        std::fs::write(
+            d.join("env.toml"),
+            crate::env::starter("me", env!("CARGO_PKG_VERSION")),
+        )
+        .expect("write");
+        assert_eq!(env_of(&check(&d)), Some(None), "the starter file is fine");
+        std::fs::write(
+            d.join("env.toml"),
+            "schema_version = 1\nname = \"me\"\ndreamer = \">=999\"\n",
+        )
+        .expect("write");
+        let problem = env_of(&check(&d)).flatten().expect("too new");
+        assert!(problem.contains(">=999"), "{problem}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -1998,8 +1998,10 @@ name = "dreamer-workspace-config"
 version = "0.14.0"
 dependencies = [
  "dreamer-terminal-core",
+ "semver",
  "serde",
  "serde_norway",
+ "toml 0.8.23",
 ]
 
 [[package]]
