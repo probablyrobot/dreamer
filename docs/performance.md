@@ -363,6 +363,25 @@ frames off, one on). A second pair of Dreamer runs gave 306 % and 178 %.
   above, close to Ghostty, Alacritty, and kitty (33 to 73 %), but the
   daemon still parses every byte (about 140 %). That parse keeps every
   pane's history, search, and journal for agents and filters, so it stays.
+- **Half of the daemon's cost was handing records between threads, and
+  is now batched.** Profiled with Instruments' Time Profiler on the M3 Max
+  (16 panes, 15 looping `cat` of a 64 MiB text file, all shown in one
+  window, frames on):
+  - Before: the daemon used 81 % of a core. About 37 % of that was the
+    router waking a pane's VT worker for each record and the worker going
+    back to sleep, and about 10 % was a clock reading per record. The
+    terminal engine was about 14 % and tmux decoding about 11 %.
+  - The router now hands each worker a pane's records in batches of up
+    to 32 records or 64 KiB per turn, and the worker reads the clock once
+    per batch. Order within each pane, held output, and reattaching a
+    pane that outruns its mirror are unchanged.
+  - After: 41 % of a core for the same load. Thread wake-ups fell from
+    about 2.9 s to 0.6 s of CPU in 10 s. The engine (about 27 %) and tmux
+    decoding (about 19 %) are now the largest parts, with allocation
+    next.
+  - With no window open, the same 15 busy panes cost the daemon 0 %: it
+    attaches to a session only when something asks for it.
+  - Not measured yet: the same change on Linux.
 
 - **Typing under load is bounded by tmux, not the daemon.**
   - At every size, the time for a key to reach a Dreamer client matches
