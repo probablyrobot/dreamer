@@ -358,15 +358,15 @@ pub const SCHEMA: &[Key] = &[
     Key {
         path: "render.frames",
         kind: "off | on | always",
-        default: "off",
+        default: "on",
         doc: "Whether desktop windows may show a pane from the daemon's screen frames instead of following every byte the pane writes with their own terminal engine. off follows every byte; on accepts frames for a pane the daemon switches to them; always follows every pane the window shows on frames, for checks: such a pane has no local scrollback, selection, or search. Applies to panes a window starts following after the change. DREAMER_RENDER_FRAMES, when set, comes first.",
-        example: "on",
+        example: "off",
         live: false,
     },
     Key {
         path: "render.frames_above",
         kind: "a rate per second (256KiB, 1MiB)",
-        default: "1MiB",
+        default: "512KiB",
         doc: "The daemon switches a pane that a window follows with render.frames on to screen frames once the pane writes more than this a second, measured over render.frames_dwell. Typing, build logs, and full-screen programs stay well under it; cat of a large file is far over.",
         example: "4MiB",
         live: true,
@@ -374,9 +374,9 @@ pub const SCHEMA: &[Key] = &[
     Key {
         path: "render.frames_below",
         kind: "a rate per second (256KiB, 1MiB)",
-        default: "256KiB",
+        default: "128KiB",
         doc: "The daemon switches such a pane back to the byte stream once it writes less than this a second, measured over render.frames_dwell. Must be less than render.frames_above, so a pane at the threshold does not flip.",
-        example: "512KiB",
+        example: "64KiB",
         live: true,
     },
     Key {
