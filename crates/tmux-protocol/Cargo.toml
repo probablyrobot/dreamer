@@ -12,6 +12,10 @@ publish = true
 # Published as dreamer-tmux-protocol; the library keeps its short name.
 [lib]
 name = "tmux_protocol"
+
+[dependencies]
+memchr = "2.8.3"
+
 [dev-dependencies]
 proptest = "1.12.0"
 

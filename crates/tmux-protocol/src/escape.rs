@@ -27,10 +27,7 @@ pub fn unescape(escaped: &[u8], out: &mut Vec<u8>) -> Result<(), UnescapeError> 
     let mut i = 0;
     while i < escaped.len() {
         // Copy the run up to the next backslash in one step.
-        let run_end = escaped[i..]
-            .iter()
-            .position(|&b| b == b'\\')
-            .map_or(escaped.len(), |p| i + p);
+        let run_end = memchr::memchr(b'\\', &escaped[i..]).map_or(escaped.len(), |p| i + p);
         out.extend_from_slice(&escaped[i..run_end]);
         i = run_end;
         if i == escaped.len() {
