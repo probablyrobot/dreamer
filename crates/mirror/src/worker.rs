@@ -53,6 +53,26 @@ pub mod end {
 pub struct WorkerHandle {
     data: mpsc::Sender<WorkerMsg>,
     urgent: mpsc::UnboundedSender<WorkerMsg>,
+    /// Records sent on the data lane and not yet applied. The lane is
+    /// bounded by these, not by messages: a message carries a batch, and
+    /// a bound in messages would let a pane queue a batch's worth more.
+    records: Arc<AtomicUsize>,
+    capacity: usize,
+}
+
+/// Room on the data lane for one batch of output.
+#[derive(Debug)]
+pub struct Slot<'a> {
+    permit: mpsc::Permit<'a, WorkerMsg>,
+    records: &'a AtomicUsize,
+    count: usize,
+}
+
+impl Slot<'_> {
+    pub fn send(self, msg: WorkerMsg) {
+        self.records.fetch_add(self.count, Ordering::Relaxed);
+        self.permit.send(msg);
+    }
 }
 
 /// Why a message did not go on the data lane.
@@ -69,23 +89,37 @@ pub enum LaneError {
 pub struct WorkerGone;
 
 impl WorkerHandle {
-    /// A slot on the data lane, without waiting: send into it to keep
-    /// order with the pane's output. Nothing is lost when there is none.
-    pub fn try_reserve(&self) -> Result<mpsc::Permit<'_, WorkerMsg>, LaneError> {
-        self.data.try_reserve().map_err(|e| match e {
+    /// Room for `records` records on the data lane, without waiting:
+    /// send into it to keep order with the pane's output. Nothing is lost
+    /// when there is none.
+    pub fn try_reserve(&self, records: usize) -> Result<Slot<'_>, LaneError> {
+        let queued = self.records.load(Ordering::Relaxed);
+        if queued > 0 && queued + records > self.capacity {
+            return Err(if self.data.is_closed() {
+                LaneError::Gone
+            } else {
+                LaneError::Full
+            });
+        }
+        let permit = self.data.try_reserve().map_err(|e| match e {
             mpsc::error::TrySendError::Full(()) => LaneError::Full,
             mpsc::error::TrySendError::Closed(()) => LaneError::Gone,
+        })?;
+        Ok(Slot {
+            permit,
+            records: &self.records,
+            count: records,
         })
     }
 
-    /// Messages waiting on the data lane.
+    /// Records waiting on the data lane.
     pub fn queued(&self) -> usize {
-        self.data.max_capacity() - self.data.capacity()
+        self.records.load(Ordering::Relaxed)
     }
 
-    /// The data lane's capacity.
+    /// The data lane's capacity, in records.
     pub fn capacity(&self) -> usize {
-        self.data.max_capacity()
+        self.capacity
     }
 
     /// Ahead of any queued output.
@@ -971,6 +1005,8 @@ pub fn spawn(
 ) -> std::io::Result<WorkerHandle> {
     let (tx, mut rx) = mpsc::channel::<WorkerMsg>(capacity);
     let (urgent_tx, mut urgent) = mpsc::unbounded_channel::<WorkerMsg>();
+    let records = Arc::new(AtomicUsize::new(0));
+    let queued = Arc::clone(&records);
     // Tests: make one pane's output slow to apply, to outrun its mirror.
     let slow: Option<(u32, std::time::Duration)> =
         std::env::var("DREAMER_TEST_SLOW_PANE").ok().and_then(|v| {
@@ -1116,6 +1152,7 @@ pub fn spawn(
                         let mut m = mirrors
                             .get_mut(&pane)
                             .filter(|m| m.generation == generation && m.attach == attach);
+                        let count = records.len();
                         for (record, at) in records {
                             if let Some(at) = at {
                                 perf::record(perf::Stage::Route, now.duration_since(at));
@@ -1129,6 +1166,7 @@ pub fn spawn(
                                 m.apply(record, now);
                             }
                         }
+                        queued.fetch_sub(count, Ordering::Relaxed);
                     }
                     WorkerMsg::Drop { pane } => {
                         mirrors.remove(&pane);
@@ -1291,5 +1329,7 @@ pub fn spawn(
     Ok(WorkerHandle {
         data: tx,
         urgent: urgent_tx,
+        records,
+        capacity,
     })
 }
