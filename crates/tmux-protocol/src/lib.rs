@@ -193,7 +193,7 @@ impl Parser {
             return Err(ProtocolError::Poisoned);
         }
         while !chunk.is_empty() {
-            let (piece, rest, complete) = match chunk.iter().position(|&b| b == b'\n') {
+            let (piece, rest, complete) = match memchr::memchr(b'\n', chunk) {
                 Some(i) => (&chunk[..i], &chunk[i + 1..], true),
                 None => (chunk, &[][..], false),
             };
@@ -202,13 +202,26 @@ impl Parser {
                     limit: self.limits.max_line,
                 }));
             }
-            self.line.extend_from_slice(piece);
             chunk = rest;
-            if complete {
-                let line = std::mem::take(&mut self.line);
-                if let Err(e) = self.handle_line(line, out) {
-                    return Err(self.fail(e));
-                }
+            if !complete {
+                self.line.extend_from_slice(piece);
+                continue;
+            }
+            // A line that arrived whole is handled where it lies; only one
+            // split across reads is put together first, in a buffer kept
+            // for the next one.
+            let result = if self.line.is_empty() {
+                self.handle_line(piece, out)
+            } else {
+                let mut line = std::mem::take(&mut self.line);
+                line.extend_from_slice(piece);
+                let r = self.handle_line(&line, out);
+                line.clear();
+                self.line = line;
+                r
+            };
+            if let Err(e) = result {
+                return Err(self.fail(e));
             }
         }
         Ok(())
@@ -237,7 +250,7 @@ impl Parser {
         e
     }
 
-    fn handle_line(&mut self, line: Vec<u8>, out: &mut Vec<Event>) -> Result<(), ProtocolError> {
+    fn handle_line(&mut self, line: &[u8], out: &mut Vec<Event>) -> Result<(), ProtocolError> {
         if let Some(open) = &mut self.open {
             let end = if line.starts_with(b"%end ") {
                 Some(true)
@@ -248,8 +261,9 @@ impl Parser {
             };
             if let Some(ok) = end {
                 let rest = &line[if ok { 5 } else { 7 }..];
-                let guard = parse_guard(rest)
-                    .ok_or_else(|| ProtocolError::MalformedGuard { line: line.clone() })?;
+                let guard = parse_guard(rest).ok_or_else(|| ProtocolError::MalformedGuard {
+                    line: line.to_vec(),
+                })?;
                 // A body line can legitimately read like an end guard; only a
                 // guard carrying the open block's numbers closes it.
                 if guard.number == open.guard.number && guard.time == open.guard.time {
@@ -268,13 +282,14 @@ impl Parser {
                     limit: self.limits.max_response,
                 });
             }
-            open.body.push(line);
+            open.body.push(line.to_vec());
             return Ok(());
         }
 
         if let Some(rest) = line.strip_prefix(b"%begin ") {
-            let guard = parse_guard(rest)
-                .ok_or_else(|| ProtocolError::MalformedGuard { line: line.clone() })?;
+            let guard = parse_guard(rest).ok_or_else(|| ProtocolError::MalformedGuard {
+                line: line.to_vec(),
+            })?;
             self.open = Some(Open {
                 guard,
                 body: Vec::new(),
@@ -283,19 +298,23 @@ impl Parser {
             return Ok(());
         }
         if line.starts_with(b"%end ") || line.starts_with(b"%error ") {
-            return Err(ProtocolError::UnexpectedEnd { line });
+            return Err(ProtocolError::UnexpectedEnd {
+                line: line.to_vec(),
+            });
         }
         if line.first() == Some(&b'%') {
-            let n = parse_notification(&line).map_err(|reason| {
+            let n = parse_notification(line).map_err(|reason| {
                 ProtocolError::MalformedNotification {
-                    line: line.clone(),
+                    line: line.to_vec(),
                     reason,
                 }
             })?;
             out.push(Event::Notification(n));
             return Ok(());
         }
-        Err(ProtocolError::UnexpectedLine { line })
+        Err(ProtocolError::UnexpectedLine {
+            line: line.to_vec(),
+        })
     }
 }
 
