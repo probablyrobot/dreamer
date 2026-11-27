@@ -396,7 +396,7 @@ impl Router {
             return;
         }
         if !self.backlog.contains_key(&pane) {
-            match self.worker(pane).try_reserve() {
+            match self.worker(pane).try_reserve(s.records.len()) {
                 Ok(slot) => {
                     slot.send(WorkerMsg::Apply {
                         pane,
@@ -988,19 +988,19 @@ impl Router {
         };
         while !queue.is_empty() {
             // Oldest first, in batches, while the lane has room.
-            match worker.try_reserve() {
+            let mut count = 0;
+            let mut size = 0;
+            for (record, _) in queue.iter() {
+                if count == BATCH_RECORDS || size >= BATCH_BYTES {
+                    break;
+                }
+                count += 1;
+                size += held_cost(record);
+            }
+            match worker.try_reserve(count) {
                 Ok(slot) => {
-                    let mut records = Vec::with_capacity(BATCH_RECORDS.min(queue.len()));
-                    let mut size = 0;
-                    while records.len() < BATCH_RECORDS && size < BATCH_BYTES {
-                        let Some((record, at)) = queue.pop_front() else {
-                            break;
-                        };
-                        let cost = held_cost(&record);
-                        *bytes -= cost;
-                        size += cost;
-                        records.push((record, at));
-                    }
+                    let records: Vec<_> = queue.drain(..count).collect();
+                    *bytes -= size;
                     slot.send(WorkerMsg::Apply {
                         pane,
                         generation,
