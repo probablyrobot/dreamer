@@ -27,6 +27,7 @@ pub const PACKAGES: &[&str] = &[
     "dreamer-domain",
     "dreamer-environment",
     "dreamer-app-package",
+    "dreamer-app-registry",
     "dreamer-matcher",
     "dreamer-memory",
     "dreamer-procreg",

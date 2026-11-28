@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 environment.workspace = true
 app-package.workspace = true
+app-registry.workspace = true
 providers.workspace = true
 api.workspace = true
 app-protocol.workspace = true

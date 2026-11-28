@@ -3164,6 +3164,131 @@ fn a_packed_app_has_one_hash_and_installs_from_its_file() {
     );
 }
 
+/// Installing records the version in the registry and its package under
+/// `packages/`; the folder under `apps/` is rebuilt from the package.
+#[test]
+fn installs_are_recorded_in_the_registry_and_rebuilt_from_their_package() {
+    let cli = Cli::new();
+    let config = cli.root.join("config");
+    let manifest = |version: &str, title: &str| {
+        format!(
+            "schema_version = 1\nid = \"me.windows\"\nversion = \"{version}\"\ntitle = \"{title}\"\ncapabilities = [\"tmux.topology\"]\n\n[package]\nlicense = \"MIT\"\n\n[data.p]\nmethod = \"tmux.topology\"\npath = \"panes\"\n\n[view]\ntype = \"list\"\nsource = \"p\"\nfield = \"id\"\n"
+        )
+    };
+    let pkg = cli.root.join("windows");
+    std::fs::create_dir_all(&pkg).expect("pkg");
+    let path = pkg.display().to_string();
+    let install = |args: &[&str]| {
+        let mut all = vec!["app", "install"];
+        all.extend_from_slice(args);
+        let out = cli.run(&all);
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
+    };
+    let installed_title = || {
+        std::fs::read_to_string(config.join("apps/me.windows/app.toml"))
+            .expect("installed")
+            .lines()
+            .find(|l| l.starts_with("title"))
+            .map(str::to_owned)
+            .unwrap_or_default()
+    };
+
+    // An app installed by an earlier Dreamer is recorded on the first run.
+    let old = config.join("apps/old");
+    std::fs::create_dir_all(&old).expect("old");
+    std::fs::write(
+        old.join("app.toml"),
+        manifest("1", "Old").replace("me.windows", "old"),
+    )
+    .expect("old manifest");
+
+    std::fs::write(pkg.join("app.toml"), manifest("0.1.0", "One")).expect("manifest");
+    let (ok, said) = install(&[&path]);
+    assert!(ok && said.contains("recorded me.windows 0.1.0"), "{said}");
+    let index = std::fs::read_to_string(cli.root.join("data/registry/index/me/windows.json"))
+        .expect("index");
+    let line: serde_json::Value =
+        serde_json::from_str(index.lines().next().expect("a line")).expect("json");
+    assert_eq!(line["version"], "0.1.0");
+    assert_eq!(line["source"], "local");
+    assert_eq!(line["yanked"], false);
+    assert_eq!(line["capabilities"], serde_json::json!(["tmux.topology"]));
+    let first = line["sha256"].as_str().expect("sha").to_owned();
+    assert!(
+        cli.root
+            .join(format!("data/registry/packages/{first}.dreamerapp"))
+            .is_file()
+    );
+    let package = config.join("packages/me.windows.dreamerapp");
+    assert!(package.is_file() && config.join("packages/old.dreamerapp").is_file());
+    let old_index = std::fs::read_to_string(cli.root.join("data/registry/index/local/old.json"))
+        .expect("old recorded");
+    assert!(old_index.contains("\"0.0.0-migrated\""), "{old_index}");
+
+    // The same version with other files: refused, naming both hashes.
+    std::fs::write(pkg.join("app.toml"), manifest("0.1.0", "Changed")).expect("manifest");
+    let (ok, said) = install(&[&path]);
+    assert!(
+        !ok && said.contains(&first) && said.contains("raise `version`"),
+        "{said}"
+    );
+    assert_eq!(installed_title(), "title = \"One\"");
+
+    // Work in progress: --dev versions rise.
+    let (ok, said) = install(&[&path, "--dev"]);
+    assert!(ok && said.contains("me.windows 0.1.0-dev.1"), "{said}");
+    std::fs::write(pkg.join("app.toml"), manifest("0.1.0", "Changed again")).expect("manifest");
+    let (ok, said) = install(&[&path, "--dev"]);
+    assert!(ok && said.contains("me.windows 0.1.0-dev.2"), "{said}");
+
+    // An earlier version, from the registry.
+    let (ok, said) = install(&["me.windows@0.1.0"]);
+    assert!(ok && said.contains(&first), "{said}");
+    assert_eq!(installed_title(), "title = \"One\"");
+    // Without a version: the highest (a dev version comes before its
+    // release).
+    let (ok, said) = install(&["me.windows@0.1.0-dev.2"]);
+    assert!(ok, "{said}");
+    assert_eq!(installed_title(), "title = \"Changed again\"");
+    let (ok, said) = install(&["me.windows"]);
+    assert!(
+        ok && said.contains("me.windows 0.1.0 from the registry"),
+        "{said}"
+    );
+
+    // A hand edit is reported, and put back by a sync.
+    let edited = config.join("apps/me.windows/app.toml");
+    std::fs::write(&edited, manifest("0.1.0", "By hand")).expect("edit");
+    let listed = String::from_utf8_lossy(&cli.run(&["app", "list"]).stdout).into_owned();
+    assert!(
+        listed.contains("me.windows") && listed.contains("(edited"),
+        "{listed}"
+    );
+    assert!(cli.run(&["app", "sync"]).status.success());
+    assert_eq!(installed_title(), "title = \"One\"");
+    assert!(config.join("apps/.edited-me.windows/app.toml").is_file());
+
+    // A deleted folder comes back when the daemon starts.
+    std::fs::remove_dir_all(config.join("apps/me.windows")).expect("rm");
+    cli.topology();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !edited.is_file() {
+        assert!(
+            Instant::now() < deadline,
+            "the app was never unpacked again"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(installed_title(), "title = \"One\"");
+}
+
 #[test]
 fn a_generated_monitor_package_is_built_installed_and_runs_in_a_pane() {
     let cli = Cli::new();

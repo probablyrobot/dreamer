@@ -158,6 +158,12 @@ reason, before anything binds.
 - **Logging:** background mode logs to the file and the foreground logs to
   standard error. The daemon writes nothing to standard output after it
   starts, and nothing but protocol frames to the socket.
+- **Installed apps:** at start, and whenever a file under
+  `<config dir>/packages/` changes, the daemon runs `dream app sync`
+  (the `dream` beside it), which unpacks each installed app whose folder
+  is missing or differs from its package ([termapp.md](termapp.md#the-local-registry)).
+  A daemon started with `DREAMER_FORBID_DEFAULT_TMUX` but without its own
+  `DREAMER_CONFIG_DIR` and `DREAMER_DATA_DIR` skips it.
 - **Stopping:** SIGTERM, SIGINT, or `dream shutdown` stop the daemon, which
   then removes its socket and releases the lock. Actions left unfinished by
   a crash are settled at the next start (see [actions.md](actions.md)).

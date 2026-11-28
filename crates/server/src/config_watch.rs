@@ -4,6 +4,10 @@
 //! a checkpoint with the new colors. A file that does not parse changes
 //! nothing: the settings in force stay, and the reason is logged and
 //! published (`config.changed`, state `refused`).
+//!
+//! Installed apps are unpacked from their packages (`packages/`): on
+//! start, and whenever a package changes (a restore, a pull), `dream app
+//! sync` unpacks each app whose folder is missing or differs from it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,14 +46,88 @@ pub async fn run(state: Arc<State>) {
         return;
     };
     let mut seen = workspace_config::check::stamp(&dir);
+    let mut packages = stamp_packages(&dir);
+    sync_apps().await;
     loop {
         tokio::time::sleep(EVERY).await;
+        let now = stamp_packages(&dir);
+        if now != packages {
+            packages = now;
+            sync_apps().await;
+        }
         let now = workspace_config::check::stamp(&dir);
         if now == seen {
             continue;
         }
         seen = now;
         apply(&state).await;
+    }
+}
+
+/// The installed packages: names, sizes and times.
+fn stamp_packages(
+    dir: &std::path::Path,
+) -> Vec<(std::ffi::OsString, u64, Option<std::time::SystemTime>)> {
+    let mut out: Vec<_> = std::fs::read_dir(dir.join("packages"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| {
+            let m = e.metadata().ok();
+            (
+                e.file_name(),
+                m.as_ref().map_or(0, std::fs::Metadata::len),
+                m.and_then(|m| m.modified().ok()),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Run `dream app sync` (beside this daemon, or `DREAMER_DREAM`) and log
+/// what it did.
+async fn sync_apps() {
+    // A test daemon that was not given its own configuration and data
+    // directories never writes to the user's.
+    let private = |v: &str| std::env::var_os(v).is_some();
+    if private("DREAMER_FORBID_DEFAULT_TMUX")
+        && !(private("DREAMER_CONFIG_DIR") && private("DREAMER_DATA_DIR"))
+    {
+        return;
+    }
+    let dream = std::env::var_os("DREAMER_DREAM")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|e| Some(e.parent()?.join("dream")))
+        })
+        .filter(|p| p.is_file());
+    let Some(dream) = dream else {
+        log::warn(
+            "installed apps not checked against their packages: `dream` is not beside dreamerd",
+        );
+        return;
+    };
+    let out = tokio::process::Command::new(&dream)
+        .args(["app", "sync"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await;
+    match out {
+        Ok(o) => {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                log::info(format!("apps: {line}"));
+            }
+            if !o.status.success() {
+                log::warn(format!(
+                    "apps: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ));
+            }
+        }
+        Err(e) => log::warn(format!("apps: {}: {e}", dream.display())),
     }
 }
 

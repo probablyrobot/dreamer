@@ -120,9 +120,11 @@ Building an app package ([termapp.md](termapp.md#building-an-app)):
 | `dream app preview PATH --png FILE` | Write the desktop's drawing of the app's preview pane as a PNG (for a web app, its page as Chromium draws it), opening a preview first when none is open; fails with `no Dreamer window is running; --png needs one` when no desktop is running. With `--level observe\|own\|elsewhere` it takes the image as an agent at that level: its connection narrows itself to the agent's grant, opens a preview pane of its own, and closes it afterwards |
 | `dream app test PATH [--update] [--size WxH]` | Replay `fixtures/events.jsonl` with no daemon and compare the screen after each event with `fixtures/expect/`; `--update` records them ([termapp.md](termapp.md#testing-an-app)) |
 | `dream app pack PATH [-o FILE] [--json]` | Check it, then write it as one file, `<id>-<version>.dreamerapp`, and print its SHA-256 (see [termapp.md](termapp.md#packages)) |
-| `dream app install PATH [--name NAME]` | Check, preview, and copy it into `<config dir>/apps/`; the version it replaces is kept. `PATH` is a folder or a `.dreamerapp` file |
+| `dream app install PATH [--name NAME] [--dev]` | Check and preview it, record its version in the local registry, and install it: its package goes to `<config dir>/packages/`, its files to `<config dir>/apps/`; the version it replaces is kept. `PATH` is a folder or a `.dreamerapp` file. The same id and version with other files is refused; `--dev` records the next `VERSION-dev.N` instead |
+| `dream app install ID[@VERSION] [--name NAME]` | Install from the local registry: the highest version that is not yanked and that this Dreamer runs, or `VERSION` |
+| `dream app sync` | Record apps an earlier Dreamer installed, and unpack each installed package whose folder is missing or edited (an edited folder is kept as `apps/.edited-NAME/`). The daemon runs it when it starts and when a package changes |
 | `dream app rollback NAME` | Put the kept version back (and keep the one it replaces) |
-| `dream app list` | Installed packages, and which have a kept version |
+| `dream app list` | Installed packages, which have a kept version, and which differ from their package |
 | `dream app launch NAME [--session $N \| --beside %N] [--request]` | Run an installed package in a new tmux window (or in a pane split from `%N`, side by side) with the grant it declares; `--request` prints the `apps.launch` parameters as JSON instead, for a client that launches on its own connection |
 
 `dream app run APP_ID [--method METHOD]... [--all-panes | --pane %N...] [--session $N]
@@ -417,9 +419,15 @@ never stores or asks for a password or token.
 | `dream env restore REV [--dry-run] [--json]` | Bring the files back to save `REV`. `REV` is checked first in a scratch copy, and one that does not validate changes nothing. What is there is saved first ("Before restoring REV"), and the restore is a new save on top, so restoring that earlier save undoes it. Files the save lacks are removed; files that are never versioned are left alone. A running Dreamer applies the result as it does any edit. `--dry-run` lists what would change |
 
 Never versioned: `hosts.yaml` (host names), `memory/` (your memory),
-`local/` (what differs per machine), and the previous version of each
-app kept for `dream app rollback`. `env.toml` names the environment and
-the oldest Dreamer that reads it.
+`local/` (what differs per machine), and `apps/`. Each installed app is
+versioned as its package, `packages/NAME.dreamerapp`; its folder under
+`apps/` is unpacked from it, so a restore or a pull that changes a
+package changes the app. `dream env status` names installed apps whose
+folder differs from their package. An environment saved by an earlier
+Dreamer, with `apps/` in it, is brought up to date by the first
+`dream app sync` (the daemon runs it when it starts), in one automatic
+save. `env.toml` names the environment and the oldest Dreamer that
+reads it.
 
 Changes Dreamer makes itself (an app installed or rolled back, a theme
 kept from the palette) are saved on their own, unless `env.autosave` is

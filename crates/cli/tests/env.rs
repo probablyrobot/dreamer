@@ -391,6 +391,62 @@ row_key = "id"
 columns = ["id", "name"]
 "#;
 
+/// An environment an earlier Dreamer saved with `apps/` in it: the first
+/// run records each app, saves its package, and stops versioning the
+/// unpacked folders, in one save that leaves the user's own changes alone.
+#[test]
+fn an_environment_that_versioned_apps_now_versions_their_packages() {
+    let e = Env::new("apps-migrate");
+    e.ok(&["env", "init"]);
+    let ignore = std::fs::read_to_string(e.config().join(".gitignore")).expect("ignore");
+    let earlier: String = ignore
+        .lines()
+        .filter(|l| *l != "/apps/")
+        .map(|l| format!("{l}\n"))
+        .collect();
+    e.write(".gitignore", &earlier);
+    e.write("apps/local.windows/app.toml", APP);
+    e.git(&e.config(), &["add", "-A"]);
+    e.git(
+        &e.config(),
+        &["commit", "-q", "-m", "Saved by an earlier Dreamer"],
+    );
+    e.write("dreamer.yaml", "font:\n  size: 15\n");
+
+    let out = e.ok(&["app", "sync"]);
+    assert!(out.contains("recorded local.windows"), "{out}");
+    let saved = e.git(&e.config(), &["show", "--name-status", "--format=", "HEAD"]);
+    for line in [
+        "M\t.gitignore",
+        "D\tapps/local.windows/app.toml",
+        "A\tpackages/local.windows.dreamerapp",
+    ] {
+        assert!(saved.lines().any(|l| l == line), "{line} in {saved}");
+    }
+    assert!(!saved.contains("dreamer.yaml"), "{saved}");
+    assert!(e.config().join("apps/local.windows/app.toml").is_file());
+    assert!(e.git(&e.config(), &["ls-files", "apps"]).trim().is_empty());
+    let status = e.ok(&["env", "status"]);
+    assert!(
+        status.contains("+ dreamer.yaml") && !status.contains("ignore list keeps them out"),
+        "{status}"
+    );
+
+    // A hand edit to the unpacked app is reported, though not versioned.
+    e.write(
+        "apps/local.windows/app.toml",
+        &APP.replace("0.1.0", "0.1.1"),
+    );
+    let status = e.ok(&["env", "status"]);
+    assert!(
+        status.contains("differ from their package") && status.contains("local.windows"),
+        "{status}"
+    );
+    // A second run has nothing to record.
+    let out = e.ok(&["app", "sync"]);
+    assert!(!out.contains("recorded"), "{out}");
+}
+
 #[test]
 fn an_app_install_saves_only_itself_and_never_fails_because_of_git() {
     let e = Env::new("autosave");
@@ -412,8 +468,8 @@ fn an_app_install_saves_only_itself_and_never_fails_because_of_git() {
     let saved = e.git(&e.config(), &["show", "--name-only", "--format=", "HEAD"]);
     assert_eq!(
         saved.trim(),
-        "apps/local.windows/app.toml",
-        "only the app: {saved}"
+        "packages/local.windows.dreamerapp",
+        "only the app's package: {saved}"
     );
     let status = e.ok(&["env", "status"]);
     assert!(
