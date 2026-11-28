@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use environment::{Change, Environment, InitOptions, Problem, Saved, Status};
+use environment::{Change, Environment, InitOptions, Problem, Restored, Saved, Status};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -12,7 +12,8 @@ dream env init [--name NAME] [--nested]   make the configuration directory an en
 dream env status [--json]                 what changed since the last save, and whether it validates
 dream env save [-m TEXT] [--force]        check everything, then save what changed
 dream env log [-n N] [--json]             saves, newest first
-dream env diff [REV] [--patch] [--json]   what changed since the last save (or REV)";
+dream env diff [REV] [--patch] [--json]   what changed since the last save (or REV)
+dream env restore REV [--dry-run] [--json] bring the files back to save REV (saving what is there first)";
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let dir = workspace_config::config_dir()
@@ -27,6 +28,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         "save" => save(&env, rest),
         "log" => log(&env, rest),
         "diff" => diff(&env, rest),
+        "restore" => restore(&env, rest),
         "help" | "--help" | "-h" => {
             println!("{USAGE}");
             Ok(())
@@ -240,6 +242,46 @@ fn diff(env: &Environment, args: &[String]) -> Result<(), String> {
         println!("no changes");
     } else {
         print_changes(&changes);
+    }
+    Ok(())
+}
+
+fn restore(env: &Environment, args: &[String]) -> Result<(), String> {
+    let f = flags(args, &[], &["--dry-run", "--json"])?;
+    let [rev] = f.positional.as_slice() else {
+        return Err(format!(
+            "which save? `dream env restore REV` (see `dream env log`)\n{USAGE}"
+        ));
+    };
+    let dry = f.on("--dry-run");
+    let done: Restored = env.restore(rev, &problems, dry)?;
+    if f.on("--json") {
+        return json(&done);
+    }
+    if dry {
+        if done.changes.is_empty() {
+            println!("restoring {} would change nothing", done.revision);
+        } else {
+            println!("restoring {} would change:", done.revision);
+            print_changes(&done.changes);
+        }
+        return Ok(());
+    }
+    if let Some(b) = &done.saved_before {
+        println!("saved what was there first: {} {}", b.short, b.message);
+    }
+    match &done.restored {
+        Some(r) => {
+            println!(
+                "restored {}: saved as {} {}",
+                done.revision, r.short, r.message
+            );
+            print_changes(&done.changes);
+            if let Some(b) = &done.saved_before {
+                println!("to undo: dream env restore {}", b.short);
+            }
+        }
+        None => println!("the files already match {}; nothing changed", done.revision),
     }
     Ok(())
 }

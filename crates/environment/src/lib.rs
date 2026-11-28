@@ -201,6 +201,21 @@ pub enum Saved {
     },
 }
 
+/// What `restore` did, or would do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Restored {
+    /// The revision restored.
+    pub revision: String,
+    /// The save made first of what was there, when anything was unsaved:
+    /// restoring it undoes the restore.
+    pub saved_before: Option<Save>,
+    /// The save the restore made; `None` when the files already matched
+    /// (or with `dry_run`).
+    pub restored: Option<Save>,
+    /// How the files change: what the revision adds, changes or removes.
+    pub changes: Vec<Change>,
+}
+
 /// The configuration directory as an environment.
 #[derive(Debug, Clone)]
 pub struct Environment {
@@ -545,6 +560,160 @@ impl Environment {
         Ok(out)
     }
 
+    /// Bring the versioned files back to save `rev`, as a new save on top:
+    /// history is never rewritten. `rev` is first unpacked into a scratch
+    /// directory beside the configuration directory and checked there with
+    /// `check` (see [`validate`]); a revision with problems changes
+    /// nothing. What was there is saved first, so restoring that save
+    /// undoes this. Ignored files (`local/`, `hosts.yaml`, `memory/`) are
+    /// never touched. With `dry_run`, only report what would change.
+    pub fn restore(
+        &self,
+        rev: &str,
+        check: &dyn Fn(&Path) -> Vec<Problem>,
+        dry_run: bool,
+    ) -> Result<Restored, String> {
+        if let Some(b) = self.blocked()? {
+            return Err(b.to_string());
+        }
+        let commit = self
+            .resolve(Some(rev))?
+            .ok_or_else(|| format!("{rev:?} is not a save in this environment"))?;
+        let short = self
+            .git
+            .run(&["rev-parse", "--short", &commit])?
+            .trim()
+            .to_owned();
+
+        // Files the revision holds that the ignore list now keeps out:
+        // restoring would overwrite what is private to this machine.
+        let in_rev = self
+            .git
+            .run(&["ls-tree", "-r", "-z", "--name-only", &commit])?;
+        let clashing: Vec<&str> = in_rev
+            .split('\0')
+            .filter(|p| !p.is_empty())
+            .filter(|p| {
+                self.git.dir.join(p).exists()
+                    && self
+                        .git
+                        .ask(&["check-ignore", "-q", "--no-index", "--", p])
+                        .ok()
+                        .flatten()
+                        .is_some()
+            })
+            .collect();
+        if !clashing.is_empty() {
+            return Err(format!(
+                "{short} holds files that are now kept out of the environment ({}); \
+                 restoring would overwrite this machine's copies, so nothing was changed. \
+                 Take what you need from it with `git -C {} show {short}:PATH`",
+                clashing.join(", "),
+                self.git.dir.display()
+            ));
+        }
+
+        // Check the revision where it cannot disturb anything.
+        let scratch = scratch_dir(&self.git.dir);
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+        let problems = self.unpack(&commit, &scratch).map(|()| check(&scratch));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let problems = problems?;
+        if !problems.is_empty() {
+            let mut e = format!("{short} does not validate, so nothing was changed:");
+            for p in problems {
+                let file = p.file.strip_prefix(&scratch).unwrap_or(&p.file);
+                e.push_str(&format!("\n  {}: {}", file.display(), p.message));
+            }
+            return Err(e);
+        }
+
+        // From what is there now to the revision.
+        let changes: Vec<Change> = self
+            .diff(Some(&commit))?
+            .into_iter()
+            .map(|mut c| {
+                c.what = match c.what {
+                    What::Added => What::Deleted,
+                    What::Deleted => What::Added,
+                    w => w,
+                };
+                c
+            })
+            .collect();
+        if dry_run {
+            return Ok(Restored {
+                revision: short,
+                saved_before: None,
+                restored: None,
+                changes,
+            });
+        }
+
+        let saved_before = match self.save(Some(&format!("Before restoring {short}")), &[], true)? {
+            Saved::Saved { save, .. } => Some(save),
+            Saved::Nothing => None,
+        };
+        // Index and files to the revision: tracked files it lacks are
+        // removed, untracked and ignored files are left alone.
+        self.git.run(&["read-tree", "--reset", "-u", &commit])?;
+        let subject = self
+            .git
+            .run(&["log", "-1", "--format=%s", &commit])?
+            .trim()
+            .to_owned();
+        let staged = self.git.ask(&["diff", "--cached", "--quiet"])?.is_none();
+        let restored = if staged {
+            self.git.run(&[
+                "commit",
+                "-q",
+                "-m",
+                &format!("Restore {short} ({subject})"),
+            ])?;
+            self.head()?
+        } else {
+            None
+        };
+        Ok(Restored {
+            revision: short,
+            saved_before,
+            restored,
+            changes,
+        })
+    }
+
+    /// Write the files of `commit` into `dir`.
+    fn unpack(&self, commit: &str, dir: &Path) -> Result<(), String> {
+        let archive = self.git.output(&["archive", "--format=tar", commit])?;
+        if !archive.status.success() {
+            return Err(git::failure(&["archive"], &archive));
+        }
+        let mut tar = std::process::Command::new("tar")
+            .arg("-x")
+            .arg("-C")
+            .arg(dir)
+            .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("tar: {e}"))?;
+        if let Some(mut stdin) = tar.stdin.take() {
+            use std::io::Write as _;
+            stdin
+                .write_all(&archive.stdout)
+                .map_err(|e| format!("tar: {e}"))?;
+        }
+        let out = tar.wait_with_output().map_err(|e| format!("tar: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "tar: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+    }
+
     /// `rev` (or `HEAD`) as a commit, `None` when nothing is saved yet;
     /// an error for a revision that does not exist.
     fn resolve(&self, rev: Option<&str>) -> Result<Option<String>, String> {
@@ -679,6 +848,15 @@ pub fn validate(dir: &Path, version: &str) -> Vec<Problem> {
         });
     }
     problems
+}
+
+/// A directory beside the configuration directory (same file system,
+/// never inside the repository) to check a revision in.
+fn scratch_dir(config: &Path) -> PathBuf {
+    let name = config
+        .file_name()
+        .map_or_else(|| "dreamer".into(), |n| n.to_string_lossy().into_owned());
+    config.with_file_name(format!(".{name}.restore-{}", std::process::id()))
 }
 
 /// A name for a new environment: the login name, cleaned to what

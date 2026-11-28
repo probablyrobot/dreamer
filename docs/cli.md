@@ -410,6 +410,7 @@ never stores or asks for a password or token.
 | `dream env save [-m TEXT] [--force]` | Check every file (as `dream config check` does, plus each workspace, `extensions.yaml` and each app), then save what changed, with your message or one made from the changes ("settings; workspace dev"). An environment that does not validate is not saved unless `--force` |
 | `dream env log [-n N] [--json]` | Saves, newest first |
 | `dream env diff [REV] [--patch] [--json]` | What changed since the last save, or since `REV` (a revision from `dream env log`); `--patch` shows the text |
+| `dream env restore REV [--dry-run] [--json]` | Bring the files back to save `REV`. `REV` is checked first in a scratch copy, and one that does not validate changes nothing. What is there is saved first ("Before restoring REV"), and the restore is a new save on top, so restoring that earlier save undoes it. Files the save lacks are removed; files that are never versioned are left alone. A running Dreamer applies the result as it does any edit. `--dry-run` lists what would change |
 
 Never versioned: `hosts.yaml` (host names), `memory/` (your memory),
 `local/` (what differs per machine), and the previous version of each

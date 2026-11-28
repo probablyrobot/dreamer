@@ -262,3 +262,113 @@ fn commands_before_init_say_how_to_start() {
     let out = e.fails(&["env", "status"]);
     assert!(out.contains("dream env init"), "{out}");
 }
+
+#[test]
+fn restore_brings_back_an_earlier_save_and_can_be_undone() {
+    let e = Env::new("restore");
+    e.write("dreamer.yaml", "font:\n  size: 14\n");
+    e.write("workspaces/old.yaml", WORKSPACE);
+    e.write("hosts.yaml", "hosts: []\n");
+    e.ok(&["env", "init"]);
+    let first = e.git(&e.config(), &["rev-parse", "--short", "HEAD"]);
+    let first = first.trim();
+
+    e.write("dreamer.yaml", "font:\n  size: 18\n");
+    std::fs::remove_file(e.config().join("workspaces/old.yaml")).expect("rm");
+    e.write("workspaces/new.yaml", WORKSPACE);
+    e.ok(&["env", "save", "-m", "bigger font"]);
+    e.write("dreamer.yaml", "font:\n  size: 20\n");
+    let private = "hosts:\n  - name: secret-box\n";
+    e.write("hosts.yaml", private);
+
+    let dry = e.ok(&["env", "restore", first, "--dry-run"]);
+    assert!(
+        dry.contains("~ dreamer.yaml") && dry.contains("+ workspaces/old.yaml"),
+        "{dry}"
+    );
+    assert!(
+        std::fs::read_to_string(e.config().join("dreamer.yaml"))
+            .expect("read")
+            .contains("20"),
+        "a dry run changes nothing"
+    );
+
+    let out = e.ok(&["env", "restore", first]);
+    assert!(out.contains("saved what was there first"), "{out}");
+    let settings = std::fs::read_to_string(e.config().join("dreamer.yaml")).expect("read");
+    assert!(settings.contains("size: 14"), "{settings}");
+    assert!(
+        e.config().join("workspaces/old.yaml").exists(),
+        "a removed file comes back"
+    );
+    assert!(
+        !e.config().join("workspaces/new.yaml").exists(),
+        "a file the save lacks goes"
+    );
+    assert_eq!(
+        std::fs::read_to_string(e.config().join("hosts.yaml")).expect("hosts"),
+        private,
+        "ignored files are never touched"
+    );
+    let log = e.ok(&["env", "log"]);
+    let lines: Vec<&str> = log.lines().collect();
+    assert!(lines[0].contains(&format!("Restore {first}")), "{log}");
+    assert!(
+        lines[1].contains(&format!("Before restoring {first}")),
+        "{log}"
+    );
+    assert_eq!(
+        lines.len(),
+        4,
+        "history is added to, never rewritten:\n{log}"
+    );
+
+    // Undo: restore the save made before.
+    let before = lines[1].split_whitespace().next().expect("rev");
+    e.ok(&["env", "restore", before]);
+    let settings = std::fs::read_to_string(e.config().join("dreamer.yaml")).expect("read");
+    assert!(settings.contains("size: 20"), "undone: {settings}");
+    assert!(e.config().join("workspaces/new.yaml").exists());
+}
+
+#[test]
+fn restore_refuses_an_unknown_or_invalid_save_and_changes_nothing() {
+    let e = Env::new("restore-bad");
+    e.write("dreamer.yaml", "font:\n  size: 14\n");
+    e.ok(&["env", "init"]);
+    e.write("workspaces/dev.yaml", "windows: [\n");
+    e.ok(&["env", "save", "-m", "broken", "--force"]);
+    let broken = e.git(&e.config(), &["rev-parse", "--short", "HEAD"]);
+    e.write("workspaces/dev.yaml", WORKSPACE);
+    e.ok(&["env", "save", "-m", "fixed"]);
+    e.write("dreamer.yaml", "font:\n  size: 16\n");
+
+    let head = e.git(&e.config(), &["rev-parse", "HEAD"]);
+    let refused = e.fails(&["env", "restore", broken.trim()]);
+    assert!(
+        refused.contains("does not validate") && refused.contains("workspaces/dev.yaml"),
+        "{refused}"
+    );
+    assert!(e.fails(&["env", "restore", "nope"]).contains("not a save"));
+    assert_eq!(
+        e.git(&e.config(), &["rev-parse", "HEAD"]),
+        head,
+        "nothing saved"
+    );
+    assert!(
+        std::fs::read_to_string(e.config().join("dreamer.yaml"))
+            .expect("read")
+            .contains("16"),
+        "unsaved work untouched"
+    );
+    let siblings: Vec<String> = std::fs::read_dir(&e.root)
+        .expect("root")
+        .flatten()
+        .map(|d| d.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("restore"))
+        .collect();
+    assert!(
+        siblings.is_empty(),
+        "the scratch copy is removed: {siblings:?}"
+    );
+}
