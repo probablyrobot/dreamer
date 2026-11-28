@@ -396,6 +396,30 @@ See [settings.md](settings.md#live-and-checked). The same skills, with
 the MCP server, come as a plugin for Claude Code and Codex: see
 [MCP](mcp.md#the-dreamer-plugin).
 
+## The environment
+
+Your settings, themes, workspaces, apps and extensions, kept in the
+configuration directory, can be versioned as one environment with git.
+Dreamer runs your own `git`, with your name, email and credentials; it
+never stores or asks for a password or token.
+
+| Command | What it does |
+| --- | --- |
+| `dream env init [--name NAME] [--nested]` | Make the configuration directory a git repository and save it. A repository already there is adopted with its history; only `env.toml` and missing `.gitignore` lines are added and saved, and your other changes stay as they are. Inside another repository (dotfiles, say) it stops unless `--nested`. Running it again changes nothing |
+| `dream env status [--json]` | What changed since the last save, by kind (settings, themes, workspaces, apps, extensions), and whether everything validates |
+| `dream env save [-m TEXT] [--force]` | Check every file (as `dream config check` does, plus each workspace, `extensions.yaml` and each app), then save what changed, with your message or one made from the changes ("settings; workspace dev"). An environment that does not validate is not saved unless `--force` |
+| `dream env log [-n N] [--json]` | Saves, newest first |
+| `dream env diff [REV] [--patch] [--json]` | What changed since the last save, or since `REV` (a revision from `dream env log`); `--patch` shows the text |
+
+Never versioned: `hosts.yaml` (host names), `memory/` (your memory),
+`local/` (what differs per machine), and the previous version of each
+app kept for `dream app rollback`. `env.toml` names the environment and
+the oldest Dreamer that reads it.
+
+You may use git in the directory yourself at any time. A save stops,
+changing nothing, while no branch is checked out or a merge or rebase is
+under way.
+
 ## Updating
 
 | Command | What it does |

@@ -1753,6 +1753,7 @@ dependencies = [
  "dreamer-api",
  "dreamer-app-protocol",
  "dreamer-client",
+ "dreamer-environment",
  "dreamer-platform",
  "dreamer-providers",
  "dreamer-terminal-core",
@@ -1791,6 +1792,14 @@ dependencies = [
 [[package]]
 name = "dreamer-domain"
 version = "0.14.0"
+
+[[package]]
+name = "dreamer-environment"
+version = "0.14.0"
+dependencies = [
+ "dreamer-workspace-config",
+ "serde",
+]
 
 [[package]]
 name = "dreamer-ghostty-sys"

@@ -1,0 +1,20 @@
+[package]
+name = "dreamer-environment"
+description = "Dreamer's environment: the configuration directory, versioned with git"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+
+# Published as dreamer-environment; the library keeps its short name.
+[lib]
+name = "environment"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+workspace-config.workspace = true
+
+[lints]
+workspace = true

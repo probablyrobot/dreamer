@@ -13,6 +13,7 @@ name = "dream"
 path = "src/main.rs"
 
 [dependencies]
+environment.workspace = true
 providers.workspace = true
 api.workspace = true
 app-protocol.workspace = true
