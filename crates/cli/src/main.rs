@@ -599,18 +599,35 @@ fn check(target: &str) -> Result<(), String> {
 
 fn up(target: &str, rest: &[&str]) -> Result<(), String> {
     let plan = load_plan(target)?;
-    let mut socket = Socket::Default;
+    let mut socket = None;
     let mut tmux = std::env::var_os("DREAMER_TMUX")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| "tmux".into());
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match *arg {
-            "-L" => socket = Socket::Name(it.next().ok_or("-L needs a name")?.to_string()),
+            "-L" => {
+                socket = Some(Socket::Name(
+                    it.next().ok_or("-L needs a name")?.to_string(),
+                ))
+            }
             "--tmux" => tmux = it.next().ok_or("--tmux needs a path")?.into(),
             other => return Err(format!("unknown option `{other}`\n{USAGE}")),
         }
     }
+    // The server the daemon drives: `-L`, else `tmux:` in dreamer.yaml,
+    // else Dreamer's own.
+    let settings = match socket {
+        Some(_) => workspace_config::TmuxSettings::default(),
+        None => workspace_config::load_settings()
+            .map(|s| s.tmux)
+            .unwrap_or_default(),
+    };
+    let server = tmux_backend::choose(socket, &settings);
+    if let Some(why) = tmux_backend::choice::forbidden(&server.socket) {
+        return Err(why.into());
+    }
+    let socket = server.socket.clone();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -625,6 +642,8 @@ fn up(target: &str, rest: &[&str]) -> Result<(), String> {
             }
             None => {
                 let mut config = ConnectionConfig::new(&tmux, socket.clone(), &plan.session);
+                // Starting Dreamer's own server: it reads `tmux.config`.
+                config.config_file = server.config_file.clone();
                 config.new_session_args = Some(new_session_args(&plan));
                 let (conn, _events) = Connection::spawn(config).await.map_err(|e| e.to_string())?;
                 apply_adopted(&conn, &plan).await

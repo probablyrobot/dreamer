@@ -33,6 +33,41 @@ pub struct Settings {
     pub web: WebSettings,
     pub render: RenderSettings,
     pub env: EnvSettings,
+    pub tmux: TmuxSettings,
+}
+
+/// Which tmux server Dreamer drives (`tmux:`), and what a server it
+/// starts reads.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TmuxSettings {
+    pub server: TmuxServerChoice,
+    pub config: TmuxConfig,
+}
+
+/// `tmux.server` / `tmux.server_path`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TmuxServerChoice {
+    /// Dreamer's own server, `-L dreamer`, started when it is not running.
+    #[default]
+    Own,
+    /// The user's default tmux server (`server: default`).
+    Default,
+    /// `-L NAME`.
+    Name(String),
+    /// `-S PATH`.
+    Path(PathBuf),
+}
+
+/// `tmux.config`: what Dreamer's own server reads when Dreamer starts it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TmuxConfig {
+    /// The user's tmux configuration, found as tmux finds it.
+    #[default]
+    User,
+    /// No configuration (`config: none`).
+    None,
+    /// This file.
+    Path(PathBuf),
 }
 
 /// The environment: the configuration directory, versioned with git
@@ -625,6 +660,7 @@ impl Default for Settings {
             web: WebSettings::default(),
             render: RenderSettings::default(),
             env: EnvSettings::default(),
+            tmux: TmuxSettings::default(),
         }
     }
 }
@@ -660,6 +696,16 @@ struct File {
     render: RenderFile,
     #[serde(default)]
     env: EnvFile,
+    #[serde(default)]
+    tmux: TmuxFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TmuxFile {
+    server: Option<String>,
+    server_path: Option<String>,
+    config: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1288,6 +1334,46 @@ fn error(origin: Option<&Path>, at: &str, message: String) -> ConfigError {
     }
 }
 
+fn parse_tmux(f: &TmuxFile) -> Result<TmuxSettings, (String, String)> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let path = |key: &str, text: &str| {
+        crate::downloads::expand_home(text, home.as_deref()).ok_or_else(|| {
+            (
+                key.to_owned(),
+                format!("{text:?} is not an absolute path or one from ~/"),
+            )
+        })
+    };
+    let server = match (f.server.as_deref(), f.server_path.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err((
+                "tmux.server_path".into(),
+                "give tmux.server or tmux.server_path, not both".into(),
+            ));
+        }
+        (None, None) | (Some("dreamer"), None) => TmuxServerChoice::Own,
+        (Some("default"), None) => TmuxServerChoice::Default,
+        (Some(n), None) => {
+            if n.is_empty() || n.contains('/') || n.chars().any(char::is_control) {
+                return Err((
+                    "tmux.server".into(),
+                    format!(
+                        "{n:?} is not a tmux socket name (dreamer, default, or a name without `/`)"
+                    ),
+                ));
+            }
+            TmuxServerChoice::Name(n.to_owned())
+        }
+        (None, Some(p)) => TmuxServerChoice::Path(path("tmux.server_path", p)?),
+    };
+    let config = match f.config.as_deref() {
+        None => TmuxConfig::User,
+        Some("none") => TmuxConfig::None,
+        Some(p) => TmuxConfig::Path(path("tmux.config", p)?),
+    };
+    Ok(TmuxSettings { server, config })
+}
+
 pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, ConfigError> {
     let file: File = if text.trim().is_empty() {
         File::default()
@@ -1545,6 +1631,7 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(a) = file.env.autosave {
         s.env.autosave = a;
     }
+    s.tmux = parse_tmux(&file.tmux).map_err(|(at, m)| error(origin, &at, m))?;
     if let Some(f) = file.render.frames {
         s.render.frames = f;
     }
@@ -2156,6 +2243,34 @@ mod tests {
     #[test]
     fn autosave_is_on_unless_turned_off() {
         assert!(Settings::default().env.autosave);
+        let s = parse_settings("", None).expect("empty");
+        assert_eq!(s.tmux, TmuxSettings::default());
+        assert_eq!(s.tmux.server, TmuxServerChoice::Own);
+        let s = parse_settings("tmux:\n  server: default\n  config: none\n", None).expect("tmux");
+        assert_eq!(
+            (s.tmux.server, s.tmux.config),
+            (TmuxServerChoice::Default, TmuxConfig::None)
+        );
+        let s =
+            parse_settings("tmux:\n  server: work\n  config: /etc/t.conf\n", None).expect("name");
+        assert_eq!(
+            (s.tmux.server, s.tmux.config),
+            (
+                TmuxServerChoice::Name("work".into()),
+                TmuxConfig::Path("/etc/t.conf".into())
+            )
+        );
+        let s = parse_settings("tmux:\n  server_path: /tmp/t.sock\n", None).expect("path");
+        assert_eq!(s.tmux.server, TmuxServerChoice::Path("/tmp/t.sock".into()));
+        for bad in [
+            "tmux:\n  server: a/b\n",
+            "tmux:\n  server: x\n  server_path: /tmp/s\n",
+            "tmux:\n  server_path: relative\n",
+            "tmux:\n  config: relative.conf\n",
+            "tmux:\n  socket: x\n",
+        ] {
+            assert!(parse_settings(bad, None).is_err(), "{bad}");
+        }
         let s = parse_settings("env:\n  autosave: false\n", None).expect("parse");
         assert!(!s.env.autosave);
         let e = parse_settings("env:\n  autosave: sometimes\n", None).expect_err("bad");

@@ -424,6 +424,9 @@ single-quote syntax (sh, bash, zsh, dash, and fish do).
 The remote command is fixed: the remote `dream`, `bridge --stdio`, and the
 remote daemon's tmux options (`--tmux`, `--tmux-socket`,
 `--tmux-socket-path`). Application data never goes into these arguments.
+Without `tmux_socket` or `tmux_socket_path` in the host's profile, the
+remote daemon drives what its own `dreamer.yaml` chooses: Dreamer's own
+server on that host (`tmux -L dreamer`) by default.
 
 `crates/client/tests/ssh.rs` runs the generated argv through a stand-in
 `ssh` that hands the command to `/bin/sh -c`, as sshd does, and checks that

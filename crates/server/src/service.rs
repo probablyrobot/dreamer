@@ -20,6 +20,11 @@ pub struct EndpointConfig {
     pub name: String,
     pub program: PathBuf,
     pub socket: Socket,
+    /// Dreamer's own server (ADR 0015): started when it is not running.
+    pub own: bool,
+    /// `-f` when starting Dreamer's own server; `None` lets tmux find the
+    /// user's configuration.
+    pub config_file: Option<PathBuf>,
 }
 
 /// Unfinished pastes by pane and paste id: the bytes so far, and when the
@@ -42,8 +47,35 @@ impl EndpointConfig {
     fn describe(&self) -> String {
         match &self.socket {
             Socket::Default => "default".into(),
+            Socket::Name(n) if self.own => format!("-L {n} (Dreamer's own)"),
             Socket::Name(n) => format!("-L {n}"),
             Socket::Path(p) => format!("-S {}", p.display()),
+        }
+    }
+
+    /// Start Dreamer's own server with a first session, in the home
+    /// folder, reading `config_file` (or the user's tmux configuration).
+    /// Never any other server.
+    async fn start_own(&self) -> Result<(), String> {
+        if !self.own {
+            return Err("only Dreamer's own tmux server is started".into());
+        }
+        let mut c = self.command();
+        if let Some(f) = &self.config_file {
+            c.arg("-f").arg(f);
+        }
+        c.args(["new-session", "-d"]);
+        if let Some(home) = std::env::var_os("HOME") {
+            c.current_dir(home);
+        }
+        let out = c
+            .output()
+            .await
+            .map_err(|e| format!("cannot run {}: {e}", self.program.display()))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
         }
     }
 
@@ -174,25 +206,34 @@ impl State {
             let cfg = &self.endpoint_config;
             // Test harnesses set this so no test can reach the user's own
             // tmux server, even by forgetting to name an isolated socket.
-            if matches!(cfg.socket, Socket::Default)
-                && std::env::var_os("DREAMER_FORBID_DEFAULT_TMUX").is_some()
-            {
-                return Err(unavailable(
-                    "the default tmux server is off limits here (DREAMER_FORBID_DEFAULT_TMUX)"
-                        .into(),
-                ));
+            if let Some(why) = tmux_backend::choice::forbidden(&cfg.socket) {
+                return Err(unavailable(why.into()));
             }
-            let out = cfg
-                .command()
-                .args(["list-sessions", "-F", ATTACH_FORMAT])
-                .output()
-                .await
-                .map_err(|e| unavailable(format!("cannot run {}: {e}", cfg.program.display())))?;
-            let chosen = out
-                .status
-                .success()
-                .then(|| attach_session(&String::from_utf8_lossy(&out.stdout)))
-                .flatten();
+            let sessions = || async {
+                let out = cfg
+                    .command()
+                    .args(["list-sessions", "-F", ATTACH_FORMAT])
+                    .output()
+                    .await
+                    .map_err(|e| {
+                        unavailable(format!("cannot run {}: {e}", cfg.program.display()))
+                    })?;
+                Ok::<_, RpcError>(
+                    out.status
+                        .success()
+                        .then(|| attach_session(&String::from_utf8_lossy(&out.stdout)))
+                        .flatten(),
+                )
+            };
+            let mut chosen = sessions().await?;
+            if chosen.is_none() && cfg.own {
+                // Dreamer's own server: start it, as a terminal starts its
+                // first shell.
+                cfg.start_own().await.map_err(|e| {
+                    unavailable(format!("cannot start tmux {}: {e}", cfg.describe()))
+                })?;
+                chosen = sessions().await?;
+            }
             let Some(session) = chosen else {
                 return Err(unavailable(format!(
                     "no tmux server with sessions on endpoint `{}` (tmux {})",

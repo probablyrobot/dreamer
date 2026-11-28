@@ -21,8 +21,11 @@ the version. Most commands that print take `--json`.
 **Which tmux server.** A command that starts `dreamerd` takes the tmux
 options the new daemon should use: `-L name` (or `--tmux-socket name`) or
 `--tmux-socket-path PATH` for the server, and `--tmux PATH` for the tmux
-program. Without them, the daemon drives your default tmux server, with
-`tmux` from `PATH` or `DREAMER_TMUX`. If a running daemon drives a
+program. Without them, the daemon drives the server `tmux.server` names
+in `dreamer.yaml`: Dreamer's own (`tmux -L dreamer`) unless you choose
+another, and `-L default` is your default tmux server
+([daemon.md](daemon.md#commands)). It runs `tmux` from `PATH` or
+`DREAMER_TMUX`. If a running daemon drives a
 different tmux server, the command refuses and suggests `dream shutdown`.
 
 ## Panes and actions

@@ -6,6 +6,7 @@
 //! connection, scheduler, and inventory arrive in M1.
 
 pub mod bootstrap;
+pub mod choice;
 pub mod command;
 pub mod connection;
 pub mod control;
@@ -16,6 +17,7 @@ pub mod server;
 pub mod workspace;
 
 pub use bootstrap::{BootstrapError, Bootstrapped, PaneState, bootstrap_pane};
+pub use choice::{OWN_SOCKET, Server, choose};
 pub use command::{Batch, TmuxCommand};
 pub use connection::{CommandError, ConnEvent, Connection, ConnectionConfig, LinkState, Socket};
 pub use control::{ControlClient, ControlError};

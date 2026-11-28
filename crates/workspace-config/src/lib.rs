@@ -32,8 +32,8 @@ pub use settings::{
     DrawerSettings, DrawerSide, EmbedderSettings, EnvSettings, FallbackSettings, FontSettings,
     KosmonautServer, KosmonautSettings, LinkSettings, MemoryProvider, MemorySettings, MiddleClick,
     RenderFrames, RenderSettings, STARTER_SETTINGS, Settings, SqliteSettings, TierSettings,
-    WebColor, WebComponent, WebSettings, WindowSettings, ensure_settings_file, load_settings,
-    settings_path,
+    TmuxConfig, TmuxServerChoice, TmuxSettings, WebColor, WebComponent, WebSettings,
+    WindowSettings, ensure_settings_file, load_settings, settings_path,
 };
 
 use std::path::{Path, PathBuf};

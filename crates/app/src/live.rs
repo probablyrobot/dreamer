@@ -37,6 +37,9 @@ pub(crate) struct Live {
     pub copy_on_select: bool,
     pub middle_click: workspace_config::MiddleClick,
     pub fallback: Vec<String>,
+    /// `tmux.server`: the server the daemon drives when started with no
+    /// socket option.
+    pub tmux_server: workspace_config::TmuxServerChoice,
     /// The system's title bar and window buttons, or none.
     pub decorations: workspace_config::Decorations,
     /// Dreamer Web: whether it is offered, and where it downloads from.
@@ -118,6 +121,7 @@ pub(crate) fn apply(cx: &mut App, settings: &Settings, themes: Vec<&'static Sche
         copy_on_select: settings.clipboard.copy_on_select,
         middle_click: settings.clipboard.middle_click,
         fallback: settings.fallback.launch.clone(),
+        tmux_server: settings.tmux.server.clone(),
         decorations,
         web: settings.web.clone(),
         downloads: settings.web.downloads.folder.clone(),
