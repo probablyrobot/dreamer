@@ -29,10 +29,11 @@ pub use plan::{Arrange, PanePlan, PaneRef, Plan, SizeArg, SplitStep, Start, Wind
 pub use schema::{Direction, NodeSpec, Size, WindowSpec, WorkspaceFile};
 pub use settings::{
     Appearance, ClipboardSettings, ClipboardTmux, ClipboardWrite, Decorations, DownloadSettings,
-    DrawerSettings, DrawerSide, EmbedderSettings, FallbackSettings, FontSettings, KosmonautServer,
-    KosmonautSettings, LinkSettings, MemoryProvider, MemorySettings, MiddleClick, RenderFrames,
-    RenderSettings, STARTER_SETTINGS, Settings, SqliteSettings, TierSettings, WebColor,
-    WebComponent, WebSettings, WindowSettings, ensure_settings_file, load_settings, settings_path,
+    DrawerSettings, DrawerSide, EmbedderSettings, EnvSettings, FallbackSettings, FontSettings,
+    KosmonautServer, KosmonautSettings, LinkSettings, MemoryProvider, MemorySettings, MiddleClick,
+    RenderFrames, RenderSettings, STARTER_SETTINGS, Settings, SqliteSettings, TierSettings,
+    WebColor, WebComponent, WebSettings, WindowSettings, ensure_settings_file, load_settings,
+    settings_path,
 };
 
 use std::path::{Path, PathBuf};

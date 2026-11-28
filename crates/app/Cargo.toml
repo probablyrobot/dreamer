@@ -20,6 +20,7 @@ path = "src/main.rs"
 web = ["web-engine/engine", "dep:futures-lite"]
 
 [dependencies]
+environment.workspace = true
 api.workspace = true
 app-model = { path = "../app-model" }
 view-tree.workspace = true

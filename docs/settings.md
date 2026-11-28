@@ -80,6 +80,8 @@ render:
   frames_below: 128KiB                   # back to the stream below this
   frames_dwell: 1s                       # least time on a feed
   frames_hold: 2s                        # on the stream after selecting
+env:
+  autosave: true                         # default; save the environment when Dreamer changes it
 web:
   component: ask                         # ask (default), auto, or never
   url: https://example.com/dreamer-web/  # optional; default: the release
@@ -377,6 +379,22 @@ benchmark's escape load) writes about 768 KiB/s.
 ```yaml
 render:
   frames_above: 4MiB
+```
+
+## The environment
+
+Once `dream env init` has run, the configuration directory is versioned
+with git as your environment (see [the CLI](cli.md#the-environment)).
+With `env.autosave` on (the default), Dreamer saves it when it changes
+it itself: an app installed or rolled back with `dream app`, a theme
+kept from the palette. Only the files that change are saved, as
+"(automatic)" in `dream env log`; your own edits wait for
+`dream env save`. When git cannot save (a merge under way, say), the
+change still happens and Dreamer says the environment was not saved.
+
+```yaml
+env:
+  autosave: false
 ```
 
 ## Dreamer Web

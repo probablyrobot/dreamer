@@ -7,6 +7,19 @@ use environment::{Change, Environment, InitOptions, Problem, Restored, Saved, St
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Save what a command of Dreamer's just changed (`env.autosave`). Never
+/// fails the command: a problem is reported and the command carries on.
+pub(crate) fn autosave(paths: &[&str], message: &str) {
+    let Some(dir) = workspace_config::config_dir() else {
+        return;
+    };
+    match Environment::new(&dir).autosave(paths, message) {
+        Ok(Some(save)) => println!("environment saved: {} {}", save.short, save.message),
+        Ok(None) => {}
+        Err(e) => eprintln!("dream: the environment was not saved: {e}"),
+    }
+}
+
 const USAGE: &str = "\
 dream env init [--name NAME] [--nested]   make the configuration directory an environment (or adopt its repository)
 dream env status [--json]                 what changed since the last save, and whether it validates
@@ -219,7 +232,8 @@ fn log(env: &Environment, args: &[String]) -> Result<(), String> {
         println!("nothing saved yet");
     }
     for s in saves {
-        println!("{}  {}  {}", s.short, day(&s.date), s.message);
+        let auto = if s.automatic { "  (automatic)" } else { "" };
+        println!("{}  {}  {}{auto}", s.short, day(&s.date), s.message);
     }
     Ok(())
 }

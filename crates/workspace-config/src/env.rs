@@ -14,6 +14,7 @@
 //! | `workspaces/` | `dream workspace`, the desktop | the user | yes |
 //! | `apps/<id>/` | the desktop, `dreamer-termapp` | `dream app install` | yes |
 //! | `apps/.last-good/` | `dream app rollback` | `dream app install` | no: the previous install, kept for rollback |
+//! | `apps/.staging-<name>/` | nothing | `dream app install`, for a moment | no |
 //! | `extensions.yaml` | the daemon | the user | yes |
 //! | `hosts.yaml` | the daemon, the desktop | the user; the desktop's connect dialog | no: host names are private |
 //! | `memory/` | the daemon (files memory) | the daemon, agents | no: personal |
@@ -44,6 +45,8 @@ pub const IGNORED: &[&str] = &[
     "/memory/",
     // The version an app install replaced, kept for `dream app rollback`.
     "/apps/.last-good/",
+    // An app being installed, for a moment.
+    "/apps/.staging-*/",
     // Editors and operating systems.
     ".DS_Store",
     "*~",

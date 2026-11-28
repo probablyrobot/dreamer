@@ -49,7 +49,13 @@ pub(crate) fn keep(cx: &mut App, scheme: &'static Scheme) {
     cx.spawn(async move |cx: &mut AsyncApp| {
         let kept = cx
             .background_executor()
-            .spawn(async move { write(at, Some(scheme.name), true) })
+            .spawn(async move {
+                let kept = write(at, Some(scheme.name), true);
+                if matches!(kept, Ok(Some(_))) {
+                    autosave(scheme.title);
+                }
+                kept
+            })
             .await;
         cx.update(|cx| match kept {
             Ok(Some(settings)) => {
@@ -111,4 +117,18 @@ fn write(
         *before = None;
     }
     out
+}
+
+/// Save the environment after keeping a theme (`env.autosave`), on the
+/// background thread that wrote it. A failure is reported, never shown as
+/// the theme failing.
+fn autosave(title: &str) {
+    let Some(dir) = workspace_config::config_dir() else {
+        return;
+    };
+    if let Err(e) =
+        environment::Environment::new(&dir).autosave(&["dreamer.yaml"], &format!("Theme {title}"))
+    {
+        eprintln!("dreamer: the environment was not saved: {e}");
+    }
 }

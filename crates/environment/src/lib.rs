@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 pub use git::NO_GIT;
+
+/// The trailer that marks a save Dreamer made on its own.
+const TRAILER: &str = "Dreamer-Save";
 use git::{Git, canonical};
 use workspace_config::env::{ENV_FILE, IGNORED};
 
@@ -166,6 +169,8 @@ pub struct Save {
     /// Commit time, RFC 3339.
     pub date: String,
     pub message: String,
+    /// Made by Dreamer for a change it made itself (autosave).
+    pub automatic: bool,
 }
 
 /// What `init` did.
@@ -490,7 +495,9 @@ impl Environment {
             "log",
             &format!("-n{n}"),
             "-z",
-            "--format=%H%x1f%h%x1f%cI%x1f%s",
+            &format!(
+                "--format=%H%x1f%h%x1f%cI%x1f%s%x1f%(trailers:key={TRAILER},valueonly,separator=)"
+            ),
         ])?;
         Ok(out
             .split('\0')
@@ -502,6 +509,7 @@ impl Environment {
                     short: f.next()?.to_owned(),
                     date: f.next()?.to_owned(),
                     message: f.next()?.to_owned(),
+                    automatic: f.next().is_some_and(|t| t.trim() == "automatic"),
                 })
             })
             .collect())
@@ -558,6 +566,35 @@ impl Environment {
             out.push_str(&String::from_utf8_lossy(&o.stdout));
         }
         Ok(out)
+    }
+
+    /// Save the files at `paths` (relative to the configuration directory)
+    /// after Dreamer itself changed them, with `message`. Only those files
+    /// are saved: other changes, the user's own, stay as they are. Does
+    /// nothing when the directory is not an environment, when
+    /// `env.autosave` is off, or when nothing at `paths` changed. The
+    /// caller's own work must not fail because of this: it reports the
+    /// error and carries on.
+    pub fn autosave(&self, paths: &[&str], message: &str) -> Result<Option<Save>, String> {
+        if paths.is_empty() || !self.initialized()? || !autosave_on(&self.git.dir) {
+            return Ok(None);
+        }
+        if let Some(b) = self.blocked()? {
+            return Err(b.to_string());
+        }
+        let mut add = vec!["add", "-A", "--"];
+        add.extend_from_slice(paths);
+        self.git.run(&add)?;
+        let mut staged = vec!["diff", "--cached", "--quiet", "--"];
+        staged.extend_from_slice(paths);
+        if self.git.ask(&staged)?.is_some() {
+            return Ok(None);
+        }
+        let trailer = format!("{TRAILER}: automatic");
+        let mut commit = vec!["commit", "-q", "-m", message, "-m", &trailer, "--"];
+        commit.extend_from_slice(paths);
+        self.git.run(&commit)?;
+        self.head()
     }
 
     /// Bring the versioned files back to save `rev`, as a new save on top:
@@ -848,6 +885,16 @@ pub fn validate(dir: &Path, version: &str) -> Vec<Problem> {
         });
     }
     problems
+}
+
+/// `env.autosave` in `dreamer.yaml`; on when the file is absent or does
+/// not read (its own problems are reported elsewhere).
+fn autosave_on(dir: &Path) -> bool {
+    let path = dir.join("dreamer.yaml");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| workspace_config::settings::parse_settings(&t, Some(&path)).ok())
+        .is_none_or(|s| s.env.autosave)
 }
 
 /// A directory beside the configuration directory (same file system,
