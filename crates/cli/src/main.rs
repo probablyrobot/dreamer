@@ -120,7 +120,7 @@ const USAGE: &str = "usage:
   dream service install [--no-start] [-L socket | --tmux-socket-path PATH] [--tmux PATH]
   dream service status
   dream service uninstall [--no-stop]
-  dream app new|check|preview|test|install|rollback|list|launch|types ... (see `dream app`)
+  dream app new|check|preview|test|pack|install|rollback|list|launch|types ... (see `dream app`)
   dream app run APP_ID [--method M]... [--all-panes | --pane %N...] [--session $N] -- PROGRAM [ARGS...]
   dream --version";
 
@@ -199,6 +199,7 @@ fn main() -> ExitCode {
         ["app", "preview", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| preview::run(&d, &extra))
         }
+        ["app", "pack", rest @ ..] => build::pack(&to_owned(rest)),
         ["app", "install", rest @ ..] => build::install(&to_owned(rest)),
         ["app", "rollback", rest @ ..] => build::rollback(&to_owned(rest)),
         ["app", "list"] => build::list(),

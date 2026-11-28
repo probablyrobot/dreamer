@@ -29,7 +29,8 @@ pub const USAGE: &str = "usage:
                                           with --level, as an agent at that level takes it
   dream app test PATH [--update] [--size WxH]
                                           replay fixtures/events.jsonl and compare each screen with fixtures/expect/
-  dream app install PATH [--name NAME]    check, preview, and install; the replaced version is kept
+  dream app pack PATH [-o FILE] [--json] check, then write <id>-<version>.dreamerapp and print its SHA-256
+  dream app install PATH [--name NAME]    check, preview, and install (a folder or a .dreamerapp); the replaced version is kept
   dream app rollback NAME                 put the last good version back
   dream app list                          installed packages
   dream app launch NAME [--session $N | --beside %N] [--request]
@@ -479,12 +480,95 @@ fn valid_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// `dream app pack PATH [-o FILE] [--json]`.
+pub fn pack(args: &[String]) -> Result<(), String> {
+    let (mut path, mut out, mut json) = (None, None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-o" => out = Some(PathBuf::from(it.next().ok_or(USAGE)?)),
+            "--json" => json = true,
+            p if path.is_none() && !p.starts_with('-') => path = Some(p.to_owned()),
+            _ => return Err(USAGE.into()),
+        }
+    }
+    let m = manifest(&path.ok_or(USAGE)?);
+    let dir = m.parent().ok_or("no package directory")?.to_path_buf();
+    if m.file_name().and_then(|n| n.to_str()) != Some(app_package::MANIFEST) {
+        return Err("pack a package directory, whose manifest is app.toml".into());
+    }
+    crate::strip::build(&m)?;
+    let problems = crate::strip::type_problems(&m);
+    if !problems.is_empty() {
+        let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        return Err(lines.join("\n"));
+    }
+    let v = checked(&m)?;
+    ok_or_error(&v)?;
+    installable(&v)?;
+    let (id, version) = (
+        v["id"].as_str().unwrap_or_default(),
+        v["version"].as_str().unwrap_or_default(),
+    );
+    let packed = app_package::pack(&dir)?;
+    let out = out.unwrap_or_else(|| PathBuf::from(app_package::file_name(id, version)));
+    std::fs::write(&out, &packed.bytes).map_err(|e| format!("{}: {e}", out.display()))?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "id": id,
+                "version": version,
+                "file": out,
+                "sha256": packed.sha256,
+                "bytes": packed.bytes.len(),
+                "files": packed.files,
+            })
+        );
+    } else {
+        println!(
+            "packed {id} {version}: {} ({} files, {} bytes)\nsha256 {}",
+            out.display(),
+            packed.files.len(),
+            packed.bytes.len(),
+            packed.sha256
+        );
+    }
+    Ok(())
+}
+
 pub fn install(args: &[String]) -> Result<(), String> {
     let (path, name) = match args {
         [p] => (p, None),
         [p, f, n] if f == "--name" => (p, Some(n.clone())),
         _ => return Err(USAGE.into()),
     };
+    let file = Path::new(path);
+    if file.is_file() && file.extension().and_then(|e| e.to_str()) == Some(app_package::EXTENSION) {
+        return install_package(file, name);
+    }
+    install_dir(path, name)
+}
+
+/// Install a `.dreamerapp`: unpack it beside the installed apps, install
+/// that folder, and remove it again.
+fn install_package(file: &Path, name: Option<String>) -> Result<(), String> {
+    let bytes = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let apps = apps()?;
+    let unpacked = apps.join(format!(".unpack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&unpacked);
+    let result = app_package::unpack(&bytes, &unpacked)
+        .map_err(|e| format!("{}: {e}", file.display()))
+        .and_then(|u| {
+            println!("unpacked {} (sha256 {})", file.display(), u.sha256);
+            install_dir(&unpacked.display().to_string(), name)
+        });
+    let _ = std::fs::remove_dir_all(&unpacked);
+    result
+}
+
+fn install_dir(path: &str, name: Option<String>) -> Result<(), String> {
     let m = manifest(path);
     let dir = m.parent().ok_or("no package directory")?.to_path_buf();
     crate::strip::build(&m)?;

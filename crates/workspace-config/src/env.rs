@@ -15,6 +15,7 @@
 //! | `apps/<id>/` | the desktop, `dreamer-termapp` | `dream app install` | yes |
 //! | `apps/.last-good/` | `dream app rollback` | `dream app install` | no: the previous install, kept for rollback |
 //! | `apps/.staging-<name>/` | nothing | `dream app install`, for a moment | no |
+//! | `apps/.unpack-<pid>/` | `dream app install` | `dream app install FILE.dreamerapp`, for a moment | no |
 //! | `extensions.yaml` | the daemon | the user | yes |
 //! | `hosts.yaml` | the daemon, the desktop | the user; the desktop's connect dialog | no: host names are private |
 //! | `memory/` | the daemon (files memory) | the daemon, agents | no: personal |
@@ -47,6 +48,8 @@ pub const IGNORED: &[&str] = &[
     "/apps/.last-good/",
     // An app being installed, for a moment.
     "/apps/.staging-*/",
+    // A package being unpacked to install, for a moment.
+    "/apps/.unpack-*/",
     // Editors and operating systems.
     ".DS_Store",
     "*~",

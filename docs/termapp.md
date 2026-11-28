@@ -136,6 +136,8 @@ them. `DIR` is the package directory, or its `app.toml`.
    `apps/NAME/` with `--name NAME`). A package that fails changes
    nothing. `dream app list` shows what is installed. The version it replaces is kept in
    `apps/.last-good/`, and `dream app rollback NAME` swaps it back.
+   `dream app pack DIR` writes the app as one file to share or keep
+   ([below](#packages)); `dream app install FILE.dreamerapp` installs it.
 6. **Launch:** `dream app launch NAME` runs the installed package `NAME`
    (its id, unless it was installed with `--name`) in a new tmux window
    of the first session (`--session $N` for another; `--beside %N` for a
@@ -1274,6 +1276,56 @@ input, so a slow app cannot hold up the pane or the desktop.
   is not called; without one, the pane says it is waiting for the
   daemon. Its calls are answered from `fixtures/calls.json`
   ([testing an app](#testing-an-app)), or with an error.
+
+## Packages
+
+`dream app pack DIR [-o FILE] [--json]` checks the app, then writes it as
+one file, `<id>-<version>.dreamerapp`, and prints the file's SHA-256. The
+same files always give the same bytes, on macOS and on Linux, so the hash
+names exactly one version of the app. `dream app install FILE.dreamerapp`
+unpacks it and installs it as it installs a folder.
+
+**What goes in.** Every regular file in the folder, except:
+
+- files and folders whose names start with `.` (`.git/`, `.env`, ...);
+- `node_modules/` folders, and `build/` at the root (a script app's
+  JavaScript, which installing builds again);
+- what `.dreamerignore` at the root names: one pattern a line, `#` for
+  comments. A pattern ending in `/` matches only folders. A pattern with
+  another `/` matches the path from the root (a leading `/` is dropped);
+  one without matches that name anywhere. `*` matches within a name, `?`
+  one character of it, and `**` any number of folders. `!` patterns are
+  not supported.
+
+A symbolic link, or any file that is not a regular file, is refused
+unless it is left out. Limits: at most 4096 files, 16 MiB a file,
+64 MiB a package, and 255 bytes a path. Paths are UTF-8, relative, with
+`/` between parts; a part is never empty, `.` or `..`, and holds no `\`
+or control characters. `app.toml` is at the root.
+
+**The format**, for a tool of its own to write the same bytes: a POSIX
+ustar archive, not compressed.
+
+- One entry for each file, in byte order of the paths (`app.toml` before
+  `app.ts`), and no entries for folders.
+- Each 512-byte header is zeros except: the path in `name` (bytes
+  0-99) when it fits in 100 bytes; otherwise split at the first `/` that
+  leaves at most 155 bytes before it, in `prefix` (bytes 345-499), and at
+  most 100 after it, in `name`. `mode` (100-107) is `0000644`, or
+  `0000755` when any execute bit was set; `uid` and `gid` (108-123)
+  `0000000`; `size` (124-135) eleven octal digits; `mtime` (136-147)
+  `00000000000`; each number ends with a NUL. `typeflag` (156) is `0`,
+  `magic` (257-262) `ustar` and a NUL, `version` (263-264) `00`. No user
+  or group names, no link name, no device numbers.
+- The checksum (148-155): the sum of the header's bytes with these eight
+  counted as spaces, as six octal digits, a NUL and a space.
+- The file's bytes follow, padded with zeros to a multiple of 512, and
+  the archive ends with two zero blocks and nothing after them.
+
+Installing reads only this form. It refuses any other entry type (links,
+folders, devices, pax or GNU extensions), any header with other owners,
+times or modes, files out of order or repeated, and a package over the
+limits, before anything is written.
 
 ## Modules
 

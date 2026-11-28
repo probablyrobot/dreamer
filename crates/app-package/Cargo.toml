@@ -1,0 +1,19 @@
+[package]
+name = "dreamer-app-package"
+description = "Dreamer app packages: one app folder as a deterministic archive, identified by its SHA-256"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+
+# Published as dreamer-app-package; the library keeps its short name.
+[lib]
+name = "app_package"
+
+[dependencies]
+sha2 = "0.10.9"
+
+[lints]
+workspace = true
