@@ -12,7 +12,11 @@ dreamer --fixture FILE
 
 With no arguments (as when launched from Finder or a desktop launcher),
 or with `--workspace`, the app opens a **workspace**: the windows you had
-open last time, or the first session of the default tmux server. The app
+open last time, or the first session of Dreamer's own tmux server
+(`tmux -L dreamer`, started if it is not running; `tmux.server` in
+`dreamer.yaml` or `-L` chooses another, and `-L default` is your default
+tmux server). When your default server has sessions, a line at the bottom
+of the window says where they are, once, until you dismiss it. The app
 starts `dreamerd` if it is not running, passing it the tmux options (`-L`
 names a tmux socket, as in tmux). See [packaging.md](packaging.md) for
 the macOS app and the Arch package.

@@ -530,3 +530,86 @@ async fn a_daemon_with_launchds_path_finds_tmux_on_the_login_shells_path() {
         .expect("shutdown");
     assert!(wait_exit(&mut daemon, Duration::from_secs(5)).is_some());
 }
+
+/// tmux's socket folder under a private `TMUX_TMPDIR`.
+fn tmux_dir(tmpdir: &Path) -> PathBuf {
+    let uid = Command::new("id").arg("-u").output().expect("id");
+    tmpdir.join(format!(
+        "tmux-{}",
+        String::from_utf8_lossy(&uid.stdout).trim()
+    ))
+}
+
+/// A daemon with no socket option, its tmux sockets in a private
+/// `TMUX_TMPDIR`, and `dreamer.yaml` reading `yaml`.
+fn unnamed_launch(d: &Dirs, yaml: &str) -> (Launch, PathBuf) {
+    let tmpdir = d.root.join("tx");
+    std::fs::create_dir_all(&tmpdir).expect("tmpdir");
+    std::fs::set_permissions(&tmpdir, std::fs::Permissions::from_mode(0o700)).expect("mode");
+    let config = d.root.join("cfg");
+    std::fs::create_dir_all(&config).expect("config");
+    std::fs::write(config.join("dreamer.yaml"), yaml).expect("settings");
+    let mut env: Vec<(String, String)> = d
+        .env()
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+    env.extend([
+        ("TMUX_TMPDIR".into(), tmpdir.display().to_string()),
+        ("DREAMER_CONFIG_DIR".into(), config.display().to_string()),
+        ("HOME".into(), d.root.display().to_string()),
+        ("SHELL".into(), "/bin/sh".into()),
+    ]);
+    let launch = Launch {
+        socket: d.socket(),
+        daemon: PathBuf::from(EXE),
+        args: vec!["--tmux".into(), tmux_program().display().to_string()],
+        env,
+        wait: Duration::from_secs(10),
+    };
+    (launch, tmpdir)
+}
+
+/// ADR 0015: with no socket option, the daemon drives Dreamer's own
+/// server (`-L dreamer`), starting it, and never the default one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_no_socket_the_daemon_starts_and_drives_its_own_tmux_server() {
+    let d = Dirs::new();
+    let (launch, tmpdir) = unnamed_launch(&d, "tmux:\n  config: none\n");
+    let sockets = tmux_dir(&tmpdir);
+    let (mut c, _) = ensure_running(&launch, "test").await.expect("ensure");
+    let topology = c
+        .call(Request::TmuxTopology(api::TopologyParams::default()))
+        .await;
+    let own = Command::new(tmux_program())
+        .args(["-L", "dreamer", "kill-server"])
+        .env("TMUX_TMPDIR", &tmpdir)
+        .status();
+    match topology.expect("topology") {
+        Response::TmuxTopology(t) => assert_eq!(t.sessions.len(), 1, "{t:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(own.is_ok_and(|s| s.success()), "Dreamer's server ran");
+    assert!(
+        !sockets.join("default").exists(),
+        "the default server was started"
+    );
+    let s = status(&mut c).await;
+    assert_eq!(s.endpoints[0].socket, "-L dreamer (Dreamer's own)");
+}
+
+/// Driving the default server is opt-in, and a test daemon still refuses
+/// it (`DREAMER_FORBID_DEFAULT_TMUX`) without starting anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_default_server_is_opt_in_and_never_started() {
+    let d = Dirs::new();
+    let (launch, tmpdir) = unnamed_launch(&d, "tmux:\n  server: default\n");
+    let (c, _) = ensure_running(&launch, "test").await.expect("ensure");
+    let refused = c
+        .call(Request::TmuxTopology(api::TopologyParams::default()))
+        .await
+        .expect_err("refused");
+    assert!(refused.to_string().contains("off limits"), "{refused}");
+    let sockets = tmux_dir(&tmpdir);
+    assert!(!sockets.join("default").exists() && !sockets.join("dreamer").exists());
+}

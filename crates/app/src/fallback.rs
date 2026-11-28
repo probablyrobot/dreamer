@@ -27,9 +27,16 @@ pub(crate) fn quote(word: &str) -> String {
 
 /// `tmux [-L name | -S path] attach-session -t $SESSION[:@WINDOW]` for the
 /// tmux the daemon was started with (its `--tmux`, `--tmux-socket`, and
-/// `--tmux-socket-path` options). Ids, never names: names can contain
-/// anything, and ids are exact for this server.
-pub(crate) fn attach_command(daemon_args: &[String], session: u32, window: Option<u32>) -> Attach {
+/// `--tmux-socket-path` options), or with none the server `tmux.server`
+/// chooses (Dreamer's own, `-L dreamer`, by default). Ids, never names:
+/// names can contain anything, and ids are exact for this server.
+pub(crate) fn attach_command(
+    daemon_args: &[String],
+    server: &workspace_config::TmuxServerChoice,
+    session: u32,
+    window: Option<u32>,
+) -> Attach {
+    use workspace_config::TmuxServerChoice;
     let opt = |name: &str| {
         daemon_args
             .iter()
@@ -39,9 +46,20 @@ pub(crate) fn attach_command(daemon_args: &[String], session: u32, window: Optio
     };
     let mut argv = vec![opt("--tmux").unwrap_or_else(|| "tmux".into())];
     if let Some(name) = opt("--tmux-socket") {
-        argv.extend(["-L".into(), name]);
+        if name != "default" {
+            argv.extend(["-L".into(), name]);
+        }
     } else if let Some(path) = opt("--tmux-socket-path") {
         argv.extend(["-S".into(), path]);
+    } else {
+        match server {
+            TmuxServerChoice::Own => argv.extend(["-L".into(), "dreamer".into()]),
+            TmuxServerChoice::Default => {}
+            TmuxServerChoice::Name(n) => argv.extend(["-L".into(), n.clone()]),
+            TmuxServerChoice::Path(p) => {
+                argv.extend(["-S".into(), p.display().to_string()]);
+            }
+        }
     }
     let target = match window {
         Some(w) => format!("${session}:@{w}"),
@@ -75,6 +93,7 @@ pub(crate) fn launch_argv(template: &[String], attach: &Attach) -> Option<Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use workspace_config::TmuxServerChoice;
 
     #[test]
     fn words_are_quoted_only_when_needed_and_quotes_survive() {
@@ -89,13 +108,24 @@ mod tests {
 
     #[test]
     fn the_attach_command_names_the_same_server_and_window_by_id() {
-        let a = attach_command(&[], 0, Some(3));
+        let own = TmuxServerChoice::Own;
+        let a = attach_command(&[], &own, 0, Some(3));
+        assert_eq!(
+            a.argv,
+            ["tmux", "-L", "dreamer", "attach-session", "-t", "$0:@3"]
+        );
+        assert_eq!(a.display, "tmux -L dreamer attach-session -t '$0:@3'");
+        let a = attach_command(&[], &TmuxServerChoice::Default, 0, Some(3));
         assert_eq!(a.argv, ["tmux", "attach-session", "-t", "$0:@3"]);
-        assert_eq!(a.display, "tmux attach-session -t '$0:@3'");
+        let default: Vec<String> = ["--tmux-socket", "default"].map(String::from).to_vec();
+        assert_eq!(
+            attach_command(&default, &own, 0, None).argv,
+            ["tmux", "attach-session", "-t", "$0"]
+        );
         let args: Vec<String> = ["--tmux-socket", "dev box", "--tmux", "/usr/bin/tmux"]
             .map(String::from)
             .to_vec();
-        let a = attach_command(&args, 2, None);
+        let a = attach_command(&args, &own, 2, None);
         assert_eq!(
             a.display,
             "/usr/bin/tmux -L 'dev box' attach-session -t '$2'"
@@ -104,14 +134,14 @@ mod tests {
             .map(String::from)
             .to_vec();
         assert_eq!(
-            attach_command(&args, 1, Some(4)).argv,
+            attach_command(&args, &own, 1, Some(4)).argv,
             ["tmux", "-S", "/tmp/t s", "attach-session", "-t", "$1:@4"]
         );
     }
 
     #[test]
     fn a_launch_template_splices_the_argv_and_needs_the_placeholder() {
-        let a = attach_command(&[], 0, Some(1));
+        let a = attach_command(&[], &TmuxServerChoice::Default, 0, Some(1));
         let t: Vec<String> = ["kitty", "-e", "{command}"].map(String::from).to_vec();
         assert_eq!(
             launch_argv(&t, &a).expect("launch"),

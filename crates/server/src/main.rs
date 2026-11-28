@@ -78,26 +78,37 @@ struct Args {
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut background = false;
     let mut program = tmux_backend::server::tmux_program();
-    let mut socket = Socket::Default;
+    let mut socket = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
         match a.as_str() {
             "--background" => background = true,
             "--tmux" => program = PathBuf::from(value("--tmux")?),
-            "--tmux-socket" => socket = Socket::Name(value("--tmux-socket")?),
+            "--tmux-socket" => socket = Some(Socket::Name(value("--tmux-socket")?)),
             "--tmux-socket-path" => {
-                socket = Socket::Path(PathBuf::from(value("--tmux-socket-path")?))
+                socket = Some(Socket::Path(PathBuf::from(value("--tmux-socket-path")?)));
             }
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
+    // With no option, `tmux:` in dreamer.yaml chooses; without that,
+    // Dreamer's own server (ADR 0015). Settings are read only then.
+    let tmux = match socket {
+        Some(_) => workspace_config::TmuxSettings::default(),
+        None => workspace_config::load_settings()
+            .map(|s| s.tmux)
+            .unwrap_or_default(),
+    };
+    let server = tmux_backend::choose(socket, &tmux);
     Ok(Args {
         background,
         endpoint: EndpointConfig {
             name: "default".into(),
             program,
-            socket,
+            socket: server.socket,
+            own: server.own,
+            config_file: server.config_file,
         },
     })
 }
@@ -444,6 +455,11 @@ mod tests {
             .expect("parse");
         assert!(a.background);
         assert!(matches!(a.endpoint.socket, tmux_backend::Socket::Name(ref n) if n == "x"));
+        assert!(!a.endpoint.own);
+        let a = super::parse(&["--tmux-socket".into(), "default".into()]).expect("default");
+        assert_eq!(a.endpoint.socket, tmux_backend::Socket::Default);
+        let a = super::parse(&["--tmux-socket".into(), "dreamer".into()]).expect("own");
+        assert!(a.endpoint.own);
         assert!(super::parse(&["--bogus".into()]).is_err());
         assert!(super::parse(&["--tmux".into()]).is_err());
     }

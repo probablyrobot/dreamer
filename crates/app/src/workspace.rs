@@ -150,6 +150,9 @@ fn forwarded(url: &str, via: &replica::Via) -> Option<(String, u16)> {
 pub(crate) struct Workspace {
     /// The daemon's tmux options, for the fallback attach command.
     daemon_args: Vec<String>,
+    /// The one-time line saying the user's tmux sessions are on their
+    /// default server (ADR 0015): `None` until checked.
+    tmux_hint: Option<bool>,
     /// The local daemon's tmux, or a host through its coordinator.
     pub(crate) via: replica::Via,
     /// The local daemon's remote hosts, while the sidebar shows them.
@@ -282,6 +285,7 @@ impl Workspace {
     ) -> Workspace {
         Workspace {
             daemon_args,
+            tmux_hint: None,
             via: replica::Via::Local,
             hosts: None,
             topology,
@@ -327,6 +331,74 @@ impl Workspace {
             drawer_focus: None,
             drawer_back: None,
         }
+    }
+
+    /// Once: when Dreamer drives its own tmux server and the user's default
+    /// server has sessions, say where they went (ADR 0015), until
+    /// dismissed. Reads the default server's session list only (never
+    /// attaches), off the UI thread; never under
+    /// `DREAMER_FORBID_DEFAULT_TMUX`.
+    fn check_tmux_hint(&mut self, cx: &mut Context<Self>) {
+        if self.tmux_hint.is_some() {
+            return;
+        }
+        self.tmux_hint = Some(false);
+        let chosen = self
+            .daemon_args
+            .iter()
+            .any(|a| a == "--tmux-socket" || a == "--tmux-socket-path");
+        let own = crate::live::with(|l| l.tmux_server.clone()).unwrap_or_default()
+            == workspace_config::TmuxServerChoice::Own;
+        if self.via != replica::Via::Local
+            || chosen
+            || !own
+            || std::env::var_os("DREAMER_FORBID_DEFAULT_TMUX").is_some()
+        {
+            return;
+        }
+        let program = self
+            .daemon_args
+            .iter()
+            .position(|a| a == "--tmux")
+            .and_then(|i| self.daemon_args.get(i + 1))
+            .cloned()
+            .unwrap_or_else(|| "tmux".into());
+        let task = cx.background_executor().spawn(async move {
+            if tmux_hint_marker().is_none_or(|m| m.exists()) {
+                return false;
+            }
+            std::process::Command::new(program)
+                .args(["list-sessions", "-F", "x"])
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+        });
+        cx.spawn(async move |this, cx| {
+            if task.await {
+                let _ = this.update(cx, |ws, cx| {
+                    ws.tmux_hint = Some(true);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Hide the tmux line for good.
+    fn dismiss_tmux_hint(&mut self, cx: &mut Context<Self>) {
+        self.tmux_hint = Some(false);
+        cx.notify();
+        cx.background_executor()
+            .spawn(async {
+                if let Some(m) = tmux_hint_marker() {
+                    if let Some(d) = m.parent() {
+                        let _ = std::fs::create_dir_all(d);
+                    }
+                    let _ = std::fs::write(m, "");
+                }
+            })
+            .detach();
     }
 
     /// Follow installed packages' contributions from `<config dir>/apps`.
@@ -1589,8 +1661,10 @@ impl Workspace {
         if self.via != replica::Via::Local {
             return None;
         }
+        let server = crate::live::with(|l| l.tmux_server.clone()).unwrap_or_default();
         Some(crate::fallback::attach_command(
             &self.daemon_args,
+            &server,
             self.session?,
             window,
         ))
@@ -1773,6 +1847,7 @@ impl Workspace {
         self.focus_drawer(window, cx);
         self.follow_decorations(window, cx);
         self.follow_contributions(window, cx);
+        self.check_tmux_hint(cx);
         if first_save {
             // Record the server incarnation the session id now belongs to.
             self.save_state(cx);
@@ -2768,6 +2843,28 @@ impl Render for Workspace {
                     )
                     .children(self.panel.clone()),
             )
+            .children((self.tmux_hint == Some(true)).then(|| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(11.0))
+                    .text_color(c(t.muted))
+                    .child(
+                        "Your own tmux sessions stay on your tmux server; Dreamer uses its own (tmux -L dreamer). To show yours here, set tmux.server: default in dreamer.yaml.",
+                    )
+                    .child(
+                        div()
+                            .id("tmux-hint-dismiss")
+                            .px_1()
+                            .rounded_sm()
+                            .bg(c(t.selected))
+                            .child("Dismiss")
+                            .on_click(cx.listener(|ws, _, _, cx| ws.dismiss_tmux_hint(cx))),
+                    )
+            }))
             // Last, so it floats over the panes rather than under them.
             .children(palette.map(|p| p.when(!overlay_clear, |d| d.opacity(0.0))))
             .children(menu.map(|m| m.when(!overlay_clear, |d| d.opacity(0.0))))
@@ -5076,6 +5173,11 @@ fn swatch(s: &'static terminal_ghostty::core::schemes::Scheme) -> gpui::Div {
         .bg(hex(s.background))
         .child(dot(s.foreground))
         .children(s.ansi[1..7].iter().map(|&c| dot(c)))
+}
+
+/// Present once the tmux line was dismissed.
+fn tmux_hint_marker() -> Option<std::path::PathBuf> {
+    workspace_config::desktop_state::state_dir().map(|d| d.join("tmux-hint-dismissed"))
 }
 
 #[cfg(test)]

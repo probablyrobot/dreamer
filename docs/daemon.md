@@ -34,10 +34,20 @@ dreamerd [--background] [--tmux PATH] [--tmux-socket NAME | --tmux-socket-path P
 dreamerd --version | --self-check
 ```
 
-Without a socket option, the daemon drives your default tmux server. It
-only ever attaches to a server that is already running; it never starts
-one. It connects on the first request that needs tmux and reconnects
-after the link drops.
+Without a socket option, the daemon drives **Dreamer's own tmux server**,
+`tmux -L dreamer`, so the tmux you run in a terminal stays out of it.
+When that server is not running, or has no sessions, the daemon starts it
+with one session in your home folder; it reads your tmux configuration as
+tmux does, or what `tmux.config` names. `tmux -L dreamer attach` (or
+`ls`) reaches Dreamer's sessions from any terminal.
+
+To drive another server, give `-L NAME` (`-L default` is your default tmux
+server, the one plain `tmux` uses) or `--tmux-socket-path PATH`, or set
+`tmux.server` / `tmux.server_path` in `dreamer.yaml`
+([settings.md](settings.md#tmux-server)); an option comes first. The
+daemon starts only its own server: any other it only ever attaches to
+once it is running. `dream status` names the server in use. It connects on
+the first request that needs tmux and reconnects after the link drops.
 
 ### Control clients
 
@@ -212,7 +222,7 @@ demand.
 | --- | --- |
 | `DREAMER_RUNTIME_DIR`, `DREAMER_STATE_DIR`, `DREAMER_DATA_DIR` | Private directories per test |
 | `DREAMER_PI_LATEST_URL`, `DREAMER_PI_DOWNLOAD_URL` | Where pi releases are found; tests point them at `file://` stand-ins so nothing is downloaded |
-| `DREAMER_FORBID_DEFAULT_TMUX` | The daemon refuses to attach to the default tmux server. Test harnesses set it so no test can reach the user's own tmux, even if it forgets to name an isolated socket |
+| `DREAMER_FORBID_DEFAULT_TMUX` | The daemon refuses the default tmux server, and Dreamer's own (`-L dreamer`) unless `TMUX_TMPDIR` is set. Test harnesses set it so no test can reach the user's own tmux, or their Dreamer's, even if it forgets to name an isolated socket |
 | `DREAMER_TEST_ABORT_AFTER_DISPATCH` | Abort the process right after an action reaches tmux, to test crash recovery |
 | `DREAMER_TEST_PASTE_TOTAL` | What all unfinished pastes may hold together, in bytes (default 128 MiB), to test the limit |
 | `DREAMER_TEST_SLOW_PANE` | `PANE:MICROS`: sleep that long before applying each output chunk of that pane, so it outruns its mirror |

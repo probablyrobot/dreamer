@@ -82,6 +82,10 @@ render:
   frames_hold: 2s                        # on the stream after selecting
 env:
   autosave: true                         # default; save the environment when Dreamer changes it
+tmux:
+  server: dreamer                        # dreamer (default, Dreamer's own), default (yours), or a socket name
+  # server_path: ~/.tmux-work.sock       # or a socket path, instead of server
+  config: none                           # optional; what Dreamer's own server reads: none, or a file
 web:
   component: ask                         # ask (default), auto, or never
   url: https://example.com/dreamer-web/  # optional; default: the release
@@ -395,6 +399,27 @@ change still happens and Dreamer says the environment was not saved.
 ```yaml
 env:
   autosave: false
+```
+
+## tmux server
+
+Dreamer drives its own tmux server, `tmux -L dreamer`, and starts it when
+it is not running, so the tmux you run in a terminal is never touched.
+`tmux.server: default` drives your default tmux server instead (the one
+plain `tmux` uses): its sessions show in Dreamer, and the daemon attaches
+one client to each ([daemon.md](daemon.md#control-clients)). Any other
+name is `tmux -L NAME`; `tmux.server_path` is `tmux -S PATH`. The `-L`
+and `--tmux-socket-path` options come first. The daemon reads this when it
+starts: after a change, `dream shutdown` and start Dreamer again.
+
+`tmux.config` is what Dreamer's own server reads when Dreamer starts it:
+by default your tmux configuration, found as tmux finds it
+(`~/.tmux.conf`, or `~/.config/tmux/tmux.conf`); `none` reads none; a
+path reads that file.
+
+```yaml
+tmux:
+  server: default
 ```
 
 ## Dreamer Web
