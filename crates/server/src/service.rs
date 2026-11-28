@@ -927,6 +927,7 @@ impl api::Service for DaemonService {
                     mirror::MirrorState::Live => (api::MirrorState::Live, None),
                     mirror::MirrorState::Failed(e) => (api::MirrorState::Failed, Some(e.clone())),
                     mirror::MirrorState::Cold => (api::MirrorState::Cold, None),
+                    mirror::MirrorState::Stale => (api::MirrorState::Stale, None),
                 };
                 let cold = m.state == mirror::MirrorState::Cold;
                 api::MirrorStatus {

@@ -141,6 +141,10 @@ pub enum MirrorState {
     /// The Cold tier: no mirror and no journal; its output is dropped
     /// unparsed. Any request for the pane's content attaches it again.
     Cold,
+    /// It outran its mirror repeatedly: paused for this client while tmux
+    /// keeps running it. The mirror shows its last content and is caught
+    /// up about once a second, or at once when its content is asked for.
+    Stale,
 }
 
 /// The Cold panes of one connection.
@@ -275,6 +279,8 @@ pub struct MirrorHost {
     retention: Retention,
     host_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     cold: ColdSet,
+    /// Panes paused after outrunning their mirror (ADR 0014).
+    stale: ColdSet,
     watched: Watched,
     /// The control connection, for tmux's paste buffers.
     conn: Connection,
@@ -347,6 +353,7 @@ impl MirrorHost {
         let (changes_tx, changes) = watch::channel(0u64);
         let (buffers_tx, buffers) = watch::channel((0u64, String::new()));
         let cold = ColdSet::default();
+        let stale = ColdSet::default();
         let tmux = conn.clone();
         router::spawn(
             router::Router::new(
@@ -359,6 +366,7 @@ impl MirrorHost {
                 changes_tx,
             )
             .with_cold(cold.clone())
+            .with_stale(stale.clone())
             .with_buffers(buffers_tx)
             .with_sessions(config.sessions),
         )
@@ -371,6 +379,7 @@ impl MirrorHost {
                 retention: config.retention,
                 host_bytes,
                 cold,
+                stale,
                 watched: Watched::default(),
                 conn: tmux,
                 buffers,
@@ -462,12 +471,18 @@ impl MirrorHost {
         self.cold.lock().is_ok_and(|c| c.contains(&pane))
     }
 
-    /// Bring a Cold pane back before its content is asked for: a fresh
-    /// attach (a cold attach, as for a new pane), waited for
+    /// Whether the pane is stale: paused after outrunning its mirror, and
+    /// caught up before its content is read (ADR 0014).
+    pub fn is_stale(&self, pane: TmuxPaneId) -> bool {
+        self.stale.lock().is_ok_and(|c| c.contains(&pane))
+    }
+
+    /// Bring a Cold or stale pane back before its content is asked for: a
+    /// fresh attach (a cold attach, as for a new pane), waited for
     /// up to `COLD_WAKE`. Nothing for any other pane, so the hot path costs
     /// one set lookup.
     async fn awake(&self, pane: TmuxPaneId) {
-        if !self.is_cold(pane) {
+        if !self.is_cold(pane) && !self.is_stale(pane) {
             return;
         }
         let (reply, answer) = oneshot::channel();

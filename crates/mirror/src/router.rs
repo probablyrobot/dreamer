@@ -29,6 +29,12 @@ const MAX_ATTACHES: usize = 16;
 /// How often held output is offered to its worker again when no more of
 /// that pane's output arrives (which offers it at once).
 const BACKLOG_TICK: std::time::Duration = std::time::Duration::from_millis(5);
+/// A pane that outruns its mirror again within this long of its last
+/// attach is left paused (stale) instead of being captured again, and a
+/// stale pane is caught up at most this often (ADR 0014). A capture runs
+/// in tmux without yielding, so every other pane on the connection waits
+/// for it; captures in a row would stall them over and over.
+const CATCH_UP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Connection events handled in one turn of the router before the output
 /// they carried goes to the workers. Records are handed over in batches so
@@ -115,6 +121,14 @@ enum Flow {
     Queued {
         generation: PaneGeneration,
     },
+    /// Outran its mirror again soon after an attach: paused for its client,
+    /// so its output stays off the connection, while tmux keeps running it.
+    /// The mirror keeps its last content until the pane is caught up, at
+    /// `due` or as soon as something asks for its content (ADR 0014).
+    Stale {
+        generation: PaneGeneration,
+        due: tokio::time::Instant,
+    },
 }
 
 impl Flow {
@@ -125,7 +139,8 @@ impl Flow {
             | Flow::Live { generation }
             | Flow::Failed { generation, .. }
             | Flow::Cold { generation }
-            | Flow::Queued { generation } => *generation,
+            | Flow::Queued { generation }
+            | Flow::Stale { generation, .. } => *generation,
         }
     }
 }
@@ -166,6 +181,14 @@ pub(crate) struct Router {
     /// The Cold panes, shared with the host so a request can tell at once
     /// whether a pane needs waking.
     cold: crate::ColdSet,
+    /// Panes that are stale (see [`Flow::Stale`]), for the host to catch
+    /// up before it reads one.
+    stale: crate::ColdSet,
+    /// When each pane last became live after a re-attach or catch-up, to
+    /// tell a pane that keeps outrunning its mirror.
+    live_since: HashMap<TmuxPaneId, tokio::time::Instant>,
+    /// Panes being attached again because they outran their mirror.
+    reattaching: std::collections::HashSet<TmuxPaneId>,
     /// Panes attaching now, and those waiting for a turn, in order.
     attaching: std::collections::HashSet<TmuxPaneId>,
     queued: std::collections::VecDeque<(TmuxPaneId, PaneGeneration)>,
@@ -247,6 +270,9 @@ impl Router {
             flows: HashMap::new(),
             sizes: HashMap::new(),
             cold: crate::ColdSet::default(),
+            stale: crate::ColdSet::default(),
+            live_since: HashMap::new(),
+            reattaching: std::collections::HashSet::new(),
             attaching: std::collections::HashSet::new(),
             queued: std::collections::VecDeque::new(),
             release_at: None,
@@ -285,6 +311,11 @@ impl Router {
         self
     }
 
+    pub(crate) fn with_stale(mut self, stale: crate::ColdSet) -> Router {
+        self.stale = stale;
+        self
+    }
+
     /// Report paste-buffer changes on `tx`.
     pub(crate) fn with_buffers(mut self, tx: watch::Sender<(u64, String)>) -> Router {
         self.buffers = Some(tx);
@@ -299,6 +330,106 @@ impl Router {
                 c.remove(&pane);
             }
         }
+    }
+
+    fn set_stale(&self, pane: TmuxPaneId, stale: bool) {
+        if let Ok(mut c) = self.stale.lock() {
+            if stale {
+                c.insert(pane);
+            } else {
+                c.remove(&pane);
+            }
+        }
+    }
+
+    /// The pane's held output went over `BACKLOG_BYTES`: its mirror cannot
+    /// keep up. The first time, capture it again at once. If it outran
+    /// its mirror again within `CATCH_UP_INTERVAL` of the end of its last
+    /// re-attach, it is flooding: leave it paused and catch it up later
+    /// (ADR 0014).
+    fn outran(&mut self, pane: TmuxPaneId, generation: PaneGeneration) {
+        let now = tokio::time::Instant::now();
+        let recent = self
+            .live_since
+            .get(&pane)
+            .is_some_and(|t| now.duration_since(*t) < CATCH_UP_INTERVAL);
+        if !recent {
+            perf::count(perf::Counter::Reattaches, 1);
+            self.start(pane, generation);
+            self.reattaching.insert(pane);
+            self.changed();
+            return;
+        }
+        let Some(conn) = self
+            .sources
+            .get(&pane)
+            .and_then(|s| self.conn_of(*s))
+            .cloned()
+        else {
+            // Its client is gone: nothing to pause through; attach as usual.
+            self.start(pane, generation);
+            self.changed();
+            return;
+        };
+        // tmux keeps running the pane and keeps its screen; it only stops
+        // sending its output to this client.
+        tokio::spawn(
+            conn.submit(tmux_backend::Batch::new().push(
+                TmuxCommand::new("refresh-client").opt("-A", format!("{}:pause", pid(pane))),
+            )),
+        );
+        self.backlog.remove(&pane);
+        self.staged.remove(&pane);
+        let due = self
+            .live_since
+            .get(&pane)
+            .map_or(now, |t| *t + CATCH_UP_INTERVAL);
+        self.flows.insert(pane, Flow::Stale { generation, due });
+        self.set_stale(pane, true);
+        self.changed();
+    }
+
+    /// Catch up stale panes that are due.
+    fn catch_up_due(&mut self) {
+        let now = tokio::time::Instant::now();
+        let due: Vec<(TmuxPaneId, PaneGeneration)> = self
+            .flows
+            .iter()
+            .filter_map(|(p, f)| match f {
+                Flow::Stale { generation, due } if *due <= now => Some((*p, *generation)),
+                _ => None,
+            })
+            .collect();
+        for (pane, generation) in due {
+            self.catch_up(pane, generation);
+        }
+    }
+
+    /// Attach a stale pane again (on/pause/capture/continue, as any
+    /// attach): its mirror is rebuilt from tmux's current screen.
+    fn catch_up(&mut self, pane: TmuxPaneId, generation: PaneGeneration) {
+        self.set_stale(pane, false);
+        // It is paused for its client, and tmux reports `%pause` only for a
+        // pane that is not paused yet: resume it first, so the attach's own
+        // pause is reported. Submitted in order on the same connection.
+        if let Some(conn) = self.sources.get(&pane).and_then(|s| self.conn_of(*s)) {
+            tokio::spawn(conn.submit(resume_command(pid(pane))));
+        }
+        perf::count(perf::Counter::Reattaches, 1);
+        self.start(pane, generation);
+        self.reattaching.insert(pane);
+        self.changed();
+    }
+
+    /// The earliest time a stale pane is due for catching up.
+    fn next_catch_up(&self) -> Option<tokio::time::Instant> {
+        self.flows
+            .values()
+            .filter_map(|f| match f {
+                Flow::Stale { due, .. } => Some(*due),
+                _ => None,
+            })
+            .min()
     }
 
     fn worker(&self, pane: TmuxPaneId) -> &WorkerHandle {
@@ -320,6 +451,11 @@ impl Router {
             let held = !self.backlog.is_empty();
             tokio::select! {
                 _ = tick.tick(), if held => self.drain(),
+                () = tokio::time::sleep_until(self.next_catch_up().unwrap_or_else(tokio::time::Instant::now)),
+                    if self.next_catch_up().is_some() =>
+                {
+                    self.catch_up_due();
+                }
                 () = tokio::time::sleep_until(self.release_at.unwrap_or_else(tokio::time::Instant::now)),
                     if self.release_at.is_some() =>
                 {
@@ -419,13 +555,14 @@ impl Router {
         }
         let held = *bytes;
         if held > BACKLOG_BYTES {
-            perf::count(perf::Counter::Reattaches, 1);
-            self.start(pane, s.generation);
-            self.changed();
+            self.outran(pane, s.generation);
         }
     }
 
     fn closed(&mut self) {
+        if let Ok(mut stale) = self.stale.lock() {
+            stale.clear();
+        }
         for flow in self.flows.values_mut() {
             *flow = Flow::Failed {
                 generation: flow.generation(),
@@ -567,7 +704,9 @@ impl Router {
             Control::Cool { pane, reply } => {
                 let r = match self.flows.get(&pane) {
                     Some(Flow::Cold { .. }) => Ok(()),
-                    Some(Flow::Live { generation }) => {
+                    // A stale pane goes Cold as a live one does; tmux keeps
+                    // running it either way.
+                    Some(Flow::Live { generation } | Flow::Stale { generation, .. }) => {
                         let generation = *generation;
                         let (tx, rx) = tokio::sync::oneshot::channel();
                         match self
@@ -582,6 +721,7 @@ impl Router {
                                     *self.attaches.entry(pane).or_default() += 1;
                                     self.backlog.remove(&pane);
                                     self.flows.insert(pane, Flow::Cold { generation });
+                                    self.set_stale(pane, false);
                                     self.set_cold(pane, true);
                                     self.release_at =
                                         Some(tokio::time::Instant::now() + RELEASE_AFTER);
@@ -605,6 +745,12 @@ impl Router {
                         self.set_cold(pane, false);
                         self.start(pane, generation);
                         self.changed();
+                        true
+                    }
+                    // Something wants its content now: catch it up early.
+                    Some(Flow::Stale { generation, .. }) => {
+                        let generation = *generation;
+                        self.catch_up(pane, generation);
                         true
                     }
                     _ => false,
@@ -637,6 +783,7 @@ impl Router {
                                 Flow::Live { .. } => MirrorState::Live,
                                 Flow::Failed { reason, .. } => MirrorState::Failed(reason.clone()),
                                 Flow::Cold { .. } => MirrorState::Cold,
+                                Flow::Stale { .. } => MirrorState::Stale,
                                 Flow::Queued { .. } => MirrorState::Attaching,
                             };
                             (*p, f.generation(), s)
@@ -649,6 +796,8 @@ impl Router {
 
     /// Attach a pane now, or queue it when `MAX_ATTACHES` are in progress.
     fn start(&mut self, pane: TmuxPaneId, generation: PaneGeneration) {
+        // Whatever replaces a stale flow ends it.
+        self.set_stale(pane, false);
         if !self.attaching.contains(&pane) && self.attaching.len() >= MAX_ATTACHES {
             self.backlog.remove(&pane);
             self.flows.insert(pane, Flow::Queued { generation });
@@ -769,6 +918,7 @@ impl Router {
     /// A pane whose client is gone waits for its next one; its mirror is
     /// attached again from a capture then.
     fn park(&mut self, pane: TmuxPaneId, generation: PaneGeneration) {
+        self.set_stale(pane, false);
         *self.attaches.entry(pane).or_default() += 1;
         self.backlog.remove(&pane);
         self.leave_source(pane);
@@ -952,6 +1102,12 @@ impl Router {
                 self.leave_source(pane);
             }
             Some(Flow::Cold { .. }) => self.set_cold(pane, false),
+            Some(Flow::Stale { .. }) => {
+                self.set_stale(pane, false);
+                let _ = self.worker(pane).urgent(WorkerMsg::Drop { pane });
+                // Never leave a pane paused for its client.
+                self.leave_source(pane);
+            }
             Some(Flow::Queued { .. }) => {}
             None => {}
         }
@@ -1063,6 +1219,9 @@ impl Router {
         // worker then drops as stale.
         let _ = self.worker(pane).urgent(msg);
         self.flows.insert(pane, Flow::Live { generation });
+        if self.reattaching.remove(&pane) {
+            self.live_since.insert(pane, tokio::time::Instant::now());
+        }
         self.attached(pane);
     }
 
@@ -1122,14 +1281,14 @@ impl Router {
                 self.drain_pane(pane);
                 let held = self.backlog.get(&pane).map_or(0, |(_, b)| *b);
                 if held > BACKLOG_BYTES {
-                    perf::count(perf::Counter::Reattaches, 1);
-                    self.start(pane, generation);
-                    self.changed();
+                    self.outran(pane, generation);
                 }
             }
             Some(Flow::Cold { .. }) => {
                 perf::count(perf::Counter::ColdDroppedBytes, record_size(&record) as u64);
             }
+            // Stale: sent before the pause took effect; the catch-up's
+            // capture covers it.
             // Pausing: already in the coming capture. Failed or unmirrored:
             // nothing to keep.
             _ => {}

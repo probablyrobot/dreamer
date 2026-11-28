@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const PACKAGE: &str = "dreamer.v1";
 pub const PROTOCOL_MAJOR: u32 = 1;
-pub const PROTOCOL_MINOR: u32 = 66;
+pub const PROTOCOL_MINOR: u32 = 67;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -174,6 +174,8 @@ pub enum MirrorState {
     Cold = 4,
     /// Reserved. Meant a mirror tmux sends no output for. API 1.64 reported it for panes outside the session the daemon's control client was attached to; the daemon now keeps a control client per tmux session, so every pane streams and nothing reports this state.
     NotStreaming = 5,
+    /// It outran its mirror again soon after an attach, so it is paused for the daemon's control client while tmux keeps running it. The mirror shows its last content and is caught up about once a second, or at once when its content is asked for. Since API 1.67.
+    Stale = 6,
 }
 
 impl MirrorState {
@@ -186,6 +188,7 @@ impl MirrorState {
             Self::Failed => "failed",
             Self::Cold => "cold",
             Self::NotStreaming => "not_streaming",
+            Self::Stale => "stale",
         }
     }
 
@@ -197,6 +200,7 @@ impl MirrorState {
             "failed" => Some(Self::Failed),
             "cold" => Some(Self::Cold),
             "not_streaming" => Some(Self::NotStreaming),
+            "stale" => Some(Self::Stale),
             _ => None,
         }
     }

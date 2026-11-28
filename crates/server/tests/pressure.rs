@@ -303,6 +303,87 @@ async fn a_pane_that_outruns_its_mirror_is_reattached_without_stalling_others() 
     );
 }
 
+async fn stale(c: &Client, pane: u32) -> bool {
+    let Ok(Response::TerminalMirrors(m)) = c
+        .call(Request::TerminalMirrors(api::TopologyParams::default()))
+        .await
+    else {
+        return false;
+    };
+    m.mirrors
+        .iter()
+        .any(|x| x.pane == pane && x.state == api::MirrorState::Stale as i32)
+}
+
+#[tokio::test]
+async fn a_pane_that_keeps_outrunning_its_mirror_stays_paused_and_catches_up_lazily() {
+    // ADR 0014. Pane %0 floods and its mirror is slow, so it outruns the
+    // mirror again right after each re-attach. It must then stay paused
+    // (stale) and be caught up about once a second, never captured over
+    // and over: each capture stalls every other pane on the connection.
+    let s = Setup::new(&[
+        ("DREAMER_MIRROR_WORKERS", "2"),
+        ("DREAMER_TEST_SLOW_PANE", "0:2000"),
+    ]);
+    let c = s.client().await;
+    s.type_into(0, "echo A''READY");
+    s.type_into(1, "echo B''READY");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !(s.mirror_shows(&c, 0, "AREADY").await && s.mirror_shows(&c, 1, "BREADY").await) {
+        assert!(Instant::now() < deadline, "panes never came up");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let quiet = round_trips(&s, &c, 1, 10).await;
+
+    s.type_into(
+        0,
+        "yes 0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz",
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !stale(&c, 0).await {
+        assert!(Instant::now() < deadline, "pane %0 never went stale");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Typing into %1 over several catch-ups of %0.
+    let before = reattaches(&c, 0).await;
+    let started = Instant::now();
+    let mut busy = Vec::new();
+    while started.elapsed() < Duration::from_secs(4) {
+        busy.extend(round_trips(&s, &c, 1, 5).await);
+    }
+    busy.sort();
+    let caught_up = reattaches(&c, 0).await - before;
+    println!(
+        "lazy: pane %1 round trip p95 {:?} quiet, {:?} over 4 s while %0 stayed stale ({caught_up} catch-ups, {} round trips)",
+        p95(&quiet),
+        p95(&busy),
+        busy.len()
+    );
+    assert!(
+        p95(&busy) < Duration::from_millis(250).max(p95(&quiet) * 5),
+        "a stale pane delayed another: p95 {:?} (quiet {:?})",
+        p95(&busy),
+        p95(&quiet)
+    );
+    assert!(
+        (1..=8).contains(&caught_up),
+        "a stale pane is caught up about once a second, not {caught_up} times in 4 s"
+    );
+
+    // Its content is current when asked for.
+    s.type_into(0, "\u{3}");
+    s.type_into(0, "clear; echo A''FTER");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !s.mirror_shows(&c, 0, "AFTER").await {
+        assert!(
+            Instant::now() < deadline,
+            "the mirror of %0 never caught up"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 #[tokio::test]
 async fn busy_panes_stay_under_tmux_flow_control_with_other_sessions_attached() {
     // The daemon runs a control client in every session. tmux keeps
