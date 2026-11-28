@@ -132,8 +132,9 @@ them. `DIR` is the package directory, or its `app.toml`.
 4. **Test:** `dream app test DIR` replays the app's events and compares
    each screen with the one expected ([below](#testing-an-app)).
 5. **Install:** `dream app install DIR` checks it, previews it when it has
-   fixtures, and copies it to `<config dir>/apps/<id>/` (or
-   `apps/NAME/` with `--name NAME`). A package that fails changes
+   fixtures, records the version in the local registry, and installs it
+   to `<config dir>/apps/<id>/` (or `apps/NAME/` with `--name NAME`)
+   ([below](#the-local-registry)). A package that fails changes
    nothing. `dream app list` shows what is installed. The version it replaces is kept in
    `apps/.last-good/`, and `dream app rollback NAME` swaps it back.
    `dream app pack DIR` writes the app as one file to share or keep
@@ -1326,6 +1327,51 @@ Installing reads only this form. It refuses any other entry type (links,
 folders, devices, pax or GNU extensions), any header with other owners,
 times or modes, files out of order or repeated, and a package over the
 limits, before anything is written.
+
+## The local registry
+
+Every version installed on this machine is kept in the local registry,
+`<data dir>/registry/` (`DREAMER_DATA_DIR`, else `$XDG_DATA_HOME/dreamer`,
+else `~/.local/share/dreamer`), by its package's hash:
+
+```text
+registry/
+  index/<namespace>/<name>.json    one line a version
+  packages/<sha256>.dreamerapp
+```
+
+An app's id `me.windows` is indexed at `index/me/windows.json`; an id
+without a namespace (from before ids had one) under `index/local/`. Each
+line is one JSON object: `version`, `sha256`, `dreamer` (the
+`[package] dreamer` requirement, or `null`), `capabilities` (the grant
+it asks for), `yanked` (`false`), `source` (`local`), and `added` (UTC).
+
+- **A version names one package.** `dream app install DIR` packs the
+  folder and records the version. Installing the same id and version
+  with other files is refused, with both hashes: raise `version` in
+  `app.toml`. For work in progress, `--dev` records the next
+  `VERSION-dev.N` instead (the same files again keep their number).
+  Under semantic versioning `0.2.0-dev.3` comes before `0.2.0`, so work
+  on the version to come.
+- **Installing again.** `dream app install ID` installs the highest
+  version that is not yanked and that this Dreamer runs;
+  `dream app install ID@VERSION` installs that one.
+- **Installed apps come from their package.** Installing writes the
+  package to `<config dir>/packages/NAME.dreamerapp`, which the
+  environment versions, and unpacks it to `apps/NAME/`, which it does
+  not. When the daemon starts, and when a package changes, `dream app
+  sync` unpacks each app whose folder is missing or differs from its
+  package; a folder edited by hand is moved to `apps/.edited-NAME/`
+  first. `dream app list` and `dream env status` say which differ. To
+  work on an app with live reloading, use `dream app preview --open`
+  on its source folder, not the installed copy.
+- **Apps installed by an earlier Dreamer** are recorded the first time
+  `dream app sync` or `dream app install` runs: each is packed and
+  recorded at its manifest version, or `0.0.0-migrated` when that is not
+  a semantic version.
+
+One writer at a time changes the registry; files are written beside
+their place and renamed into it.
 
 ## Modules
 

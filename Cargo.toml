@@ -21,6 +21,7 @@ view-tree = { package = "dreamer-view-tree", path = "crates/view-tree", version 
 client = { package = "dreamer-client", path = "crates/client", version = "=0.15.0" }
 environment = { package = "dreamer-environment", path = "crates/environment", version = "=0.15.0" }
 app-package = { package = "dreamer-app-package", path = "crates/app-package", version = "=0.15.0" }
+app-registry = { package = "dreamer-app-registry", path = "crates/app-registry", version = "=0.15.0" }
 domain = { package = "dreamer-domain", path = "crates/domain", version = "=0.15.0" }
 ghostty-sys = { package = "dreamer-ghostty-sys", path = "crates/ghostty-sys", version = "=0.15.0" }
 perf = { package = "dreamer-perf", path = "crates/perf", version = "=0.15.0" }

@@ -48,7 +48,7 @@ impl Kind {
             "dreamer.yaml" => Kind::Settings,
             "themes" => Kind::Themes,
             "workspaces" => Kind::Workspaces,
-            "apps" => Kind::Apps,
+            "apps" | "packages" => Kind::Apps,
             "extensions.yaml" => Kind::Extensions,
             ENV_FILE | ".gitignore" => Kind::Environment,
             _ => Kind::Other,
@@ -314,32 +314,7 @@ impl Environment {
         }
 
         // The ignore list: missing lines appended, nothing removed.
-        let gitignore = self.git.dir.join(".gitignore");
-        let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
-        let have: std::collections::HashSet<&str> = existing.lines().map(str::trim).collect();
-        let missing: Vec<String> = IGNORED
-            .iter()
-            .filter(|l| !have.contains(**l))
-            .map(|l| (*l).to_owned())
-            .collect();
-        if !missing.is_empty() {
-            let mut text = existing.clone();
-            if !text.is_empty() && !text.ends_with('\n') {
-                text.push('\n');
-            }
-            if text.is_empty() {
-                text = workspace_config::env::gitignore();
-            } else {
-                text.push_str(
-                    "# Dreamer: never versioned (private, specific to this machine, or rebuilt).\n",
-                );
-                for l in &missing {
-                    text.push_str(l);
-                    text.push('\n');
-                }
-            }
-            write_file(&gitignore, &text)?;
-        }
+        let missing = append_ignored(&self.git.dir)?;
 
         let env_path = self.git.dir.join(ENV_FILE);
         let wrote_env = !env_path.exists();
@@ -595,6 +570,99 @@ impl Environment {
         commit.extend_from_slice(paths);
         self.git.run(&commit)?;
         self.head()
+    }
+
+    /// Bring an environment saved by an earlier Dreamer up to what is
+    /// versioned now: the lines of the ignore list it lacks are appended
+    /// to `.gitignore`, and the files under `untrack` stop being versioned
+    /// (they stay on disk). With `env.autosave` on, that is saved together
+    /// with the files at `save`, as one automatic save with `message`.
+    /// Only those paths change in the save: anything else the user has
+    /// staged or changed stays as it was.
+    pub fn catch_up(
+        &self,
+        untrack: &[&str],
+        save: &[&str],
+        message: &str,
+    ) -> Result<Option<Save>, String> {
+        if !self.initialized()? {
+            return Ok(None);
+        }
+        if let Some(b) = self.blocked()? {
+            return Err(b.to_string());
+        }
+        append_ignored(&self.git.dir)?;
+        let mut rm = vec!["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--"];
+        rm.extend_from_slice(untrack);
+        let mut add = vec!["add", "-A", "--", ".gitignore"];
+        add.extend_from_slice(save);
+        if !autosave_on(&self.git.dir) {
+            if !untrack.is_empty() {
+                self.git.run(&rm)?;
+            }
+            return Ok(None);
+        }
+        let Some(head) = self.git.ask(&["rev-parse", "-q", "--verify", "HEAD"])? else {
+            return Ok(None);
+        };
+        let head = head.trim().to_owned();
+        // A private index, read from the last save, so that the save holds
+        // these paths and nothing else.
+        let index = self
+            .git
+            .run(&["rev-parse", "--git-path", "dreamer-catch-up-index"])?;
+        let index = self.git.dir.join(index.trim());
+        let private = |args: &[&str]| -> Result<String, String> {
+            let out = self
+                .git
+                .command()
+                .env("GIT_INDEX_FILE", &index)
+                .args(args)
+                .output()
+                .map_err(|e| format!("git: {e}"))?;
+            if out.status.success() {
+                Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+            } else {
+                Err(git::failure(args, &out))
+            }
+        };
+        let trailer = format!("{TRAILER}: automatic");
+        let saved = (|| {
+            private(&["read-tree", &head])?;
+            private(&add)?;
+            if !untrack.is_empty() {
+                private(&rm)?;
+            }
+            let tree = private(&["write-tree"])?;
+            let before = self.git.run(&["rev-parse", &format!("{head}^{{tree}}")])?;
+            if tree == before.trim() {
+                return Ok(false);
+            }
+            let commit = private(&[
+                "commit-tree",
+                &tree,
+                "-p",
+                &head,
+                "-m",
+                message,
+                "-m",
+                &trailer,
+            ])?;
+            self.git
+                .run(&["update-ref", "-m", message, "HEAD", &commit, &head])?;
+            Ok::<bool, String>(true)
+        })();
+        let _ = std::fs::remove_file(&index);
+        // The real index follows the save.
+        if !untrack.is_empty() {
+            self.git.run(&rm)?;
+        }
+        if saved? {
+            self.git.run(&add)?;
+            self.head()
+        } else {
+            Ok(None)
+        }
     }
 
     /// Bring the versioned files back to save `rev`, as a new save on top:
@@ -889,6 +957,38 @@ pub fn validate(dir: &Path, version: &str) -> Vec<Problem> {
 
 /// `env.autosave` in `dreamer.yaml`; on when the file is absent or does
 /// not read (its own problems are reported elsewhere).
+/// Append the lines of [`IGNORED`] that `.gitignore` in `dir` lacks;
+/// nothing is removed. The lines it appended.
+fn append_ignored(dir: &Path) -> Result<Vec<String>, String> {
+    let gitignore = dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
+    let have: std::collections::HashSet<&str> = existing.lines().map(str::trim).collect();
+    let missing: Vec<String> = IGNORED
+        .iter()
+        .filter(|l| !have.contains(**l))
+        .map(|l| (*l).to_owned())
+        .collect();
+    if !missing.is_empty() {
+        let mut text = existing.clone();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        if text.is_empty() {
+            text = workspace_config::env::gitignore();
+        } else {
+            text.push_str(
+                "# Dreamer: never versioned (private, specific to this machine, or rebuilt).\n",
+            );
+            for l in &missing {
+                text.push_str(l);
+                text.push('\n');
+            }
+        }
+        write_file(&gitignore, &text)?;
+    }
+    Ok(missing)
+}
+
 fn autosave_on(dir: &Path) -> bool {
     let path = dir.join("dreamer.yaml");
     std::fs::read_to_string(&path)

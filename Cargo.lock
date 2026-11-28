@@ -1756,12 +1756,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dreamer-app-registry"
+version = "0.15.0"
+dependencies = [
+ "dreamer-app-package",
+ "semver",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dreamer-cli"
 version = "0.15.0"
 dependencies = [
  "dreamer-api",
  "dreamer-app-package",
  "dreamer-app-protocol",
+ "dreamer-app-registry",
  "dreamer-client",
  "dreamer-environment",
  "dreamer-platform",

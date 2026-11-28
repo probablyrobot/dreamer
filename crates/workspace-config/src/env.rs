@@ -12,10 +12,11 @@
 //! | `dreamer.yaml` | every program | the user; the desktop's theme picker | yes |
 //! | `themes/` | every program | the user | yes |
 //! | `workspaces/` | `dream workspace`, the desktop | the user | yes |
-//! | `apps/<id>/` | the desktop, `dreamer-termapp` | `dream app install` | yes |
+//! | `packages/<name>.dreamerapp` | `dream app sync` | `dream app install` | yes: the package of each installed app |
+//! | `apps/<name>/` | the desktop, `dreamer-termapp` | `dream app install`, `dream app sync` | no: unpacked from its package |
 //! | `apps/.last-good/` | `dream app rollback` | `dream app install` | no: the previous install, kept for rollback |
-//! | `apps/.staging-<name>/` | nothing | `dream app install`, for a moment | no |
-//! | `apps/.unpack-<pid>/` | `dream app install` | `dream app install FILE.dreamerapp`, for a moment | no |
+//! | `apps/.staging-<name>/`, `apps/.unpack-<pid>/` | nothing | `dream app install`, for a moment | no |
+//! | `apps/.edited-<name>/` | the user | `dream app sync` | no: a hand edit an unpacking replaced |
 //! | `extensions.yaml` | the daemon | the user | yes |
 //! | `hosts.yaml` | the daemon, the desktop | the user; the desktop's connect dialog | no: host names are private |
 //! | `memory/` | the daemon (files memory) | the daemon, agents | no: personal |
@@ -44,12 +45,9 @@ pub const IGNORED: &[&str] = &[
     "/hosts.yaml",
     // Personal memory, written by the daemon and agents.
     "/memory/",
-    // The version an app install replaced, kept for `dream app rollback`.
-    "/apps/.last-good/",
-    // An app being installed, for a moment.
-    "/apps/.staging-*/",
-    // A package being unpacked to install, for a moment.
-    "/apps/.unpack-*/",
+    // Installed apps, unpacked from their packages in `packages/`, which
+    // are versioned instead.
+    "/apps/",
     // Editors and operating systems.
     ".DS_Store",
     "*~",
@@ -271,7 +269,7 @@ mod tests {
     #[test]
     fn the_ignore_list_keeps_private_and_machine_files_out() {
         let g = gitignore();
-        for must in ["/hosts.yaml", "/memory/", "/local/", "/apps/.last-good/"] {
+        for must in ["/hosts.yaml", "/memory/", "/local/", "/apps/"] {
             assert!(g.lines().any(|l| l == must), "{must} missing from\n{g}");
         }
         for never in [
@@ -280,6 +278,7 @@ mod tests {
             "workspaces",
             "extensions.yaml",
             "env.toml",
+            "packages",
         ] {
             assert!(!g.contains(never), "{never} must be versioned");
         }

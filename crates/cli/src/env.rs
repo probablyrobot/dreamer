@@ -147,6 +147,8 @@ fn status(env: &Environment, args: &[String]) -> Result<(), String> {
     f.none_positional()?;
     let s = env.status()?;
     let problems = problems(env.dir());
+    // Installed apps are not versioned; their packages are.
+    let differing = crate::installed::differing(env.dir());
     if f.on("--json") {
         #[derive(serde::Serialize)]
         struct Out<'a> {
@@ -154,11 +156,13 @@ fn status(env: &Environment, args: &[String]) -> Result<(), String> {
             status: &'a Status,
             valid: bool,
             problems: &'a [Problem],
+            apps_differing: &'a [String],
         }
         return json(&Out {
             status: &s,
             valid: problems.is_empty(),
             problems: &problems,
+            apps_differing: &differing,
         });
     }
     let branch = s.branch.as_deref().unwrap_or("(no branch)");
@@ -182,6 +186,12 @@ fn status(env: &Environment, args: &[String]) -> Result<(), String> {
         println!(
             "saved although the ignore list keeps them out (they would be pushed): {}",
             s.tracked_but_ignored.join(" ")
+        );
+    }
+    if !differing.is_empty() {
+        println!(
+            "installed apps that differ from their package (`dream app sync` puts the package back): {}",
+            differing.join(" ")
         );
     }
     if problems.is_empty() {

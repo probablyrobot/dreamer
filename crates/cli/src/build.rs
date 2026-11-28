@@ -30,9 +30,14 @@ pub const USAGE: &str = "usage:
   dream app test PATH [--update] [--size WxH]
                                           replay fixtures/events.jsonl and compare each screen with fixtures/expect/
   dream app pack PATH [-o FILE] [--json] check, then write <id>-<version>.dreamerapp and print its SHA-256
-  dream app install PATH [--name NAME]    check, preview, and install (a folder or a .dreamerapp); the replaced version is kept
+  dream app install PATH [--name NAME] [--dev]
+                                          check, preview, record in the registry, and install (a folder or a .dreamerapp);
+                                          --dev records the next VERSION-dev.N for work in progress
+  dream app install ID[@VERSION] [--name NAME]
+                                          install from the registry: the highest version that runs here, or VERSION
   dream app rollback NAME                 put the last good version back
-  dream app list                          installed packages
+  dream app list                          installed packages, and any that differ from their package
+  dream app sync [--quiet]                unpack each installed package whose folder is missing or edited
   dream app launch NAME [--session $N | --beside %N] [--request]
                                           run it in a new tmux window (or beside a pane) with the grant it declares;
                                           --request prints the apps.launch parameters instead
@@ -53,7 +58,7 @@ pub(crate) fn manifest(path: &str) -> PathBuf {
     if p.is_dir() { p.join("app.toml") } else { p }
 }
 
-fn apps() -> Result<PathBuf, String> {
+pub(crate) fn apps() -> Result<PathBuf, String> {
     workspace_config::config_dir()
         .map(|d| d.join("apps"))
         .ok_or_else(|| "cannot determine the configuration directory (HOME unset)".into())
@@ -441,31 +446,8 @@ pub fn test(args: &[String]) -> Result<(), String> {
     ))
 }
 
-/// Copy a package's regular files and directories; a symbolic link or
-/// anything else is refused, so an install copies only what it shows.
-fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
-    let fail = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
-    std::fs::create_dir_all(to).map_err(|e| fail(to, e))?;
-    for entry in std::fs::read_dir(from).map_err(|e| fail(from, e))? {
-        let entry = entry.map_err(|e| fail(from, e))?;
-        let (src, dst) = (entry.path(), to.join(entry.file_name()));
-        let kind = entry.file_type().map_err(|e| fail(&src, e))?;
-        if kind.is_dir() {
-            copy_dir(&src, &dst)?;
-        } else if kind.is_file() {
-            std::fs::copy(&src, &dst).map_err(|e| fail(&src, e))?;
-        } else {
-            return Err(format!(
-                "{}: only files and directories are installed",
-                src.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// A name for the installed directory: letters, digits, `-`, `_`, `.`.
-fn valid_name(name: &str) -> Result<(), String> {
+pub(crate) fn valid_name(name: &str) -> Result<(), String> {
     let ok = !name.is_empty()
         && !name.starts_with('.')
         && name
@@ -539,21 +521,37 @@ pub fn pack(args: &[String]) -> Result<(), String> {
 }
 
 pub fn install(args: &[String]) -> Result<(), String> {
-    let (path, name) = match args {
-        [p] => (p, None),
-        [p, f, n] if f == "--name" => (p, Some(n.clone())),
-        _ => return Err(USAGE.into()),
-    };
-    let file = Path::new(path);
-    if file.is_file() && file.extension().and_then(|e| e.to_str()) == Some(app_package::EXTENSION) {
-        return install_package(file, name);
+    let (mut what, mut name, mut dev) = (None, None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--name" => name = Some(it.next().ok_or(USAGE)?.clone()),
+            "--dev" => dev = true,
+            p if what.is_none() && !p.starts_with('-') => what = Some(p.to_owned()),
+            _ => return Err(USAGE.into()),
+        }
     }
-    install_dir(path, name)
+    let what = what.ok_or(USAGE)?;
+    // Installed by an earlier Dreamer: recorded before anything changes.
+    if let Err(e) = crate::installed::migrate() {
+        eprintln!("dream: {e}");
+    }
+    let file = Path::new(&what);
+    if file.is_file() && file.extension().and_then(|e| e.to_str()) == Some(app_package::EXTENSION) {
+        return install_package(file, name, dev);
+    }
+    if file.exists() {
+        return install_dir(&what, name, dev);
+    }
+    if what.contains('/') || dev {
+        return Err(format!("{what}: no such folder or package file"));
+    }
+    install_registered(&what, name)
 }
 
 /// Install a `.dreamerapp`: unpack it beside the installed apps, install
 /// that folder, and remove it again.
-fn install_package(file: &Path, name: Option<String>) -> Result<(), String> {
+fn install_package(file: &Path, name: Option<String>, dev: bool) -> Result<(), String> {
     let bytes = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
     let apps = apps()?;
     let unpacked = apps.join(format!(".unpack-{}", std::process::id()));
@@ -562,15 +560,56 @@ fn install_package(file: &Path, name: Option<String>) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", file.display()))
         .and_then(|u| {
             println!("unpacked {} (sha256 {})", file.display(), u.sha256);
-            install_dir(&unpacked.display().to_string(), name)
+            install_dir(&unpacked.display().to_string(), name, dev)
         });
     let _ = std::fs::remove_dir_all(&unpacked);
     result
 }
 
-fn install_dir(path: &str, name: Option<String>) -> Result<(), String> {
+/// `ID[@VERSION]` from the registry.
+fn install_registered(spec: &str, name: Option<String>) -> Result<(), String> {
+    let (id, wanted) = match spec.split_once('@') {
+        Some((id, v)) => (id, Some(v)),
+        None => (spec, None),
+    };
+    let reg = crate::installed::registry();
+    let chosen = reg.choose(id, wanted, env!("CARGO_PKG_VERSION"))?;
+    let bytes = reg.package(&chosen.sha256)?;
+    let apps = apps()?;
+    let unpacked = apps.join(format!(".unpack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&unpacked);
+    let result = app_package::unpack(&bytes, &unpacked).and_then(|_| {
+        let m = unpacked.join(app_package::MANIFEST);
+        crate::strip::build(&m)?;
+        let v = checked(&m)?;
+        ok_or_error(&v)?;
+        // Only what makes it unable to run here: an id or version from
+        // before the identity checks was recorded as it was installed.
+        if let Some(why) = v["runs_here"].as_str() {
+            return Err(why.to_owned());
+        }
+        Ok(())
+    });
+    let _ = std::fs::remove_dir_all(&unpacked);
+    result?;
+    println!(
+        "{id} {} from the registry (sha256 {})",
+        chosen.version, chosen.sha256
+    );
+    crate::installed::deploy(
+        &name.unwrap_or_else(|| id.to_owned()),
+        id,
+        &chosen.version,
+        &bytes,
+    )
+}
+
+fn install_dir(path: &str, name: Option<String>, dev: bool) -> Result<(), String> {
     let m = manifest(path);
     let dir = m.parent().ok_or("no package directory")?.to_path_buf();
+    if m.file_name().and_then(|n| n.to_str()) != Some(app_package::MANIFEST) {
+        return Err("install a package directory, whose manifest is app.toml".into());
+    }
     crate::strip::build(&m)?;
     let problems = crate::strip::type_problems(&m);
     if !problems.is_empty() {
@@ -587,34 +626,16 @@ fn install_dir(path: &str, name: Option<String>) -> Result<(), String> {
     }
     let name = name.unwrap_or_else(|| id.clone());
     valid_name(&name)?;
-    let apps = apps()?;
-    let dest = apps.join(&name);
-    if m.file_name().and_then(|n| n.to_str()) != Some("app.toml") {
-        return Err("install a package directory, whose manifest is app.toml".into());
-    }
-    let staging = apps.join(format!(".staging-{name}"));
-    let _ = std::fs::remove_dir_all(&staging);
-    copy_dir(&dir, &staging)?;
-    let fail = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
-    if dest.exists() {
-        let last = apps.join(".last-good");
-        std::fs::create_dir_all(&last).map_err(|e| fail(&last, e))?;
-        let keep = last.join(&name);
-        let _ = std::fs::remove_dir_all(&keep);
-        std::fs::rename(&dest, &keep).map_err(|e| fail(&dest, e))?;
-    }
-    std::fs::rename(&staging, &dest).map_err(|e| fail(&staging, e))?;
-    println!(
-        "installed {id} {} as {} ({})",
-        v["version"].as_str().unwrap_or(""),
-        name,
-        dest.display()
-    );
-    crate::env::autosave(
-        &[&format!("apps/{name}")],
-        &format!("Install app {name} {}", v["version"].as_str().unwrap_or("")),
-    );
-    Ok(())
+    let packed = app_package::pack(&dir)?;
+    let manifest_text = std::fs::read_to_string(&m).map_err(|e| format!("{}: {e}", m.display()))?;
+    let version = crate::installed::version_for(
+        &id,
+        v["version"].as_str().unwrap_or_default(),
+        &packed.sha256,
+        dev,
+    )?;
+    crate::installed::record(&id, &version, &packed.bytes, &manifest_text)?;
+    crate::installed::deploy(&name, &id, &version, &packed.bytes)
 }
 
 pub fn rollback(args: &[String]) -> Result<(), String> {
@@ -640,24 +661,25 @@ pub fn rollback(args: &[String]) -> Result<(), String> {
         std::fs::rename(&swap, &keep).map_err(|e| fail(&swap, e))?;
     }
     println!("rolled {name} back ({})", dest.display());
-    crate::env::autosave(&[&format!("apps/{name}")], &format!("Roll back app {name}"));
-    Ok(())
+    crate::installed::repackage(name)
 }
 
 pub fn list() -> Result<(), String> {
     let apps = apps()?;
-    let mut names: Vec<String> = std::fs::read_dir(&apps)
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| !n.starts_with('.') && apps.join(n).join("app.toml").is_file())
-        .collect();
-    names.sort();
-    if names.is_empty() {
+    let config = apps
+        .parent()
+        .ok_or("no configuration directory")?
+        .to_path_buf();
+    let installed = crate::installed::installed(&config);
+    if installed.is_empty() {
         println!("no packages in {}", apps.display());
     }
-    for n in names {
+    for (n, standing) in installed {
+        let note = standing.note();
+        if standing == crate::installed::Standing::Missing {
+            println!("{n}{note}");
+            continue;
+        }
         let v = checked(&apps.join(&n).join("app.toml"))?;
         let last = if apps.join(".last-good").join(&n).is_dir() {
             "  (last good kept)"
@@ -673,12 +695,12 @@ pub fn list() -> Result<(), String> {
         };
         match ok_or_error(&v) {
             Ok(()) => println!(
-                "{n}  {} {}  {}{last}{fix}",
+                "{n}  {} {}  {}{last}{fix}{note}",
                 v["id"].as_str().unwrap_or(""),
                 v["version"].as_str().unwrap_or(""),
                 v["title"].as_str().unwrap_or("")
             ),
-            Err(e) => println!("{n}  invalid: {e}"),
+            Err(e) => println!("{n}  invalid: {e}{note}"),
         }
     }
     Ok(())

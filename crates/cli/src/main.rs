@@ -50,6 +50,7 @@ mod env;
 mod extprobe;
 mod harness;
 mod hosts;
+mod installed;
 mod jobrun;
 mod mcp;
 mod memory;
@@ -203,6 +204,7 @@ fn main() -> ExitCode {
         ["app", "install", rest @ ..] => build::install(&to_owned(rest)),
         ["app", "rollback", rest @ ..] => build::rollback(&to_owned(rest)),
         ["app", "list"] => build::list(),
+        ["app", "sync", rest @ ..] => installed::sync(&to_owned(rest)),
         ["app", "types", rest @ ..] => build::types(&to_owned(rest)),
         ["app", "launch", rest @ ..] => {
             daemon::split_daemon_args(rest).and_then(|(d, extra)| build::launch(&d, &extra))
