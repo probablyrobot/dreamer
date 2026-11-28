@@ -1740,6 +1740,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dreamer-app-package"
+version = "0.14.0"
+dependencies = [
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "dreamer-app-protocol"
 version = "0.14.0"
 dependencies = [
@@ -1753,6 +1760,7 @@ name = "dreamer-cli"
 version = "0.14.0"
 dependencies = [
  "dreamer-api",
+ "dreamer-app-package",
  "dreamer-app-protocol",
  "dreamer-client",
  "dreamer-environment",

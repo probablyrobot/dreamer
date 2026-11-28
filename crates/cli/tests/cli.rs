@@ -3104,6 +3104,66 @@ fn app_identity_is_checked_at_install_and_older_installs_still_launch() {
     assert!(installed.status.success(), "{installed:?}");
 }
 
+/// `dream app pack` writes the same package twice; `install FILE`
+/// installs what it wrote.
+#[test]
+fn a_packed_app_has_one_hash_and_installs_from_its_file() {
+    let cli = Cli::new();
+    let pkg = cli.root.join("panes");
+    std::fs::create_dir_all(pkg.join(".git")).expect("pkg");
+    std::fs::write(
+        pkg.join("app.toml"),
+        "schema_version = 1\nid = \"local.panes\"\nversion = \"0.3.0\"\ntitle = \"Panes\"\ncapabilities = [\"tmux.topology\"]\n\n[package]\nlicense = \"MIT\"\n\n[data.p]\nmethod = \"tmux.topology\"\npath = \"panes\"\n\n[view]\ntype = \"list\"\nsource = \"p\"\nfield = \"id\"\n",
+    )
+    .expect("manifest");
+    std::fs::write(pkg.join(".git/HEAD"), "private\n").expect("dot");
+    let path = pkg.display().to_string();
+    let pack = |to: &str| {
+        let out = cli.run(&["app", "pack", &path, "-o", to, "--json"]);
+        assert!(out.status.success(), "{out:?}");
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        v["sha256"].as_str().expect("sha256").to_owned()
+    };
+    let one = cli.root.join("one.dreamerapp").display().to_string();
+    let first = pack(&one);
+    assert_eq!(
+        first,
+        pack(&cli.root.join("two.dreamerapp").display().to_string())
+    );
+    let bytes = std::fs::read(&one).expect("package");
+    assert!(
+        !bytes.windows(7).any(|w| w == b"private"),
+        "dot folders stay out"
+    );
+
+    let installed = cli.run(&["app", "install", &one]);
+    let said = String::from_utf8_lossy(&installed.stdout);
+    assert!(
+        installed.status.success() && said.contains(&first) && said.contains("local.panes 0.3.0"),
+        "{installed:?}"
+    );
+    let apps = cli.root.join("config/apps");
+    assert!(apps.join("local.panes/app.toml").is_file());
+    let left: Vec<_> = std::fs::read_dir(&apps)
+        .expect("apps")
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".unpack"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    // A package changed after packing is refused.
+    let mut broken = bytes.clone();
+    broken[0] = b'/';
+    let bad = cli.root.join("bad.dreamerapp");
+    std::fs::write(&bad, broken).expect("bad");
+    assert!(
+        !cli.run(&["app", "install", &bad.display().to_string()])
+            .status
+            .success()
+    );
+}
+
 #[test]
 fn a_generated_monitor_package_is_built_installed_and_runs_in_a_pane() {
     let cli = Cli::new();
