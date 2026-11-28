@@ -22,6 +22,11 @@ capabilities = [
 all_panes = true
 root = "main"
 
+[package]
+description = "A chat with an agent session: transcript and composer"
+license = "Apache-2.0"
+repository = "https://github.com/probablyrobot/dreamer"
+
 [data.sessions]
 method = "agent.sessions.list"
 path = "sessions"

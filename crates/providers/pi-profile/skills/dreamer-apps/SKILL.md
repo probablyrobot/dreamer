@@ -80,6 +80,10 @@ next problem. What the messages mean:
 | `` `endpont` is not a field of the parameters of dreamer.tmux.topology (TopologyParams); did you mean `endpoint`? `` | Use the record's field, as declared in `types/dreamer.d.ts` |
 | `` `jobs.list` is not in the app's capabilities, so the call is refused; add it to `capabilities` in app.toml `` | Add the method (or its service, `jobs.*`) to `capabilities` |
 | `ok: false`, `problems` empty, and `error` such as ``app.ts:23:9: Expected ',', got 'ident'`` | A syntax error, or a manifest problem: `error` says where |
+| `` version: `1` is not a semantic version `` | Give `version` as `MAJOR.MINOR.PATCH` (`"0.1.0"`); raise it on each change you install |
+| `` id: `panes` is not <namespace>.<name> `` | Use `local.NAME` for the user's own apps |
+| `` package.license: `MIT/Apache` is not an SPDX license expression `` | Write it as SPDX (`MIT OR Apache-2.0`), or leave `license` out |
+| `` local.x 0.1.0 needs Dreamer >=0.16; this is Dreamer 0.15.0 `` | Lower `dreamer` in `[package]`, or tell the user to update Dreamer |
 
 The check sees the methods `app.ts` calls by name (`dreamer.jobs.list()`,
 `dreamer.call("jobs.list")`). A method named at run time is not seen; a

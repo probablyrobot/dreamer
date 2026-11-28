@@ -71,6 +71,28 @@ pub struct Manifest {
     /// capability.
     #[serde(default)]
     pub net: Option<NetSpec>,
+    /// What a registry shows and checks: all optional until publishing.
+    #[serde(default)]
+    pub package: Option<Package>,
+}
+
+/// `[package]`: the app's description, license, authors, repository, and
+/// the oldest Dreamer that runs it.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Package {
+    #[serde(default)]
+    pub description: Option<String>,
+    /// An SPDX license expression, such as `MIT` or `MIT OR Apache-2.0`.
+    #[serde(default)]
+    pub license: Option<String>,
+    #[serde(default)]
+    pub authors: Vec<String>,
+    #[serde(default)]
+    pub repository: Option<String>,
+    /// The oldest Dreamer that runs the app, as a requirement (`">=0.15"`).
+    #[serde(default)]
+    pub dreamer: Option<String>,
 }
 
 /// What a script app's `fetch` may reach.
@@ -847,6 +869,119 @@ pub fn key_ok(k: &str) -> bool {
             .is_some_and(|c| c.len() == 1 && c.chars().all(|c| c.is_ascii_lowercase()))
 }
 
+fn validate_package(p: &Package, errors: &mut Vec<String>) {
+    if let Some(l) = &p.license
+        && let Err(e) = spdx_ok(l)
+    {
+        errors.push(format!(
+            "package.license: `{l}` is not an SPDX license expression: {e}"
+        ));
+    }
+    if let Some(r) = &p.dreamer
+        && let Err(e) = semver::VersionReq::parse(r)
+    {
+        errors.push(format!(
+            "package.dreamer: `{r}` is not a version requirement such as \">=0.15\": {e}"
+        ));
+    }
+    if p.authors.iter().any(|a| a.trim().is_empty()) {
+        errors.push("package.authors: an author is empty".into());
+    }
+    if p.description
+        .as_deref()
+        .is_some_and(|d| d.trim().is_empty())
+    {
+        errors.push("package.description: empty".into());
+    }
+    if p.repository.as_deref().is_some_and(|r| {
+        !(r.starts_with("https://") || r.starts_with("http://")) || r.contains(char::is_whitespace)
+    }) {
+        errors.push("package.repository: an http(s) URL".into());
+    }
+}
+
+/// The form of an SPDX license expression (SPDX 2.3, annex D): license
+/// ids (optionally `+`), `LicenseRef-…`, `WITH` an exception, `AND`, `OR`,
+/// and parentheses. Ids are checked for form, not against the SPDX list.
+fn spdx_ok(text: &str) -> Result<(), String> {
+    let spaced = text.replace('(', " ( ").replace(')', " ) ");
+    let tokens: Vec<&str> = spaced.split_whitespace().collect();
+    if tokens.is_empty() {
+        return Err("empty".into());
+    }
+    let mut at = 0;
+    spdx_or(&tokens, &mut at)?;
+    match tokens.get(at) {
+        None => Ok(()),
+        Some(t) => Err(format!("unexpected `{t}`")),
+    }
+}
+
+fn spdx_or(t: &[&str], at: &mut usize) -> Result<(), String> {
+    spdx_and(t, at)?;
+    while t.get(*at).is_some_and(|w| *w == "OR") {
+        *at += 1;
+        spdx_and(t, at)?;
+    }
+    Ok(())
+}
+
+fn spdx_and(t: &[&str], at: &mut usize) -> Result<(), String> {
+    spdx_with(t, at)?;
+    while t.get(*at).is_some_and(|w| *w == "AND") {
+        *at += 1;
+        spdx_with(t, at)?;
+    }
+    Ok(())
+}
+
+fn spdx_with(t: &[&str], at: &mut usize) -> Result<(), String> {
+    match t.get(*at).copied() {
+        Some("(") => {
+            *at += 1;
+            spdx_or(t, at)?;
+            if t.get(*at).copied() != Some(")") {
+                return Err("a `(` is not closed".into());
+            }
+            *at += 1;
+            return Ok(());
+        }
+        Some(id) if spdx_id(id.strip_suffix('+').unwrap_or(id)) => *at += 1,
+        Some(other) => return Err(format!("`{other}` is not a license id")),
+        None => return Err("it ends where a license id belongs".into()),
+    }
+    if t.get(*at).is_some_and(|w| *w == "WITH") {
+        *at += 1;
+        match t.get(*at) {
+            Some(e) if spdx_id(e) => *at += 1,
+            _ => return Err("`WITH` needs an exception id".into()),
+        }
+    }
+    Ok(())
+}
+
+/// A license or exception id: letters, digits, `-` and `.`, not an
+/// operator; `DocumentRef-x:LicenseRef-y` too.
+fn spdx_id(id: &str) -> bool {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    };
+    if ["AND", "OR", "WITH"].contains(&id) {
+        return false;
+    }
+    match id.split_once(':') {
+        Some((doc, lic)) => {
+            doc.starts_with("DocumentRef-")
+                && lic.starts_with("LicenseRef-")
+                && plain(doc)
+                && plain(lic)
+        }
+        None => plain(id),
+    }
+}
+
 fn path_ok(p: &str) -> bool {
     !p.is_empty()
         && p.split('.')
@@ -1292,7 +1427,56 @@ impl Manifest {
             );
         }
         self.validate_contributions(&mut errors);
+        if let Some(p) = &self.package {
+            validate_package(p, &mut errors);
+        }
         errors
+    }
+
+    /// What keeps the app from being installed, though it still runs as
+    /// installed before: a version that is not a semantic version, and an
+    /// id that is not `<namespace>.<name>`. Each says how to fix it.
+    pub fn identity(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if semver::Version::parse(&self.version).is_err() {
+            out.push(format!(
+                "version: `{}` is not a semantic version; use one such as \"0.1.0\"",
+                self.version
+            ));
+        }
+        let parts: Vec<&str> = self.id.split('.').collect();
+        if parts.len() != 2 {
+            out.push(format!(
+                "id: `{}` is not <namespace>.<name>; use \"local.{}\" for an app you do not publish",
+                self.id,
+                parts.last().copied().unwrap_or_default()
+            ));
+        }
+        out
+    }
+
+    /// Whether Dreamer `version` runs this app (`[package] dreamer`); the
+    /// error names both versions. A pre-release counts as its release.
+    pub fn runs_on(&self, version: &str) -> Result<(), String> {
+        let Some(req) = self.package.as_ref().and_then(|p| p.dreamer.as_deref()) else {
+            return Ok(());
+        };
+        let Ok(req) = semver::VersionReq::parse(req) else {
+            return Err(format!(
+                "package.dreamer: `{req}` is not a version requirement"
+            ));
+        };
+        let v = semver::Version::parse(version)
+            .map_err(|e| format!("this Dreamer's version `{version}` does not parse: {e}"))?;
+        let release = semver::Version::new(v.major, v.minor, v.patch);
+        if req.matches(&v) || req.matches(&release) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} {} needs Dreamer {req}; this is Dreamer {version}",
+                self.id, self.version
+            ))
+        }
     }
 
     /// A view's own checks: a version 1 `[view]`, or a tree's data node
@@ -1992,6 +2176,54 @@ pub fn fill_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with(extra: &str) -> Result<Manifest, Vec<String>> {
+        Manifest::parse(&format!("{GOOD}\n{extra}"))
+    }
+
+    #[test]
+    fn identity_wants_a_semantic_version_and_a_namespaced_id() {
+        assert!(Manifest::parse(GOOD).expect("good").identity().is_empty());
+        let old = GOOD
+            .replace("version = \"0.1.0\"", "version = \"1\"")
+            .replace("id = \"local.panes\"", "id = \"panes\"");
+        // Installed before identities were checked: it still parses and runs.
+        let m = Manifest::parse(&old).expect("still runs");
+        let problems = m.identity();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("version:"), "{problems:?}");
+        assert!(problems[1].contains("local.panes"), "{problems:?}");
+        let pre = GOOD.replace("0.1.0", "0.2.0-dev.3+abc");
+        assert!(Manifest::parse(&pre).expect("pre").identity().is_empty());
+    }
+
+    #[test]
+    fn package_metadata_is_checked() {
+        let m = with(
+            "[package]\ndescription = \"Panes\"\nlicense = \"(MIT OR Apache-2.0) AND GPL-2.0+ WITH Classpath-exception-2.0\"\nauthors = [\"A\"]\nrepository = \"https://example.com/x\"\ndreamer = \">=0.15\"\n",
+        )
+        .expect("good package");
+        m.runs_on("0.15.0").expect("same");
+        m.runs_on("0.15.0-dev.1").expect("its pre-release");
+        let e = m.runs_on("0.14.2").expect_err("older");
+        assert!(e.contains(">=0.15") && e.contains("0.14.2"), "{e}");
+
+        let unknown = with("[package]\nhomepage = \"x\"\n").expect_err("unknown key");
+        assert!(unknown[0].contains("homepage"), "{unknown:?}");
+        for bad in [
+            "MIT OR",
+            "(MIT",
+            "MIT AND AND BSD",
+            "MIT WITH",
+            "M I T",
+            "MIT/Apache",
+        ] {
+            let e = with(&format!("[package]\nlicense = \"{bad}\"\n")).expect_err(bad);
+            assert!(e[0].starts_with("package.license"), "{bad}: {e:?}");
+        }
+        let req = with("[package]\ndreamer = \"soon\"\n").expect_err("req");
+        assert!(req[0].starts_with("package.dreamer"), "{req:?}");
+    }
 
     const GOOD: &str = r#"
 schema_version = 1

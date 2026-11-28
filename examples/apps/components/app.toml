@@ -8,6 +8,11 @@ title = "Components"
 module = "app.luau"
 root = "main"
 
+[package]
+description = "Every host component, drawn from fixtures"
+license = "Apache-2.0"
+repository = "https://github.com/probablyrobot/dreamer"
+
 [nodes.main]
 type = "split"
 sizes = [55, 45]

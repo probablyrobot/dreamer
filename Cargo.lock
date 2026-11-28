@@ -240,6 +240,7 @@ dependencies = [
  "dreamer-providers",
  "dreamer-script-runtime",
  "dreamer-view-tree",
+ "semver",
  "serde",
  "serde_json",
  "tokio",

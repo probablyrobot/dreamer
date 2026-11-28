@@ -300,11 +300,18 @@ manifest:
 
 ```toml
 schema_version = 1
-id = "local.panes"          # dotted lowercase
-version = "0.1.0"
+id = "local.panes"          # <namespace>.<name>; local. for an app you do not publish
+version = "0.1.0"           # a semantic version
 title = "Panes"
 capabilities = ["tmux.topology", "actions.submit"]
 # all_panes = true          # grant every pane: to read others, or hear their events
+
+[package]                   # optional; every key in it is optional
+description = "Panes of every session, as a table"
+license = "MIT"             # an SPDX license expression
+authors = ["Your Name"]
+repository = "https://github.com/you/panes"
+dreamer = ">=0.15"          # the oldest Dreamer that runs it
 
 [data.panes]
 method = "tmux.topology"    # a query, never a mutation
@@ -380,6 +387,19 @@ params = { action = { kind = { rename_window = { window = "${selected.window}", 
 Validation is strict: unknown keys, unknown methods, mutations as data
 sources, malformed placeholders, and duplicate or reserved keys are errors,
 each reported with where it is.
+
+**Identity.** `id` is `<namespace>.<name>`, each part lowercase letters,
+digits and `-`. `local.` is the namespace of apps you do not publish, and
+it never will be publishable. `version` is a semantic version (`0.1.0`,
+`1.2.0-beta.1`). `[package]` is optional and strict: `description`,
+`license` (an SPDX expression such as `MIT OR Apache-2.0`, checked for its
+form, not against the SPDX list), `authors`, `repository` (an http(s)
+URL), and `dreamer`, the oldest Dreamer that runs the app (`">=0.15"`);
+any other key is an error. `dream app check` and `dream app install`
+refuse an id or version of another form, and `install` refuses an app
+whose `dreamer` this Dreamer does not meet, naming both versions. An app
+installed before these checks keeps running; `dream app list` marks it,
+and `dream app check` says what to change.
 
 ## View trees
 
