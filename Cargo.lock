@@ -1727,6 +1727,8 @@ dependencies = [
  "futures-lite",
  "gpui",
  "gpui_platform",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
  "png 0.18.1",
  "replica",
  "serde_json",
