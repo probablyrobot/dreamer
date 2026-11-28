@@ -3049,6 +3049,61 @@ exec /bin/sh -c "exec $3"
 /// version it replaces kept as the last good one), and launched in a real
 /// tmux pane with the grant it declares, where it follows live data with
 /// no GUI. A broken version is refused and changes nothing.
+/// An app installed before ids and versions were checked still runs;
+/// installing needs a semantic version, a `<namespace>.<name>` id, and a
+/// Dreamer at least as new as the app's `[package] dreamer`.
+#[test]
+fn app_identity_is_checked_at_install_and_older_installs_still_launch() {
+    let cli = Cli::new();
+    let manifest = |id: &str, version: &str, package: &str| {
+        format!(
+            "schema_version = 1\nid = \"{id}\"\nversion = \"{version}\"\ntitle = \"Old\"\ncapabilities = [\"tmux.topology\"]\n{package}\n[data.p]\nmethod = \"tmux.topology\"\npath = \"panes\"\n\n[view]\ntype = \"list\"\nsource = \"p\"\nfield = \"id\"\n"
+        )
+    };
+    // As installed by an earlier Dreamer.
+    let old = cli.root.join("config/apps/old");
+    std::fs::create_dir_all(&old).expect("old");
+    std::fs::write(old.join("app.toml"), manifest("old", "1", "")).expect("old manifest");
+    let checked = cli.run(&["app", "check", &old.display().to_string()]);
+    let said = String::from_utf8_lossy(&checked.stderr);
+    assert!(
+        !checked.status.success()
+            && said.contains("not a semantic version")
+            && said.contains("\"local.old\""),
+        "{checked:?}"
+    );
+    let listed = String::from_utf8_lossy(&cli.run(&["app", "list"]).stdout).into_owned();
+    assert!(listed.contains("old  old 1  Old  (needs a fix"), "{listed}");
+    let out = cli.ok(&["app", "launch", "old"]);
+    let (pane, _) = launched(&out);
+    cli.wait_pane(&pane, "[live]");
+
+    // A copy to install: refused until its identity is fixed.
+    let pkg = cli.root.join("pkg");
+    std::fs::create_dir_all(&pkg).expect("pkg");
+    let path = pkg.display().to_string();
+    std::fs::write(pkg.join("app.toml"), manifest("old", "1", "")).expect("pkg manifest");
+    assert!(!cli.run(&["app", "install", &path]).status.success());
+    let newer = "[package]\ndreamer = \">=99.0\"\n";
+    std::fs::write(pkg.join("app.toml"), manifest("local.old", "0.2.0", newer))
+        .expect("pkg manifest");
+    let refused = cli.run(&["app", "install", &path]);
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success()
+            && said.contains("needs Dreamer >=99.0")
+            && said.contains(&format!("this is Dreamer {}", env!("CARGO_PKG_VERSION"))),
+        "{refused:?}"
+    );
+    std::fs::write(
+        pkg.join("app.toml"),
+        manifest("local.old", "0.2.0", "[package]\nlicense = \"MIT\"\n"),
+    )
+    .expect("pkg manifest");
+    let installed = cli.run(&["app", "install", &path]);
+    assert!(installed.status.success(), "{installed:?}");
+}
+
 #[test]
 fn a_generated_monitor_package_is_built_installed_and_runs_in_a_pane() {
     let cli = Cli::new();

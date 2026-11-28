@@ -75,6 +75,23 @@ pub(crate) fn checked(manifest: &Path) -> Result<Value, String> {
     })
 }
 
+/// What keeps a package that runs from being installed: an id or version
+/// that is not one a registry takes, or a Dreamer older than it needs.
+pub(crate) fn installable(v: &Value) -> Result<(), String> {
+    let refused: Vec<&str> = v["identity"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .chain(v["runs_here"].as_str())
+        .collect();
+    if refused.is_empty() {
+        Ok(())
+    } else {
+        Err(refused.join("\n"))
+    }
+}
+
 pub(crate) fn ok_or_error(v: &Value) -> Result<(), String> {
     if v["ok"] == Value::Bool(true) {
         Ok(())
@@ -122,7 +139,13 @@ pub fn check(args: &[String]) -> Result<(), String> {
         Err(e) if !problems.is_empty() => serde_json::json!({ "ok": false, "error": e }),
         Err(e) => return Err(e),
     };
-    let v = with_problems(v, &problems);
+    let mut v = with_problems(v, &problems);
+    if v["ok"] == Value::Bool(true)
+        && let Err(e) = installable(&v)
+    {
+        v["ok"] = Value::Bool(false);
+        v["error"] = Value::String(e);
+    }
     if !json && !problems.is_empty() {
         let mut lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
         if let Some(e) = v["error"].as_str().filter(|e| *e != lines[0]) {
@@ -472,6 +495,7 @@ pub fn install(args: &[String]) -> Result<(), String> {
     }
     let v = checked(&m)?;
     ok_or_error(&v)?;
+    installable(&v)?;
     let id = v["id"].as_str().unwrap_or_default().to_owned();
     // A package with fixtures must draw from them.
     if dir.join("fixtures").is_dir() {
@@ -556,9 +580,16 @@ pub fn list() -> Result<(), String> {
         } else {
             ""
         };
+        // It runs; `dream app check` says what to fix before installing
+        // it again.
+        let fix = if installable(&v).is_err() {
+            "  (needs a fix: see `dream app check`)"
+        } else {
+            ""
+        };
         match ok_or_error(&v) {
             Ok(()) => println!(
-                "{n}  {} {}  {}{last}",
+                "{n}  {} {}  {}{last}{fix}",
                 v["id"].as_str().unwrap_or(""),
                 v["version"].as_str().unwrap_or(""),
                 v["title"].as_str().unwrap_or("")

@@ -9,6 +9,11 @@ version = "0.1.0"
 title = "Panes (web)"
 capabilities = ["tmux.topology"]
 
+[package]
+description = "The panes of every session, as a web page"
+license = "Apache-2.0"
+repository = "https://github.com/probablyrobot/dreamer"
+
 [web]
 # Origins the page may also navigate to; they never get the bridge.
 allow = ["https://tmux.github.io"]

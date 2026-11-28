@@ -60,6 +60,9 @@ fn main() -> ExitCode {
                     "version": m.version,
                     "title": m.title,
                     "needs": { "methods": n.methods, "panes": n.panes, "all_panes": n.all_panes },
+                    // What keeps it from being installed; it still runs.
+                    "identity": m.identity(),
+                    "runs_here": m.runs_on(env!("CARGO_PKG_VERSION")).err(),
                 });
                 println!("{out}");
                 ExitCode::SUCCESS
@@ -91,8 +94,15 @@ fn main() -> ExitCode {
         },
         ["--check", path] => match checked(path) {
             Ok(m) => {
-                println!("ok: {} {} ({})", m.id, m.version, m.title);
-                ExitCode::SUCCESS
+                let mut refused = m.identity();
+                refused.extend(m.runs_on(env!("CARGO_PKG_VERSION")).err());
+                if refused.is_empty() {
+                    println!("ok: {} {} ({})", m.id, m.version, m.title);
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!("{}", refused.join("\n"));
+                    ExitCode::FAILURE
+                }
             }
             Err(e) => {
                 eprintln!("{e}");
