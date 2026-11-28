@@ -138,7 +138,8 @@
       "live",
       "failed",
       "cold",
-      "not_streaming"
+      "not_streaming",
+      "stale"
     ],
     "MouseAction": [
       "unspecified",
@@ -6136,5 +6137,5 @@
       }
     }
   },
-  "version": "1.66"
+  "version": "1.67"
 }

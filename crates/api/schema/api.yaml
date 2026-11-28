@@ -13,7 +13,7 @@
 # name. `repeated: true` makes a list; `optional: true` an explicitly
 # optional scalar (messages are always optional).
 
-version: { major: 1, minor: 66 }
+version: { major: 1, minor: 67 }
 package: dreamer.v1
 
 types:
@@ -403,6 +403,7 @@ types:
       - { n: 3, name: failed }
       - { n: 4, name: cold, doc: "The Cold tier: no mirror and no output from tmux for this client; asking for its content attaches it again." }
       - { n: 5, name: not_streaming, doc: "Reserved. Meant a mirror tmux sends no output for. API 1.64 reported it for panes outside the session the daemon's control client was attached to; the daemon now keeps a control client per tmux session, so every pane streams and nothing reports this state." }
+      - { n: 6, name: stale, doc: "It outran its mirror again soon after an attach, so it is paused for the daemon's control client while tmux keeps running it. The mirror shows its last content and is caught up about once a second, or at once when its content is asked for. Since API 1.67." }
 
   - message: MirrorStatus
     fields:
