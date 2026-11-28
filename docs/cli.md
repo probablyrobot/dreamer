@@ -417,6 +417,10 @@ Never versioned: `hosts.yaml` (host names), `memory/` (your memory),
 app kept for `dream app rollback`. `env.toml` names the environment and
 the oldest Dreamer that reads it.
 
+Changes Dreamer makes itself (an app installed or rolled back, a theme
+kept from the palette) are saved on their own, unless `env.autosave` is
+off (see [settings](settings.md#the-environment)).
+
 You may use git in the directory yourself at any time. A save stops,
 changing nothing, while no branch is checked out or a merge or rebase is
 under way.

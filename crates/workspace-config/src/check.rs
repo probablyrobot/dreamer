@@ -356,6 +356,14 @@ pub const SCHEMA: &[Key] = &[
         live: false,
     },
     Key {
+        path: "env.autosave",
+        kind: "bool",
+        default: "true",
+        doc: "Save the environment (dream env) when Dreamer itself changes it: an app installed, rolled back or removed, a theme picked in the desktop. Only the files that change are saved; your own edits wait for dream env save. Does nothing until dream env init has run.",
+        example: "false",
+        live: true,
+    },
+    Key {
         path: "render.frames",
         kind: "off | on | always",
         default: "on",

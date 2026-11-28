@@ -502,6 +502,10 @@ pub fn install(args: &[String]) -> Result<(), String> {
         name,
         dest.display()
     );
+    crate::env::autosave(
+        &[&format!("apps/{name}")],
+        &format!("Install app {name} {}", v["version"].as_str().unwrap_or("")),
+    );
     Ok(())
 }
 
@@ -528,6 +532,7 @@ pub fn rollback(args: &[String]) -> Result<(), String> {
         std::fs::rename(&swap, &keep).map_err(|e| fail(&swap, e))?;
     }
     println!("rolled {name} back ({})", dest.display());
+    crate::env::autosave(&[&format!("apps/{name}")], &format!("Roll back app {name}"));
     Ok(())
 }
 

@@ -372,3 +372,80 @@ fn restore_refuses_an_unknown_or_invalid_save_and_changes_nothing() {
         "the scratch copy is removed: {siblings:?}"
     );
 }
+
+const APP: &str = r#"schema_version = 1
+id = "local.windows"
+version = "0.1.0"
+title = "Windows"
+capabilities = ["tmux.topology"]
+
+[data.windows]
+method = "tmux.topology"
+path = "windows"
+events = ["tmux.topology"]
+
+[view]
+type = "table"
+source = "windows"
+row_key = "id"
+columns = ["id", "name"]
+"#;
+
+#[test]
+fn an_app_install_saves_only_itself_and_never_fails_because_of_git() {
+    let e = Env::new("autosave");
+    e.ok(&["env", "init"]);
+    let pkg = e.root.join("windows");
+    std::fs::create_dir_all(&pkg).expect("pkg");
+    std::fs::write(pkg.join("app.toml"), APP).expect("manifest");
+    let pkg = pkg.display().to_string();
+
+    // A hand edit in progress is never swept into an automatic save.
+    e.write("dreamer.yaml", "font:\n  size: 15\n");
+    let out = e.ok(&["app", "install", &pkg]);
+    assert!(out.contains("environment saved"), "{out}");
+    let log = e.ok(&["env", "log", "-n", "1"]);
+    assert!(
+        log.contains("Install app local.windows 0.1.0") && log.contains("(automatic)"),
+        "{log}"
+    );
+    let saved = e.git(&e.config(), &["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(
+        saved.trim(),
+        "apps/local.windows/app.toml",
+        "only the app: {saved}"
+    );
+    let status = e.ok(&["env", "status"]);
+    assert!(
+        status.contains("+ dreamer.yaml"),
+        "hand edit left alone: {status}"
+    );
+
+    // Turned off: nothing is saved.
+    e.write("dreamer.yaml", "env:\n  autosave: false\n");
+    e.ok(&["env", "save", "-m", "no autosave"]);
+    std::fs::write(
+        e.root.join("windows/app.toml"),
+        APP.replace("0.1.0", "0.2.0"),
+    )
+    .expect("update");
+    let out = e.ok(&["app", "install", &pkg]);
+    assert!(!out.contains("environment saved"), "{out}");
+    assert!(e.ok(&["env", "log", "-n", "1"]).contains("no autosave"));
+
+    // On again, but git cannot save (a merge under way): the install
+    // still works and says why the environment was not saved.
+    e.write("dreamer.yaml", "font:\n  size: 15\n");
+    e.ok(&["env", "save", "-m", "autosave back on"]);
+    let head = e.git(&e.config(), &["rev-parse", "HEAD"]);
+    std::fs::write(e.config().join(".git/MERGE_HEAD"), head).expect("merge head");
+    std::fs::write(
+        e.root.join("windows/app.toml"),
+        APP.replace("0.1.0", "0.3.0"),
+    )
+    .expect("update");
+    let out = e.dream(&["app", "install", &pkg]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "the install does not fail: {err}");
+    assert!(err.contains("the environment was not saved"), "{err}");
+}

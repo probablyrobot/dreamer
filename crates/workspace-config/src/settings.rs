@@ -32,6 +32,22 @@ pub struct Settings {
     pub window: WindowSettings,
     pub web: WebSettings,
     pub render: RenderSettings,
+    pub env: EnvSettings,
+}
+
+/// The environment: the configuration directory, versioned with git
+/// (`dream env`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvSettings {
+    /// Save the environment when Dreamer itself changes it (an app
+    /// installed, a theme picked). Hand edits wait for `dream env save`.
+    pub autosave: bool,
+}
+
+impl Default for EnvSettings {
+    fn default() -> Self {
+        EnvSettings { autosave: true }
+    }
 }
 
 /// How the desktop draws terminal panes, and when the daemon switches a
@@ -608,6 +624,7 @@ impl Default for Settings {
             window: WindowSettings::default(),
             web: WebSettings::default(),
             render: RenderSettings::default(),
+            env: EnvSettings::default(),
         }
     }
 }
@@ -641,6 +658,14 @@ struct File {
     web: WebFile,
     #[serde(default)]
     render: RenderFile,
+    #[serde(default)]
+    env: EnvFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvFile {
+    autosave: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1517,6 +1542,9 @@ pub fn parse_settings(text: &str, origin: Option<&Path>) -> Result<Settings, Con
     if let Some(c) = file.web.color {
         s.web.color = c;
     }
+    if let Some(a) = file.env.autosave {
+        s.env.autosave = a;
+    }
     if let Some(f) = file.render.frames {
         s.render.frames = f;
     }
@@ -2123,6 +2151,15 @@ mod tests {
             let e = parse_settings(&format!("render:\n  {bad}\n"), None).expect_err(bad);
             assert!(e.at.starts_with("render.frames_"), "{bad}: {e:?}");
         }
+    }
+
+    #[test]
+    fn autosave_is_on_unless_turned_off() {
+        assert!(Settings::default().env.autosave);
+        let s = parse_settings("env:\n  autosave: false\n", None).expect("parse");
+        assert!(!s.env.autosave);
+        let e = parse_settings("env:\n  autosave: sometimes\n", None).expect_err("bad");
+        assert!(e.to_string().contains("autosave"), "{e}");
     }
 
     #[test]
