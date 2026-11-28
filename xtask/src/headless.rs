@@ -25,6 +25,7 @@ pub const PACKAGES: &[&str] = &[
     "dreamer-sdk",
     "dreamer-termapp",
     "dreamer-domain",
+    "dreamer-environment",
     "dreamer-matcher",
     "dreamer-memory",
     "dreamer-procreg",

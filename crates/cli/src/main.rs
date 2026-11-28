@@ -46,6 +46,7 @@ mod build;
 mod collect;
 mod daemon;
 mod delegate;
+mod env;
 mod extprobe;
 mod harness;
 mod hosts;
@@ -77,6 +78,7 @@ const USAGE: &str = "usage:
   dream config-dir
   dream themes
   dream config check | dream config schema [--json]
+  dream env init|status|save|log|diff ...   (the configuration directory, versioned with git; see `dream env help`)
   dream skills [list | show NAME | install [--claude] [--codex] [--opencode]]   (agent skills for configuring Dreamer and building apps)
   dream workspace list
   dream workspace check <name|path>
@@ -141,6 +143,7 @@ fn main() -> ExitCode {
         ["workspace", "list"] => list(),
         ["themes"] => themes(),
         ["config", "check"] => config_check(),
+        ["env", rest @ ..] => env::run(&to_owned(rest)),
         ["skills"] | ["skills", "list"] => skills_list(),
         ["skills", "show", name] => skills_show(name),
         ["skills", "install", rest @ ..] => skills_install(rest),
